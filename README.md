@@ -112,6 +112,27 @@ ArkhamMirror uses a `config.yaml` file for system settings. You can configure:
 
 See `config.yaml` for all available options.
 
+## 💖 Support This Project
+
+ArkhamMirror is **free and open source**, built to empower journalists, researchers, and investigators. Your support helps us:
+
+* 🖥️ Cover GPU compute costs for AI/OCR processing
+* 🔧 Maintain and improve the platform
+* ✨ Build new features requested by the community
+* 📚 Create better documentation and tutorials
+
+### Ways to Support
+
+[![GitHub Sponsors](https://img.shields.io/badge/Sponsor-GitHub-EA4AAA?style=for-the-badge&logo=github)](https://github.com/sponsors/mantisfury)
+[![Ko-fi](https://img.shields.io/badge/Support-Ko--fi-FF5E5B?style=for-the-badge&logo=ko-fi&logoColor=white)](https://ko-fi.com/arkham_mirror)
+
+* **[GitHub Sponsors](https://github.com/sponsors/mantisfury)** - Zero fees, recurring or one-time support
+* **[Ko-fi](https://ko-fi.com/arkham_mirror)** - Quick one-time donations
+
+**Every contribution matters!** Even $5 helps keep the servers running and the code flowing.
+
+Thank you to our amazing sponsors! [View all sponsors →](SPONSORS.md)
+
 ## 🤝 Contributing
 
 We welcome contributions! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines on how to report bugs, suggest features, and submit pull requests.
