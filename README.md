@@ -20,6 +20,9 @@ If a complete non-coder can ship this in a week, imagine what you can do.
 
 ![ArkhamMirror Demo](assets/ArkhamMirrorDemo.gif)
 
+[![Watch the Deep Dive](https://img.youtube.com/vi/HcjcKnEzPww/0.jpg)](https://www.youtube.com/watch?v=HcjcKnEzPww)
+> *Listen to the AI-generated Deep Dive (via NotebookLM) explaining how ArkhamMirror works and why it matters.*
+
 ## 🚀 Features
 
 * **Hybrid OCR Engine**: Automatically switches between fast CPU-based OCR (PaddleOCR) and smart GPU-based Vision LLMs (Qwen-VL) for complex layouts and handwriting.
