@@ -20,7 +20,17 @@ This section guides you through submitting an enhancement suggestion for ArkhamM
 * **Provide a step-by-step description of the suggested enhancement** in as many details as possible.
 * **Explain why this enhancement would be useful** to most ArkhamMirror users.
 
-### 3. Pull Requests
+### 3. Your First Code Contribution
+
+**New to open source?** Look for issues labeled [`good first issue`](https://github.com/mantisfury/ArkhamMirror/labels/good%20first%20issue) - these are beginner-friendly tasks that are great for first-time contributors!
+
+**What makes a good first issue?**
+- Clear, well-defined scope
+- Doesn't require deep knowledge of the entire codebase
+- Has guidance or examples provided
+- Usually takes 1-3 hours to complete
+
+### 4. Pull Requests
 
 The process is straightforward:
 
@@ -29,6 +39,12 @@ The process is straightforward:
 3. **Commit** changes to your own branch.
 4. **Push** your work back up to your fork.
 5. Submit a **Pull Request** so that we can review your changes.
+
+**Pull Request Guidelines:**
+- Keep PRs focused on a single feature or bug fix
+- Write clear commit messages
+- Update documentation if you're adding/changing features
+- Test your changes before submitting
 
 ## 💻 Development Setup
 
