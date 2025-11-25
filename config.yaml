@@ -1,0 +1,43 @@
+# ArkhamMirror Configuration
+
+# --- System Settings ---
+system:
+  environment: "development" # development | production
+  log_level: "INFO" # DEBUG | INFO | WARNING | ERROR
+  data_dir: "./data" # Path to store documents and database
+  
+# --- OCR Settings ---
+ocr:
+  default_engine: "paddle" # paddle | qwen
+  paddle:
+    use_gpu: false # Set to true if you have a CUDA capable GPU
+    lang: "en"
+  qwen:
+    model_path: "Qwen/Qwen-VL-Chat" # Path or HuggingFace ID
+    use_gpu: true # Highly recommended for LLM OCR
+    quantization: 4 # 4-bit quantization (optional)
+
+# --- LLM Settings ---
+llm:
+  provider: "lm_studio" # lm_studio | openai | local
+  base_url: "http://localhost:1234/v1" # URL for LM Studio or LocalAI
+  model_name: "qwen/qwen3-vl-8b" # Model identifier used in API calls
+  timeout: 120 # Seconds
+
+# --- Embedding Settings ---
+embedding:
+  provider: "huggingface"
+  model_name: "BAAI/bge-large-en-v1.5"
+  device: "cpu" # cpu | cuda
+
+# --- Vector Store ---
+vector_store:
+  provider: "qdrant"
+  url: "http://localhost:6333"
+  collection_name: "arkham_mirror_hybrid"
+
+# --- Processing ---
+processing:
+  chunk_size: 512
+  chunk_overlap: 50
+  max_workers: 2 # Number of concurrent workers (adjust based on RAM/VRAM)
