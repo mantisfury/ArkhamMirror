@@ -14,6 +14,7 @@ from backend.embedding_services import embed_hybrid
 from qdrant_client import QdrantClient
 from qdrant_client.http.models import Filter, FieldCondition, MatchValue
 from openai import OpenAI
+from backend.utils.security_utils import sanitize_for_llm
 
 load_dotenv()
 st.set_page_config(layout="wide", page_title="Investigation & Anomalies")
@@ -288,7 +289,7 @@ with col_chat:
                     {"role": "system", "content": system_msg},
                     {
                         "role": "user",
-                        "content": f"Context:\n{context_text}\n\nQuestion: {prompt}",
+                        "content": f"Context:\n{sanitize_for_llm(context_text)}\n\nQuestion: {sanitize_for_llm(prompt)}",
                     },
                 ]
 

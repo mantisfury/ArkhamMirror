@@ -11,6 +11,19 @@ This roadmap outlines the future development direction of ArkhamMirror. We welco
 - [x] Basic Document Clustering
 - [x] Streamlit UI
 
+## v0.1.5: The "Hardening" Update (Immediate Priority)
+
+*Focus: Security, stability, and code quality before major feature expansion.*
+
+- [x] **Critical Security Fixes**: XSS, Command Injection, Path Traversal, Hardcoded Creds.
+- [x] **Basic Authentication**: Simple password protection for the UI (using `streamlit-authenticator`).
+- [x] **Network Security**: Bind database ports to localhost to prevent accidental exposure.
+- [ ] **Code Quality Refactor**:
+  - [ ] Fix N+1 query performance issues in Anomaly detection.
+  - [ ] Implement proper database constraints (Foreign Keys, Unique Constraints).
+  - [ ] Centralize configuration (remove magic numbers).
+  - [ ] Add unit tests for critical paths.
+
 ## v0.2: The "Connector" Update (In Progress)
 
 *Focus: Linking entities and improving ingestion.*

@@ -21,8 +21,13 @@ from backend.db.models import Document, Entity, Chunk, Project, Anomaly, PageOCR
 from backend.embedding_services import embed_hybrid
 # from openai import OpenAI # Removed
 
+from backend.utils.auth import check_authentication
+
 load_dotenv()
 st.set_page_config(layout="wide", page_title="ArkhamMirror Search")
+
+# Check authentication
+check_authentication()
 
 # Initialize State
 if "view_doc_id" not in st.session_state:

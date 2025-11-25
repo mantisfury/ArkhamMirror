@@ -41,3 +41,18 @@ processing:
   chunk_size: 512
   chunk_overlap: 50
   max_workers: 2 # Number of concurrent workers (adjust based on RAM/VRAM)
+
+# --- Authentication ---
+auth:
+  cookie:
+    name: "arkham_mirror_auth"
+    key: "some_random_signature_key" # Change this!
+    expiry_days: 30
+  credentials:
+    usernames:
+      admin:
+        name: "Admin"
+        # Default password is 'admin' (hashed)
+        # Generate new hash with: python scripts/generate_keys.py
+        password: "$2b$12$EixZaYVK1fsbw1ZfbX3OXePaWxn96p36WQoeG6Lruj3vjPGga31lW"
+        email: "admin@arkham.local"

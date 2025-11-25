@@ -31,3 +31,4 @@ lxml==5.4.0
 reportlab==4.4.5
 extract-msg==0.55.0
 Pillow==12.0.0
+streamlit-authenticator

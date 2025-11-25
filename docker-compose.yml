@@ -3,13 +3,13 @@ services:
   postgres:
     image: postgres:15
     environment:
-      POSTGRES_USER: anom
-      POSTGRES_PASSWORD: anompass
-      POSTGRES_DB: anomdb
+      POSTGRES_USER: ${POSTGRES_USER:-anom}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-anompass}
+      POSTGRES_DB: ${POSTGRES_DB:-anomdb}
     volumes:
       - ./data/postgres:/var/lib/postgresql/data
     ports:
-      - "5435:5432"
+      - "127.0.0.1:5435:5432"
   qdrant:
     image: qdrant/qdrant:latest
     environment:
@@ -18,12 +18,12 @@ services:
     volumes:
       - ./data/qdrant:/qdrant/storage
     ports:
-      - "6343:6333"
-      - "6344:6334"
+      - "127.0.0.1:6343:6333"
+      - "127.0.0.1:6344:6334"
     restart: unless-stopped
   redis:
     image: redis:7
     ports:
-      - "6380:6379"
+      - "127.0.0.1:6380:6379"
     volumes:
       - ./data/redis:/data

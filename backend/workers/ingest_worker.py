@@ -13,6 +13,7 @@ from backend.db.models import Base, Document
 from backend.utils.hash_utils import get_file_hash
 import argparse
 import watchgod
+from backend.utils.security_utils import sanitize_filename
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO)
@@ -49,7 +50,7 @@ def process_file(file_path, project_id=None, ocr_mode="paddle"):
         storage_dir = os.path.abspath(os.path.join("data", "documents"))
         os.makedirs(storage_dir, exist_ok=True)
 
-        new_filename = f"{file_hash}_{os.path.basename(file_path)}"
+        new_filename = f"{file_hash}_{sanitize_filename(os.path.basename(file_path))}"
         permanent_path = os.path.join(storage_dir, new_filename)
 
         shutil.move(file_path, permanent_path)
