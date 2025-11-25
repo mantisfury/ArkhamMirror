@@ -34,6 +34,8 @@
 
 ## 📦 Installation
 
+**👉 New to ArkhamMirror?** Check out our [User Guide for Journalists](docs/USER_GUIDE.md) - a step-by-step tutorial with screenshots and troubleshooting tips!
+
 ### Prerequisites
 
 * **Docker Desktop** (for DB, Redis, Qdrant)
