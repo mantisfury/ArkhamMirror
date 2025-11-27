@@ -82,7 +82,18 @@ This roadmap outlines the future development direction of ArkhamMirror. We welco
   - [ ] **Custom Event Types**: User-configurable event type definitions and classification rules
   - [ ] **Multi-Document Timeline Merging**: Combine timelines from multiple sources with conflict resolution
 - [ ] **Entity-Event Linking**: Connect timeline events to extracted entities (who was involved in each event)
-- [ ] **Geospatial Analysis**: Map extracted locations to visualize physical connections.
+- [x] **Geospatial Analysis**: (Completed ✅)
+  - [x] **Geocoding Service**: Convert location entities to coordinates (using Nominatim)
+  - [x] **Interactive Map**: Visualize entities on a global map with filtering by type and mention count
+  - [x] **Batch Processing**: Background script to geocode entities efficiently
+- [ ] **Project/Case System**: (Priority High 🔴)
+  - **Case Isolation**: Separate workspaces for different investigations to prevent data pollution.
+  - **Case Switching**: Easy UI to switch between active cases.
+- [ ] **Investigative Lenses**:
+  - **Speculation Mode**: LLM prompt mode "What might the author be hiding?"
+  - **"What's Weirdest?" Button**: One-click surfacing of the highest-anomaly document.
+- [ ] **Infrastructure Hardening (Phase 1)**:
+  - **Structured Logging**: Comprehensive logging for debugging.
 - [ ] **Multilingual Support**:
   - **Offline Translation**: Translate foreign documents to English (using Qwen-VL or NLLB).
 - [ ] **Data Refinement**:
@@ -90,6 +101,11 @@ This roadmap outlines the future development direction of ArkhamMirror. We welco
 - [ ] **Consistency Checking**:
   - **Fact Checking**: Cross-reference claims against other documents.
   - **Stylometry**: Detect voice changes (e.g., multiple authors in one doc).
+- [ ] **Numeric Value Analysis**:
+  - **Value Extraction**: Extract all monetary amounts and quantities.
+  - **Discrepancy Detection**: "Contract says $5M, Invoice says $4.5M".
+- [ ] **Security Hardening**:
+  - **File Type Validation**: Strict validation to prevent malicious uploads.
 
 ## v0.4: The "Watchdog" Update (Statistical Anomaly)
 
@@ -103,12 +119,43 @@ This roadmap outlines the future development direction of ArkhamMirror. We welco
   - **Autoencoders**: Identify "unique" documents that don't fit standard patterns.
   - **Paraphrase Detection**: Find leaks by identifying re-worded content across documents.
   - **Temporal Anomaly Detection**: Flag events happening at unusual times or frequencies
+  - **Red Flag Discovery Mode**: LLM heuristics for "ghost entities", linguistic shifts, and suspicious omissions.
+- [ ] **Contradiction Engine**:
+  - **Cross-Document Fact Comparison**: "Show me every doc that disagrees with File X on dates/numbers".
+  - **Contradiction Detection**: Explicit LLM-based pairwise comparison of claims.
+- [ ] **Infrastructure Hardening (Phase 2)**:
+  - **Async Search**: Non-blocking UI for long queries.
+  - **Caching**: Cache embeddings and query results.
+  - **Pagination**: Handle large result sets gracefully.
 - [ ] **Local User Auth**: Simple user accounts for team access on a shared local server.
 - [ ] **Annotation System**: Highlight and comment on documents shared within the private network.
 - [ ] **Headless API**: Decouple the backend (FastAPI) to allow custom local interfaces or integration with other offline tools.
+
+## v0.5: The "Synthesizer" Update (Planned)
+
+*Focus: Deep understanding, narrative reconstruction, and missing data inference.*
+
+- [ ] **Shadow Gap Analyzer**: Infer missing content (what's *not* being said).
+- [ ] **Big Picture Engine**: Multi-document narrative synthesis ("Tell me the overall story").
+- [ ] **Influence Constellation Maps**: Enhanced graph with directionality and "gravity wells".
+- [ ] **Document Version Comparison**: Diff tools for tracking changes between document drafts.
+- [ ] **Template Detection**: Identify form letters and boilerplate across the corpus.
+- [ ] **Citation Network**: Build a graph of document-to-document references/footnotes.
+
+## v0.6: The "Publisher" Update (Planned)
+
+*Focus: Export, reporting, and external integration.*
+
+- [ ] **Redaction Detection**: Identify and analyze redacted sections.
+- [ ] **Export Package**: One-click export of investigation artifacts (timeline, graph, docs) for legal/editor review.
+- [ ] **Batch Query Mode**: Run structured questions against all documents (CSV export).
+- [ ] **Hypothesis Generator**: "What could explain these documents?" mode.
 
 ## Future Ideas
 
 - **Face Recognition**: Identify people in photos across documents.
 - **Audio Fingerprinting**: Match audio clips.
 - **Dark Web Scraper**: Optional module to pull data from onion sites.
+- **Handwriting Clustering**: Group documents by handwriting style.
+- **Conspiracy Graph Builder**: Experimental "wild" connection mode.
+- **Interactive Cluster Map**: 3D UMAP/t-SNE visualization of document embeddings.

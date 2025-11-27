@@ -109,6 +109,11 @@ class CanonicalEntity(Base):
     total_mentions = Column(Integer, default=0)  # Aggregate count across all docs
     first_seen = Column(DateTime, default=datetime.utcnow)
     last_seen = Column(DateTime, default=datetime.utcnow)
+    
+    # Geospatial data
+    latitude = Column(Float, nullable=True)
+    longitude = Column(Float, nullable=True)
+    resolved_address = Column(String, nullable=True)  # Full address returned by geocoder
 
 
 class EntityRelationship(Base):
