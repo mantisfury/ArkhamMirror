@@ -1,6 +1,8 @@
 import os
+import json
 import logging
 import spacy
+from datetime import datetime
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from redis import Redis
@@ -8,8 +10,16 @@ from dotenv import load_dotenv
 from qdrant_client import QdrantClient
 from qdrant_client.http.models import PointStruct
 
-from backend.db.models import Chunk, Anomaly, Document, Entity
+from backend.db.models import (
+    Chunk,
+    Anomaly,
+    Document,
+    Entity,
+    CanonicalEntity,
+    EntityRelationship,
+)
 from backend.embedding_services import embed_hybrid
+from backend.entity_resolution import EntityResolver
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO)
@@ -201,20 +211,89 @@ def embed_chunk_job(chunk_id):
                 key = (clean_text, ent.label_)
                 local_counts[key] = local_counts.get(key, 0) + 1
 
+            # Entity Resolution: Link to canonical entities
+            resolver = EntityResolver()
+
             for (text, label), count in local_counts.items():
-                # Naive upsert (race condition possible but acceptable for v0.1)
+                # 1. Check if entity mention already exists for this document
                 entity = (
                     session.query(Entity)
                     .filter_by(doc_id=doc.id, text=text, label=label)
                     .first()
                 )
+
                 if entity:
                     entity.count += count
                 else:
                     entity = Entity(doc_id=doc.id, text=text, label=label, count=count)
                     session.add(entity)
+                    session.flush()  # Get entity ID
+
+                # 2. Find or create canonical entity
+                if not entity.canonical_entity_id:
+                    # Fetch existing canonical entities of same label
+                    existing_canonicals = (
+                        session.query(CanonicalEntity).filter_by(label=label).all()
+                    )
+
+                    canonical_dicts = [
+                        {
+                            "id": c.id,
+                            "canonical_name": c.canonical_name,
+                            "aliases": c.aliases,
+                        }
+                        for c in existing_canonicals
+                    ]
+
+                    # Try to match with existing canonical
+                    canonical_id = resolver.find_canonical_match(
+                        text, label, canonical_dicts
+                    )
+
+                    if canonical_id:
+                        # Link to existing canonical
+                        canonical = session.query(CanonicalEntity).get(canonical_id)
+                        entity.canonical_entity_id = canonical_id
+
+                        # Update canonical stats
+                        canonical.total_mentions += count
+                        canonical.last_seen = datetime.utcnow()
+
+                        # Update aliases
+                        canonical.aliases = resolver.merge_aliases(
+                            canonical.aliases or "", text
+                        )
+
+                        # Check if this new mention is a better canonical name
+                        try:
+                            current_aliases = json.loads(canonical.aliases)
+                            all_names = [canonical.canonical_name] + current_aliases
+                            best_name = resolver.select_best_name(all_names)
+
+                            if best_name != canonical.canonical_name:
+                                logger.info(
+                                    f"Updating canonical name: {canonical.canonical_name} -> {best_name}"
+                                )
+                                canonical.canonical_name = best_name
+                        except Exception as e:
+                            logger.warning(f"Failed to update canonical name: {e}")
+
+                    else:
+                        # Create new canonical entity
+                        canonical = CanonicalEntity(
+                            canonical_name=text,
+                            label=label,
+                            total_mentions=count,
+                            aliases=f'["{text}"]',
+                        )
+                        session.add(canonical)
+                        session.flush()
+                        entity.canonical_entity_id = canonical.id
+
             session.commit()
-            logger.info(f"Extracted {len(local_counts)} entities from chunk {chunk.id}")
+            logger.info(
+                f"Extracted and linked {len(local_counts)} entities from chunk {chunk.id}"
+            )
 
         except Exception as ner_e:
             logger.error(f"NER failed for chunk {chunk.id}: {ner_e}")

@@ -6,7 +6,9 @@ from rq import Queue
 from redis import Redis
 from dotenv import load_dotenv
 
-from backend.db.models import MiniDoc, PageOCR, Chunk, Document
+from backend.db.models import MiniDoc, PageOCR, Chunk, Document, TimelineEvent, DateMention, SensitiveDataMatch
+from backend.timeline_service import extract_timeline_from_chunk
+from backend.utils.pattern_detector import detect_sensitive_data
 # from backend.embedding_services import embed_hybrid # Not used here
 # Actually parser just chunks. Embedder embeds.
 
@@ -85,6 +87,58 @@ def parse_minidoc_job(minidoc_db_id):
             )
             session.add(chunk)
             session.flush()  # Get ID
+
+            # Extract timeline information from chunk
+            try:
+                date_mentions, timeline_events = extract_timeline_from_chunk(
+                    chunk_text, chunk.id, minidoc.document_id
+                )
+
+                # Insert date mentions
+                for mention_data in date_mentions:
+                    mention = DateMention(**mention_data)
+                    session.add(mention)
+
+                # Insert timeline events
+                for event_data in timeline_events:
+                    event = TimelineEvent(**event_data)
+                    session.add(event)
+
+                if date_mentions or timeline_events:
+                    logger.info(
+                        f"Extracted {len(date_mentions)} date mentions and {len(timeline_events)} events from chunk {chunk.id}"
+                    )
+
+            except Exception as e:
+                logger.warning(f"Timeline extraction failed for chunk {chunk.id}: {str(e)}")
+                # Don't fail the entire parsing job if timeline extraction fails
+
+            # Detect sensitive data patterns
+            try:
+                sensitive_matches = detect_sensitive_data(chunk_text)
+
+                for match in sensitive_matches:
+                    sensitive_data = SensitiveDataMatch(
+                        chunk_id=chunk.id,
+                        doc_id=minidoc.document_id,
+                        pattern_type=match.pattern_type,
+                        match_text=match.match_text,
+                        confidence=match.confidence,
+                        start_pos=match.start_pos,
+                        end_pos=match.end_pos,
+                        context_before=match.context_before,
+                        context_after=match.context_after
+                    )
+                    session.add(sensitive_data)
+
+                if sensitive_matches:
+                    logger.info(
+                        f"Detected {len(sensitive_matches)} sensitive pattern(s) in chunk {chunk.id}"
+                    )
+
+            except Exception as e:
+                logger.warning(f"Sensitive data detection failed for chunk {chunk.id}: {str(e)}")
+                # Don't fail the entire parsing job if pattern detection fails
 
             # Enqueue Embed Job
             q.enqueue("backend.workers.embed_worker.embed_chunk_job", chunk_id=chunk.id)

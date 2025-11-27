@@ -8,6 +8,7 @@ from redis import Redis
 from dotenv import load_dotenv
 
 from backend.db.models import Document, MiniDoc
+from backend.metadata_service import extract_pdf_metadata
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO)
@@ -52,6 +53,33 @@ def split_pdf_job(doc_id, file_path, ocr_mode="paddle"):
 
         num_pages = len(pdf)
         doc_record.num_pages = num_pages
+
+        # Extract PDF metadata (forensic information)
+        try:
+            logger.info(f"Extracting PDF metadata for {file_path}")
+            metadata = extract_pdf_metadata(file_path)
+
+            if "error" not in metadata:
+                # Update document record with metadata
+                doc_record.pdf_author = metadata.get("pdf_author")
+                doc_record.pdf_creator = metadata.get("pdf_creator")
+                doc_record.pdf_producer = metadata.get("pdf_producer")
+                doc_record.pdf_subject = metadata.get("pdf_subject")
+                doc_record.pdf_keywords = metadata.get("pdf_keywords")
+                doc_record.pdf_creation_date = metadata.get("pdf_creation_date")
+                doc_record.pdf_modification_date = metadata.get("pdf_modification_date")
+                doc_record.pdf_version = metadata.get("pdf_version")
+                doc_record.is_encrypted = 1 if metadata.get("is_encrypted") else 0
+                doc_record.file_size_bytes = metadata.get("file_size_bytes")
+
+                logger.info(f"Metadata extracted: Author={metadata.get('pdf_author')}, "
+                          f"Creator={metadata.get('pdf_creator')}")
+            else:
+                logger.warning(f"Could not extract PDF metadata: {metadata['error']}")
+
+        except Exception as e:
+            logger.warning(f"PDF metadata extraction failed: {str(e)}")
+            # Don't fail the entire job if metadata extraction fails
 
         # Create output directory for pages
         # Use file_hash as folder name for stability

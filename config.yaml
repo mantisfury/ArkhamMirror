@@ -26,9 +26,22 @@ llm:
 
 # --- Embedding Settings ---
 embedding:
-  provider: "huggingface"
-  model_name: "BAAI/bge-large-en-v1.5"
-  device: "cpu" # cpu | cuda
+  provider: "bge-m3"  # Options: "bge-m3", "minilm-bm25"
+  device: "cpu"       # cpu | cuda
+
+  # Provider-specific settings
+  providers:
+    bge-m3:
+      model_name: "BAAI/bge-m3"
+      dense_dimension: 1024
+      languages: "multilingual"
+      download_size_gb: 2.24
+
+    minilm-bm25:
+      dense_model: "sentence-transformers/all-MiniLM-L6-v2"
+      dense_dimension: 384
+      languages: "english-only"
+      download_size_gb: 0.08
 
 # --- Vector Store ---
 vector_store:
@@ -42,6 +55,29 @@ processing:
   chunk_overlap: 50
   max_workers: 2 # Number of concurrent workers (adjust based on RAM/VRAM)
 
+# --- Search Settings ---
+search:
+  hybrid_weights:
+    dense: 0.7    # 70% semantic similarity
+    sparse: 0.3   # 30% keyword matching
+  fusion_method: "rrf"  # Options: "rrf" (Reciprocal Rank Fusion)
+
+# --- UI Settings ---
+ui:
+  search:
+    max_results: 150 # Maximum number of search results to return
+    preview_length: 200 # Characters to show in search result preview
+  anomalies:
+    max_display: 50 # Maximum anomalies to display in UI
+    top_anomalies: 5 # Number of top anomalies for context
+  visualizations:
+    document_viewer_height: 600 # Height of document viewer in pixels
+    min_entity_count: 5 # Minimum entities for heatmap
+    max_entity_count: 30 # Maximum entities for heatmap
+  llm:
+    temperature: 0.3 # Temperature for chat completions (lower = more focused)
+    max_tokens: 2048 # Maximum tokens in LLM response
+
 # --- Authentication ---
 auth:
   cookie:
@@ -52,7 +88,5 @@ auth:
     usernames:
       admin:
         name: "Admin"
-        # Default password is 'admin' (hashed)
-        # Generate new hash with: python scripts/generate_keys.py
-        password: "$2b$12$EixZaYVK1fsbw1ZfbX3OXePaWxn96p36WQoeG6Lruj3vjPGga31lW"
+        password: "$2b$12$Y3/S0Vl8u5eYzfmNd9hy0.JzsmiHlNk4W63lRxMbfXFnQhFsezcoq"
         email: "admin@arkham.local"

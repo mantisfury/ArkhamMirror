@@ -1,22 +1,48 @@
-from FlagEmbedding import BGEM3FlagModel
-import torch
+from backend.config import get_config
+from backend.embedding_providers.bge_m3 import BGEM3Provider
+from backend.embedding_providers.minilm_bm25 import MiniLMBM25Provider
+
+_provider_instance = None
 
 
-device = "cuda" if torch.cuda.is_available() else "cpu"
-model = None
+def get_provider():
+    """
+    Factory function to get the configured embedding provider instance.
+    Singleton pattern to avoid reloading models.
+    """
+    global _provider_instance
+    if _provider_instance is None:
+        provider_name = get_config("embedding.provider", "bge-m3")
+        device = get_config("embedding.device", "cpu")
 
+        if provider_name == "bge-m3":
+            model_name = get_config(
+                "embedding.providers.bge-m3.model_name", "BAAI/bge-m3"
+            )
+            _provider_instance = BGEM3Provider(model_name=model_name, device=device)
+        elif provider_name == "minilm-bm25":
+            model_name = get_config(
+                "embedding.providers.minilm-bm25.dense_model",
+                "sentence-transformers/all-MiniLM-L6-v2",
+            )
+            _provider_instance = MiniLMBM25Provider(
+                model_name=model_name, device=device
+            )
+        else:
+            raise ValueError(f"Unknown embedding provider: {provider_name}")
 
-def get_model():
-    global model
-    if model is None:
-        print(f"Loading BGE-M3 Model on {device}...")
-        model = BGEM3FlagModel(
-            "BAAI/bge-m3", use_fp16=(device == "cuda"), device=device
-        )
-    return model
+    return _provider_instance
 
 
 def embed_hybrid(text):
-    model_instance = get_model()
-    output = model_instance.encode(text, return_dense=True, return_sparse=True)
-    return {"dense": output["dense_vecs"].tolist(), "sparse": output["lexical_weights"]}
+    """
+    Generates hybrid embeddings (dense + sparse) using the configured provider.
+
+    Returns:
+        {
+            "dense": List[float],
+            "sparse": Dict[int, float]
+        }
+    """
+    provider = get_provider()
+    return provider.encode(text)

@@ -17,8 +17,9 @@ import importlib
 import backend.db.models
 
 importlib.reload(backend.db.models)
-from backend.db.models import Document, Entity, Chunk, Project, Anomaly, PageOCR
+from backend.db.models import Document, Entity, Chunk, Project, Anomaly, PageOCR, TimelineEvent, DateMention, SensitiveDataMatch
 from backend.embedding_services import embed_hybrid
+from backend.config import get_config
 # from openai import OpenAI # Removed
 
 from backend.utils.auth import check_authentication
@@ -455,6 +456,56 @@ with st.expander("🔎 Search Options"):
         st.session_state.selected_doc_ids_for_search = [
             doc_options[t] for t in selected_titles
         ]
+
+        # Timeline filtering
+        st.markdown("---")
+        st.markdown("**📅 Timeline Filters**")
+
+        use_date_filter = st.checkbox("Filter by date range", value=False)
+        if use_date_filter:
+            # Get date range from database
+            earliest_event = session.query(TimelineEvent).filter(
+                TimelineEvent.event_date.isnot(None)
+            ).order_by(TimelineEvent.event_date).first()
+
+            latest_event = session.query(TimelineEvent).filter(
+                TimelineEvent.event_date.isnot(None)
+            ).order_by(TimelineEvent.event_date.desc()).first()
+
+            if earliest_event and latest_event:
+                col_start, col_end = st.columns(2)
+                with col_start:
+                    start_date = st.date_input(
+                        "Start Date",
+                        value=earliest_event.event_date.date(),
+                        min_value=earliest_event.event_date.date(),
+                        max_value=latest_event.event_date.date()
+                    )
+                with col_end:
+                    end_date = st.date_input(
+                        "End Date",
+                        value=latest_event.event_date.date(),
+                        min_value=earliest_event.event_date.date(),
+                        max_value=latest_event.event_date.date()
+                    )
+
+                # Convert to datetime for querying
+                st.session_state.date_filter_start = datetime.combine(start_date, datetime.min.time())
+                st.session_state.date_filter_end = datetime.combine(end_date, datetime.max.time())
+
+                # Show matching documents count
+                matching_doc_ids = session.query(TimelineEvent.doc_id).filter(
+                    TimelineEvent.event_date >= st.session_state.date_filter_start,
+                    TimelineEvent.event_date <= st.session_state.date_filter_end
+                ).distinct().all()
+
+                st.info(f"📊 {len(matching_doc_ids)} documents have events in this date range")
+            else:
+                st.warning("No timeline events found in database. Process documents to extract events.")
+                use_date_filter = False
+
+        st.session_state.use_date_filter = use_date_filter
+
     finally:
         session.close()
 
@@ -475,25 +526,72 @@ if search_clicked and query:
             )
 
         # Document Filter (New)
+        allowed_doc_ids = None
+
         if (
             "selected_doc_ids_for_search" in st.session_state
             and st.session_state.selected_doc_ids_for_search
         ):
+            allowed_doc_ids = set(st.session_state.selected_doc_ids_for_search)
+
+        # Date Range Filter (Timeline-based)
+        if st.session_state.get("use_date_filter", False):
+            session = Session()
+            try:
+                # Find documents that have events in the specified date range
+                date_filtered_doc_ids = session.query(TimelineEvent.doc_id).filter(
+                    TimelineEvent.event_date >= st.session_state.date_filter_start,
+                    TimelineEvent.event_date <= st.session_state.date_filter_end
+                ).distinct().all()
+
+                date_filtered_doc_ids = set([d[0] for d in date_filtered_doc_ids])
+
+                if allowed_doc_ids is None:
+                    allowed_doc_ids = date_filtered_doc_ids
+                else:
+                    # Intersect with existing document filter
+                    allowed_doc_ids = allowed_doc_ids.intersection(date_filtered_doc_ids)
+
+            finally:
+                session.close()
+
+        # Apply combined document filter to Qdrant search
+        if allowed_doc_ids:
             search_filter.must.append(
                 FieldCondition(
                     key="doc_id",
-                    match=models.MatchAny(
-                        any=st.session_state.selected_doc_ids_for_search
-                    ),
+                    match=models.MatchAny(any=list(allowed_doc_ids)),
                 )
             )
 
+        # Prepare sparse vector
+        sparse_indices = list(map(int, q_vecs["sparse"].keys()))
+        sparse_values = list(map(float, q_vecs["sparse"].values()))
+        sparse_vector = models.SparseVector(
+            indices=sparse_indices, values=sparse_values
+        )
+
+        limit = get_config("ui.search.max_results", 150)
+
+        # Execute Hybrid Search (Dense + Sparse with RRF Fusion)
         hits = qdrant_client.query_points(
             collection_name=COLLECTION_NAME,
-            query=q_vecs["dense"],
-            using="dense",
-            query_filter=search_filter,
-            limit=20,
+            prefetch=[
+                models.Prefetch(
+                    query=q_vecs["dense"],
+                    using="dense",
+                    filter=search_filter,
+                    limit=limit,
+                ),
+                models.Prefetch(
+                    query=sparse_vector,
+                    using="sparse",
+                    filter=search_filter,
+                    limit=limit,
+                ),
+            ],
+            query=models.FusionQuery(fusion=models.Fusion.RRF),
+            limit=limit,
         ).points
         st.session_state.search_results = hits
     except Exception as e:
@@ -513,7 +611,8 @@ with col_nav:
                     doc_id = hit.payload.get("doc_id")
                     st.markdown(f"**Document ID: {doc_id}**")
                     st.caption(f"Score: {hit.score:.2f}")
-                    chunk_preview = hit.payload.get("text", "")[:150] + "..."
+                    preview_len = get_config("ui.search.preview_length", 200)
+                    chunk_preview = hit.payload.get("text", "")[:preview_len] + "..."
                     st.text(chunk_preview)
                     if st.button("View Context", key=f"hit_{hit.id}"):
                         st.session_state.view_doc_id = doc_id
@@ -629,16 +728,93 @@ with col_viewer:
                     st.markdown(full_text, unsafe_allow_html=True)
 
                 with tab_meta:
-                    st.json(
-                        {
-                            "id": doc.id,
-                            "title": doc.title,
-                            "path": doc.path,
-                            "type": doc.doc_type,
-                            "created_at": str(doc.created_at),
-                            "hash": doc.file_hash,
-                        }
-                    )
+                    # Basic document info
+                    st.markdown("### 📄 Document Information")
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        st.metric("Document ID", doc.id)
+                        st.metric("Type", doc.doc_type)
+                        st.metric("Pages", doc.num_pages or "Unknown")
+                    with col2:
+                        st.metric("Status", doc.status)
+                        st.metric("Created", doc.created_at.strftime("%Y-%m-%d") if doc.created_at else "Unknown")
+                        if doc.file_size_bytes:
+                            size_mb = doc.file_size_bytes / (1024 * 1024)
+                            st.metric("File Size", f"{size_mb:.2f} MB")
+
+                    # PDF Metadata (Forensic Information)
+                    if any([doc.pdf_author, doc.pdf_creator, doc.pdf_producer,
+                           doc.pdf_creation_date, doc.pdf_modification_date]):
+                        st.divider()
+                        st.markdown("### 🔍 PDF Metadata (Forensic)")
+
+                        if doc.pdf_author or doc.pdf_creator:
+                            st.markdown("**👤 Authorship:**")
+                            if doc.pdf_author:
+                                st.text(f"Author: {doc.pdf_author}")
+                            if doc.pdf_creator:
+                                st.text(f"Creator Application: {doc.pdf_creator}")
+
+                        if doc.pdf_producer:
+                            st.markdown("**🔧 PDF Producer:**")
+                            st.text(doc.pdf_producer)
+                            if "exif" in doc.pdf_producer.lower() or "metadata" in doc.pdf_producer.lower():
+                                st.warning("⚠️ Metadata may have been manipulated")
+
+                        if doc.pdf_creation_date or doc.pdf_modification_date:
+                            st.markdown("**📅 Timestamps:**")
+                            col_created, col_modified = st.columns(2)
+                            with col_created:
+                                if doc.pdf_creation_date:
+                                    st.text(f"Created: {doc.pdf_creation_date.strftime('%Y-%m-%d %H:%M:%S')}")
+                            with col_modified:
+                                if doc.pdf_modification_date:
+                                    st.text(f"Modified: {doc.pdf_modification_date.strftime('%Y-%m-%d %H:%M:%S')}")
+
+                            # Check for date inconsistencies
+                            if doc.pdf_creation_date and doc.pdf_modification_date:
+                                if doc.pdf_modification_date < doc.pdf_creation_date:
+                                    st.error("🚨 Modification date is BEFORE creation date - possible tampering!")
+
+                        if doc.pdf_subject or doc.pdf_keywords:
+                            st.markdown("**📝 Additional Info:**")
+                            if doc.pdf_subject:
+                                st.text(f"Subject: {doc.pdf_subject}")
+                            if doc.pdf_keywords:
+                                st.text(f"Keywords: {doc.pdf_keywords}")
+
+                        if doc.is_encrypted:
+                            st.warning("🔒 This PDF was encrypted")
+
+                    # Sensitive Data Matches
+                    sensitive_data = session.query(SensitiveDataMatch).filter(
+                        SensitiveDataMatch.doc_id == doc.id
+                    ).all()
+
+                    if sensitive_data:
+                        st.divider()
+                        st.markdown("### 🔐 Sensitive Data Detected")
+                        st.caption(f"Found {len(sensitive_data)} sensitive pattern(s) in this document")
+
+                        # Group by pattern type
+                        from collections import defaultdict
+                        grouped_patterns = defaultdict(list)
+                        for match in sensitive_data:
+                            grouped_patterns[match.pattern_type].append(match)
+
+                        # Display by type
+                        for pattern_type, matches in grouped_patterns.items():
+                            with st.expander(f"🔍 {pattern_type.upper().replace('_', ' ')} ({len(matches)} found)"):
+                                for match in matches[:10]:  # Limit to first 10
+                                    confidence_color = "🟢" if match.confidence > 0.8 else "🟡" if match.confidence > 0.5 else "🔴"
+                                    st.markdown(f"{confidence_color} **Match:** `{match.match_text}` (Confidence: {match.confidence:.2f})")
+                                    if match.context_before or match.context_after:
+                                        context = f"...{match.context_before} **[{match.match_text}]** {match.context_after}..."
+                                        st.caption(context)
+                                    st.markdown("---")
+
+                                if len(matches) > 10:
+                                    st.info(f"+ {len(matches) - 10} more matches")
 
                     st.divider()
                     st.subheader("🔗 Extracted Entities")

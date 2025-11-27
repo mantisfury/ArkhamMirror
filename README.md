@@ -80,8 +80,16 @@ If a complete non-coder can ship this in a week, imagine what you can do.
     python -m venv venv
     .\venv\Scripts\activate  # Windows
     # source venv/bin/activate # Linux/Mac
-    pip install -r requirements.txt
+    # Option 1: Standard Installation (Recommended)
+    # Includes BGE-M3 (multilingual) and all features
+    pip install -r requirements-standard.txt
+
+    # Option 2: Minimal Installation
+    # Lightweight (English-only), saves ~2GB disk space
+    # pip install -r requirements-minimal.txt
     ```
+
+    **Note**: If you choose the Minimal installation, you must update `config.yaml` to use the `minilm-bm25` provider. See [EMBEDDING_PROVIDERS.md](docs/EMBEDDING_PROVIDERS.md) for details.
 
 4. **Configure Environment**
     Copy `.env.example` to `.env` (or create one):

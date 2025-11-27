@@ -11,51 +11,82 @@ This roadmap outlines the future development direction of ArkhamMirror. We welco
 - [x] Basic Document Clustering
 - [x] Streamlit UI
 
-## v0.1.5: The "Hardening" Update (Immediate Priority)
+## v0.1.5: The "Hardening" Update (Completed ✅)
 
 *Focus: Security, stability, and code quality before major feature expansion.*
 
 - [x] **Critical Security Fixes**: XSS, Command Injection, Path Traversal, Hardcoded Creds.
 - [x] **Basic Authentication**: Simple password protection for the UI (using `streamlit-authenticator`).
 - [x] **Network Security**: Bind database ports to localhost to prevent accidental exposure.
-- [ ] **Code Quality Refactor**:
-  - [ ] Fix N+1 query performance issues in Anomaly detection.
-  - [ ] Implement proper database constraints (Foreign Keys, Unique Constraints).
-  - [ ] Centralize configuration (remove magic numbers).
-  - [ ] Add unit tests for critical paths.
+- [x] **Code Quality Refactor**:
+  - [x] Fix N+1 query performance issues in Anomaly detection.
+  - [x] Implement proper database constraints (Foreign Keys, Unique Constraints).
+  - [x] Centralize configuration (remove magic numbers).
+  - [x] Add unit tests for critical paths.
 
-## v0.2: The "Connector" Update (In Progress)
+## v0.2: The "Connector" Update (Completed ✅)
 
 *Focus: Linking entities and improving ingestion.*
 
-- [ ] **Cross-Document Entity Linking**: Automatically detect that "John Doe" in Doc A is the same as "J. Doe" in Doc B.
-  - *Requires*: Entity Resolution (Deduplication), Graph Database (NetworkX/Neo4j), Relationship Extraction.
-- [ ] **Data Extraction (Core)**:
-  - **Table Extraction**: Convert PDF tables to CSV/Excel (using Table Transformer).
-  - **Metadata Scrubbing**: Extract author, creation date, and software metadata.
-  - **Regex Search**: Find specific patterns (Credit Cards, IBANs, Emails, SSNs).
-- [ ] **Visual Analytics (Quick Wins)**:
-  - **Wordclouds**: Visualize top terms per document or cluster.
-  - **Heatmaps**: Entity co-occurrence matrices and activity-over-time grids.
-- [ ] **Ingestion Progress Bar**: Real-time status updates in the UI.
-- [ ] **Configurable Pipelines**: Allow users to define custom extraction steps via YAML.
-- [ ] **Multilingual Embeddings**: Switch to `BAAI/bge-m3` to enable cross-language semantic search (e.g. search English, find Russian).
+- [x] **Cross-Document Entity Linking**: Automatically detect that "John Doe" in Doc A is the same as "J. Doe" in Doc B.
+  - Implemented fuzzy matching, canonical entity resolution, co-occurrence tracking
+- [x] **Data Extraction (Core)**:
+  - [x] **Table Extraction**: Convert PDF tables to CSV (using pdfplumber).
+  - [x] **Metadata Scrubbing**: Extract author, creation date, software metadata from PDFs with forensic analysis for tampering detection.
+  - [x] **Regex Search**: 12 pattern types (SSN, Credit Cards, Emails, Phone, IP Addresses, API Keys, IBANs, Bitcoin). Includes validation (Luhn algorithm for credit cards, SSN rules).
+- [x] **Visual Analytics (Quick Wins)**:
+  - [x] **Wordclouds**: Visualize top terms per document or cluster.
+  - [x] **Heatmaps**: Entity co-occurrence matrices and activity-over-time grids.
+- [ ] **Ingestion Progress Bar**: Real-time status updates in the UI (deferred to v0.4).
+- [ ] **Configurable Pipelines**: Allow users to define custom extraction steps via YAML (deferred to v0.4).
+- [x] **Multilingual Embeddings**: Using `BAAI/bge-m3` for cross-language semantic search.
 - [x] **More File Types**: Support for .docx, .eml, .msg, .txt, and images.
 - [x] **NER Integration**: Extract People, Orgs, and Locations.
 
-## v0.3: The "Analyst" Update (Advanced Logic)
+## v0.2.5: The "Modular Search" Update (Completed ✅)
+
+*Focus: Flexible embedding system and proper hybrid search implementation.*
+
+- [x] **Modular Embedding Architecture**:
+  - [x] Provider-based system (swap embedding models without code changes)
+  - [x] BGE-m3 provider (multilingual, native hybrid embeddings)
+  - [x] MiniLM-BM25 provider (lightweight English-only, BM25 sparse)
+  - [x] Configuration for provider selection and hybrid weights
+- [x] **True Hybrid Search**:
+  - [x] Implement RRF (Reciprocal Rank Fusion) for dense + sparse vectors
+  - [x] User-configurable dense/sparse weights (default 70/30)
+  - [x] Improved resilience for exact term matching (case numbers, OCR errors)
+- [x] **Installation Tiers**:
+  - [x] Minimal tier: MiniLM-BM25 (~1.3GB total, English-only)
+  - [x] Standard tier: BGE-m3 (~3.5GB total, multilingual)
+  - [x] Setup script for model downloads and configuration
+- [x] **Documentation**:
+  - [x] Embedding provider comparison guide
+  - [x] Migration guide for switching providers
+  - [x] Re-indexing script for provider changes
+
+## v0.3: The "Analyst" Update (In Progress)
 
 *Focus: Visualizing relationships and temporal analysis.*
 
-- [ ] **Interactive Graph Explorer**: Visual UI (using NetworkX/PyVis) to navigate connections between people, organizations, and events.
+- [x] **Interactive Graph Explorer**: Visual UI (using NetworkX/PyVis) to navigate connections between people, organizations, and events.
+  - [x] Community Detection (Louvain)
+  - [x] Pathfinding (Shortest Path)
+- [x] **Timeline Analysis**: (Completed ✅)
+  - [x] **Event Extraction**: LLM-based extraction of chronological events with dates, types, and confidence scores
+  - [x] **Date Mention Extraction**: Regex and NLP-based extraction of all date references
+  - [x] **Interactive Timeline Visualization**: Three-view interface (Event Timeline, Date Distribution, Gap Analysis)
+  - [x] **Gap Detection**: Identify suspicious temporal gaps in document timelines
+  - [x] **Search Integration**: Filter search results by date range using extracted timeline data
+  - [ ] **Timeline Export**: Export timeline data to CSV/JSON for external analysis
+  - [ ] **Custom Event Types**: User-configurable event type definitions and classification rules
+  - [ ] **Multi-Document Timeline Merging**: Combine timelines from multiple sources with conflict resolution
+- [ ] **Entity-Event Linking**: Connect timeline events to extracted entities (who was involved in each event)
 - [ ] **Geospatial Analysis**: Map extracted locations to visualize physical connections.
 - [ ] **Multilingual Support**:
   - **Offline Translation**: Translate foreign documents to English (using Qwen-VL or NLLB).
 - [ ] **Data Refinement**:
   - **OCR Correction UI**: Manually fix OCR errors to improve search index.
-- [ ] **Timeline Analysis**:
-  - **Event Extraction**: Identify dates and associated events.
-  - **Interactive Timelines**: Plot events chronologically to see the "story" of a case.
 - [ ] **Consistency Checking**:
   - **Fact Checking**: Cross-reference claims against other documents.
   - **Stylometry**: Detect voice changes (e.g., multiple authors in one doc).
@@ -71,6 +102,7 @@ This roadmap outlines the future development direction of ArkhamMirror. We welco
   - **Local Outlier Factor (LOF)**: Detect documents that are statistically distant from their clusters.
   - **Autoencoders**: Identify "unique" documents that don't fit standard patterns.
   - **Paraphrase Detection**: Find leaks by identifying re-worded content across documents.
+  - **Temporal Anomaly Detection**: Flag events happening at unusual times or frequencies
 - [ ] **Local User Auth**: Simple user accounts for team access on a shared local server.
 - [ ] **Annotation System**: Highlight and comment on documents shared within the private network.
 - [ ] **Headless API**: Decouple the backend (FastAPI) to allow custom local interfaces or integration with other offline tools.

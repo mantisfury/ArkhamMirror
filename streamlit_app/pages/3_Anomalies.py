@@ -11,7 +11,8 @@ from sqlalchemy.orm import sessionmaker
 from dotenv import load_dotenv
 from backend.db.models import Anomaly, Chunk, Document, Entity
 from backend.embedding_services import embed_hybrid
-from qdrant_client import QdrantClient
+from backend.config import get_config
+from qdrant_client import QdrantClient, models
 from qdrant_client.http.models import Filter, FieldCondition, MatchValue
 from openai import OpenAI
 from backend.utils.security_utils import sanitize_for_llm
@@ -91,30 +92,57 @@ def get_relevant_context(query, doc_id=None):
                 must=[FieldCondition(key="doc_id", match=MatchValue(value=doc_id))]
             )
 
+        # Prepare sparse vector
+        sparse_indices = list(map(int, q_vecs["sparse"].keys()))
+        sparse_values = list(map(float, q_vecs["sparse"].values()))
+        sparse_vector = models.SparseVector(
+            indices=sparse_indices, values=sparse_values
+        )
+
+        limit = get_config("ui.search.max_results", 150)
+
         hits = qdrant_client.query_points(
             collection_name=COLLECTION_NAME,
-            query=q_vecs["dense"],
-            using="dense",
-            query_filter=search_filter,
-            limit=150,
+            prefetch=[
+                models.Prefetch(
+                    query=q_vecs["dense"],
+                    using="dense",
+                    filter=search_filter,
+                    limit=limit,
+                ),
+                models.Prefetch(
+                    query=sparse_vector,
+                    using="sparse",
+                    filter=search_filter,
+                    limit=limit,
+                ),
+            ],
+            query=models.FusionQuery(fusion=models.Fusion.RRF),
+            limit=limit,
         ).points
 
         if hits:
+            # Fetch all document titles in one query to avoid N+1 problem
+            doc_ids = {
+                hit.payload.get("doc_id") for hit in hits if "doc_id" in hit.payload
+            }
+            doc_titles = {}
+            if doc_ids:
+                session = Session()
+                try:
+                    docs = (
+                        session.query(Document.id, Document.title)
+                        .filter(Document.id.in_(doc_ids))
+                        .all()
+                    )
+                    doc_titles = {doc_id: title for doc_id, title in docs}
+                finally:
+                    session.close()
+
             context_parts.append("### Relevant Text Segments:")
             for hit in hits:
-                # Fetch doc title for context
                 meta = hit.payload
-                # Include Chunk ID and Document Title for citation
-                doc_title = "Unknown Document"
-                if "doc_id" in meta:
-                    session = Session()
-                    try:
-                        doc = session.query(Document).get(meta["doc_id"])
-                        if doc:
-                            doc_title = doc.title
-                    finally:
-                        session.close()
-
+                doc_title = doc_titles.get(meta.get("doc_id"), "Unknown Document")
                 context_parts.append(
                     f"- [Source: {doc_title} | Chunk ID: {hit.id}] {meta.get('text', '')}"
                 )
@@ -145,7 +173,7 @@ def get_relevant_context(query, doc_id=None):
             if doc_id:
                 q = q.filter(Chunk.doc_id == doc_id)
 
-            top_anoms = q.limit(5).all()
+            top_anoms = q.limit(get_config("ui.anomalies.top_anomalies", 5)).all()
             if top_anoms:
                 context_parts.append("Top Severity Anomalies:")
                 for a, c in top_anoms:
@@ -176,7 +204,7 @@ with col_context:
                 .join(Chunk, Anomaly.chunk_id == Chunk.id)
                 .join(Document, Chunk.doc_id == Document.id)
                 .order_by(Anomaly.score.desc())
-                .limit(50)
+                .limit(get_config("ui.anomalies.max_display", 50))
                 .all()
             )
 
@@ -186,7 +214,8 @@ with col_context:
                 for anom, chunk, doc in anomalies:
                     with st.expander(f"{anom.score:.2f} | {doc.title}"):
                         st.caption(f"Reason: {anom.reason}")
-                        st.text(chunk.text[:200] + "...")
+                        preview_len = get_config("ui.search.preview_length", 200)
+                        st.text(chunk.text[:preview_len] + "...")
                         if st.button("Chat about this", key=f"chat_anom_{anom.id}"):
                             st.session_state.chat_doc_id = doc.id
                             st.session_state.messages.append(
@@ -231,7 +260,10 @@ with col_context:
                     full_text = reconstruct_full_text(st.session_state.chat_doc_id)
 
                     # Display in a scrollable container
-                    with st.container(height=600):
+                    viewer_height = get_config(
+                        "ui.visualizations.document_viewer_height", 600
+                    )
+                    with st.container(height=viewer_height):
                         st.markdown(full_text)
                 else:
                     st.info(
@@ -297,7 +329,7 @@ with col_chat:
                     stream = llm_client.chat.completions.create(
                         model="local-model",
                         messages=messages,
-                        temperature=0.3,
+                        temperature=get_config("ui.llm.temperature", 0.3),
                         stream=True,
                     )
                     response = st.write_stream(stream)
