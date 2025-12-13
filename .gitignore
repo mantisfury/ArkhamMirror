@@ -1,0 +1,112 @@
+# =============================================================================
+# ArkhamMirror .gitignore
+# =============================================================================
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual Environment
+venv/
+ENV/
+env/
+.venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Environment variables (use .env.example as template)
+.env
+.env.local
+.env.*.local
+
+# Logs
+*.log
+DataSilo/logs/*.log
+
+# DataSilo user data (documents, pages, database volumes)
+DataSilo/documents/*
+DataSilo/pages/*
+DataSilo/postgres/*
+DataSilo/qdrant/*
+DataSilo/redis/*
+DataSilo/logs/*
+DataSilo/temp/*
+# Keep .gitkeep files
+!DataSilo/**/.gitkeep
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Reflex generated
+.web/
+.reflex/
+.states/
+app/.web/
+app/.reflex/
+app/.states/
+
+# Node modules (Reflex frontend)
+node_modules/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Pytest
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Docker
+*.pid
+
+# Temporary files
+*.tmp
+*.temp
+
+# Model weights (too large for Git - download separately)
+models/
+*.bin
+*.pt
+*.pth
+*.onnx
+!app/arkham/models/
+
+# Backup files
+*.bak
+*.backup
+nul
+
+# AI assistant files (development only)
+.agent/
+.gemini/
+.claude/

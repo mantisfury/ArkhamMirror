@@ -1,0 +1,30 @@
+services:
+  postgres:
+    image: postgres:15
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-anom}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-anompass}
+      POSTGRES_DB: ${POSTGRES_DB:-anomdb}
+    volumes:
+      - ../DataSilo/postgres:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:5435:5432"
+    restart: unless-stopped
+  qdrant:
+    image: qdrant/qdrant:latest
+    environment:
+      QDRANT__SERVICE__HTTP_PORT: 6333
+      QDRANT__SERVICE__GRPC_PORT: 6334
+    volumes:
+      - ../DataSilo/qdrant:/qdrant/storage
+    ports:
+      - "127.0.0.1:6343:6333"
+      - "127.0.0.1:6344:6334"
+    restart: unless-stopped
+  redis:
+    image: redis:7
+    ports:
+      - "127.0.0.1:6380:6379"
+    volumes:
+      - ../DataSilo/redis:/data
+    restart: unless-stopped
