@@ -1,0 +1,92 @@
+# ArkhamMirror Configuration
+
+# --- System Settings ---
+system:
+  environment: "development" # development | production
+  log_level: "INFO" # DEBUG | INFO | WARNING | ERROR
+  data_dir: "./data" # Path to store documents and database
+  
+# --- OCR Settings ---
+ocr:
+  default_engine: "paddle" # paddle | qwen
+  paddle:
+    use_gpu: false # Set to true if you have a CUDA capable GPU
+    lang: "en"
+  qwen:
+    model_path: "Qwen/Qwen-VL-Chat" # Path or HuggingFace ID
+    use_gpu: true # Highly recommended for LLM OCR
+    quantization: 4 # 4-bit quantization (optional)
+
+# --- LLM Settings ---
+llm:
+  provider: "lm_studio" # lm_studio | openai | local
+  base_url: "http://localhost:1234/v1" # URL for LM Studio or LocalAI
+  model_name: "qwen/qwen3-vl-8b" # Model identifier used in API calls
+  timeout: 120 # Seconds
+
+# --- Embedding Settings ---
+embedding:
+  provider: "bge-m3"  # Options: "bge-m3", "minilm-bm25"
+  device: "cpu"       # cpu | cuda
+
+  # Provider-specific settings
+  providers:
+    bge-m3:
+      model_name: "BAAI/bge-m3"
+      dense_dimension: 1024
+      languages: "multilingual"
+      download_size_gb: 2.24
+
+    minilm-bm25:
+      dense_model: "sentence-transformers/all-MiniLM-L6-v2"
+      dense_dimension: 384
+      languages: "english-only"
+      download_size_gb: 0.08
+
+# --- Vector Store ---
+vector_store:
+  provider: "qdrant"
+  url: "http://localhost:6333"
+  collection_name: "arkham_mirror_hybrid"
+
+# --- Processing ---
+processing:
+  chunk_size: 512
+  chunk_overlap: 50
+  max_workers: 2 # Number of concurrent workers (adjust based on RAM/VRAM)
+
+# --- Search Settings ---
+search:
+  hybrid_weights:
+    dense: 0.7    # 70% semantic similarity
+    sparse: 0.3   # 30% keyword matching
+  fusion_method: "rrf"  # Options: "rrf" (Reciprocal Rank Fusion)
+
+# --- UI Settings ---
+ui:
+  search:
+    max_results: 150 # Maximum number of search results to return
+    preview_length: 200 # Characters to show in search result preview
+  anomalies:
+    max_display: 50 # Maximum anomalies to display in UI
+    top_anomalies: 5 # Number of top anomalies for context
+  visualizations:
+    document_viewer_height: 600 # Height of document viewer in pixels
+    min_entity_count: 5 # Minimum entities for heatmap
+    max_entity_count: 30 # Maximum entities for heatmap
+  llm:
+    temperature: 0.3 # Temperature for chat completions (lower = more focused)
+    max_tokens: 2048 # Maximum tokens in LLM response
+
+# --- Authentication ---
+auth:
+  cookie:
+    name: "arkham_mirror_auth"
+    key: "some_random_signature_key" # Change this!
+    expiry_days: 30
+  credentials:
+    usernames:
+      admin:
+        name: "Admin"
+        password: "$2b$12$Y3/S0Vl8u5eYzfmNd9hy0.JzsmiHlNk4W63lRxMbfXFnQhFsezcoq"
+        email: "admin@arkham.local"

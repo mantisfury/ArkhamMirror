@@ -1,0 +1,79 @@
+{
+  "Los Angeles/Long Beach": {
+    "lat": 33.7690164,
+    "lon": -118.191604,
+    "address": "Long Beach, Los Angeles County, California, United States"
+  },
+  "Kowloon Road": {
+    "lat": 22.3343121,
+    "lon": 114.1626028,
+    "address": "Kowloon Road, Un Chau, So Uk, Sham Shui Po, Sham Shui Po District, Kowloon, Hong Kong, China"
+  },
+  "China": {
+    "lat": 35.000074,
+    "lon": 104.999927,
+    "address": "China"
+  },
+  "Los Angeles": {
+    "lat": 34.0536909,
+    "lon": -118.242766,
+    "address": "Los Angeles, Los Angeles County, California, United States"
+  },
+  "the United States": {
+    "lat": 47.8291375,
+    "lon": -122.5970742,
+    "address": "Buzzcut, Kitsap County, Washington, 98364, United States"
+  },
+  "the Cayman Islands": {
+    "lat": 19.7198862,
+    "lon": -79.79314,
+    "address": "Cayman Brac, Stake Bay, Sister Islands, KY2-2400, Cayman Islands"
+  },
+  "Rivera": {
+    "lat": 45.1147797,
+    "lon": 7.4137652,
+    "address": "Rivera, Almese, Turin, Piedmont, 10400, Italy"
+  },
+  "Cayman Islands": {
+    "lat": 19.7031822,
+    "lon": -79.9174627,
+    "address": "Cayman Islands"
+  },
+  "Port of L": {
+    "lat": 46.7766735,
+    "lon": 7.7190354,
+    "address": "Port, Burghalten, Teuffenthal (BE), Horrenbach-Buchen, Thun administrative district, Oberland administrative region, Bern, 3623, Switzerland"
+  },
+  "Grand Cayman": {
+    "lat": 19.3298472,
+    "lon": -81.1712216,
+    "address": "Grand Cayman, Cayman Islands"
+  },
+  "Hong Kong": {
+    "lat": 22.350627,
+    "lon": 114.1849161,
+    "address": "Hong Kong, China"
+  },
+  "Port of Los Angeles\n• March 15, 2024:": null,
+  "San Pedro": {
+    "lat": 33.7358518,
+    "lon": -118.2922934,
+    "address": "San Pedro, Los Angeles, Los Angeles County, California, 90731, United States"
+  },
+  "S.C.": {
+    "lat": 33.6874388,
+    "lon": -80.4363743,
+    "address": "South Carolina, United States"
+  },
+  "Kowloon": {
+    "lat": 22.3049255,
+    "lon": 114.1616003,
+    "address": "Kowloon, Civic Square, West Kowloon, Yau Ma Tei, Yau Tsim Mong District, Kowloon, Hong Kong, China"
+  },
+  "Long Beach": {
+    "lat": 33.7690164,
+    "lon": -118.191604,
+    "address": "Long Beach, Los Angeles County, California, United States"
+  },
+  "Port Administration Building\nDescription": null
+}

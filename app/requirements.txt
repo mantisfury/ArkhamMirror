@@ -1,0 +1,136 @@
+# ============================================================================
+# ArkhamMirror Requirements - FULL INSTALL
+# Last Updated: 2025-12-10
+# ============================================================================
+# This is the AUTHORITATIVE requirements file for the application.
+# Uses BGE-M3 embeddings (~2.2GB) for best multilingual search quality.
+#
+# For systems with limited disk/RAM, use requirements-minimal.txt instead.
+# See comparison at the bottom of requirements-minimal.txt.
+# ============================================================================
+
+# =============================================================================
+# CORE FRAMEWORK
+# =============================================================================
+# Reflex 0.7.14 uses Next.js - versions 0.8.x use Vite/react-router which breaks Chrome
+reflex==0.7.14
+
+# =============================================================================
+# DATA SCIENCE & MACHINE LEARNING
+# =============================================================================
+numpy>=2.0.0
+pandas>=2.0.0
+scikit-learn>=1.5.0
+torch>=2.0.0
+transformers>=4.40.0
+
+# Embeddings & Similarity
+FlagEmbedding>=1.3.0                    # BAAI/bge-m3 embeddings
+sentence-transformers>=2.2.0            # MiniLM fallback embeddings
+
+# Clustering & Dimensionality Reduction
+umap-learn>=0.5.0                       # UMAP for visualization
+hdbscan>=0.8.0                          # Clustering for entity deduplication
+
+# =============================================================================
+# LLM API
+# =============================================================================
+openai>=1.0.0                           # LM Studio API compatibility
+
+# =============================================================================
+# VECTOR STORE & DATABASE
+# =============================================================================
+qdrant-client>=1.8.0                    # Vector database
+psycopg2-binary>=2.9.0                  # PostgreSQL adapter
+sqlalchemy>=2.0.0                       # ORM
+alembic>=1.12.0                         # Database migrations
+
+# =============================================================================
+# TASK QUEUE & BACKGROUND JOBS
+# =============================================================================
+redis>=5.0.0,<7.0.0                     # Required by reflex 0.7.14 (must be <7.0)
+rq>=2.0.0                               # Redis Queue for background workers
+
+# =============================================================================
+# DOCUMENT PROCESSING
+# =============================================================================
+# PDF Processing
+PyMuPDF>=1.24.0                         # PDF rendering & page extraction (fitz)
+pdfplumber>=0.10.0                      # Table extraction from PDFs
+pypdf>=4.0.0                            # PDF manipulation
+
+# OCR (Primary: PaddleOCR, LLM: Qwen via LM Studio)
+paddlepaddle>=3.0.0                     # PaddleOCR backend
+paddleocr>=2.7.0                        # OCR engine
+
+# Image Processing
+Pillow>=10.0.0                          # Image handling
+
+# Other Document Formats
+python-docx>=1.0.0                      # Word documents
+extract-msg>=0.50.0                     # Outlook .msg files
+
+# =============================================================================
+# NLP & ENTITY RECOGNITION
+# =============================================================================
+spacy>=3.7.0                            # NLP pipeline
+
+# =============================================================================
+# GRAPH ANALYSIS
+# =============================================================================
+networkx>=3.0                           # Graph algorithms
+python-louvain>=0.16                    # Community detection
+
+# =============================================================================
+# VISUALIZATION
+# =============================================================================
+plotly>=5.18.0                          # Interactive charts in Reflex
+wordcloud>=1.9.0                        # Word cloud generation
+
+# =============================================================================
+# GEOSPATIAL
+# =============================================================================
+geopy>=2.4.0                            # Geocoding for map features
+
+# =============================================================================
+# UTILITIES
+# =============================================================================
+python-dotenv>=1.0.0                    # Environment variables
+tqdm>=4.65.0                            # Progress bars
+click>=8.1.0                            # CLI tools
+beautifulsoup4>=4.12.0                  # HTML parsing
+lxml>=5.0.0                             # XML/HTML parser
+reportlab>=4.0.0                        # PDF generation
+tabulate>=0.9.0                         # Table formatting
+rank-bm25>=0.2.0                        # BM25 search ranking
+psutil>=5.9.0                           # System monitoring
+PyYAML>=6.0.0                           # YAML parsing
+pydantic>=2.0.0                         # Data validation (required by reflex)
+
+# =============================================================================
+# PACKAGES REMOVED (with reasoning)
+# =============================================================================
+# The following packages were in legacy requirements but are NOT needed:
+#
+# - unstructured[pdf]
+#   Reason: Never imported - we use PyMuPDF + PaddleOCR for document handling
+#
+# - pdf2image
+#   Reason: Never imported - we use PyMuPDF (fitz) for PDF-to-image conversion
+#
+# - pytesseract
+#   Reason: Never imported - PaddleOCR replaced Tesseract entirely
+#
+# - watchgod
+#   Reason: Only in legacy ingest_worker.py with broken imports - not used
+#
+# - streamlit, streamlit-authenticator, streamlit-agraph, streamlit-folium
+#   Reason: Legacy Streamlit UI - all UI is now Reflex-based
+#
+# - seaborn
+#   Reason: Listed but never imported in the codebase
+#
+# - pyod (Python Outlier Detection)
+#   Reason: Listed but never imported - may be added for future anomaly features
+#
+# =============================================================================
