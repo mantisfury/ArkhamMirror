@@ -40,6 +40,7 @@ from .settings import (
     # LLM
     LM_STUDIO_URL,
     # Application
+    BACKEND_HOST,
     BACKEND_PORT,
     FRONTEND_PORT,
     DEBUG,
@@ -81,6 +82,7 @@ __all__ = [
     # LLM
     "LM_STUDIO_URL",
     # Application
+    "BACKEND_HOST",
     "BACKEND_PORT",
     "FRONTEND_PORT",
     "DEBUG",

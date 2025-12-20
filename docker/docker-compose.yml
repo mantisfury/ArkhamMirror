@@ -55,3 +55,17 @@ services:
     volumes:
       - ../DataSilo/redis:/data
     restart: unless-stopped
+
+# =============================================================================
+# LLM INFERENCE (NOT INCLUDED)
+# =============================================================================
+# ArkhamMirror does NOT bundle an LLM. You provide your own inference:
+#
+# RECOMMENDED OPTIONS:
+#   - LM Studio (https://lmstudio.ai) - GUI, easy setup, port 1234
+#   - Ollama (https://ollama.ai) - CLI, lightweight, port 11434
+#   - Cloud APIs: OpenAI, OpenRouter, Together AI, Groq
+#
+# Configure your choice in .env (see .env.example for details).
+# The app works without AI - OCR uses PaddleOCR, other features gracefully degrade.
+# =============================================================================

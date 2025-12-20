@@ -6,7 +6,14 @@ import hashlib
 from typing import List, Dict, Any, Optional
 from redis import Redis
 
-from config.settings import LM_STUDIO_URL, REDIS_URL
+from config.settings import (
+    REDIS_URL,
+    LLM_PROVIDER,
+    LLM_BASE_URL,
+    LLM_API_KEY,
+    LLM_MODEL_NAME,
+    LLM_HEADERS,
+)
 
 # Configure Logger
 logging.basicConfig(level=logging.INFO)
@@ -20,14 +27,26 @@ if REDIS_URL:
     except Exception as e:
         logger.warning(f"Failed to connect to Redis for caching: {e}")
 
-# LM Studio Configuration from central config
-LM_STUDIO_BASE_URL = LM_STUDIO_URL
-if not LM_STUDIO_BASE_URL.endswith("/v1"):
-    LM_STUDIO_BASE_URL = f"{LM_STUDIO_BASE_URL}/v1"
-CHAT_ENDPOINT = f"{LM_STUDIO_BASE_URL}/chat/completions"
-MODEL_ID = "qwen/qwen3-vl-8b"
+# =============================================================================
+# LLM Configuration (from central config)
+# =============================================================================
+# Supports: local (LM Studio, vLLM, Ollama), openai, anthropic, openrouter, etc.
 
-logger.info(f"LM Studio configured: {LM_STUDIO_BASE_URL}")
+# Ensure base URL has /v1 suffix for OpenAI-compatible endpoints
+_BASE_URL = LLM_BASE_URL
+if not _BASE_URL.endswith("/v1"):
+    _BASE_URL = f"{_BASE_URL}/v1"
+
+CHAT_ENDPOINT = f"{_BASE_URL}/chat/completions"
+MODEL_ID = LLM_MODEL_NAME if LLM_MODEL_NAME and LLM_MODEL_NAME != "auto" else "default"
+
+# Build default headers (includes auth for cloud providers)
+DEFAULT_HEADERS = {"Content-Type": "application/json"}
+if LLM_API_KEY and LLM_API_KEY != "not-needed":
+    DEFAULT_HEADERS["Authorization"] = f"Bearer {LLM_API_KEY}"
+DEFAULT_HEADERS.update(LLM_HEADERS)
+
+logger.info(f"LLM configured: provider={LLM_PROVIDER}, endpoint={_BASE_URL}, model={MODEL_ID}")
 
 
 def encode_image(image_path):
@@ -75,10 +94,8 @@ def transcribe_image(
             "stream": False,
         }
 
-        headers = {"Content-Type": "application/json"}
-
         response = requests.post(
-            CHAT_ENDPOINT, headers=headers, json=payload, timeout=180
+            CHAT_ENDPOINT, headers=DEFAULT_HEADERS, json=payload, timeout=180
         )
         response.raise_for_status()
 
@@ -87,7 +104,7 @@ def transcribe_image(
 
     except requests.exceptions.ConnectionError:
         logger.warning(
-            "LLM Transcription failed: LM Studio not running. Falling back to PaddleOCR if available."
+            "LLM Transcription failed: LLM server not running. Falling back to PaddleOCR if available."
         )
         return None
     except requests.exceptions.Timeout:
@@ -173,10 +190,8 @@ def chat_with_llm(
             except Exception as e:
                 logger.warning(f"Cache check failed: {e}")
 
-        headers = {"Content-Type": "application/json"}
-
         response = requests.post(
-            CHAT_ENDPOINT, headers=headers, json=payload, timeout=120
+            CHAT_ENDPOINT, headers=DEFAULT_HEADERS, json=payload, timeout=120
         )
         response.raise_for_status()
 
@@ -194,24 +209,32 @@ def chat_with_llm(
         return content
 
     except requests.exceptions.ConnectionError:
-        # LM Studio not running or not reachable
-        logger.warning("LM Studio not available - connection refused")
-        return (
-            "[LM Studio not running]\n\n"
-            "To use AI features, please:\n"
-            "1. Start LM Studio (https://lmstudio.ai)\n"
-            "2. Load a model (e.g., Qwen3-VL-8B)\n"
-            "3. Start the local server (port 1234)\n\n"
-            "The rest of ArkhamMirror works without LM Studio."
-        )
+        # LLM server not running or not reachable
+        logger.warning(f"LLM server not available ({LLM_PROVIDER}) - connection refused")
+        if LLM_PROVIDER == "local":
+            return (
+                "[LLM Server not running]\n\n"
+                "To use AI features, please start your local LLM server:\n"
+                "- LM Studio: Start server on port 1234\n"
+                "- vLLM: Run 'docker compose up vllm' in docker/ folder\n"
+                "- Ollama: Run 'ollama serve'\n\n"
+                "Or configure a cloud provider in your .env file.\n"
+                "The rest of ArkhamMirror works without AI."
+            )
+        else:
+            return (
+                f"[{LLM_PROVIDER.upper()} API Error]\n\n"
+                f"Could not connect to {LLM_PROVIDER} API.\n"
+                "Please check your API key and network connection."
+            )
     except requests.exceptions.Timeout:
-        logger.warning("LM Studio request timed out")
+        logger.warning(f"LLM request timed out ({LLM_PROVIDER})")
         return (
-            "[LM Studio timeout]\n\n"
+            "[LLM Timeout]\n\n"
             "The AI request took too long. This could mean:\n"
-            "• The model is still loading\n"
-            "• The request was too complex\n"
-            "• LM Studio is overloaded\n\n"
+            "- The model is still loading\n"
+            "- The request was too complex\n"
+            "- The server is overloaded\n\n"
             "Try again in a moment, or use a smaller/faster model."
         )
     except requests.exceptions.HTTPError as http_err:

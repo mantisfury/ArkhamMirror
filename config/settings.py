@@ -133,12 +133,152 @@ REDIS_URL = os.getenv("REDIS_URL", f"redis://{REDIS_HOST}:{REDIS_PORT}")
 # =============================================================================
 # LLM CONFIGURATION
 # =============================================================================
+# ArkhamMirror does NOT bundle an LLM. You provide your own inference.
+#
+# Supported providers (all use OpenAI-compatible API format):
+#   - 'local'      : Local inference (LM Studio, Ollama, or vLLM) - default
+#   - 'openai'     : OpenAI API (GPT-4o, etc.)
+#   - 'openrouter' : OpenRouter (500+ models, single API)
+#   - 'together'   : Together AI
+#   - 'groq'       : Groq (fast inference)
+#   - 'azure'      : Azure OpenAI
+#
+# For local inference, also set LLM_LOCAL_BACKEND:
+#   - 'lm_studio'  : LM Studio (default, port 1234)
+#   - 'ollama'     : Ollama (port 11434)
+#   - 'vllm'       : vLLM (port 8001) - if you run it yourself
+# =============================================================================
 
-# Unified LLM URL - consolidate LM_STUDIO_URL and LLM_BASE_URL into one
-# Check LM_STUDIO_URL first (preferred), then LLM_BASE_URL (legacy), then default
-LM_STUDIO_URL = os.getenv("LM_STUDIO_URL") or os.getenv(
-    "LLM_BASE_URL", "http://localhost:1234/v1"
-)
+LLM_PROVIDER = os.getenv("LLM_PROVIDER", "local").lower()
+
+# Local backend selection (only used when LLM_PROVIDER='local')
+LLM_LOCAL_BACKEND = os.getenv("LLM_LOCAL_BACKEND", "lm_studio").lower()
+
+# -----------------------------------------------------------------------------
+# Local LLM Endpoints
+# -----------------------------------------------------------------------------
+LM_STUDIO_URL = os.getenv("LM_STUDIO_URL", "http://localhost:1234/v1")
+VLLM_URL = os.getenv("VLLM_URL", "http://localhost:8001/v1")
+OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434/v1")
+
+# -----------------------------------------------------------------------------
+# Cloud Provider API Keys (set in .env file)
+# -----------------------------------------------------------------------------
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
+TOGETHER_API_KEY = os.getenv("TOGETHER_API_KEY", "")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
+AZURE_OPENAI_API_KEY = os.getenv("AZURE_OPENAI_API_KEY", "")
+AZURE_OPENAI_ENDPOINT = os.getenv("AZURE_OPENAI_ENDPOINT", "")
+
+# -----------------------------------------------------------------------------
+# Model Selection (provider-specific defaults)
+# -----------------------------------------------------------------------------
+LLM_MODEL = os.getenv("LLM_MODEL", "")  # Empty = use provider default
+
+# Default models per provider (used when LLM_MODEL is not set)
+LLM_DEFAULT_MODELS = {
+    "local": "auto",  # Use whatever model is loaded
+    "openai": "gpt-4o",
+    "openrouter": "qwen/qwen3-4b",
+    "together": "Qwen/Qwen3-4B",
+    "groq": "llama-3.3-70b-versatile",
+    "azure": "",  # Must be configured per deployment
+}
+
+# -----------------------------------------------------------------------------
+# Unified LLM Configuration
+# -----------------------------------------------------------------------------
+
+def _get_llm_config() -> dict:
+    """
+    Build LLM configuration based on provider settings.
+    Returns dict with: base_url, api_key, model, headers
+    """
+    provider = LLM_PROVIDER
+    model = LLM_MODEL or LLM_DEFAULT_MODELS.get(provider, "")
+
+    if provider == "local":
+        # Route to appropriate local backend
+        backend = LLM_LOCAL_BACKEND
+        if backend == "vllm":
+            base_url = VLLM_URL
+        elif backend == "ollama":
+            base_url = OLLAMA_URL
+        else:
+            base_url = LM_STUDIO_URL  # Default: LM Studio
+        return {
+            "base_url": base_url,
+            "api_key": "not-needed",  # Local doesn't need API key
+            "model": model,
+            "headers": {},
+        }
+
+    elif provider == "openai":
+        return {
+            "base_url": "https://api.openai.com/v1",
+            "api_key": OPENAI_API_KEY,
+            "model": model,
+            "headers": {},
+        }
+
+    elif provider == "openrouter":
+        return {
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key": OPENROUTER_API_KEY,
+            "model": model,
+            "headers": {"HTTP-Referer": "https://github.com/your-repo"},  # Required by OpenRouter
+        }
+
+    elif provider == "together":
+        return {
+            "base_url": "https://api.together.xyz/v1",
+            "api_key": TOGETHER_API_KEY,
+            "model": model,
+            "headers": {},
+        }
+
+    elif provider == "groq":
+        return {
+            "base_url": "https://api.groq.com/openai/v1",
+            "api_key": GROQ_API_KEY,
+            "model": model,
+            "headers": {},
+        }
+
+    elif provider == "azure":
+        return {
+            "base_url": AZURE_OPENAI_ENDPOINT,
+            "api_key": AZURE_OPENAI_API_KEY,
+            "model": model,
+            "headers": {},
+        }
+
+    else:
+        # Unknown provider - fall back to local LM Studio
+        logger.warning(f"Unknown LLM_PROVIDER '{provider}', falling back to local")
+        return {
+            "base_url": LM_STUDIO_URL,
+            "api_key": "not-needed",
+            "model": model,
+            "headers": {},
+        }
+
+
+# Build config on import
+_LLM_CONFIG = _get_llm_config()
+
+# Exported values for use by llm_service.py
+LLM_BASE_URL = _LLM_CONFIG["base_url"]
+LLM_API_KEY = _LLM_CONFIG["api_key"]
+LLM_MODEL_NAME = _LLM_CONFIG["model"]
+LLM_HEADERS = _LLM_CONFIG["headers"]
+
+# Legacy compatibility (some code still uses LM_STUDIO_URL directly)
+# This ensures old code continues to work
+if LLM_PROVIDER == "local" and LLM_LOCAL_BACKEND != "lm_studio":
+    # Update LM_STUDIO_URL to point to actual backend for legacy code
+    pass  # Keep original LM_STUDIO_URL for reference
 
 # =============================================================================
 # APPLICATION PORTS
@@ -272,7 +412,17 @@ def get_config_summary() -> dict:
         "DATABASE_URL": DATABASE_URL.replace(POSTGRES_PASSWORD, "***"),
         "QDRANT_URL": QDRANT_URL,
         "REDIS_URL": REDIS_URL,
+        # LLM Configuration
+        "LLM_PROVIDER": LLM_PROVIDER,
+        "LLM_LOCAL_BACKEND": LLM_LOCAL_BACKEND,
+        "LLM_BASE_URL": LLM_BASE_URL,
+        "LLM_MODEL_NAME": LLM_MODEL_NAME,
+        "LLM_API_KEY": "***" if LLM_API_KEY else "(not set)",
+        # Local endpoints (for reference)
         "LM_STUDIO_URL": LM_STUDIO_URL,
+        "VLLM_URL": VLLM_URL,
+        "OLLAMA_URL": OLLAMA_URL,
+        # Other
         "PYTHON_EXECUTABLE": PYTHON_EXECUTABLE,
         "BACKEND_HOST": BACKEND_HOST,
         "BACKEND_PORT": BACKEND_PORT,
