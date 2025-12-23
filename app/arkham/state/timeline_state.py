@@ -64,7 +64,7 @@ class TimelineState(rx.State):
             )
 
             toast_state = await self.get_state(ToastState)
-            async with self:
+            async with toast_state:
                 toast_state.show_error(format_error_for_ui(error_info))
         finally:
             async with self:
@@ -93,7 +93,7 @@ class TimelineState(rx.State):
             from ..state.toast_state import ToastState
 
             toast_state = await self.get_state(ToastState)
-            async with self:
+            async with toast_state:
                 toast_state.show_warning("No timeline events to export")
             return
 
@@ -151,7 +151,7 @@ class TimelineState(rx.State):
 
             toast_state = await self.get_state(ToastState)
             gap_msg = f" and {gap_filename}" if self.gaps else ""
-            async with self:
+            async with toast_state:
                 toast_state.show_success(f"Timeline exported to {filename}{gap_msg}")
 
         except Exception as e:
@@ -167,7 +167,7 @@ class TimelineState(rx.State):
             )
 
             toast_state = await self.get_state(ToastState)
-            async with self:
+            async with toast_state:
                 toast_state.show_error(format_error_for_ui(error_info))
 
     async def _load_heatmap_impl(self):
@@ -225,7 +225,7 @@ class TimelineState(rx.State):
             )
 
             toast_state = await self.get_state(ToastState)
-            async with self:
+            async with toast_state:
                 toast_state.show_error(format_error_for_ui(error_info))
         finally:
             async with self:

@@ -7,6 +7,30 @@ from ..state.search_state import SearchState
 from ..components.design_tokens import SPACING, CARD_PADDING
 
 
+class SearchPageState(rx.State):
+    """State for the search page to handle URL query parameters."""
+
+    async def check_doc_filter(self):
+        """Check for doc_id query parameter on page load."""
+        router_data = self.router.page.params
+
+        doc_id_str = router_data.get("doc_id", "")
+        if doc_id_str:
+            try:
+                doc_id = int(doc_id_str)
+                from ..services.search_service import get_document_title
+                doc_title = get_document_title(doc_id) or f"Document #{doc_id}"
+
+                search_state = await self.get_state(SearchState)
+                search_state.filter_doc_id = doc_id
+                search_state.filter_doc_title = doc_title
+                if not search_state.query:
+                    search_state.query = "*"
+                await search_state.execute_search()
+            except (ValueError, TypeError):
+                pass
+
+
 def filters_panel() -> rx.Component:
     """Advanced filters panel for search refinement."""
     return rx.card(
@@ -113,11 +137,42 @@ def filters_panel() -> rx.Component:
     )
 
 
+def doc_filter_banner() -> rx.Component:
+    """Banner showing active document filter with clear button."""
+    return rx.cond(
+        SearchState.filter_doc_id,
+        rx.callout.root(
+            rx.callout.icon(rx.icon(tag="filter")),
+            rx.callout.text(
+                rx.hstack(
+                    rx.text("Searching within: ", weight="bold"),
+                    rx.text(SearchState.filter_doc_title),
+                    rx.spacer(),
+                    rx.button(
+                        rx.icon(tag="x", size=14),
+                        "Clear Filter",
+                        on_click=SearchState.clear_doc_filter,
+                        size="1",
+                        variant="ghost",
+                    ),
+                    width="100%",
+                    align="center",
+                ),
+            ),
+            color_scheme="blue",
+            margin_bottom=SPACING["md"],
+        ),
+        rx.fragment(),
+    )
+
+
+@rx.page(route="/search", on_load=SearchPageState.check_doc_filter)
 def search_page() -> rx.Component:
     """Main search page."""
     return layout(
         rx.vstack(
             rx.heading("Document Search", size="8", margin_bottom=SPACING["md"]),
+            doc_filter_banner(),
             search_bar(),
             rx.divider(margin_y=SPACING["lg"]),
             # Filters and results layout

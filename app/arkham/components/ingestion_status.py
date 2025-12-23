@@ -336,9 +336,7 @@ def document_detail_modal() -> rx.Component:
                                     rx.button(
                                         rx.icon("search", size=16),
                                         "Search in Document",
-                                        on_click=rx.redirect(
-                                            f"/search?doc_id={IngestionStatusState.selected_document['id']}"
-                                        ),
+                                        on_click=IngestionStatusState.search_in_document,
                                         size="2",
                                         variant="soft",
                                         color_scheme="violet",
@@ -497,8 +495,8 @@ def recent_documents_component() -> rx.Component:
                                     rx.button(
                                         rx.icon("search", size=14),
                                         "Search",
-                                        on_click=rx.redirect(
-                                            f"/search?doc_id={doc['id']}"
+                                        on_click=IngestionStatusState.search_in_document_by_id(
+                                            doc["id"]
                                         ),
                                         size="1",
                                         variant="soft",

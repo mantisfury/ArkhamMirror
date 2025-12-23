@@ -162,6 +162,7 @@ class SearchState(rx.State):
                     doc_type=self.doc_type_filter
                     if self.doc_type_filter != "all"
                     else None,
+                    allowed_doc_ids=[self.filter_doc_id] if self.filter_doc_id else None,
                 ),
             )
 
@@ -419,3 +420,13 @@ class SearchState(rx.State):
     def set_current_save_name(self, name: str):
         """Set the name for the current save operation."""
         self.current_save_name = name
+
+    # Document filter from URL query parameter
+    filter_doc_id: Optional[int] = None
+    filter_doc_title: str = ""
+
+    def clear_doc_filter(self):
+        """Clear the document filter."""
+        self.filter_doc_id = None
+        self.filter_doc_title = ""
+        return SearchState.execute_search

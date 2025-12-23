@@ -621,3 +621,14 @@ class IngestionStatusState(rx.State):
         except Exception as e:
             logger.error(f"Failed to load document detail: {e}", exc_info=True)
             self.show_toast(f"Error loading document: {str(e)}", "error")
+
+    def search_in_document(self):
+        """Navigate to search page filtered to the selected document."""
+        if self.selected_document and "id" in self.selected_document:
+            doc_id = self.selected_document["id"]
+            return rx.redirect(f"/search?doc_id={doc_id}")
+
+    def search_in_document_by_id(self, doc_id):
+        """Navigate to search page filtered to the specified document."""
+        doc_id_str = str(doc_id) if not isinstance(doc_id, str) else doc_id
+        return rx.redirect(f"/search?doc_id={doc_id_str}")

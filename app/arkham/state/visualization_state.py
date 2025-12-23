@@ -166,8 +166,9 @@ class VisualizationState(rx.State):
             )
 
             toast_state = await self.get_state(ToastState)
-            async with self:
+            async with toast_state:
                 toast_state.show_error(format_error_for_ui(error_info))
+            async with self:
                 self.error_message = error_info["user_message"]
         finally:
             async with self:
@@ -231,8 +232,9 @@ class VisualizationState(rx.State):
             )
 
             toast_state = await self.get_state(ToastState)
-            async with self:
+            async with toast_state:
                 toast_state.show_error(format_error_for_ui(error_info))
+            async with self:
                 self.error_message = error_info["user_message"]
         finally:
             async with self:
@@ -266,8 +268,9 @@ class VisualizationState(rx.State):
             )
 
             toast_state = await self.get_state(ToastState)
-            async with self:
+            async with toast_state:
                 toast_state.show_error(format_error_for_ui(error_info))
+            async with self:
                 self.error_message = error_info["user_message"]
         finally:
             async with self:
