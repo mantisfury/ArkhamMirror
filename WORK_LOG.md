@@ -1012,3 +1012,85 @@ packages/
 - Integration testing across shards
 
 ---
+
+## 2025-12-25 | Claude | Phase 1 & 2 Complete - Full Frame Implementation
+
+**Phase 1 Complete**: Foundation services
+
+1. **ResourceService** (`services/resources.py`) ✅
+   - Hardware detection (GPU via PyTorch, CPU/RAM via psutil)
+   - Tier assignment (minimal/standard/recommended/power)
+   - GPU memory management (allocate/release/wait_for_memory)
+   - CPU thread management (acquire/release)
+   - Per-tier pool configurations with CPU fallbacks
+   - Service availability checks (Redis, PostgreSQL, Qdrant, LM Studio)
+
+2. **StorageService** (`services/storage.py`) ✅
+   - File/blob storage with categories (documents, exports, temp, models, projects)
+   - File operations (store, retrieve, delete, exists)
+   - Temp file management with automatic cleanup
+   - Project-scoped storage (get_project_path, migrate_to_project)
+   - Metadata cache with JSON persistence
+
+3. **DocumentService** (`services/documents.py`) ✅
+   - Full CRUD (create_document, get_document, list_documents, update_document, delete_document)
+   - Content access (get_document_text, get_document_chunks, get_document_pages)
+   - Page and chunk management (add_page, add_chunk)
+   - Vector search integration
+   - Batch operations (batch_delete, batch_update_status)
+   - Database tables: arkham_frame.documents, chunks, pages
+
+4. **ProjectService** (`services/projects.py`) ✅
+   - Full CRUD with unique name enforcement
+   - Settings management with dot notation (get_setting, set_setting, delete_setting)
+   - Project statistics (get_stats)
+   - Database table: arkham_frame.projects
+
+---
+
+**Phase 2 Complete**: Data services
+
+1. **EntityService** (`services/entities.py`) ✅
+   - Full CRUD for entities with batch creation
+   - Canonical entity management (create, link, merge, find_or_create)
+   - Relationship management with typed relationships
+   - Entity types: PERSON, ORGANIZATION, LOCATION, DATE, MONEY, EVENT, PRODUCT, DOCUMENT, CONCEPT, OTHER
+   - Relationship types: WORKS_FOR, LOCATED_IN, MEMBER_OF, OWNS, RELATED_TO, MENTIONED_WITH, etc.
+   - Co-occurrence analysis (get_cooccurrences, get_entity_network)
+   - Database tables: arkham_frame.entities, canonical_entities, entity_relationships
+
+2. **VectorService** (`services/vectors.py`) ✅
+   - Collection management (create, delete, list, get)
+   - Standard collections auto-created: arkham_documents, arkham_chunks, arkham_entities
+   - Vector operations: upsert, delete, search, scroll
+   - Embedding generation with optional sentence-transformers
+   - Distance metrics: COSINE, EUCLIDEAN, DOT
+   - Batch operations and filter support
+
+3. **ChunkService** (`services/chunks.py`) ✅ NEW
+   - 8 chunking strategies: FIXED_SIZE, FIXED_TOKENS, SENTENCE, PARAGRAPH, SEMANTIC, RECURSIVE, MARKDOWN, CODE
+   - Token counting with tiktoken (falls back to character estimation)
+   - Multi-page document chunking with page metadata
+   - Configuration (ChunkConfig with chunk_size, overlap, min/max, separators)
+   - Token truncation and chunk merging utilities
+
+4. **LLMService** (`services/llm.py`) ✅ Enhanced
+   - Streaming support (stream_chat, stream_generate)
+   - Structured output extraction (extract_json, extract_list)
+   - JSON schema validation
+   - Prompt template system with variables
+   - Default prompts: summarize, extract_entities, qa, classify
+   - Token usage tracking and statistics
+
+**Frame Integration**:
+- `frame.py` updated with all new service initialization
+- `services/__init__.py` updated with comprehensive exports
+- `full_frame_plan.md` updated with Phase 1 & 2 completion
+
+**Services Completed**: 8/11 (73%)
+- ResourceService, StorageService, DocumentService, ProjectService (Phase 1)
+- EntityService, VectorService, ChunkService, LLMService (Phase 2)
+
+**Next Phase**: Phase 3 - Pipeline Refactoring (OCR shard, Dispatchers)
+
+---

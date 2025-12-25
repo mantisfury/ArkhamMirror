@@ -1228,149 +1228,248 @@ navigation:
 
 ## 5. Implementation Phases
 
-### Phase 1: Foundation (Weeks 1-2)
+### Phase 1: Foundation ✅ COMPLETE
 
 **Goal:** Core services that everything depends on
 
-1. **ResourceService** implementation
-   - Hardware detection
-   - Tier assignment
-   - GPU/CPU management
+1. **ResourceService** implementation ✅
+   - Hardware detection (GPU via PyTorch, CPU/RAM via psutil)
+   - Tier assignment (minimal/standard/recommended/power)
+   - GPU memory management (allocate/release/wait_for_memory)
+   - CPU thread management (acquire/release)
+   - Per-tier pool configurations with fallbacks
+   - Startup report logging
+   - Configuration overrides (force_tier, disabled_pools, pool_overrides, gpu_vram_override_mb)
+   - Service availability checks (Redis, PostgreSQL, Qdrant, LM Studio)
+   - **File:** `services/resources.py`
 
-2. **StorageService** implementation
-   - File storage
-   - Temp file management
-   - Project-scoped storage
+2. **StorageService** implementation ✅
+   - File/blob storage with categories (documents, exports, temp, models, projects)
+   - File operations (store, retrieve, delete, exists)
+   - Temp file management with automatic cleanup
+   - Project-scoped storage (get_project_path, migrate_to_project)
+   - Metadata cache with JSON persistence
+   - Storage statistics
+   - **File:** `services/storage.py`
 
-3. **DocumentService** completion
-   - Full CRUD
-   - Content access
-   - Batch operations
+3. **DocumentService** completion ✅
+   - Full CRUD (create_document, get_document, list_documents, update_document, delete_document)
+   - Content access (get_document_text, get_document_chunks, get_document_pages)
+   - Page and chunk management (add_page, add_chunk)
+   - Vector search integration
+   - Batch operations (batch_delete, batch_update_status)
+   - Database table creation with schema isolation (arkham_frame.documents, chunks, pages)
+   - **File:** `services/documents.py`
 
-4. **ProjectService** completion
-   - Full CRUD
-   - Statistics
-   - Settings
+4. **ProjectService** completion ✅
+   - Full CRUD with unique name enforcement
+   - Settings management (get_setting, set_setting, delete_setting with dot notation)
+   - Project statistics (get_stats)
+   - Basic export/import
+   - Database table creation (arkham_frame.projects)
+   - **File:** `services/projects.py`
 
-### Phase 2: Data Services (Weeks 3-4)
+**Phase 1 Completed:** 2025-12-25
+
+---
+
+### Phase 2: Data Services ✅ COMPLETE
 
 **Goal:** Complete data access layer
 
-1. **EntityService** completion
-   - Full CRUD
-   - Canonical entity management
-   - Relationship management
+**Status:** ✅ Complete
 
-2. **VectorService** completion
-   - Collection management
-   - Vector operations
-   - Embedding generation
+1. **EntityService** completion ✅
+   - [x] Full CRUD (create_entity, get_entity, list_entities, update_entity, delete_entity)
+   - [x] Batch entity creation (create_entities_batch)
+   - [x] Canonical entity management (create_canonical, get_canonical, update_canonical, delete_canonical, link_to_canonical, unlink_from_canonical, merge_canonicals, find_or_create_canonical)
+   - [x] Relationship management (create_relationship, get_relationship, delete_relationship, get_relationships)
+   - [x] Entity search with filters (entity_type, document_id, canonical_id, search_text)
+   - [x] Co-occurrence analysis (get_cooccurrences, get_entity_network)
+   - [x] Entity types enum (PERSON, ORGANIZATION, LOCATION, DATE, MONEY, EVENT, PRODUCT, DOCUMENT, CONCEPT, OTHER)
+   - [x] Relationship types enum (WORKS_FOR, LOCATED_IN, MEMBER_OF, OWNS, RELATED_TO, MENTIONED_WITH, etc.)
+   - [x] Database tables (arkham_frame.entities, canonical_entities, entity_relationships)
+   - [x] Statistics (get_stats)
+   - **File:** `services/entities.py`
 
-3. **ChunkService** implementation
-   - Text chunking strategies
-   - Token counting
+2. **VectorService** completion ✅
+   - [x] Collection management (create_collection, delete_collection, get_collection, list_collections, collection_exists)
+   - [x] Standard collections auto-creation (arkham_documents, arkham_chunks, arkham_entities)
+   - [x] Vector operations (upsert, upsert_single, delete_vectors, delete_by_filter, get_vector)
+   - [x] Search operations (search, search_text, search_batch)
+   - [x] Embedding generation (embed_text, embed_texts, embed_and_upsert)
+   - [x] Optional local embedding model support (sentence-transformers)
+   - [x] Scroll functionality for large collections
+   - [x] Distance metrics (COSINE, EUCLIDEAN, DOT)
+   - [x] Filter support for search and delete operations
+   - [x] Statistics (get_stats with collection details)
+   - **File:** `services/vectors.py`
 
-4. **LLMService** enhancements
-   - Structured output
-   - Prompt management
-   - Streaming
+3. **ChunkService** implementation (NEW) ✅
+   - [x] Text chunking strategies (FIXED_SIZE, FIXED_TOKENS, SENTENCE, PARAGRAPH, SEMANTIC, RECURSIVE, MARKDOWN, CODE)
+   - [x] Token counting with tiktoken support (falls back to character estimation)
+   - [x] Document chunking (chunk_document for multi-page documents)
+   - [x] Configuration (ChunkConfig with chunk_size, overlap, min/max, separators)
+   - [x] Token truncation (truncate_to_tokens)
+   - [x] Chunk merging (merge_chunks)
+   - [x] Batch token counting (count_tokens_batch)
+   - [x] Strategy-specific implementations (recursive split, markdown-aware, code-aware)
+   - **File:** `services/chunks.py`
 
-### Phase 3: Pipeline Refactoring (Weeks 5-6)
+4. **LLMService** enhancements ✅
+   - [x] Enhanced chat with stop sequences
+   - [x] Structured output (extract_json with schema validation, extract_list)
+   - [x] Prompt management (register_prompt, get_prompt, list_prompts, run_prompt)
+   - [x] Default prompts (summarize, extract_entities, qa, classify)
+   - [x] Streaming (stream_chat, stream_generate)
+   - [x] LLMResponse dataclass with token usage tracking
+   - [x] JSON extraction patterns (code blocks, objects, arrays)
+   - [x] PromptTemplate with variable rendering
+   - [x] Statistics (get_stats with request/token counts)
+   - **File:** `services/llm.py`
+
+**Phase 2 Completed:** 2025-12-25
+
+---
+
+### Phase 3: Pipeline Refactoring
 
 **Goal:** Move processing logic to shards
 
-1. Create OCR shard
-   - Move OCR logic from frame
-   - Implement PaddleOCR worker
-   - Implement Qwen worker
+**Status:** 🔲 Not Started
 
-2. Refactor pipeline stages to dispatchers
-   - IngestDispatcher
-   - OCRDispatcher
-   - ParseDispatcher
-   - EmbedDispatcher
+1. **Create OCR shard** (NEW SHARD)
+   - [ ] Package structure (arkham-shard-ocr)
+   - [ ] shard.yaml manifest v5
+   - [ ] PaddleOCR worker (gpu-paddle pool)
+   - [ ] Qwen-VL worker (gpu-qwen pool)
+   - [ ] Quality check worker
+   - **Directory:** `packages/arkham-shard-ocr/`
 
-3. Update existing shards with worker handlers
-   - ingest shard workers
-   - parse shard workers
-   - embed shard workers
+2. **Refactor pipeline stages to dispatchers**
+   - [ ] IngestDispatcher - routes to ingest shard workers
+   - [ ] OCRDispatcher - routes to OCR shard workers
+   - [ ] ParseDispatcher - routes to parse shard workers
+   - [ ] EmbedDispatcher - routes to embed shard workers
+   - **Directory:** `arkham_frame/pipeline/dispatchers/`
 
-### Phase 4: Output Services (Weeks 7-8)
+3. **Update existing shards with worker handlers**
+   - [ ] ingest shard workers (file_intake, format_detect)
+   - [ ] parse shard workers (ner_extract, chunker)
+   - [ ] embed shard workers (embedding)
+
+---
+
+### Phase 4: Output Services
 
 **Goal:** Export and notification capabilities
 
-1. **ExportService** implementation
-   - PDF generation
-   - HTML/Markdown export
-   - JSON/CSV export
+**Status:** 🔲 Not Started
 
-2. **TemplateService** implementation
-   - Template CRUD
-   - Variable extraction
-   - Rendering
+1. **ExportService** implementation (NEW)
+   - [ ] Multi-format export (pdf, html, md, json, csv, docx)
+   - [ ] Batch export
+   - [ ] Template-based export
+   - [ ] Format handler registration
+   - **File:** `services/export.py`
 
-3. **NotificationService** implementation
-   - Alert management
-   - Delivery channels
-   - Webhooks
+2. **TemplateService** implementation (NEW)
+   - [ ] Template CRUD
+   - [ ] Variable extraction
+   - [ ] Jinja2 rendering
+   - [ ] Template categories (letter, report, checklist, export)
+   - **File:** `services/templates.py`
 
-4. **SchedulerService** implementation
-   - One-time jobs
-   - Recurring jobs
-   - Deadline tracking
+3. **NotificationService** implementation (NEW)
+   - [ ] Alert creation and management
+   - [ ] Delivery channels (in-app, desktop, webhook, email)
+   - [ ] Webhook registration
+   - **File:** `services/notifications.py`
 
-### Phase 5: Manifest Compliance (Week 9)
+4. **SchedulerService** implementation (NEW)
+   - [ ] One-time jobs (schedule_at)
+   - [ ] Recurring jobs (schedule_recurring with cron)
+   - [ ] Deadline tracking with reminders
+   - **File:** `services/scheduler.py`
+
+---
+
+### Phase 5: Manifest Compliance
 
 **Goal:** All shards compliant with v5 manifest
 
-1. Create missing manifests
-   - graph
-   - timeline
-   - anomalies
-   - contradictions
+**Status:** 🔲 Not Started
 
-2. Update incomplete manifests
-   - search
-   - parse
-   - embed
-   - ingest
+1. **Create missing manifests** (CRITICAL)
+   - [ ] arkham-shard-graph/shard.yaml
+   - [ ] arkham-shard-timeline/shard.yaml
+   - [ ] arkham-shard-anomalies/shard.yaml
+   - [ ] arkham-shard-contradictions/shard.yaml
 
-3. Validate all manifests against schema
+2. **Update incomplete manifests** (HIGH)
+   - [ ] arkham-shard-search/shard.yaml (add navigation)
+   - [ ] arkham-shard-parse/shard.yaml (add navigation)
+   - [ ] arkham-shard-embed/shard.yaml (add navigation)
+   - [ ] arkham-shard-ingest/shard.yaml (add navigation)
 
-### Phase 6: Integration Testing (Week 10)
+3. **Validate all manifests**
+   - [ ] Schema validation against v5 spec
+   - [ ] Entry point verification
+   - [ ] Navigation category consistency
+
+---
+
+### Phase 6: Integration Testing
 
 **Goal:** Verify all components work together
 
-1. End-to-end pipeline tests
-2. Shard communication tests
-3. Worker pool tests
-4. Resource scaling tests
+**Status:** 🔲 Not Started
+
+1. **End-to-end pipeline tests**
+   - [ ] Document ingest → parse → embed flow
+   - [ ] Multi-format document handling
+   - [ ] Error recovery and retry logic
+
+2. **Shard communication tests**
+   - [ ] Event bus publish/subscribe
+   - [ ] Cross-shard data access
+   - [ ] Shard discovery and loading
+
+3. **Worker pool tests**
+   - [ ] Pool configuration per tier
+   - [ ] GPU memory management
+   - [ ] CPU throttling under load
+
+4. **Resource scaling tests**
+   - [ ] Tier transitions
+   - [ ] Fallback activation
+   - [ ] Memory pressure handling
 
 ---
 
 ## 6. Detailed Specifications
 
-### 6.1 New Service Files
+### 6.1 Service Files Status
 
 ```
 packages/arkham-frame/arkham_frame/services/
-├── __init__.py          # Update exports
-├── config.py            # Exists
-├── database.py          # Exists
-├── documents.py         # Complete implementation
-├── entities.py          # Complete implementation
-├── events.py            # Exists
-├── llm.py               # Enhance
-├── projects.py          # Complete implementation
-├── vectors.py           # Complete implementation
-├── workers.py           # Exists
-├── resources.py         # NEW
-├── storage.py           # NEW
-├── notifications.py     # NEW
-├── scheduler.py         # NEW
-├── export.py            # NEW
-├── chunks.py            # NEW
-└── templates.py         # NEW
+├── __init__.py          # ✅ Updated with all exports
+├── config.py            # ✅ Exists
+├── database.py          # ✅ Exists
+├── documents.py         # ✅ COMPLETE (Phase 1)
+├── entities.py          # ✅ COMPLETE (Phase 2) - CRUD, canonicals, relationships, co-occurrence
+├── events.py            # ✅ Exists
+├── llm.py               # ✅ COMPLETE (Phase 2) - streaming, structured output, prompts
+├── projects.py          # ✅ COMPLETE (Phase 1)
+├── vectors.py           # ✅ COMPLETE (Phase 2) - collections, vectors, embeddings, search
+├── workers.py           # ✅ Exists
+├── resources.py         # ✅ COMPLETE (Phase 1)
+├── storage.py           # ✅ COMPLETE (Phase 1)
+├── chunks.py            # ✅ NEW - COMPLETE (Phase 2) - strategies, token counting
+├── notifications.py     # 🔲 NEW - Phase 4
+├── scheduler.py         # 🔲 NEW - Phase 4
+├── export.py            # 🔲 NEW - Phase 4
+└── templates.py         # 🔲 NEW - Phase 4
 ```
 
 ### 6.2 New API Routes
@@ -1451,17 +1550,25 @@ This plan provides a comprehensive roadmap to:
 
 The phased approach ensures dependencies are satisfied at each stage, with the most critical infrastructure implemented first.
 
-**Estimated Timeline:** 10 weeks for full implementation
+---
 
-**Priority Order:**
-1. ResourceService + StorageService (everything depends on these)
-2. DocumentService + EntityService (shards need data access)
-3. VectorService + ChunkService (embedding pipeline)
-4. Pipeline refactoring (OCR shard creation)
-5. ExportService + TemplateService (output capabilities)
-6. NotificationService + SchedulerService (workflow support)
-7. Manifest compliance (clean loading)
+## Progress Tracker
+
+| Phase | Description | Status | Completed |
+|-------|-------------|--------|-----------|
+| **Phase 1** | Foundation (ResourceService, StorageService, DocumentService, ProjectService) | ✅ Complete | 2025-12-25 |
+| **Phase 2** | Data Services (EntityService, VectorService, ChunkService, LLMService) | ✅ Complete | 2025-12-25 |
+| **Phase 3** | Pipeline Refactoring (OCR shard, Dispatchers) | 🔲 Not Started | - |
+| **Phase 4** | Output Services (Export, Template, Notification, Scheduler) | 🔲 Not Started | - |
+| **Phase 5** | Manifest Compliance (4 missing + 4 incomplete) | 🔲 Not Started | - |
+| **Phase 6** | Integration Testing | 🔲 Not Started | - |
+
+**Services Completed:** 8/11 (ResourceService, StorageService, DocumentService, ProjectService, EntityService, VectorService, ChunkService, LLMService)
+
+**Next Up:** Phase 3 - Pipeline Refactoring (OCR shard, Dispatchers)
 
 ---
 
 *Document generated based on analysis of shards_and_bundles.md, current Frame implementation, and architecture documentation.*
+
+*Last Updated: 2025-12-25*

@@ -26,10 +26,13 @@ class ArkhamFrame:
 
     Services:
         - config: Configuration management
+        - resources: System resource detection and management
+        - storage: File and blob storage
         - db: Database access (PostgreSQL)
         - documents: Document service
         - entities: Entity service
         - projects: Project management
+        - chunks: Text chunking and tokenization
         - vectors: Vector store (Qdrant)
         - llm: LLM service
         - events: Event bus
@@ -40,10 +43,13 @@ class ArkhamFrame:
         global _frame_instance
 
         self.config = None
+        self.resources = None
+        self.storage = None
         self.db = None
         self.documents = None
         self.entities = None
         self.projects = None
+        self.chunks = None
         self.vectors = None
         self.llm = None
         self.events = None
@@ -62,6 +68,24 @@ class ArkhamFrame:
         from arkham_frame.services.config import ConfigService
         self.config = ConfigService()
         logger.info("ConfigService initialized")
+
+        # Initialize resources (hardware detection) - early because workers depend on it
+        try:
+            from arkham_frame.services.resources import ResourceService
+            self.resources = ResourceService(config=self.config)
+            await self.resources.initialize()
+            logger.info(f"ResourceService initialized (tier: {self.resources.get_tier_name()})")
+        except Exception as e:
+            logger.warning(f"ResourceService failed to initialize: {e}")
+
+        # Initialize storage
+        try:
+            from arkham_frame.services.storage import StorageService
+            self.storage = StorageService(config=self.config)
+            await self.storage.initialize()
+            logger.info("StorageService initialized")
+        except Exception as e:
+            logger.warning(f"StorageService failed to initialize: {e}")
 
         # Initialize database
         try:
@@ -90,6 +114,15 @@ class ArkhamFrame:
         except Exception as e:
             logger.warning(f"LLMService failed to initialize: {e}")
 
+        # Initialize chunks (text chunking and tokenization)
+        try:
+            from arkham_frame.services.chunks import ChunkService
+            self.chunks = ChunkService(config=self.config)
+            await self.chunks.initialize()
+            logger.info("ChunkService initialized")
+        except Exception as e:
+            logger.warning(f"ChunkService failed to initialize: {e}")
+
         # Initialize events
         try:
             from arkham_frame.services.events import EventBus
@@ -114,9 +147,17 @@ class ArkhamFrame:
             from arkham_frame.services.entities import EntityService
             from arkham_frame.services.projects import ProjectService
 
-            self.documents = DocumentService(db=self.db, vectors=self.vectors, config=self.config)
+            self.documents = DocumentService(
+                db=self.db, vectors=self.vectors, storage=self.storage, config=self.config
+            )
+            await self.documents.initialize()
+
             self.entities = EntityService(db=self.db, config=self.config)
-            self.projects = ProjectService(db=self.db, config=self.config)
+            await self.entities.initialize()
+
+            self.projects = ProjectService(db=self.db, storage=self.storage, config=self.config)
+            await self.projects.initialize()
+
             logger.info("Document/Entity/Project services initialized")
         except Exception as e:
             logger.warning(f"Data services failed to initialize: {e}")
@@ -143,6 +184,12 @@ class ArkhamFrame:
         if self.db:
             await self.db.shutdown()
 
+        if self.storage:
+            await self.storage.shutdown()
+
+        if self.resources:
+            await self.resources.shutdown()
+
         logger.info("ArkhamFrame shutdown complete")
 
     def get_service(self, name: str) -> Optional[Any]:
@@ -150,15 +197,18 @@ class ArkhamFrame:
         Get a service by name.
 
         Args:
-            name: Service name (config, database, vectors, llm, events, workers)
+            name: Service name (config, resources, storage, database, vectors, llm, events, workers, etc.)
 
         Returns:
             The service instance or None if not available.
         """
         service_map = {
             "config": self.config,
+            "resources": self.resources,
+            "storage": self.storage,
             "database": self.db,
             "db": self.db,
+            "chunks": self.chunks,
             "vectors": self.vectors,
             "llm": self.llm,
             "events": self.events,
@@ -171,11 +221,14 @@ class ArkhamFrame:
 
     def get_state(self) -> Dict[str, Any]:
         """Get current Frame state for API."""
-        return {
+        state = {
             "version": "0.1.0",
             "services": {
                 "config": self.config is not None,
+                "resources": self.resources is not None,
+                "storage": self.storage is not None,
                 "database": self.db is not None,
+                "chunks": self.chunks is not None,
                 "vectors": self.vectors is not None,
                 "llm": self.llm is not None and self.llm.is_available() if self.llm else False,
                 "events": self.events is not None,
@@ -183,3 +236,9 @@ class ArkhamFrame:
             },
             "shards": list(self.shards.keys()),
         }
+
+        # Add resource tier if available
+        if self.resources:
+            state["resource_tier"] = self.resources.get_tier_name()
+
+        return state
