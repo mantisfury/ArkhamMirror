@@ -1,0 +1,22 @@
+[project]
+name = "arkham-shard-embed"
+version = "0.1.0"
+description = "Embedding and vector operations shard for ArkhamFrame"
+readme = "README.md"
+requires-python = ">=3.10"
+
+dependencies = [
+    "arkham-frame>=0.1.0",
+    "numpy>=1.24.0",
+    "sentence-transformers>=2.2.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "pytest-asyncio", "black", "mypy"]
+
+[project.entry-points."arkham.shards"]
+embed = "arkham_shard_embed:EmbedShard"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

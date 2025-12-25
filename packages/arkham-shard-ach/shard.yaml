@@ -1,0 +1,72 @@
+# ACH Shard - Analysis of Competing Hypotheses
+# Manifest v5 Format
+
+name: ach
+version: 0.1.0
+description: Analysis of Competing Hypotheses matrix for intelligence analysis
+entry_point: arkham_shard_ach:ACHShard
+api_prefix: /api/ach
+requires_frame: ">=0.1.0"
+
+# Navigation - Shell integration
+navigation:
+  category: Analysis
+  order: 30
+  icon: Scale
+  label: ACH Analysis
+  route: /ach
+  badge_endpoint: /api/ach/matrices/count
+  badge_type: count
+  sub_routes:
+    - id: matrices
+      label: All Matrices
+      route: /ach/matrices
+      icon: List
+    - id: new
+      label: New Analysis
+      route: /ach/new
+      icon: Plus
+
+# Dependencies
+dependencies:
+  services:
+    - database
+    - events
+  optional:
+    - llm  # For devil's advocate mode
+  shards: []
+
+# Capabilities
+capabilities:
+  - hypothesis_management
+  - evidence_management
+  - consistency_scoring
+  - devils_advocate
+  - matrix_export
+
+# Events
+events:
+  publishes:
+    - ach.matrix.created
+    - ach.matrix.updated
+    - ach.matrix.deleted
+    - ach.hypothesis.added
+    - ach.hypothesis.removed
+    - ach.evidence.added
+    - ach.evidence.removed
+    - ach.rating.updated
+    - ach.score.calculated
+  subscribes:
+    - llm.analysis.completed
+
+# State Management
+state:
+  strategy: url
+  url_params:
+    - matrixId
+    - tab
+    - view
+
+# UI Configuration - Custom UI (not generic list)
+ui:
+  has_custom_ui: true

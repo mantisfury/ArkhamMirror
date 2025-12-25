@@ -1,0 +1,51 @@
+# Dashboard Shard Manifest v5
+name: dashboard
+version: "0.1.0"
+description: "System monitoring, LLM configuration, database controls, and worker management"
+entry_point: arkham_shard_dashboard.shard:DashboardShard
+api_prefix: /api/dashboard
+requires_frame: ">=0.1.0"
+
+# Navigation - Shell integration
+navigation:
+  category: System
+  order: 10
+  icon: LayoutDashboard
+  label: Dashboard
+  route: /dashboard
+  sub_routes:
+    - id: overview
+      label: Overview
+      route: /dashboard
+      icon: LayoutDashboard
+    - id: llm
+      label: LLM Config
+      route: /dashboard/llm
+      icon: Bot
+    - id: database
+      label: Database
+      route: /dashboard/database
+      icon: Database
+    - id: workers
+      label: Workers
+      route: /dashboard/workers
+      icon: Cpu
+    - id: events
+      label: Events
+      route: /dashboard/events
+      icon: Activity
+
+# Dependencies
+dependencies:
+  services:
+    - config
+    - database
+    - events
+    - workers
+  optional:
+    - llm
+  shards: []
+
+# UI Configuration
+ui:
+  has_custom_ui: true

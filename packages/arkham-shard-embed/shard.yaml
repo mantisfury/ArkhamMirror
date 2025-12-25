@@ -1,0 +1,40 @@
+name: embed
+version: 0.1.0
+description: Document embeddings and vector operations
+
+requires_frame: ">=0.1.0"
+
+dependencies:
+  services:
+    - vectors
+    - events
+  optional:
+    - documents
+    - workers
+
+capabilities:
+  - text_embedding
+  - batch_embedding
+  - document_embedding
+  - similarity_search
+  - nearest_neighbors
+  - model_management
+
+api_prefix: /api/embed
+
+events:
+  publishes:
+    - embed.text.completed
+    - embed.batch.completed
+    - embed.document.completed
+    - embed.model.loaded
+  subscribes:
+    - documents.ingested
+    - documents.chunks.created
+
+config:
+  default_model: "BAAI/bge-m3"
+  fallback_model: "all-MiniLM-L6-v2"
+  device: "auto"
+  batch_size: 32
+  cache_size: 1000

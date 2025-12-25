@@ -1,0 +1,23 @@
+[project]
+name = "arkham-shard-anomalies"
+version = "0.1.0"
+description = "Anomaly detection shard for ArkhamFrame"
+readme = "README.md"
+requires-python = ">=3.10"
+
+dependencies = [
+    "arkham-frame>=0.1.0",
+    "pydantic>=2.0.0",
+    "numpy>=1.24.0",
+    "scipy>=1.10.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "pytest-asyncio", "black", "mypy"]
+
+[project.entry-points."arkham.shards"]
+anomalies = "arkham_shard_anomalies:AnomaliesShard"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

@@ -1,0 +1,34 @@
+name: anomalies
+version: 0.1.0
+description: Anomaly and outlier detection for documents and content
+
+requires_frame: ">=0.1.0"
+
+dependencies:
+  services:
+    - database
+    - vectors
+    - events
+  optional:
+    - documents
+
+capabilities:
+  - anomaly_detection
+  - outlier_detection
+  - pattern_detection
+  - statistical_analysis
+  - analyst_workflow
+  - triage_management
+
+api_prefix: /api/anomalies
+
+events:
+  publishes:
+    - anomalies.detected
+    - anomalies.confirmed
+    - anomalies.dismissed
+    - anomalies.pattern_found
+    - anomalies.stats_updated
+  subscribes:
+    - embeddings.created
+    - documents.indexed

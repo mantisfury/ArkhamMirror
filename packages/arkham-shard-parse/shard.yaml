@@ -1,0 +1,38 @@
+name: parse
+version: 0.1.0
+description: Entity extraction, NER, and text chunking
+
+requires_frame: ">=0.1.0"
+
+dependencies:
+  services:
+    - database
+    - workers
+    - events
+  optional:
+    - documents
+    - entities
+
+capabilities:
+  - named_entity_recognition
+  - date_extraction
+  - location_extraction
+  - entity_linking
+  - coreference_resolution
+  - text_chunking
+
+worker_pools:
+  - cpu-ner
+  - cpu-heavy
+
+api_prefix: /api/parse
+
+events:
+  publishes:
+    - parse.document.started
+    - parse.document.completed
+    - parse.entities.extracted
+    - parse.chunks.created
+  subscribes:
+    - ingest.job.completed
+    - worker.job.completed

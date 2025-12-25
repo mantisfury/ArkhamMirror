@@ -1,0 +1,680 @@
+"""Timeline Shard API endpoints."""
+
+import logging
+import time
+from typing import Annotated, Optional
+
+from fastapi import APIRouter, HTTPException, Query
+from pydantic import BaseModel
+
+from .models import (
+    TimelineEvent,
+    EventType,
+    DatePrecision,
+    ConflictType,
+    ConflictSeverity,
+    MergeStrategy,
+    DateRange,
+    ExtractionContext,
+)
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter(prefix="/api/timeline", tags=["timeline"])
+
+# These get set by the shard on initialization
+_extractor = None
+_merger = None
+_conflict_detector = None
+_database_service = None
+_documents_service = None
+_entities_service = None
+_event_bus = None
+
+
+def init_api(
+    extractor,
+    merger,
+    conflict_detector,
+    database_service,
+    documents_service,
+    entities_service,
+    event_bus
+):
+    """Initialize API with shard dependencies."""
+    global _extractor, _merger, _conflict_detector
+    global _database_service, _documents_service, _entities_service, _event_bus
+
+    _extractor = extractor
+    _merger = merger
+    _conflict_detector = conflict_detector
+    _database_service = database_service
+    _documents_service = documents_service
+    _entities_service = entities_service
+    _event_bus = event_bus
+
+
+# --- Request/Response Models ---
+
+
+class ExtractionRequest(BaseModel):
+    text: Optional[str] = None
+    document_id: Optional[str] = None
+    context: Optional[dict] = None
+
+
+class ExtractionResponse(BaseModel):
+    events: list[dict]
+    count: int
+    duration_ms: float
+
+
+class DocumentTimelineResponse(BaseModel):
+    document_id: str
+    events: list[dict]
+    count: int
+    date_range: Optional[dict] = None
+
+
+class MergeRequest(BaseModel):
+    document_ids: list[str]
+    merge_strategy: str = "chronological"
+    deduplicate: bool = True
+    date_range: Optional[dict] = None
+    priority_docs: Optional[list[str]] = None
+
+
+class MergeResponse(BaseModel):
+    events: list[dict]
+    count: int
+    sources: dict[str, int]
+    date_range: dict
+    duplicates_removed: int
+
+
+class RangeResponse(BaseModel):
+    events: list[dict]
+    count: int
+    total: int
+    has_more: bool
+
+
+class ConflictsRequest(BaseModel):
+    document_ids: list[str]
+    conflict_types: Optional[list[str]] = None
+    tolerance_days: int = 0
+
+
+class ConflictsResponse(BaseModel):
+    conflicts: list[dict]
+    count: int
+    by_type: dict[str, int]
+
+
+class EntityTimelineResponse(BaseModel):
+    entity_id: str
+    events: list[dict]
+    count: int
+    date_range: Optional[dict] = None
+
+
+class NormalizeRequest(BaseModel):
+    dates: list[str]
+    reference_date: Optional[str] = None
+    prefer_format: str = "iso"
+
+
+class NormalizeResponse(BaseModel):
+    normalized: list[dict]
+
+
+class StatsResponse(BaseModel):
+    total_events: int
+    total_documents: int
+    date_range: Optional[dict]
+    by_precision: dict[str, int]
+    by_type: dict[str, int]
+    avg_confidence: float
+    conflicts_detected: int
+
+
+# --- Endpoints ---
+
+
+@router.post("/extract", response_model=ExtractionResponse)
+async def extract_timeline(request: ExtractionRequest):
+    """
+    Extract timeline events from text or document.
+
+    Provide either 'text' directly or 'document_id' to extract from document.
+    """
+    if not _extractor:
+        raise HTTPException(status_code=503, detail="Timeline service not initialized")
+
+    start_time = time.time()
+
+    # Get text to analyze
+    if request.text:
+        text = request.text
+        doc_id = "adhoc"
+    elif request.document_id:
+        if not _documents_service:
+            raise HTTPException(status_code=503, detail="Documents service not available")
+
+        # Get document text
+        try:
+            doc = await _documents_service.get_document(request.document_id)
+            text = doc.get("text", "")
+            doc_id = request.document_id
+        except Exception as e:
+            logger.error(f"Failed to get document: {e}", exc_info=True)
+            raise HTTPException(status_code=404, detail=f"Document not found: {request.document_id}")
+    else:
+        raise HTTPException(status_code=400, detail="Either 'text' or 'document_id' required")
+
+    # Parse context
+    context = ExtractionContext()
+    if request.context:
+        if "reference_date" in request.context:
+            from datetime import datetime
+            context.reference_date = datetime.fromisoformat(request.context["reference_date"])
+        if "timezone" in request.context:
+            context.timezone = request.context["timezone"]
+
+    # Extract events
+    try:
+        events = _extractor.extract_events(text, doc_id, context)
+    except Exception as e:
+        logger.error(f"Extraction failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Extraction failed: {str(e)}")
+
+    duration_ms = (time.time() - start_time) * 1000
+
+    # Emit event
+    if _event_bus:
+        await _event_bus.emit(
+            "timeline.events.extracted",
+            {
+                "document_id": doc_id,
+                "event_count": len(events),
+                "duration_ms": duration_ms,
+            },
+            source="timeline-shard",
+        )
+
+    return ExtractionResponse(
+        events=[_event_to_dict(e) for e in events],
+        count=len(events),
+        duration_ms=duration_ms,
+    )
+
+
+@router.get("/{document_id}", response_model=DocumentTimelineResponse)
+async def get_document_timeline(
+    document_id: str,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    event_type: Optional[str] = None,
+    min_confidence: float = 0.0,
+):
+    """
+    Get timeline for a specific document.
+
+    Supports filtering by date range, event type, and confidence.
+    """
+    if not _database_service:
+        raise HTTPException(status_code=503, detail="Database service not available")
+
+    # Build query
+    query = f"SELECT * FROM timeline_events WHERE document_id = '{document_id}'"
+
+    if start_date:
+        query += f" AND date_start >= '{start_date}'"
+    if end_date:
+        query += f" AND date_start <= '{end_date}'"
+    if event_type:
+        query += f" AND event_type = '{event_type}'"
+    if min_confidence > 0:
+        query += f" AND confidence >= {min_confidence}"
+
+    query += " ORDER BY date_start"
+
+    try:
+        # This is a placeholder - actual implementation would use proper ORM
+        # events = await _database_service.execute(query)
+        events = []  # Placeholder
+    except Exception as e:
+        logger.error(f"Database query failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Query failed: {str(e)}")
+
+    # Calculate date range
+    date_range = None
+    if events:
+        from datetime import datetime
+        dates = [e.date_start for e in events]
+        date_range = {
+            "earliest": min(dates).isoformat(),
+            "latest": max(dates).isoformat(),
+        }
+
+    return DocumentTimelineResponse(
+        document_id=document_id,
+        events=[_event_to_dict(e) for e in events],
+        count=len(events),
+        date_range=date_range,
+    )
+
+
+@router.post("/merge", response_model=MergeResponse)
+async def merge_timelines(request: MergeRequest):
+    """
+    Merge timelines from multiple documents.
+
+    Supports various merge strategies and deduplication.
+    """
+    if not _merger:
+        raise HTTPException(status_code=503, detail="Timeline service not initialized")
+
+    if not _database_service:
+        raise HTTPException(status_code=503, detail="Database service not available")
+
+    # Get events for all documents
+    all_events = []
+    for doc_id in request.document_ids:
+        # Query events for this document
+        # Placeholder - actual implementation would use ORM
+        doc_events = []  # await _database_service.query(...)
+        all_events.extend(doc_events)
+
+    # Apply date range filter if provided
+    if request.date_range:
+        from datetime import datetime
+        start = datetime.fromisoformat(request.date_range.get("start")) if request.date_range.get("start") else None
+        end = datetime.fromisoformat(request.date_range.get("end")) if request.date_range.get("end") else None
+
+        if start or end:
+            filtered_events = []
+            for event in all_events:
+                if start and event.date_start < start:
+                    continue
+                if end and event.date_start > end:
+                    continue
+                filtered_events.append(event)
+            all_events = filtered_events
+
+    # Parse merge strategy
+    try:
+        strategy = MergeStrategy(request.merge_strategy.lower())
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"Invalid merge strategy: {request.merge_strategy}")
+
+    # Merge
+    try:
+        result = _merger.merge(
+            all_events,
+            strategy=strategy,
+            priority_docs=request.priority_docs,
+        )
+    except Exception as e:
+        logger.error(f"Merge failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Merge failed: {str(e)}")
+
+    # Emit event
+    if _event_bus:
+        await _event_bus.emit(
+            "timeline.merged",
+            {
+                "document_ids": request.document_ids,
+                "event_count": result.count,
+                "strategy": request.merge_strategy,
+            },
+            source="timeline-shard",
+        )
+
+    return MergeResponse(
+        events=[_event_to_dict(e) for e in result.events],
+        count=result.count,
+        sources=result.sources,
+        date_range={
+            "earliest": result.date_range.start.isoformat() if result.date_range.start else None,
+            "latest": result.date_range.end.isoformat() if result.date_range.end else None,
+        },
+        duplicates_removed=result.duplicates_removed,
+    )
+
+
+@router.get("/range", response_model=RangeResponse)
+async def get_events_in_range(
+    start_date: str,
+    end_date: str,
+    document_ids: Optional[str] = None,
+    entity_ids: Optional[str] = None,
+    event_types: Optional[str] = None,
+    limit: int = 100,
+    offset: int = 0,
+):
+    """
+    Get events within a date range across all documents.
+
+    Supports filtering by documents, entities, and event types.
+    """
+    if not _database_service:
+        raise HTTPException(status_code=503, detail="Database service not available")
+
+    # Parse comma-separated parameters
+    doc_id_list = document_ids.split(",") if document_ids else None
+    entity_id_list = entity_ids.split(",") if entity_ids else None
+    event_type_list = event_types.split(",") if event_types else None
+
+    # Build query (placeholder)
+    query = f"SELECT * FROM timeline_events WHERE date_start >= '{start_date}' AND date_start <= '{end_date}'"
+
+    if doc_id_list:
+        doc_ids_str = "','".join(doc_id_list)
+        query += f" AND document_id IN ('{doc_ids_str}')"
+
+    if event_type_list:
+        types_str = "','".join(event_type_list)
+        query += f" AND event_type IN ('{types_str}')"
+
+    query += f" ORDER BY date_start LIMIT {limit} OFFSET {offset}"
+
+    try:
+        # Placeholder
+        events = []  # await _database_service.execute(query)
+        total = 0  # await _database_service.count(...)
+    except Exception as e:
+        logger.error(f"Query failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Query failed: {str(e)}")
+
+    return RangeResponse(
+        events=[_event_to_dict(e) for e in events],
+        count=len(events),
+        total=total,
+        has_more=(offset + len(events)) < total,
+    )
+
+
+@router.post("/conflicts", response_model=ConflictsResponse)
+async def detect_conflicts(request: ConflictsRequest):
+    """
+    Find temporal conflicts across documents.
+
+    Detects contradictions, inconsistencies, gaps, and overlaps.
+    """
+    if not _conflict_detector:
+        raise HTTPException(status_code=503, detail="Timeline service not initialized")
+
+    if not _database_service:
+        raise HTTPException(status_code=503, detail="Database service not available")
+
+    # Get events for all documents
+    all_events = []
+    for doc_id in request.document_ids:
+        # Placeholder
+        doc_events = []  # await _database_service.query(...)
+        all_events.extend(doc_events)
+
+    # Parse conflict types
+    conflict_types = None
+    if request.conflict_types:
+        try:
+            conflict_types = [ConflictType(ct.lower()) for ct in request.conflict_types]
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=f"Invalid conflict type: {e}")
+
+    # Update detector tolerance
+    if request.tolerance_days != _conflict_detector.tolerance_days:
+        from .conflicts import ConflictDetector
+        temp_detector = ConflictDetector(tolerance_days=request.tolerance_days)
+    else:
+        temp_detector = _conflict_detector
+
+    # Detect conflicts
+    try:
+        conflicts = temp_detector.detect_conflicts(all_events, conflict_types)
+    except Exception as e:
+        logger.error(f"Conflict detection failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Conflict detection failed: {str(e)}")
+
+    # Count by type
+    by_type = {}
+    for conflict in conflicts:
+        type_str = conflict.type.value
+        by_type[type_str] = by_type.get(type_str, 0) + 1
+
+    # Emit event
+    if _event_bus:
+        await _event_bus.emit(
+            "timeline.conflicts.detected",
+            {
+                "document_ids": request.document_ids,
+                "conflict_count": len(conflicts),
+                "by_type": by_type,
+            },
+            source="timeline-shard",
+        )
+
+    return ConflictsResponse(
+        conflicts=[_conflict_to_dict(c) for c in conflicts],
+        count=len(conflicts),
+        by_type=by_type,
+    )
+
+
+@router.get("/entity/{entity_id}", response_model=EntityTimelineResponse)
+async def get_entity_timeline(
+    entity_id: str,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    include_related: bool = False,
+):
+    """
+    Get timeline for a specific entity.
+
+    Optionally includes events from related entities.
+    """
+    if not _database_service:
+        raise HTTPException(status_code=503, detail="Database service not available")
+
+    # Query events mentioning this entity
+    query = f"SELECT * FROM timeline_events WHERE '{entity_id}' = ANY(entities)"
+
+    if start_date:
+        query += f" AND date_start >= '{start_date}'"
+    if end_date:
+        query += f" AND date_start <= '{end_date}'"
+
+    query += " ORDER BY date_start"
+
+    try:
+        # Placeholder
+        events = []  # await _database_service.execute(query)
+    except Exception as e:
+        logger.error(f"Query failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Query failed: {str(e)}")
+
+    # Calculate date range
+    date_range = None
+    if events:
+        from datetime import datetime
+        dates = [e.date_start for e in events]
+        date_range = {
+            "earliest": min(dates).isoformat(),
+            "latest": max(dates).isoformat(),
+        }
+
+    return EntityTimelineResponse(
+        entity_id=entity_id,
+        events=[_event_to_dict(e) for e in events],
+        count=len(events),
+        date_range=date_range,
+    )
+
+
+@router.post("/normalize", response_model=NormalizeResponse)
+async def normalize_dates(request: NormalizeRequest):
+    """
+    Normalize date formats from various inputs.
+
+    Converts dates to ISO format with precision and confidence.
+    """
+    if not _extractor:
+        raise HTTPException(status_code=503, detail="Timeline service not initialized")
+
+    # Parse reference date
+    from datetime import datetime
+    ref_date = None
+    if request.reference_date:
+        try:
+            ref_date = datetime.fromisoformat(request.reference_date)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid reference_date format")
+
+    context = ExtractionContext(reference_date=ref_date or datetime.now())
+
+    # Normalize each date
+    results = []
+    for date_str in request.dates:
+        try:
+            normalized = _extractor.normalize_date(date_str, context)
+            if normalized:
+                results.append({
+                    "original": normalized.original,
+                    "normalized": normalized.normalized.isoformat(),
+                    "precision": normalized.precision.value,
+                    "confidence": round(normalized.confidence, 2),
+                    "is_range": normalized.is_range,
+                    "range_end": normalized.range_end.isoformat() if normalized.range_end else None,
+                })
+            else:
+                results.append({
+                    "original": date_str,
+                    "normalized": None,
+                    "precision": None,
+                    "confidence": 0.0,
+                    "is_range": False,
+                    "range_end": None,
+                })
+        except Exception as e:
+            logger.error(f"Failed to normalize date '{date_str}': {e}")
+            results.append({
+                "original": date_str,
+                "normalized": None,
+                "precision": None,
+                "confidence": 0.0,
+                "is_range": False,
+                "range_end": None,
+            })
+
+    return NormalizeResponse(normalized=results)
+
+
+@router.get("/stats", response_model=StatsResponse)
+async def get_timeline_stats(
+    document_ids: Optional[str] = None,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+):
+    """
+    Timeline statistics across all documents.
+
+    Optionally filtered by documents and date range.
+    """
+    if not _database_service:
+        raise HTTPException(status_code=503, detail="Database service not available")
+
+    # Build query (placeholder)
+    query = "SELECT * FROM timeline_events WHERE 1=1"
+
+    if document_ids:
+        doc_id_list = document_ids.split(",")
+        doc_ids_str = "','".join(doc_id_list)
+        query += f" AND document_id IN ('{doc_ids_str}')"
+
+    if start_date:
+        query += f" AND date_start >= '{start_date}'"
+    if end_date:
+        query += f" AND date_start <= '{end_date}'"
+
+    try:
+        # Placeholder
+        events = []  # await _database_service.execute(query)
+    except Exception as e:
+        logger.error(f"Query failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Query failed: {str(e)}")
+
+    # Calculate stats
+    total_events = len(events)
+    total_documents = len(set(e.document_id for e in events)) if events else 0
+
+    date_range = None
+    if events:
+        from datetime import datetime
+        dates = [e.date_start for e in events]
+        date_range = {
+            "earliest": min(dates).isoformat(),
+            "latest": max(dates).isoformat(),
+        }
+
+    by_precision = {}
+    by_type = {}
+    total_confidence = 0.0
+
+    for event in events:
+        # Count by precision
+        prec = event.precision.value
+        by_precision[prec] = by_precision.get(prec, 0) + 1
+
+        # Count by type
+        evt_type = event.event_type.value
+        by_type[evt_type] = by_type.get(evt_type, 0) + 1
+
+        # Sum confidence
+        total_confidence += event.confidence
+
+    avg_confidence = total_confidence / total_events if total_events > 0 else 0.0
+
+    return StatsResponse(
+        total_events=total_events,
+        total_documents=total_documents,
+        date_range=date_range,
+        by_precision=by_precision,
+        by_type=by_type,
+        avg_confidence=round(avg_confidence, 2),
+        conflicts_detected=0,  # Would need to query conflicts table
+    )
+
+
+# --- Helper Functions ---
+
+
+def _event_to_dict(event: TimelineEvent) -> dict:
+    """Convert TimelineEvent to dictionary for JSON response."""
+    return {
+        "id": event.id,
+        "document_id": event.document_id,
+        "text": event.text,
+        "date_start": event.date_start.isoformat(),
+        "date_end": event.date_end.isoformat() if event.date_end else None,
+        "precision": event.precision.value,
+        "confidence": round(event.confidence, 2),
+        "entities": event.entities,
+        "event_type": event.event_type.value,
+        "span": event.span,
+        "metadata": event.metadata,
+    }
+
+
+def _conflict_to_dict(conflict) -> dict:
+    """Convert TemporalConflict to dictionary for JSON response."""
+    return {
+        "id": conflict.id,
+        "type": conflict.type.value,
+        "severity": conflict.severity.value,
+        "events": conflict.events,
+        "description": conflict.description,
+        "documents": conflict.documents,
+        "suggested_resolution": conflict.suggested_resolution,
+        "metadata": conflict.metadata,
+    }

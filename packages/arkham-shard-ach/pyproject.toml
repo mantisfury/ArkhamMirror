@@ -1,0 +1,21 @@
+[project]
+name = "arkham-shard-ach"
+version = "0.1.0"
+description = "Analysis of Competing Hypotheses shard for ArkhamFrame"
+readme = "README.md"
+requires-python = ">=3.10"
+
+dependencies = [
+    "arkham-frame>=0.1.0",
+    "pydantic>=2.0.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "pytest-asyncio", "black", "mypy"]
+
+[project.entry-points."arkham.shards"]
+ach = "arkham_shard_ach:ACHShard"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

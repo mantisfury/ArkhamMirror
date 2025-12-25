@@ -1,0 +1,31 @@
+name: search
+version: 0.1.0
+description: Semantic and keyword search for documents
+
+requires_frame: ">=0.1.0"
+
+dependencies:
+  services:
+    - database
+    - vectors
+    - events
+  optional:
+    - documents
+    - entities
+
+capabilities:
+  - semantic_search
+  - keyword_search
+  - hybrid_search
+  - similarity_search
+  - autocomplete
+
+api_prefix: /api/search
+
+events:
+  publishes:
+    - search.query.executed
+    - search.results.found
+  subscribes:
+    - documents.indexed
+    - documents.deleted

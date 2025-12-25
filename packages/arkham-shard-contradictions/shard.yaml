@@ -1,0 +1,36 @@
+name: contradictions
+version: 0.1.0
+description: Contradiction detection engine for multi-document analysis
+
+requires_frame: ">=0.1.0"
+
+dependencies:
+  services:
+    - database
+    - events
+    - embeddings
+  optional:
+    - llm  # For contradiction verification and severity scoring
+
+capabilities:
+  - claim_extraction
+  - semantic_matching
+  - contradiction_verification
+  - severity_scoring
+  - chain_detection
+  - analyst_workflow
+  - background_analysis
+
+api_prefix: /api/contradictions
+
+events:
+  publishes:
+    - contradictions.detected
+    - contradictions.confirmed
+    - contradictions.dismissed
+    - contradictions.chain_detected
+    - contradictions.status_updated
+  subscribes:
+    - document.ingested
+    - document.updated
+    - llm.analysis.completed

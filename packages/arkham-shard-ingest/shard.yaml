@@ -1,0 +1,39 @@
+name: ingest
+version: 0.1.0
+description: Document ingestion and file processing
+
+requires_frame: ">=0.1.0"
+
+dependencies:
+  services:
+    - database
+    - workers
+    - events
+  optional:
+    - vectors  # For embedding after parsing
+
+capabilities:
+  - file_intake
+  - type_detection
+  - quality_classification
+  - worker_dispatch
+
+worker_pools:
+  - io-file
+  - cpu-light
+  - cpu-image
+  - cpu-extract
+
+api_prefix: /api/ingest
+
+events:
+  publishes:
+    - ingest.file.received
+    - ingest.file.classified
+    - ingest.file.queued
+    - ingest.job.started
+    - ingest.job.completed
+    - ingest.job.failed
+  subscribes:
+    - worker.job.completed
+    - worker.job.failed
