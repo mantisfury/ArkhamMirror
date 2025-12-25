@@ -1408,3 +1408,213 @@ New Frame services implemented:
 **Status**: Phase 5 Complete. All shards v5 compliant. Output Services implemented with full API.
 
 ---
+
+## Phase 6: Integration Testing (COMPLETE)
+
+**Date**: 2025-12-25
+
+### Goals
+Create comprehensive integration tests for all Frame components, using mocks for external dependencies (CI-friendly).
+
+### Test Files Created
+
+All tests located in `packages/arkham-frame/tests/`:
+
+#### 1. test_shard_loading.py - Shard Discovery & Manifest Tests
+Tests the shard discovery and loading system:
+- Manifest YAML parsing and validation
+- Shard discovery (11 expected shards)
+- Entry point resolution
+- Manifest v5 schema compliance validation
+- Required fields: name, version, entry_point, api_prefix, navigation, dependencies, events, state, ui
+- Shard lifecycle (initialize/shutdown)
+- API route integration
+
+#### 2. test_event_bus.py - Event Bus Tests (681 lines, 25 tests)
+Tests the event-driven communication system:
+
+**TestSubscriptionManagement:**
+- Subscribe/unsubscribe callbacks
+- Multiple subscribers on same event
+- Wildcard pattern matching (`user.*`, `*`)
+- Graceful handling of nonexistent callbacks
+- Same handler on multiple patterns
+
+**TestEventPublishing:**
+- Event publishing with payloads
+- Delivery to all matching subscribers
+- No-subscriber scenario (no error)
+- Event sequence numbers
+
+**TestAsyncHandlerExecution:**
+- Async handlers properly awaited
+- Handler exception isolation (one bad handler doesn't break others)
+- Correct payload structure
+- Mixed sync/async handlers
+
+**TestEventHistory:**
+- Events logged to history
+- Retrieval with limit
+- Filter by source
+- Max history size enforcement
+- Timestamp verification
+- Cleanup on shutdown
+
+**TestIntegrationScenarios:**
+- Document processing pipeline simulation (ingest → parse → embed → index)
+- Inter-shard communication (ACH + Search via events)
+- High throughput (100+ events)
+
+#### 3. test_resources.py - Resource Service Tests (745 lines, 23 tests)
+Tests the hardware detection and resource management:
+
+**TestHardwareDetection:**
+- CPU detection with/without psutil
+- RAM detection
+- GPU detection with CUDA
+- GPU detection without CUDA
+- GPU detection without PyTorch installed
+
+**TestTierAssignment:**
+- MINIMAL tier (no GPU)
+- STANDARD tier (<6GB VRAM)
+- RECOMMENDED tier (6-12GB VRAM)
+- POWER tier (>12GB VRAM)
+- Force tier override via config
+
+**TestPoolConfiguration:**
+- Pool limits for MINIMAL tier
+- Pool limits for POWER tier
+- Disabled pools handling
+- Fallback pool mapping (gpu-paddle → cpu-paddle)
+- Best available pool selection
+
+**TestGPUMemoryManagement:**
+- GPU memory allocation
+- GPU memory release
+- Wait for memory (success case)
+- Wait for memory (timeout → GPUMemoryError)
+- Multiple allocation tracking
+
+**TestCPUThreadManagement:**
+- Thread acquisition
+- Thread release
+- Thread limit enforcement (80% cap)
+- State tracking
+
+#### 4. test_output_services.py - Output Services Tests (57 tests)
+Tests all Phase 4 output services:
+
+**TestExportService (15 tests):**
+- JSON export with/without metadata
+- JSON pretty print vs compact
+- CSV export (list of dicts, single dict)
+- Markdown export (content, tables)
+- HTML export (structure, tables)
+- Text export
+- Batch export to multiple formats
+- Export history tracking
+- Invalid format error handling
+- Export options (title, author)
+
+**TestTemplateService (14 tests):**
+- Template CRUD (register, get, list, delete)
+- Template rendering with variables and kwargs
+- Missing template error
+- Variable extraction from content
+- Default templates (report_basic, document_summary, entity_report, analysis_report, email_notification)
+- Template validation
+- Get categories
+- Render string (without registration)
+- Load from directory
+
+**TestNotificationService (12 tests):**
+- Default log channel
+- Send notifications (all types: info, success, warning, error, alert)
+- Configure webhook channel
+- Send webhook with mocked HTTP client
+- Notification history with type filtering
+- Notification statistics
+- Channel not found error
+- Channel removal (including protected log channel)
+
+**TestSchedulerService (14 tests):**
+- Job function registration
+- Interval job scheduling
+- One-time job scheduling
+- Cron job scheduling
+- Job listing
+- Pause/resume jobs
+- Remove jobs
+- Get specific job by ID
+- Execution history tracking
+- Job statistics
+- Failure tracking (error count, error messages)
+- Invalid schedule errors
+
+**TestOutputServicesIntegration (2 tests):**
+- TemplateService + ExportService (render → export)
+- SchedulerService + NotificationService (scheduled job → notification)
+
+### Key Features of Test Suite
+
+1. **No External Dependencies Required**
+   - All external services mocked (psutil, torch, aiohttp, Redis, PostgreSQL, Qdrant)
+   - CI-friendly - runs anywhere with Python
+
+2. **pytest/pytest-asyncio Patterns**
+   - `@pytest.mark.asyncio` for all async tests
+   - `@pytest_asyncio.fixture` for async fixtures
+   - Proper fixture cleanup
+
+3. **Standalone Smoke Tests**
+   - Each file includes `smoke_test()` function
+   - Can run directly without pytest: `python tests/test_event_bus.py`
+
+4. **Comprehensive Coverage**
+   - Happy paths and error cases
+   - Edge cases (timeouts, missing data, invalid input)
+   - Integration scenarios
+
+### Test Statistics
+
+| File | Lines | Tests | Coverage |
+|------|-------|-------|----------|
+| test_shard_loading.py | ~500 | ~40 | Shard discovery & manifests |
+| test_event_bus.py | 681 | 25 | Event pub/sub |
+| test_resources.py | 745 | 23 | Hardware detection & tiers |
+| test_output_services.py | ~900 | 57 | Output services |
+| **Total** | **~2,100** | **~150** | **Full Frame coverage** |
+
+### Running the Tests
+
+```bash
+cd packages/arkham-frame
+
+# Run all tests
+pytest tests/ -v
+
+# Run specific test file
+pytest tests/test_event_bus.py -v -s
+
+# Run specific test class
+pytest tests/test_resources.py::TestTierAssignment -v
+
+# Run with coverage
+pytest tests/ --cov=arkham_frame --cov-report=html
+
+# Run smoke tests directly (no pytest)
+python tests/test_resources.py
+python tests/test_event_bus.py
+```
+
+### Commit Details
+
+- **Commit**: `291388c`
+- **Branch**: main
+- **Files**: 5 (4 new test files + full_frame_plan.md update)
+- **Lines added**: 3,240
+
+**Status**: Phase 6 Complete. Integration test suite ready. ALL 6 PHASES COMPLETE! 🎉
+
+---
