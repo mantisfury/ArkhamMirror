@@ -56,6 +56,12 @@ class EmbedShard(ArkhamShard):
         worker_service = frame.get_service("workers")
         event_bus = frame.get_service("events")
 
+        # Register workers with Frame
+        if worker_service:
+            from .workers import EmbedWorker
+            worker_service.register_worker(EmbedWorker)
+            logger.info("Registered EmbedWorker to gpu-embed pool")
+
         # Load configuration from environment or use defaults
         model = os.getenv("EMBED_MODEL", "BAAI/bge-m3")
         device = os.getenv("EMBED_DEVICE", "auto")
@@ -98,6 +104,7 @@ class EmbedShard(ArkhamShard):
         if event_bus:
             event_bus.subscribe("documents.ingested", self._on_document_ingested)
             event_bus.subscribe("documents.chunks.created", self._on_chunks_created)
+            event_bus.subscribe("parse.chunks.created", self._on_chunks_created)
             logger.info("Subscribed to document events")
 
         logger.info("Embed Shard initialized")
@@ -106,12 +113,21 @@ class EmbedShard(ArkhamShard):
         """Clean up shard resources."""
         logger.info("Shutting down Embed Shard...")
 
+        # Unregister workers
+        if self.frame:
+            worker_service = self.frame.get_service("workers")
+            if worker_service:
+                from .workers import EmbedWorker
+                worker_service.unregister_worker(EmbedWorker)
+                logger.info("Unregistered EmbedWorker from gpu-embed pool")
+
         # Unsubscribe from events
         if self.frame:
             event_bus = self.frame.get_service("events")
             if event_bus:
                 event_bus.unsubscribe("documents.ingested", self._on_document_ingested)
                 event_bus.unsubscribe("documents.chunks.created", self._on_chunks_created)
+                event_bus.unsubscribe("parse.chunks.created", self._on_chunks_created)
 
         # Clear cache
         if self.embedding_manager:

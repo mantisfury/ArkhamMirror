@@ -5,10 +5,10 @@ Extracts named entities from text using spaCy's en_core_web_sm model.
 Returns entity text, type, position, and confidence scores.
 """
 
-from typing import Dict, Any, Optional
+from typing import Dict, Any
 import logging
 
-from .base import BaseWorker
+from arkham_frame.workers.base import BaseWorker
 
 logger = logging.getLogger(__name__)
 

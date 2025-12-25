@@ -11,7 +11,7 @@ import logging
 import os
 from typing import Any, Dict
 
-from .base import BaseWorker
+from arkham_frame.workers.base import BaseWorker
 
 logger = logging.getLogger(__name__)
 
@@ -253,7 +253,7 @@ def run_paddle_worker(redis_url: str = None, worker_id: str = None):
         worker_id: Optional worker ID
 
     Example:
-        python -m arkham_frame.workers.paddle_worker
+        python -m arkham_shard_ocr.workers.paddle_worker
     """
     import asyncio
     worker = PaddleWorker(redis_url=redis_url, worker_id=worker_id)

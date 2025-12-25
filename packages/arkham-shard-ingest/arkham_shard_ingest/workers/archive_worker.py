@@ -16,7 +16,7 @@ import zipfile
 from pathlib import Path
 from typing import Dict, Any, List, Optional
 
-from .base import BaseWorker
+from arkham_frame.workers.base import BaseWorker
 
 logger = logging.getLogger(__name__)
 
@@ -1053,6 +1053,6 @@ class ArchiveWorker(BaseWorker):
 
 if __name__ == "__main__":
     """Run the worker if executed directly."""
-    from .base import run_worker
+    from arkham_frame.workers.base import run_worker
 
     run_worker(ArchiveWorker)

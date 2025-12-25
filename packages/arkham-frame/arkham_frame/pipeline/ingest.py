@@ -1,10 +1,14 @@
 """
-Ingest stage - Document ingestion and splitting.
+Ingest stage - Document ingestion dispatcher.
+
+This stage dispatches ingestion jobs to the appropriate worker pools.
+Workers are registered by the arkham-shard-ingest package.
 """
 
 from typing import Dict, Any
 from datetime import datetime
 import logging
+import uuid
 
 from .base import PipelineStage, StageResult, StageStatus
 
@@ -13,7 +17,13 @@ logger = logging.getLogger(__name__)
 
 class IngestStage(PipelineStage):
     """
-    Ingests documents and splits them into pages.
+    Dispatches ingestion jobs to worker pools.
+
+    Routes to:
+        - io-file: File reading and storage
+        - cpu-extract: Content extraction (PDF, DOCX, etc.)
+        - cpu-archive: Archive extraction (ZIP, TAR, etc.)
+        - cpu-image: Image preprocessing
     """
 
     def __init__(self, frame=None):
@@ -25,35 +35,111 @@ class IngestStage(PipelineStage):
 
     async def process(self, context: Dict[str, Any]) -> StageResult:
         """
-        Ingest a document.
+        Dispatch ingestion to worker pools.
 
         Expected context:
             - file_path: Path to the file
             - file_bytes: Raw file bytes (alternative to file_path)
             - filename: Original filename
             - project_id: Optional project ID
+            - file_type: Detected file type (optional)
         """
         started_at = datetime.utcnow()
 
         try:
             file_path = context.get("file_path")
             filename = context.get("filename", "unknown")
+            file_type = context.get("file_type")
 
-            logger.info(f"Ingesting document: {filename}")
+            logger.info(f"Dispatching ingest for: {filename}")
 
-            # In a real implementation, this would:
-            # 1. Validate file type
-            # 2. Extract pages (PDF, images, etc.)
-            # 3. Store document metadata
-            # 4. Queue pages for OCR
+            # Get worker service
+            workers = self.frame.get_service("workers") if self.frame else None
+            if not workers:
+                logger.warning("Worker service not available, skipping ingest dispatch")
+                return StageResult(
+                    stage_name=self.name,
+                    status=StageStatus.SKIPPED,
+                    output={"reason": "Worker service not available"},
+                    started_at=started_at,
+                    completed_at=datetime.utcnow(),
+                )
 
-            # Placeholder implementation
-            output = {
-                "document_id": context.get("document_id", "doc-placeholder"),
+            # Determine appropriate pool based on file type
+            pool = self._select_pool(file_type, filename)
+
+            # Check if pool has registered workers
+            if not workers.get_worker_class(pool):
+                # Fallback to io-file for basic file handling
+                if workers.get_worker_class("io-file"):
+                    pool = "io-file"
+                else:
+                    logger.warning(f"No workers registered for pool {pool}")
+                    return StageResult(
+                        stage_name=self.name,
+                        status=StageStatus.SKIPPED,
+                        output={"reason": f"No workers for pool {pool}"},
+                        started_at=started_at,
+                        completed_at=datetime.utcnow(),
+                    )
+
+            # Generate document ID
+            document_id = context.get("document_id") or str(uuid.uuid4())
+
+            # Dispatch ingest job
+            payload = {
+                "document_id": document_id,
+                "file_path": file_path,
                 "filename": filename,
-                "page_count": 0,
-                "status": "ingested",
+                "file_type": file_type,
+                "project_id": context.get("project_id"),
+                "job_type": "ingest_file",
             }
+
+            try:
+                result = await workers.enqueue_and_wait(
+                    pool=pool,
+                    payload=payload,
+                    timeout=120.0,  # 2 minutes for file processing
+                )
+
+                # Extract page paths for OCR stage
+                page_paths = result.get("page_paths", [])
+                page_count = result.get("page_count", len(page_paths))
+
+                output = {
+                    "document_id": document_id,
+                    "filename": filename,
+                    "file_type": result.get("file_type", file_type),
+                    "pool_used": pool,
+                    "page_count": page_count,
+                    "page_paths": page_paths,
+                    "has_text": result.get("has_text", False),
+                    "status": "ingested",
+                }
+
+            except Exception as e:
+                logger.error(f"Ingest dispatch failed: {e}")
+                output = {
+                    "document_id": document_id,
+                    "filename": filename,
+                    "page_count": 0,
+                    "error": str(e),
+                    "status": "ingest_failed",
+                }
+
+            # Emit event
+            events = self.frame.get_service("events") if self.frame else None
+            if events:
+                await events.publish(
+                    "ingest.document.completed",
+                    {
+                        "document_id": document_id,
+                        "filename": filename,
+                        "page_count": output.get("page_count", 0),
+                    },
+                    source="pipeline-ingest",
+                )
 
             return StageResult(
                 stage_name=self.name,
@@ -64,7 +150,7 @@ class IngestStage(PipelineStage):
             )
 
         except Exception as e:
-            logger.error(f"Ingest failed: {e}")
+            logger.error(f"Ingest dispatch failed: {e}")
             return StageResult(
                 stage_name=self.name,
                 status=StageStatus.FAILED,
@@ -72,3 +158,38 @@ class IngestStage(PipelineStage):
                 started_at=started_at,
                 completed_at=datetime.utcnow(),
             )
+
+    def _select_pool(self, file_type: str | None, filename: str) -> str:
+        """Select appropriate worker pool based on file type."""
+        if not file_type:
+            # Guess from filename extension
+            ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+            file_type = {
+                "pdf": "document",
+                "docx": "document",
+                "doc": "document",
+                "xlsx": "spreadsheet",
+                "xls": "spreadsheet",
+                "pptx": "presentation",
+                "png": "image",
+                "jpg": "image",
+                "jpeg": "image",
+                "tiff": "image",
+                "tif": "image",
+                "zip": "archive",
+                "tar": "archive",
+                "gz": "archive",
+                "7z": "archive",
+                "rar": "archive",
+            }.get(ext, "unknown")
+
+        # Map file type to pool
+        pool_map = {
+            "document": "cpu-extract",
+            "spreadsheet": "cpu-extract",
+            "presentation": "cpu-extract",
+            "image": "cpu-image",
+            "archive": "cpu-archive",
+        }
+
+        return pool_map.get(file_type, "io-file")

@@ -1094,3 +1094,149 @@ packages/
 **Next Phase**: Phase 3 - Pipeline Refactoring (OCR shard, Dispatchers)
 
 ---
+
+## 2025-12-25 | Claude | Phase 3 Complete - Pipeline Refactoring (Option B)
+
+**Decision**: Implemented Option B - Move workers from Frame to shards
+
+Workers now live in their respective shards and register with Frame's WorkerService.
+Frame pipeline stages become thin dispatchers that route to worker pools by name.
+
+---
+
+### WorkerService Enhancements (`services/workers.py`)
+
+New methods for shard worker integration:
+
+```python
+# Worker registration
+register_worker(worker_class)    # Shard registers its worker
+unregister_worker(worker_class)  # Shard unregisters on shutdown
+get_registered_workers()         # List registered workers
+get_worker_class(pool)           # Get worker class for pool
+
+# Result waiting
+wait_for_result(job_id, timeout, poll_interval)  # Wait for job completion
+enqueue_and_wait(pool, payload, priority, timeout)  # Combined enqueue + wait
+```
+
+---
+
+### Pipeline Dispatchers Updated
+
+All pipeline stages converted to thin dispatchers:
+
+**IngestStage** (`pipeline/ingest.py`):
+- Routes to: `cpu-extract`, `cpu-archive`, `cpu-image`, `io-file`
+- Auto-selects pool based on file type (document, archive, image, etc.)
+- Fallback to `io-file` if specific pool unavailable
+
+**OCRStage** (`pipeline/ocr.py`):
+- Routes to: `gpu-paddle` (default), `gpu-qwen` (smart OCR)
+- Fallback to `cpu-ocr` if GPU pools unavailable
+- Processes pages sequentially, aggregates text
+
+**ParseStage** (`pipeline/parse.py`):
+- Routes to: `cpu-ner`
+- Dispatches text for entity extraction
+
+**EmbedStage** (`pipeline/embed.py`):
+- Routes to: `gpu-embed`, fallback `cpu-embed`
+- Includes simple chunking fallback if chunks not pre-provided
+
+---
+
+### Shard Updates (v5 Manifest Compliance)
+
+**arkham-shard-parse** ✅
+- Updated `shard.yaml` to v5 format (navigation, state, ui sections)
+- Created `workers/ner_worker.py` (pool: `cpu-ner`)
+- Updated `shard.py` with worker registration/unregistration
+
+**arkham-shard-embed** ✅
+- Updated `shard.yaml` to v5 format
+- Created `workers/embed_worker.py` (pool: `gpu-embed`)
+- Updated `shard.py` with worker registration/unregistration
+
+**arkham-shard-ingest** ✅
+- Updated `shard.yaml` to v5 format
+- Created `workers/` directory with:
+  - `extract_worker.py` (pool: `cpu-extract`)
+  - `file_worker.py` (pool: `io-file`)
+  - `archive_worker.py` (pool: `cpu-archive`)
+  - `image_worker.py` (pool: `cpu-image`)
+- Updated `shard.py` with worker registration/unregistration
+
+**arkham-shard-ocr** ✅ (NEW PACKAGE)
+- Created complete package structure:
+  - `pyproject.toml` with entry point
+  - `shard.yaml` (v5 format)
+  - `README.md` with usage documentation
+  - `arkham_shard_ocr/shard.py` - OCRShard implementation
+  - `arkham_shard_ocr/api.py` - REST endpoints (/health, /page, /document, /upload)
+  - `arkham_shard_ocr/models.py` - OCREngine, BoundingBox, TextBlock, PageOCRResult
+  - `workers/paddle_worker.py` (pool: `gpu-paddle`)
+  - `workers/qwen_worker.py` (pool: `gpu-qwen`)
+
+---
+
+### Worker Migration Summary
+
+**Removed from Frame** (migrated to shards):
+- `ner_worker.py` → arkham-shard-parse
+- `embed_worker.py` → arkham-shard-embed
+- `extract_worker.py` → arkham-shard-ingest
+- `file_worker.py` → arkham-shard-ingest
+- `archive_worker.py` → arkham-shard-ingest
+- `image_worker.py` → arkham-shard-ingest
+- `paddle_worker.py` → arkham-shard-ocr
+- `qwen_worker.py` → arkham-shard-ocr
+
+**Kept in Frame**:
+- `base.py`, `registry.py`, `runner.py` - Worker infrastructure
+- `light_worker.py` - Generic utility worker
+- `db_worker.py` - Database operations
+- `enrich_worker.py`, `whisper_worker.py`, `analysis_worker.py` - Future shards
+
+---
+
+### Worker Registration Pattern (For Future Shards)
+
+```python
+async def initialize(self, frame) -> None:
+    worker_service = frame.get_service("workers")
+    if worker_service:
+        from .workers import MyWorker
+        worker_service.register_worker(MyWorker)
+
+async def shutdown(self) -> None:
+    if self._frame:
+        worker_service = self._frame.get_service("workers")
+        if worker_service:
+            from .workers import MyWorker
+            worker_service.unregister_worker(MyWorker)
+```
+
+---
+
+### Current Shard Count: 9
+
+```
+packages/
+├── arkham-frame/                    # Core (IMMUTABLE)
+├── arkham-shard-dashboard/          # Monitoring
+├── arkham-shard-ingest/             # File intake + workers
+├── arkham-shard-parse/              # NER/parsing + workers
+├── arkham-shard-search/             # Search
+├── arkham-shard-ach/                # ACH analysis
+├── arkham-shard-embed/              # Embeddings + workers
+├── arkham-shard-contradictions/     # Contradictions
+├── arkham-shard-anomalies/          # Anomalies
+└── arkham-shard-ocr/                # OCR + workers (NEW)
+```
+
+**Status**: Phase 3 Complete. Workers distributed to shards. Pipeline dispatchers functional.
+
+**Next**: Phase 4 - UI Integration (Shell updates for new shards)
+
+---

@@ -1,0 +1,26 @@
+[project]
+name = "arkham-shard-ocr"
+version = "0.1.0"
+description = "OCR processing shard for ArkhamFrame"
+readme = "README.md"
+requires-python = ">=3.10"
+
+dependencies = [
+    "arkham-frame>=0.1.0",
+    "paddleocr>=2.7.0",
+    "paddlepaddle>=2.5.0",  # CPU version, GPU users install paddlepaddle-gpu
+    "pillow>=10.0.0",
+    "httpx>=0.24.0",
+]
+
+[project.optional-dependencies]
+gpu = ["paddlepaddle-gpu>=2.5.0"]
+qwen = ["transformers>=4.35.0", "torch>=2.0.0"]
+dev = ["pytest", "pytest-asyncio", "black", "mypy"]
+
+[project.entry-points."arkham.shards"]
+ocr = "arkham_shard_ocr:OCRShard"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

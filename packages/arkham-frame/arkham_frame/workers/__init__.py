@@ -24,20 +24,20 @@ from .runner import WorkerRunner, run_single_worker
 from .registry import WorkerRegistry, WorkerInfo
 from .examples import EchoWorker, FailWorker, SlowWorker, EXAMPLE_WORKERS
 
-# Production workers
-from .extract_worker import ExtractWorker
-from .ner_worker import NERWorker
-from .embed_worker import EmbedWorker
+# Frame workers (infrastructure workers that stay in Frame)
 from .light_worker import LightWorker
-from .paddle_worker import PaddleWorker
-from .qwen_worker import QwenWorker
-from .file_worker import FileWorker
-from .image_worker import ImageWorker
-from .enrich_worker import EnrichWorker
 from .db_worker import DBWorker
-from .archive_worker import ArchiveWorker
+
+# Future shard workers (will be moved when shards are created)
+from .enrich_worker import EnrichWorker
 from .whisper_worker import WhisperWorker
 from .analysis_worker import AnalysisWorker
+
+# Note: The following workers have been moved to their respective shards:
+# - ExtractWorker, FileWorker, ArchiveWorker, ImageWorker -> arkham-shard-ingest
+# - NERWorker -> arkham-shard-parse
+# - EmbedWorker -> arkham-shard-embed
+# - PaddleWorker, QwenWorker -> arkham-shard-ocr
 
 __all__ = [
     # Base classes
@@ -51,18 +51,11 @@ __all__ = [
     # Registry
     "WorkerRegistry",
     "WorkerInfo",
-    # Production workers
-    "ExtractWorker",
-    "NERWorker",
-    "EmbedWorker",
+    # Frame workers (infrastructure)
     "LightWorker",
-    "PaddleWorker",
-    "QwenWorker",
-    "FileWorker",
-    "ImageWorker",
-    "EnrichWorker",
     "DBWorker",
-    "ArchiveWorker",
+    # Future shard workers
+    "EnrichWorker",
     "WhisperWorker",
     "AnalysisWorker",
     # Example workers (for testing)

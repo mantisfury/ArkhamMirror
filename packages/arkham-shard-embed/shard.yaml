@@ -1,16 +1,25 @@
 name: embed
 version: 0.1.0
 description: Document embeddings and vector operations
-
+entry_point: arkham_shard_embed:EmbedShard
+api_prefix: /api/embed
 requires_frame: ">=0.1.0"
+
+navigation:
+  category: Data
+  order: 50
+  icon: Binary
+  label: Embeddings
+  route: /embed
 
 dependencies:
   services:
     - vectors
+    - workers
     - events
   optional:
     - documents
-    - workers
+  shards: []
 
 capabilities:
   - text_embedding
@@ -19,8 +28,6 @@ capabilities:
   - similarity_search
   - nearest_neighbors
   - model_management
-
-api_prefix: /api/embed
 
 events:
   publishes:
@@ -31,10 +38,10 @@ events:
   subscribes:
     - documents.ingested
     - documents.chunks.created
+    - parse.chunks.created
 
-config:
-  default_model: "BAAI/bge-m3"
-  fallback_model: "all-MiniLM-L6-v2"
-  device: "auto"
-  batch_size: 32
-  cache_size: 1000
+state:
+  strategy: none
+
+ui:
+  has_custom_ui: false

@@ -381,3 +381,132 @@ class WorkerService:
         """Register a job handler for a pool."""
         self._handlers[pool] = handler
         logger.info(f"Registered handler for pool {pool}")
+
+    # --- Worker Registration (for shards) ---
+
+    _registered_workers: Dict[str, type] = {}
+
+    def register_worker(self, worker_class: type) -> None:
+        """
+        Register a worker class from a shard.
+
+        The worker class must have a `pool` attribute defining which pool it serves.
+
+        Args:
+            worker_class: BaseWorker subclass with pool attribute
+        """
+        pool = getattr(worker_class, "pool", None)
+        if not pool:
+            raise WorkerError(f"Worker class {worker_class.__name__} has no pool attribute")
+
+        if pool not in WORKER_POOLS:
+            logger.warning(f"Worker pool {pool} not in predefined pools, adding dynamically")
+            WORKER_POOLS[pool] = {"type": "custom", "max_workers": 4}
+
+        self._registered_workers[pool] = worker_class
+        logger.info(f"Registered worker {worker_class.__name__} for pool {pool}")
+
+    def unregister_worker(self, worker_class: type) -> None:
+        """
+        Unregister a worker class.
+
+        Args:
+            worker_class: BaseWorker subclass to unregister
+        """
+        pool = getattr(worker_class, "pool", None)
+        if pool and pool in self._registered_workers:
+            del self._registered_workers[pool]
+            logger.info(f"Unregistered worker for pool {pool}")
+
+    def get_registered_workers(self) -> Dict[str, type]:
+        """Get all registered worker classes."""
+        return self._registered_workers.copy()
+
+    def get_worker_class(self, pool: str) -> Optional[type]:
+        """Get the worker class for a pool."""
+        return self._registered_workers.get(pool)
+
+    # --- Job Result Waiting (for dispatchers) ---
+
+    async def wait_for_result(
+        self,
+        job_id: str,
+        timeout: float = 300.0,
+        poll_interval: float = 0.5,
+    ) -> Dict[str, Any]:
+        """
+        Wait for a job to complete and return its result.
+
+        Args:
+            job_id: Job ID to wait for
+            timeout: Maximum time to wait in seconds
+            poll_interval: Time between status checks
+
+        Returns:
+            Job result dict
+
+        Raises:
+            WorkerError: If job fails or times out
+        """
+        import asyncio
+
+        start_time = asyncio.get_event_loop().time()
+
+        while True:
+            elapsed = asyncio.get_event_loop().time() - start_time
+            if elapsed > timeout:
+                raise WorkerError(f"Job {job_id} timed out after {timeout}s")
+
+            job = self._jobs.get(job_id)
+            if job:
+                if job.status == "completed":
+                    return job.result or {}
+                elif job.status == "failed":
+                    raise WorkerError(f"Job {job_id} failed: {job.error}")
+
+            # Check Redis if available
+            if self._available and self._redis:
+                job_key = f"arkham:job:{job_id}"
+                job_data = self._redis.hgetall(job_key)
+                if job_data:
+                    status = job_data.get(b"status") or job_data.get("status")
+                    if isinstance(status, bytes):
+                        status = status.decode()
+
+                    if status == "completed":
+                        result_raw = job_data.get(b"result") or job_data.get("result", "{}")
+                        if isinstance(result_raw, bytes):
+                            result_raw = result_raw.decode()
+                        return json.loads(result_raw)
+                    elif status == "failed":
+                        error = job_data.get(b"error") or job_data.get("error", "Unknown error")
+                        if isinstance(error, bytes):
+                            error = error.decode()
+                        raise WorkerError(f"Job {job_id} failed: {error}")
+
+            await asyncio.sleep(poll_interval)
+
+    async def enqueue_and_wait(
+        self,
+        pool: str,
+        payload: Dict[str, Any],
+        priority: int = 1,
+        timeout: float = 300.0,
+    ) -> Dict[str, Any]:
+        """
+        Enqueue a job and wait for its result.
+
+        Convenience method that combines enqueue() and wait_for_result().
+
+        Args:
+            pool: Worker pool name
+            payload: Job data
+            priority: Priority level (1=highest)
+            timeout: Maximum time to wait
+
+        Returns:
+            Job result dict
+        """
+        job_id = str(uuid.uuid4())
+        await self.enqueue(pool, job_id, payload, priority)
+        return await self.wait_for_result(job_id, timeout)

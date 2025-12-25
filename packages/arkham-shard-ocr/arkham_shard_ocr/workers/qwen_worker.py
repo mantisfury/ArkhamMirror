@@ -21,7 +21,7 @@ from typing import Any, Dict, Optional
 
 import httpx
 
-from .base import BaseWorker
+from arkham_frame.workers.base import BaseWorker
 
 logger = logging.getLogger(__name__)
 
@@ -395,10 +395,10 @@ def run_qwen_worker(redis_url: str = None, worker_id: str = None):
 
     Example:
         # Default (LM Studio)
-        python -m arkham_frame.workers.qwen_worker
+        python -m arkham_shard_ocr.workers.qwen_worker
 
         # With Ollama
-        VLM_ENDPOINT=http://localhost:11434/v1 VLM_MODEL=llava python -m arkham_frame.workers.qwen_worker
+        VLM_ENDPOINT=http://localhost:11434/v1 VLM_MODEL=llava python -m arkham_shard_ocr.workers.qwen_worker
     """
     import asyncio
     worker = QwenWorker(redis_url=redis_url, worker_id=worker_id)

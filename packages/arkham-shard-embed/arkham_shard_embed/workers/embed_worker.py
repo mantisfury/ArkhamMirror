@@ -8,7 +8,7 @@ Purpose: Generate vector embeddings for semantic search and similarity matching.
 from typing import Dict, Any, List
 import logging
 
-from .base import BaseWorker
+from arkham_frame.workers.base import BaseWorker
 
 logger = logging.getLogger(__name__)
 
@@ -179,7 +179,7 @@ def run_embed_worker(redis_url: str = None, worker_id: str = None):
         worker_id: Optional worker ID (auto-generated if not provided)
 
     Example:
-        python -m arkham_frame.workers.embed_worker
+        python -m arkham_shard_embed.workers.embed_worker
     """
     import asyncio
     worker = EmbedWorker(redis_url=redis_url, worker_id=worker_id)
@@ -187,5 +187,5 @@ def run_embed_worker(redis_url: str = None, worker_id: str = None):
 
 
 if __name__ == "__main__":
-    # Allow running directly: python -m arkham_frame.workers.embed_worker
+    # Allow running directly: python -m arkham_shard_embed.workers.embed_worker
     run_embed_worker()

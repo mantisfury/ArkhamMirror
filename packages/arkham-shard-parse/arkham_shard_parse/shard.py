@@ -105,6 +105,12 @@ class ParseShard(ArkhamShard):
             event_bus=event_bus,
         )
 
+        # Register workers with Frame
+        if worker_service:
+            from .workers import NERWorker
+            worker_service.register_worker(NERWorker)
+            logger.info("Registered NERWorker to cpu-ner pool")
+
         # Subscribe to events
         if event_bus:
             event_bus.subscribe("ingest.job.completed", self._on_document_ingested)
@@ -115,6 +121,14 @@ class ParseShard(ArkhamShard):
     async def shutdown(self) -> None:
         """Clean up shard resources."""
         logger.info("Shutting down Parse Shard...")
+
+        # Unregister workers
+        if self._frame:
+            worker_service = self._frame.get_service("workers")
+            if worker_service:
+                from .workers import NERWorker
+                worker_service.unregister_worker(NERWorker)
+                logger.info("Unregistered NERWorker from cpu-ner pool")
 
         # Unsubscribe from events
         if self._frame:

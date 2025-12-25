@@ -1,0 +1,49 @@
+name: ocr
+version: 0.1.0
+description: Optical character recognition for document images
+entry_point: arkham_shard_ocr:OCRShard
+api_prefix: /api/ocr
+requires_frame: ">=0.1.0"
+
+navigation:
+  category: Analysis
+  order: 35
+  icon: ScanText
+  label: OCR
+  route: /ocr
+
+dependencies:
+  services:
+    - database
+    - storage
+    - workers
+    - events
+  optional:
+    - documents
+  shards: []
+
+capabilities:
+  - paddle_ocr
+  - qwen_ocr
+  - page_processing
+  - text_extraction
+  - bounding_boxes
+
+events:
+  publishes:
+    - ocr.page.started
+    - ocr.page.completed
+    - ocr.document.started
+    - ocr.document.completed
+    - ocr.error
+  subscribes:
+    - ingest.job.completed
+
+state:
+  strategy: url
+  url_params:
+    - documentId
+    - pageId
+
+ui:
+  has_custom_ui: false

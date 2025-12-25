@@ -76,11 +76,30 @@ class IngestShard(ArkhamShard):
             event_bus.subscribe("worker.job.completed", self._on_job_completed)
             event_bus.subscribe("worker.job.failed", self._on_job_failed)
 
+        # Register workers with Frame
+        if worker_service:
+            from .workers import ExtractWorker, FileWorker, ArchiveWorker, ImageWorker
+            worker_service.register_worker(ExtractWorker)
+            worker_service.register_worker(FileWorker)
+            worker_service.register_worker(ArchiveWorker)
+            worker_service.register_worker(ImageWorker)
+            logger.info("Registered ingest workers")
+
         logger.info("Ingest Shard initialized")
 
     async def shutdown(self) -> None:
         """Clean up shard resources."""
         logger.info("Shutting down Ingest Shard...")
+
+        # Unregister workers
+        if self._frame:
+            worker_service = self._frame.get_service("workers")
+            if worker_service:
+                from .workers import ExtractWorker, FileWorker, ArchiveWorker, ImageWorker
+                worker_service.unregister_worker(ExtractWorker)
+                worker_service.unregister_worker(FileWorker)
+                worker_service.unregister_worker(ArchiveWorker)
+                worker_service.unregister_worker(ImageWorker)
 
         # Unsubscribe from events
         if self._frame:

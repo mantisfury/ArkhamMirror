@@ -1,8 +1,16 @@
 name: parse
 version: 0.1.0
 description: Entity extraction, NER, and text chunking
-
+entry_point: arkham_shard_parse:ParseShard
+api_prefix: /api/parse
 requires_frame: ">=0.1.0"
+
+navigation:
+  category: Analysis
+  order: 40
+  icon: FileSearch
+  label: Parse & Extract
+  route: /parse
 
 dependencies:
   services:
@@ -12,6 +20,7 @@ dependencies:
   optional:
     - documents
     - entities
+  shards: []
 
 capabilities:
   - named_entity_recognition
@@ -20,12 +29,6 @@ capabilities:
   - entity_linking
   - coreference_resolution
   - text_chunking
-
-worker_pools:
-  - cpu-ner
-  - cpu-heavy
-
-api_prefix: /api/parse
 
 events:
   publishes:
@@ -36,3 +39,11 @@ events:
   subscribes:
     - ingest.job.completed
     - worker.job.completed
+
+state:
+  strategy: url
+  url_params:
+    - documentId
+
+ui:
+  has_custom_ui: false

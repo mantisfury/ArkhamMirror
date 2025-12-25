@@ -12,7 +12,7 @@ import logging
 import os
 from typing import Any, Dict, List, Tuple
 
-from .base import BaseWorker
+from arkham_frame.workers.base import BaseWorker
 
 logger = logging.getLogger(__name__)
 
