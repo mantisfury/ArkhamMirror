@@ -165,7 +165,8 @@ class VisualizationState(rx.State):
                 context={"action": "load_cluster_map"},
             )
 
-            toast_state = await self.get_state(ToastState)
+            async with self:
+                toast_state = await self.get_state(ToastState)
             async with toast_state:
                 toast_state.show_error(format_error_for_ui(error_info))
             async with self:
@@ -182,22 +183,32 @@ class VisualizationState(rx.State):
     @rx.event(background=True)
     async def load_wordcloud(self):
         """Load wordcloud image."""
+        # Read all state vars inside context manager
         async with self:
             self.is_loading = True
             self.error_message = ""
+            # Capture state values for use outside context
+            current_scope = self.wordcloud_scope
+            current_filter_id = self.wordcloud_filter_id
+            current_exclusions = list(self.wordcloud_exclusions) if self.wordcloud_exclusions else None
+            needs_clusters = not self.available_clusters
+            needs_doctypes = not self.available_doctypes
+
         try:
-            # Load options if needed
-            clusters = get_clusters() if not self.available_clusters else None
-            doctypes = get_doctypes() if not self.available_doctypes else None
-            image = get_wordcloud_data(
-                scope=self.wordcloud_scope,
-                filter_id=self.wordcloud_filter_id
-                if self.wordcloud_filter_id
-                else None,
-                custom_exclusions=self.wordcloud_exclusions
-                if self.wordcloud_exclusions
-                else None,
-            )
+            import asyncio
+
+            # Run synchronous service calls in thread (outside context - no state access)
+            def fetch_wordcloud_data():
+                clusters = get_clusters() if needs_clusters else None
+                doctypes = get_doctypes() if needs_doctypes else None
+                image = get_wordcloud_data(
+                    scope=current_scope,
+                    filter_id=current_filter_id if current_filter_id else None,
+                    custom_exclusions=current_exclusions,
+                )
+                return clusters, doctypes, image
+
+            clusters, doctypes, image = await asyncio.to_thread(fetch_wordcloud_data)
 
             async with self:
                 if clusters is not None:
@@ -226,12 +237,13 @@ class VisualizationState(rx.State):
                 else "default",
                 context={
                     "action": "generate_wordcloud",
-                    "scope": self.wordcloud_scope,
-                    "filter_id": self.wordcloud_filter_id,
+                    "scope": current_scope,
+                    "filter_id": current_filter_id,
                 },
             )
 
-            toast_state = await self.get_state(ToastState)
+            async with self:
+                toast_state = await self.get_state(ToastState)
             async with toast_state:
                 toast_state.show_error(format_error_for_ui(error_info))
             async with self:
@@ -243,15 +255,21 @@ class VisualizationState(rx.State):
     @rx.event(background=True)
     async def load_heatmap(self):
         """Load entity heatmap data."""
-        # Skip if already loaded (session cache)
-        if self._has_loaded_heatmap and self.heatmap_data.get("labels"):
-            return
-
+        # Read all state vars inside context manager
         async with self:
+            # Skip if already loaded (session cache)
+            if self._has_loaded_heatmap and self.heatmap_data.get("labels"):
+                return
             self.is_loading = True
             self.error_message = ""
+            current_top_n = self.heatmap_top_n
+
         try:
-            data = get_entity_heatmap_data(top_n=self.heatmap_top_n)
+            import asyncio
+
+            # Run synchronous service call in thread
+            data = await asyncio.to_thread(get_entity_heatmap_data, top_n=current_top_n)
+
             async with self:
                 self.heatmap_data = data
                 self._has_loaded_heatmap = True  # Mark as loaded for session cache
@@ -264,10 +282,11 @@ class VisualizationState(rx.State):
             error_info = handle_database_error(
                 e,
                 error_type="not_found" if "not found" in str(e).lower() else "default",
-                context={"action": "load_entity_heatmap", "top_n": self.heatmap_top_n},
+                context={"action": "load_entity_heatmap", "top_n": current_top_n},
             )
 
-            toast_state = await self.get_state(ToastState)
+            async with self:
+                toast_state = await self.get_state(ToastState)
             async with toast_state:
                 toast_state.show_error(format_error_for_ui(error_info))
             async with self:

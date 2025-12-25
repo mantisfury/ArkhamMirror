@@ -54,6 +54,14 @@ def cluster_map_view():
 def wordcloud_view():
     return rx.vstack(
         rx.hstack(
+            rx.button(
+                rx.icon(tag="refresh_cw", size=14),
+                "Generate",
+                on_click=VisualizationState.load_wordcloud,
+                loading=VisualizationState.is_loading,
+                color_scheme="blue",
+                size="2",
+            ),
             rx.select(
                 ["all", "cluster", "doctype"],
                 value=VisualizationState.wordcloud_scope,
@@ -141,15 +149,32 @@ def wordcloud_view():
             width="100%",
         ),
         rx.cond(
-            VisualizationState.wordcloud_image,
-            rx.image(
-                src=f"data:image/png;base64,{VisualizationState.wordcloud_image}",
-                width="100%",
-                height="auto",
-                object_fit="contain",
-                style={"border_radius": "8px"},
+            VisualizationState.is_loading,
+            rx.center(rx.spinner(), padding="8"),
+            rx.cond(
+                VisualizationState.wordcloud_image,
+                rx.image(
+                    src=f"data:image/png;base64,{VisualizationState.wordcloud_image}",
+                    width="100%",
+                    height="auto",
+                    object_fit="contain",
+                    style={"border_radius": "8px"},
+                ),
+                rx.center(
+                    rx.vstack(
+                        rx.icon(tag="cloud", size=40, color="gray"),
+                        rx.text("No word cloud generated yet.", color="gray"),
+                        rx.text(
+                            "Click 'Generate' to create a word cloud from your documents.",
+                            color="gray.8",
+                            font_size="sm",
+                        ),
+                        spacing="4",
+                        align="center",
+                    ),
+                    padding="8",
+                ),
             ),
-            rx.center(rx.spinner()),
         ),
         width="100%",
         spacing="4",

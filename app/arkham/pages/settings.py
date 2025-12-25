@@ -280,6 +280,45 @@ def nuclear_wipe_dialog() -> rx.Component:
     )
 
 
+def support_card() -> rx.Component:
+    """Support the project card."""
+    return rx.card(
+        rx.vstack(
+            rx.hstack(
+                rx.icon("heart", color="red.9", size=20),
+                rx.heading("Support the Project", size="4"),
+                spacing="2",
+            ),
+            rx.divider(),
+            rx.text(
+                "ArkhamMirror is built to give journalists and researchers powerful forensics without cloud costs or privacy risks.",
+                color="gray.11",
+                size="2",
+            ),
+            rx.text(
+                "If this tool helps you uncover the truth, consider supporting development!",
+                color="gray.11",
+                size="2",
+            ),
+            rx.link(
+                rx.button(
+                    rx.icon("coffee", size=16),
+                    "Buy me a coffee on Ko-fi",
+                    color_scheme="pink",
+                    variant="soft",
+                    size="2",
+                ),
+                href="https://ko-fi.com/arkhammirror",
+                is_external=True,
+            ),
+            width="100%",
+            spacing=SPACING["md"],
+        ),
+        width="100%",
+        padding=CARD_PADDING,
+    )
+
+
 def danger_zone_card() -> rx.Component:
     """Danger zone card with nuclear wipe."""
     return rx.card(
@@ -395,6 +434,8 @@ def settings_page() -> rx.Component:
             health_check_card(),
             # Anomaly Keywords
             anomaly_keywords_card(),
+            # Support the Project
+            support_card(),
             # Danger Zone
             danger_zone_card(),
             spacing=SPACING["md"],

@@ -31,22 +31,24 @@ class TimelineState(rx.State):
 
     async def _load_timeline_impl(self):
         """Helper to load timeline events."""
-        # Skip if already loaded (session cache)
-        if self._has_loaded_timeline and self.events:
-            return
+        from ..services.timeline_service import get_timeline_events
+        from ..state.project_state import ProjectState
 
+        # All state access must be inside context manager for background tasks
         async with self:
+            # Skip if already loaded (session cache)
+            if self._has_loaded_timeline and self.events:
+                return
             self.is_loading = True
-
-        try:
-            from ..services.timeline_service import get_timeline_events
-            from ..state.project_state import ProjectState
-
-            # Get the currently selected project ID
+            # Get other state inside same context
             project_state = await self.get_state(ProjectState)
+
+        # Read project_id inside project_state context
+        async with project_state:
             project_id = project_state.selected_project_id_int
 
-            # Run sychronous service call
+        try:
+            # Run synchronous service call (outside context - no state access)
             events = get_timeline_events(project_id=project_id)
 
             async with self:
@@ -63,7 +65,8 @@ class TimelineState(rx.State):
                 context={"action": "load_timeline"},
             )
 
-            toast_state = await self.get_state(ToastState)
+            async with self:
+                toast_state = await self.get_state(ToastState)
             async with toast_state:
                 toast_state.show_error(format_error_for_ui(error_info))
         finally:
@@ -172,29 +175,30 @@ class TimelineState(rx.State):
 
     async def _load_heatmap_impl(self):
         """Helper to load heatmap data."""
-        # Skip if already loaded (session cache)
-        if self._has_loaded_heatmap and self.heatmap_data:
-            return
+        from ..services.heatmap_service import (
+            get_day_of_week_hour_heatmap,
+            get_weekly_activity_heatmap,
+            get_monthly_activity_heatmap,
+            get_heatmap_summary_stats,
+        )
+        from ..state.project_state import ProjectState
 
+        # All state access must be inside context manager for background tasks
         async with self:
+            # Skip if already loaded (session cache)
+            if self._has_loaded_heatmap and self.heatmap_data:
+                return
             self.is_loading_heatmap = True
-            # Read self vars inside lock
             current_heatmap_type = self.heatmap_type
-
-        try:
-            from ..services.heatmap_service import (
-                get_day_of_week_hour_heatmap,
-                get_weekly_activity_heatmap,
-                get_monthly_activity_heatmap,
-                get_heatmap_summary_stats,
-            )
-            from ..state.project_state import ProjectState
-
-            # Get the currently selected project ID
+            # Get other state inside same context
             project_state = await self.get_state(ProjectState)
+
+        # Read project_id inside project_state context
+        async with project_state:
             project_id = project_state.selected_project_id_int
 
-            # Load appropriate heatmap based on type
+        try:
+            # Load appropriate heatmap based on type (outside context - no state access)
             if current_heatmap_type == "day_hour":
                 heatmap_data = get_day_of_week_hour_heatmap(project_id=project_id)
             elif current_heatmap_type == "weekly":
@@ -221,10 +225,11 @@ class TimelineState(rx.State):
             error_info = handle_database_error(
                 e,
                 error_type="default",
-                context={"action": "load_heatmap", "heatmap_type": self.heatmap_type},
+                context={"action": "load_heatmap", "heatmap_type": current_heatmap_type},
             )
 
-            toast_state = await self.get_state(ToastState)
+            async with self:
+                toast_state = await self.get_state(ToastState)
             async with toast_state:
                 toast_state.show_error(format_error_for_ui(error_info))
         finally:
