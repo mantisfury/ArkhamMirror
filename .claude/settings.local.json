@@ -4,7 +4,8 @@
       "Bash(test:*)",
       "Bash(wc:*)",
       "Bash(cat:*)",
-      "Bash(find:*)"
+      "Bash(find:*)",
+      "Bash(dir:*)"
     ]
   }
 }

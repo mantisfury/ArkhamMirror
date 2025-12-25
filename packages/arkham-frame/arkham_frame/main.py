@@ -113,6 +113,7 @@ app.add_middleware(
 
 # Include API routes
 from .api import health, documents, entities, projects, shards, events, frame as frame_api
+from .api import export, templates, notifications, scheduler
 
 app.include_router(health.router, tags=["Health"])
 app.include_router(documents.router, prefix="/api/documents", tags=["Documents"])
@@ -121,6 +122,12 @@ app.include_router(projects.router, prefix="/api/projects", tags=["Projects"])
 app.include_router(shards.router, prefix="/api/shards", tags=["Shards"])
 app.include_router(events.router, prefix="/api/events", tags=["Events"])
 app.include_router(frame_api.router, prefix="/api/frame", tags=["Frame"])
+
+# Output Services API routes
+app.include_router(export.router, prefix="/api/export", tags=["Export"])
+app.include_router(templates.router, prefix="/api/templates", tags=["Templates"])
+app.include_router(notifications.router, prefix="/api/notifications", tags=["Notifications"])
+app.include_router(scheduler.router, prefix="/api/scheduler", tags=["Scheduler"])
 
 
 # Static file serving for Shell UI

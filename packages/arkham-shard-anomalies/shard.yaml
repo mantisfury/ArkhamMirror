@@ -1,8 +1,18 @@
 name: anomalies
 version: 0.1.0
 description: Anomaly and outlier detection for documents and content
-
+entry_point: arkham_shard_anomalies:AnomaliesShard
+api_prefix: /api/anomalies
 requires_frame: ">=0.1.0"
+
+navigation:
+  category: Analysis
+  order: 50
+  icon: AlertTriangle
+  label: Anomalies
+  route: /anomalies
+  badge_endpoint: /api/anomalies/pending/count
+  badge_type: count
 
 dependencies:
   services:
@@ -10,7 +20,8 @@ dependencies:
     - vectors
     - events
   optional:
-    - documents
+    - llm
+  shards: []
 
 capabilities:
   - anomaly_detection
@@ -19,8 +30,6 @@ capabilities:
   - statistical_analysis
   - analyst_workflow
   - triage_management
-
-api_prefix: /api/anomalies
 
 events:
   publishes:
@@ -32,3 +41,13 @@ events:
   subscribes:
     - embeddings.created
     - documents.indexed
+
+state:
+  strategy: url
+  url_params:
+    - status
+    - type
+    - severity
+
+ui:
+  has_custom_ui: true

@@ -1,16 +1,27 @@
 name: contradictions
 version: 0.1.0
 description: Contradiction detection engine for multi-document analysis
-
+entry_point: arkham_shard_contradictions:ContradictionsShard
+api_prefix: /api/contradictions
 requires_frame: ">=0.1.0"
+
+navigation:
+  category: Analysis
+  order: 45
+  icon: Scale
+  label: Contradictions
+  route: /contradictions
+  badge_endpoint: /api/contradictions/pending/count
+  badge_type: count
 
 dependencies:
   services:
     - database
     - events
-    - embeddings
+    - vectors
   optional:
-    - llm  # For contradiction verification and severity scoring
+    - llm
+  shards: []
 
 capabilities:
   - claim_extraction
@@ -20,8 +31,6 @@ capabilities:
   - chain_detection
   - analyst_workflow
   - background_analysis
-
-api_prefix: /api/contradictions
 
 events:
   publishes:
@@ -34,3 +43,13 @@ events:
     - document.ingested
     - document.updated
     - llm.analysis.completed
+
+state:
+  strategy: url
+  url_params:
+    - status
+    - severity
+    - documentId
+
+ui:
+  has_custom_ui: true

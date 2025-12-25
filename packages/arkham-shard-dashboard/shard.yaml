@@ -46,6 +46,30 @@ dependencies:
     - llm
   shards: []
 
+# Capabilities
+capabilities:
+  - service_health
+  - llm_config
+  - database_controls
+  - worker_management
+  - event_viewer
+
+# Events
+events:
+  publishes:
+    - dashboard.service.health_checked
+    - dashboard.database.action_executed
+    - dashboard.workers.scaled
+  subscribes:
+    - "*"  # Dashboard monitors all events
+
+# State Management
+state:
+  strategy: url
+  url_params:
+    - tab
+    - timeRange
+
 # UI Configuration
 ui:
   has_custom_ui: true

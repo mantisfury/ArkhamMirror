@@ -28,6 +28,7 @@ class IngestShard(ArkhamShard):
     description = "Document ingestion and file processing"
 
     def __init__(self):
+        super().__init__()  # Auto-loads manifest from shard.yaml
         self.intake_manager: IntakeManager | None = None
         self.job_dispatcher: JobDispatcher | None = None
         self._frame = None

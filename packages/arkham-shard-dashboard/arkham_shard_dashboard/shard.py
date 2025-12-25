@@ -3,82 +3,11 @@ Dashboard Shard - System monitoring and controls.
 """
 
 from typing import Dict, Any, List, Optional
-from pathlib import Path
 import logging
-import yaml
 
-from arkham_frame.shard_interface import (
-    ArkhamShard,
-    ShardManifest,
-    NavigationConfig,
-    SubRoute,
-    DependencyConfig,
-    UIConfig,
-)
+from arkham_frame.shard_interface import ArkhamShard
 
 logger = logging.getLogger(__name__)
-
-
-def load_manifest_from_yaml(yaml_path: Path) -> ShardManifest:
-    """Load and parse a shard.yaml file into a ShardManifest."""
-    with open(yaml_path, "r") as f:
-        data = yaml.safe_load(f)
-
-    # Parse navigation config
-    nav_data = data.get("navigation", {})
-    navigation = None
-    if nav_data:
-        sub_routes = []
-        for sr in nav_data.get("sub_routes", []):
-            sub_routes.append(SubRoute(
-                id=sr["id"],
-                label=sr["label"],
-                route=sr["route"],
-                icon=sr.get("icon", "Circle"),
-                badge_endpoint=sr.get("badge_endpoint"),
-                badge_type=sr.get("badge_type"),
-            ))
-
-        navigation = NavigationConfig(
-            category=nav_data.get("category", "System"),
-            order=nav_data.get("order", 99),
-            icon=nav_data.get("icon", "Circle"),
-            label=nav_data.get("label", data.get("name", "Unknown")),
-            route=nav_data.get("route", f"/{data.get('name', 'unknown')}"),
-            badge_endpoint=nav_data.get("badge_endpoint"),
-            badge_type=nav_data.get("badge_type"),
-            sub_routes=sub_routes,
-        )
-
-    # Parse dependencies
-    deps_data = data.get("dependencies", {})
-    dependencies = None
-    if deps_data:
-        dependencies = DependencyConfig(
-            services=deps_data.get("services", []),
-            optional=deps_data.get("optional", []),
-            shards=deps_data.get("shards", []),
-        )
-
-    # Parse UI config
-    ui_data = data.get("ui", {})
-    ui = None
-    if ui_data:
-        ui = UIConfig(
-            has_custom_ui=ui_data.get("has_custom_ui", False),
-        )
-
-    return ShardManifest(
-        name=data.get("name", "unknown"),
-        version=data.get("version", "0.0.0"),
-        description=data.get("description", ""),
-        entry_point=data.get("entry_point", ""),
-        api_prefix=data.get("api_prefix", ""),
-        requires_frame=data.get("requires_frame", ">=0.1.0"),
-        navigation=navigation,
-        dependencies=dependencies,
-        ui=ui,
-    )
 
 
 class DashboardShard(ArkhamShard):
@@ -98,39 +27,7 @@ class DashboardShard(ArkhamShard):
     description = "System monitoring and controls"
 
     def __init__(self):
-        self.frame = None
-        self._manifest = None
-
-    @property
-    def manifest(self) -> ShardManifest:
-        """Load shard manifest from shard.yaml."""
-        if self._manifest is None:
-            manifest_path = Path(__file__).parent.parent / "shard.yaml"
-            if manifest_path.exists():
-                try:
-                    self._manifest = load_manifest_from_yaml(manifest_path)
-                except Exception as e:
-                    logger.warning(f"Failed to load shard.yaml: {e}")
-                    self._manifest = self._fallback_manifest()
-            else:
-                self._manifest = self._fallback_manifest()
-        return self._manifest
-
-    def _fallback_manifest(self) -> ShardManifest:
-        """Create a fallback manifest if shard.yaml is unavailable."""
-        return ShardManifest(
-            name="dashboard",
-            version="0.1.0",
-            description="Dashboard shard",
-            entry_point="arkham_shard_dashboard.shard:DashboardShard",
-            navigation=NavigationConfig(
-                category="System",
-                order=10,
-                icon="LayoutDashboard",
-                label="Dashboard",
-                route="/dashboard",
-            ),
-        )
+        super().__init__()  # Auto-loads manifest from shard.yaml
 
     async def initialize(self, frame) -> None:
         """Initialize the dashboard shard."""
@@ -148,7 +45,7 @@ class DashboardShard(ArkhamShard):
         """Shutdown the dashboard shard."""
         logger.info("Dashboard shard shutting down...")
 
-    def get_api_router(self):
+    def get_routes(self):
         """Return the FastAPI router for this shard."""
         from .api import router
         return router

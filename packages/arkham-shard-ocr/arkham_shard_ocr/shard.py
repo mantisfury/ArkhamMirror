@@ -23,6 +23,7 @@ class OCRShard(ArkhamShard):
     description = "Optical character recognition for document images"
 
     def __init__(self):
+        super().__init__()  # Auto-loads manifest from shard.yaml
         self._frame = None
         self._config = None
         self._default_engine = "paddle"

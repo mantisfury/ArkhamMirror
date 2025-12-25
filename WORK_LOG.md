@@ -1237,6 +1237,174 @@ packages/
 
 **Status**: Phase 3 Complete. Workers distributed to shards. Pipeline dispatchers functional.
 
-**Next**: Phase 4 - UI Integration (Shell updates for new shards)
+---
+
+## Phase 4: UI Shell Integration (COMPLETE)
+
+**Date**: 2025-12-25
+
+### Summary
+Created UI pages for all shards in the React Shell.
+
+### Work Completed
+
+1. **Frame Manifest Loading**
+   - Added `load_manifest_from_yaml()` utility to `shard_interface.py`
+   - Updated `ArkhamShard` base class to auto-load manifests in `__init__()`
+   - Removed duplicate manifest loading from ACH shard
+
+2. **Shell Pages Created** (7 new shard pages)
+   - `src/pages/ingest/` - IngestPage, IngestQueuePage
+   - `src/pages/search/` - SearchPage with filters and result cards
+   - `src/pages/ocr/` - OCRPage with job submission and results
+   - `src/pages/parse/` - ParsePage with entity browser
+   - `src/pages/embed/` - EmbedPage with similarity calculator
+   - `src/pages/contradictions/` - ContradictionsPage with detail view
+   - `src/pages/anomalies/` - AnomaliesPage with detail view
+
+3. **Routes Added** to `App.tsx`
+   - All 7 new shard routes integrated
+   - Sub-routes for ingest queue
+
+### Files Changed
+- `packages/arkham-frame/arkham_frame/shard_interface.py` - Manifest loading utility
+- `packages/arkham-shard-ach/arkham_shard_ach/shard.py` - Removed duplicate code
+- `packages/arkham-shard-shell/src/App.tsx` - Added routes
+- 35+ new files in `src/pages/` directories
+
+**Status**: Phase 4 Complete. All shards have UI pages.
+
+---
+
+## Phase 5: Output Services + Shard Compliance (COMPLETE)
+
+**Date**: 2025-12-25
+
+### Goals
+1. Verify all shards comply with v5 manifest schema
+2. Add Frame-level Output Services (Export, Template, Notification, Scheduler)
+
+### Part A: Shard Compliance Audit
+
+All shards verified and fixed for v5 compliance:
+
+| Shard | Before | After | Fixes Applied |
+|-------|--------|-------|---------------|
+| arkham-shard-dashboard | Partial | ✅ | Added `super().__init__()`, renamed `get_api_router()` to `get_routes()`, added events/state/capabilities to shard.yaml |
+| arkham-shard-ingest | Partial | ✅ | Added `super().__init__()` |
+| arkham-shard-search | Partial | ✅ | Added navigation, state, ui sections to shard.yaml, added entry_point |
+| arkham-shard-parse | Partial | ✅ | Added `super().__init__()` |
+| arkham-shard-embed | ✅ | ✅ | Already compliant |
+| arkham-shard-ocr | Partial | ✅ | Added `super().__init__()` |
+| arkham-shard-contradictions | Partial | ✅ | Added navigation, state, ui, entry_point to shard.yaml |
+| arkham-shard-anomalies | Partial | ✅ | Added navigation, state, ui, entry_point to shard.yaml |
+| arkham-shard-graph | Missing | ✅ | Created complete shard.yaml from scratch |
+| arkham-shard-timeline | Missing | ✅ | Created complete shard.yaml from scratch |
+| arkham-shard-ach | ✅ | ✅ | Reference implementation |
+
+### Part B: Output Services (COMPLETE)
+
+New Frame services implemented:
+
+1. **ExportService** (`services/export.py`) ✅
+   - Format exporters: JSON, CSV, Markdown, HTML, Text
+   - Export options (metadata, pretty print, title, author)
+   - Batch export to multiple formats
+   - Export history tracking
+
+2. **TemplateService** (`services/templates.py`) ✅
+   - Jinja2 template engine (with fallback for basic rendering)
+   - Default templates: report_basic, document_summary, entity_report, analysis_report, email_notification
+   - Variable extraction from templates
+   - Template validation
+   - File-based template loading
+
+3. **NotificationService** (`services/notifications.py`) ✅
+   - Channel types: Log (default), Email (aiosmtplib), Webhook (aiohttp)
+   - Notification types: info, success, warning, error, alert
+   - Retry logic with exponential backoff
+   - Notification history with stats
+   - Event-driven subscription support
+
+4. **SchedulerService** (`services/scheduler.py`) ✅
+   - APScheduler integration (with basic fallback)
+   - Trigger types: cron, interval, date (one-time)
+   - Job management: pause, resume, remove
+   - Execution history with stats
+   - Function registration pattern
+
+### API Routes Added
+
+**Export API** (`/api/export/`)
+- `GET /formats` - List supported formats
+- `POST /{format}` - Export data to format
+- `POST /batch` - Batch export to multiple formats
+- `GET /history` - Get export history
+
+**Templates API** (`/api/templates/`)
+- `GET /` - List templates
+- `GET /categories` - Get template categories
+- `POST /` - Create template
+- `GET /{name}` - Get template
+- `DELETE /{name}` - Delete template
+- `POST /{name}/render` - Render template
+- `POST /render` - Render template string
+- `POST /validate` - Validate template syntax
+
+**Notifications API** (`/api/notifications/`)
+- `GET /channels` - List channels
+- `POST /channels/email` - Configure email channel
+- `POST /channels/webhook` - Configure webhook channel
+- `DELETE /channels/{name}` - Remove channel
+- `POST /send` - Send notification
+- `POST /send/batch` - Send batch notifications
+- `GET /history` - Get notification history
+- `GET /stats` - Get notification stats
+
+**Scheduler API** (`/api/scheduler/`)
+- `GET /` - List jobs
+- `GET /functions` - List registered functions
+- `POST /cron` - Schedule cron job
+- `POST /interval` - Schedule interval job
+- `POST /once` - Schedule one-time job
+- `GET /{job_id}` - Get job details
+- `POST /{job_id}/pause` - Pause job
+- `POST /{job_id}/resume` - Resume job
+- `DELETE /{job_id}` - Remove job
+- `GET /{job_id}/history` - Get job history
+- `GET /history/all` - Get all job history
+- `GET /stats` - Get scheduler stats
+
+### Files Created/Modified
+
+**New Services:**
+- `packages/arkham-frame/arkham_frame/services/export.py`
+- `packages/arkham-frame/arkham_frame/services/templates.py`
+- `packages/arkham-frame/arkham_frame/services/notifications.py`
+- `packages/arkham-frame/arkham_frame/services/scheduler.py`
+
+**New API Routes:**
+- `packages/arkham-frame/arkham_frame/api/export.py`
+- `packages/arkham-frame/arkham_frame/api/templates.py`
+- `packages/arkham-frame/arkham_frame/api/notifications.py`
+- `packages/arkham-frame/arkham_frame/api/scheduler.py`
+
+**Updated:**
+- `packages/arkham-frame/arkham_frame/services/__init__.py` - Added new service exports
+- `packages/arkham-frame/arkham_frame/main.py` - Added new API routes
+
+**Shard Fixes:**
+- `packages/arkham-shard-dashboard/arkham_shard_dashboard/shard.py` - Added super().__init__(), renamed get_routes()
+- `packages/arkham-shard-dashboard/shard.yaml` - Added events, state, capabilities
+- `packages/arkham-shard-ingest/arkham_shard_ingest/shard.py` - Added super().__init__()
+- `packages/arkham-shard-parse/arkham_shard_parse/shard.py` - Added super().__init__()
+- `packages/arkham-shard-ocr/arkham_shard_ocr/shard.py` - Added super().__init__()
+- `packages/arkham-shard-search/shard.yaml` - Complete rewrite with v5 sections
+- `packages/arkham-shard-contradictions/shard.yaml` - Added missing sections
+- `packages/arkham-shard-anomalies/shard.yaml` - Added missing sections
+- `packages/arkham-shard-graph/shard.yaml` - NEW FILE
+- `packages/arkham-shard-timeline/shard.yaml` - NEW FILE
+
+**Status**: Phase 5 Complete. All shards v5 compliant. Output Services implemented with full API.
 
 ---

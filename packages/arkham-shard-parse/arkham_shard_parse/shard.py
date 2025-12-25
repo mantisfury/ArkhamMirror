@@ -33,6 +33,7 @@ class ParseShard(ArkhamShard):
     description = "Entity extraction, NER, and text chunking"
 
     def __init__(self):
+        super().__init__()  # Auto-loads manifest from shard.yaml
         self.ner_extractor: NERExtractor | None = None
         self.date_extractor: DateExtractor | None = None
         self.location_extractor: LocationExtractor | None = None

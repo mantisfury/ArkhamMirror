@@ -1,8 +1,16 @@
 name: search
 version: 0.1.0
 description: Semantic and keyword search for documents
-
+entry_point: arkham_shard_search:SearchShard
+api_prefix: /api/search
 requires_frame: ">=0.1.0"
+
+navigation:
+  category: Search
+  order: 30
+  icon: Search
+  label: Search
+  route: /search
 
 dependencies:
   services:
@@ -10,8 +18,8 @@ dependencies:
     - vectors
     - events
   optional:
-    - documents
-    - entities
+    - llm
+  shards: []
 
 capabilities:
   - semantic_search
@@ -20,8 +28,6 @@ capabilities:
   - similarity_search
   - autocomplete
 
-api_prefix: /api/search
-
 events:
   publishes:
     - search.query.executed
@@ -29,3 +35,13 @@ events:
   subscribes:
     - documents.indexed
     - documents.deleted
+
+state:
+  strategy: url
+  url_params:
+    - q
+    - type
+    - project
+
+ui:
+  has_custom_ui: true

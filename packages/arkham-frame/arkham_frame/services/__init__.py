@@ -97,6 +97,47 @@ from .storage import (
     FileInfo,
     StorageStats,
 )
+from .export import (
+    ExportService,
+    ExportError,
+    ExportFormatError,
+    ExportRenderError,
+    TemplateNotFoundError as ExportTemplateNotFoundError,
+    ExportFormat,
+    ExportOptions,
+    ExportResult,
+)
+from .templates import (
+    TemplateService,
+    TemplateError,
+    TemplateNotFoundError,
+    TemplateRenderError,
+    TemplateSyntaxError,
+    Template,
+    RenderResult,
+)
+from .notifications import (
+    NotificationService,
+    NotificationError,
+    DeliveryError,
+    ConfigurationError,
+    ChannelNotFoundError,
+    NotificationType,
+    ChannelType,
+    DeliveryStatus,
+    Notification,
+)
+from .scheduler import (
+    SchedulerService,
+    SchedulerError,
+    JobNotFoundError,
+    JobExecutionError,
+    InvalidScheduleError,
+    JobStatus,
+    TriggerType,
+    ScheduledJob,
+    JobResult,
+)
 
 __all__ = [
     # Services
@@ -112,6 +153,10 @@ __all__ = [
     "WorkerService",
     "ResourceService",
     "StorageService",
+    "ExportService",
+    "TemplateService",
+    "NotificationService",
+    "SchedulerService",
     # Entity types and enums
     "EntityType",
     "RelationshipType",
@@ -189,4 +234,37 @@ __all__ = [
     "StorageFileNotFoundError",
     "StorageFullError",
     "InvalidPathError",
+    # Export types
+    "ExportFormat",
+    "ExportOptions",
+    "ExportResult",
+    "ExportError",
+    "ExportFormatError",
+    "ExportRenderError",
+    "ExportTemplateNotFoundError",
+    # Template types
+    "Template",
+    "RenderResult",
+    "TemplateError",
+    "TemplateNotFoundError",
+    "TemplateRenderError",
+    "TemplateSyntaxError",
+    # Notification types
+    "NotificationType",
+    "ChannelType",
+    "DeliveryStatus",
+    "Notification",
+    "NotificationError",
+    "DeliveryError",
+    "ConfigurationError",
+    "ChannelNotFoundError",
+    # Scheduler types
+    "JobStatus",
+    "TriggerType",
+    "ScheduledJob",
+    "JobResult",
+    "SchedulerError",
+    "JobNotFoundError",
+    "JobExecutionError",
+    "InvalidScheduleError",
 ]
