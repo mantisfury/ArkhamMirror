@@ -82,6 +82,9 @@ class TextChunker:
         text_len = len(text)
         chunk_index = 0
 
+        # Ensure step is at least 1 to prevent infinite loops
+        step = max(1, self.chunk_size - self.overlap)
+
         i = 0
         while i < text_len:
             chunk_end = min(i + self.chunk_size, text_len)
@@ -101,7 +104,7 @@ class TextChunker:
             chunks.append(chunk)
 
             chunk_index += 1
-            i += self.chunk_size - self.overlap
+            i += step
 
         logger.debug(f"Created {len(chunks)} fixed chunks")
         return chunks

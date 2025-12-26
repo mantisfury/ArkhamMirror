@@ -1719,3 +1719,73 @@ All shards verified for:
 **Status**: Phase 7 Complete. ALL 25 SHARDS PRODUCTION READY. ALL PHASES COMPLETE!
 
 ---
+
+## 2025-12-26 | Claude | Shard Test Coverage Initiative
+
+### Goals
+Add comprehensive test suites to shards that lack tests. 11 shards have tests, 14 do not.
+
+### Shards WITH Tests (11)
+- arkham-shard-claims
+- arkham-shard-credibility
+- arkham-shard-documents
+- arkham-shard-embed (minimal)
+- arkham-shard-entities
+- arkham-shard-export
+- arkham-shard-letters
+- arkham-shard-packets
+- arkham-shard-patterns
+- arkham-shard-projects
+- arkham-shard-provenance
+- arkham-shard-reports
+- arkham-shard-settings
+- arkham-shard-summary
+- arkham-shard-templates
+
+### Shards WITHOUT Tests - Now Fixed
+
+#### arkham-shard-ach - COMPLETE
+- **Files**: tests/__init__.py, test_models.py, test_api.py, test_shard.py
+- **Tests**: 105 tests, all passing
+- **Coverage**:
+  - Models: ConsistencyRating, EvidenceType, MatrixStatus enums; Hypothesis, Evidence, Rating, HypothesisScore, ACHMatrix, DevilsAdvocateChallenge, MatrixExport dataclasses
+  - API: Matrix CRUD, hypothesis/evidence management, ratings, scoring, export, diagnosticity, sensitivity, evidence gaps, AI/LLM endpoints
+  - Shard: Metadata, initialization, shutdown, matrix management, hypothesis/evidence/rating management, scoring, export, integration workflow
+
+#### arkham-shard-ingest - COMPLETE
+- **Files**: tests/__init__.py, test_models.py, test_api.py, test_shard.py
+- **Tests**: 87 tests, all passing
+- **Coverage**:
+  - Models: FileCategory, ImageQuality, JobPriority, JobStatus enums; FileInfo, ImageQualityScore (with classification/issues properties), IngestJob (with can_retry), IngestBatch (with pending/is_complete)
+  - API: Upload endpoints (single, batch, path), job/batch status, retry, queue stats, pending jobs, service unavailable scenarios
+  - Shard: Metadata, initialization (workers, events, intake manager), shutdown, public API (ingest_file, ingest_path, get_status), event handlers (job completed/failed, retry), integration workflows
+
+### Test Pattern Used
+All test suites follow the established pattern from arkham-shard-claims:
+- `test_models.py` - Enum and dataclass tests
+- `test_api.py` - FastAPI endpoint tests with TestClient
+- `test_shard.py` - Shard class tests with mocked Frame services
+
+#### arkham-shard-parse - COMPLETE
+- **Files**: tests/__init__.py, test_models.py, test_api.py, test_shard.py, test_extractors.py, test_chunker.py
+- **Tests**: 153 tests, all passing
+- **Coverage**:
+  - Models: EntityType, EntityConfidence enums; EntityMention (with confidence_level property), Entity, EntityRelationship, DateMention, LocationMention, TextChunk, ParseResult, EntityLinkingResult dataclasses
+  - API: Parse text endpoint (with extraction flags), parse document (job dispatch, events), get entities/chunks, chunk text, link entities, stats endpoint, service unavailable scenarios
+  - Shard: Metadata, initialization (extractors, linkers, chunker, workers, events), shutdown, public API (parse_text, parse_document), event handlers (document ingested, worker completed), integration workflows
+  - Extractors: NERExtractor (mock mode, spaCy mode, async), DateExtractor (ISO dates, relative dates, dateparser), RelationExtractor (pattern matching, employment/ownership relations)
+  - Chunker: TextChunker (fixed, sentence, semantic methods), overlap handling, edge cases
+- **Bug Fix**: Added infinite loop protection to TextChunker (step = max(1, chunk_size - overlap))
+
+### Remaining Shards Without Tests (7)
+- arkham-shard-anomalies
+- arkham-shard-contradictions
+- arkham-shard-dashboard
+- arkham-shard-graph
+- arkham-shard-ocr
+- arkham-shard-search
+- arkham-shard-timeline
+
+**Status**: 3/10 shards completed. Continuing with remaining shards.
+
+---
