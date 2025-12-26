@@ -1,0 +1,79 @@
+# Entities Shard - Entity Browser and Management
+# Production Manifest v1.0
+# Compliant with shard_manifest_schema_prod.md
+
+name: entities
+version: "0.1.0"
+description: Entity browser with merge/link/edit capabilities for entity resolution workflow
+entry_point: arkham_shard_entities:EntitiesShard
+api_prefix: /api/entities
+requires_frame: ">=0.1.0"
+
+# Navigation - Shell integration
+navigation:
+  category: Data
+  order: 14                   # Data category: 10-19
+  icon: Users
+  label: Entities
+  route: /entities
+  badge_endpoint: /api/entities/count
+  badge_type: count
+  sub_routes:
+    - id: all
+      label: All Entities
+      route: /entities
+      icon: List
+    - id: merge
+      label: Merge Duplicates
+      route: /entities/merge
+      icon: GitMerge
+    - id: relationships
+      label: Relationships
+      route: /entities/relationships
+      icon: Network
+
+# Dependencies - Frame service names
+dependencies:
+  services:
+    - database            # Entity storage and persistence
+    - events              # Event publishing for entity changes
+  optional:
+    - vectors             # Similarity-based merge suggestions
+    - entities            # Frame's EntityService for advanced features
+  shards: []              # No shard dependencies (required empty)
+
+# Capabilities - Standard capability names
+capabilities:
+  - entity_management
+  - entity_merging
+  - relationship_editing
+  - canonical_resolution
+  - mention_tracking
+
+# Events - Format: {shard}.{entity}.{action}
+events:
+  publishes:
+    - entities.entity.viewed
+    - entities.entity.merged
+    - entities.entity.edited
+    - entities.relationship.created
+    - entities.relationship.deleted
+  subscribes:
+    - parse.entity.created      # From parse shard entity extraction
+    - parse.entity.updated
+
+# State Management
+state:
+  strategy: url
+  url_params:
+    - entityId            # Active entity ID
+    - view                # View mode (list, detail, merge, relationships)
+    - filter              # Entity type filter
+  local_keys:
+    - column_widths       # Column width preferences
+    - show_merged         # Show merged entities toggle
+    - sort_preference     # Default sort preference
+
+# UI Configuration - Custom UI for entity management
+ui:
+  has_custom_ui: true

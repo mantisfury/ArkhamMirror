@@ -158,19 +158,28 @@ vector_id = await embed_shard.store_embedding(
 model_info = embed_shard.get_model_info()
 ```
 
+## Dependencies
+
+### Required Frame Services
+- **vectors** - VectorService for storing embeddings in Qdrant
+- **workers** - WorkerService for background embedding jobs (uses `gpu-embed` pool)
+- **events** - EventBus for pub/sub communication
+
+### Optional Frame Services
+- **documents** - DocumentService for auto-embedding document chunks
+
 ## Events
 
 ### Published Events
 
-- `embed.text.completed` - Single text embedding completed
-- `embed.batch.completed` - Batch embedding completed
-- `embed.document.completed` - Document embedding completed
-- `embed.model.loaded` - Embedding model loaded
+- `embed.embedding.created` - Embedding created and stored
+- `embed.batch.completed` - Batch embedding operation completed
+- `embed.model.loaded` - Embedding model loaded into memory
 
 ### Subscribed Events
 
-- `documents.ingested` - Auto-queue embedding for new documents
-- `documents.chunks.created` - Trigger chunk embedding
+- `document.ingested` - Auto-queue embedding for new documents
+- `document.processed` - Trigger embedding after document processing
 
 ## Architecture
 

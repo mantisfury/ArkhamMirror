@@ -7,7 +7,7 @@ requires_frame: ">=0.1.0"
 
 navigation:
   category: Analysis
-  order: 50
+  order: 37
   icon: AlertTriangle
   label: Anomalies
   route: /anomalies
@@ -25,22 +25,17 @@ dependencies:
 
 capabilities:
   - anomaly_detection
-  - outlier_detection
-  - pattern_detection
-  - statistical_analysis
-  - analyst_workflow
-  - triage_management
 
 events:
   publishes:
-    - anomalies.detected
-    - anomalies.confirmed
-    - anomalies.dismissed
-    - anomalies.pattern_found
-    - anomalies.stats_updated
+    - anomalies.anomaly.detected
+    - anomalies.anomaly.confirmed
+    - anomalies.anomaly.dismissed
+    - anomalies.pattern.found
+    - anomalies.stats.updated
   subscribes:
-    - embeddings.created
-    - documents.indexed
+    - embed.embedding.created
+    - document.processed
 
 state:
   strategy: url

@@ -160,20 +160,30 @@ stats = await anomalies_shard.get_statistics()
 }
 ```
 
+## Dependencies
+
+### Required Frame Services
+- **database** - DatabaseService for storing anomalies (schema: arkham_anomalies)
+- **vectors** - VectorService for vector-based outlier detection
+- **events** - EventBus for pub/sub communication
+
+### Optional Frame Services
+- **llm** - LLMService for enhanced anomaly explanation
+
 ## Events
 
-### Published
+### Published Events
 
-- `anomalies.detected` - Anomalies found in document
-- `anomalies.confirmed` - Analyst confirmed anomaly
-- `anomalies.dismissed` - Analyst dismissed anomaly
-- `anomalies.pattern_found` - Pattern detected across anomalies
-- `anomalies.stats_updated` - Statistics recalculated
+- `anomalies.anomaly.detected` - Anomalies found in document
+- `anomalies.anomaly.confirmed` - Analyst confirmed anomaly
+- `anomalies.anomaly.dismissed` - Analyst dismissed anomaly
+- `anomalies.pattern.found` - Pattern detected across anomalies
+- `anomalies.stats.updated` - Statistics recalculated
 
-### Subscribed
+### Subscribed Events
 
-- `embeddings.created` - Triggers content anomaly detection
-- `documents.indexed` - Triggers metadata/statistical detection
+- `embed.embedding.created` - Triggers content anomaly detection when embeddings are created
+- `document.processed` - Triggers metadata/statistical detection when documents are processed
 
 ## Data Models
 

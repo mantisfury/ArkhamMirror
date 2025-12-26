@@ -1,8 +1,9 @@
 # ACH Shard - Analysis of Competing Hypotheses
-# Manifest v5 Format
+# Production Manifest v1.0 - Reference Implementation
+# Compliant with shard_manifest_schema_prod.md
 
 name: ach
-version: 0.1.0
+version: "0.1.0"
 description: Analysis of Competing Hypotheses matrix for intelligence analysis
 entry_point: arkham_shard_ach:ACHShard
 api_prefix: /api/ach
@@ -11,7 +12,7 @@ requires_frame: ">=0.1.0"
 # Navigation - Shell integration
 navigation:
   category: Analysis
-  order: 30
+  order: 30                   # Analysis category: 30-39
   icon: Scale
   label: ACH Analysis
   route: /ach
@@ -27,24 +28,26 @@ navigation:
       route: /ach/new
       icon: Plus
 
-# Dependencies
+# Dependencies - Frame service names
 dependencies:
   services:
-    - database
-    - events
+    - database            # Matrix and evidence persistence
+    - events              # Event publishing
   optional:
-    - llm  # For devil's advocate mode
-  shards: []
+    - llm                 # Devil's advocate mode, AI suggestions
+    - vectors             # Evidence similarity search
+  shards: []              # No shard dependencies (required empty)
 
-# Capabilities
+# Capabilities - Standard capability names
 capabilities:
   - hypothesis_management
   - evidence_management
   - consistency_scoring
   - devils_advocate
-  - matrix_export
+  - report_generation
+  - data_export
 
-# Events
+# Events - Format: {shard}.{entity}.{action}
 events:
   publishes:
     - ach.matrix.created
@@ -55,17 +58,22 @@ events:
     - ach.evidence.added
     - ach.evidence.removed
     - ach.rating.updated
-    - ach.score.calculated
+    - ach.analysis.completed
   subscribes:
     - llm.analysis.completed
+    - document.processed      # Link new documents as evidence
 
 # State Management
 state:
   strategy: url
   url_params:
-    - matrixId
-    - tab
-    - view
+    - matrixId            # Active matrix ID
+    - hypothesisId        # Selected hypothesis
+    - tab                 # Active tab (matrix, evidence, analysis)
+    - view                # View mode (grid, list, summary)
+  local_keys:
+    - matrix_zoom         # Zoom level preference
+    - show_tooltips       # Tooltip visibility
 
 # UI Configuration - Custom UI (not generic list)
 ui:

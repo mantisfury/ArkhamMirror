@@ -1,0 +1,75 @@
+# Export Shard - Production Manifest v1.0
+# Compliant with shard_manifest_schema_prod.md
+# Export data in various formats (JSON, CSV, PDF, DOCX)
+
+name: export
+version: "0.1.0"
+description: Data export shard - export documents, entities, claims, timeline, and analysis results in multiple formats
+entry_point: arkham_shard_export:ExportShard
+api_prefix: /api/export
+requires_frame: ">=0.1.0"
+
+navigation:
+  category: Export
+  order: 50
+  icon: Download
+  label: Export
+  route: /export
+  badge_endpoint: /api/export/count
+  badge_type: count
+  sub_routes:
+    - id: jobs
+      label: Export Jobs
+      route: /export/jobs
+      icon: FileDown
+    - id: history
+      label: Export History
+      route: /export/history
+      icon: History
+    - id: formats
+      label: Formats
+      route: /export/formats
+      icon: FileType
+
+dependencies:
+  services:
+    - database      # Required: stores export jobs and metadata
+    - events        # Required: publishes export events
+  optional:
+    - storage       # Optional: file storage for export files
+  shards: []        # MUST be empty - no shard dependencies
+
+capabilities:
+  - json_export           # Export to JSON format
+  - csv_export            # Export to CSV format
+  - pdf_export            # Export to PDF format (placeholder)
+  - docx_export           # Export to DOCX format (placeholder)
+  - batch_export          # Batch export multiple targets
+  - scheduled_export      # Schedule recurring exports (placeholder)
+
+events:
+  publishes:
+    - export.job.created        # New export job created
+    - export.job.started        # Export job processing started
+    - export.job.completed      # Export job finished successfully
+    - export.job.failed         # Export job failed
+    - export.file.created       # Export file generated
+    - export.file.downloaded    # Export file downloaded
+    - export.file.expired       # Export file expired/deleted
+
+  subscribes: []              # No event subscriptions - triggered by API
+
+state:
+  strategy: url
+  url_params:
+    - jobId             # Selected export job
+    - format            # Filter by format
+    - status            # Filter by status
+    - target            # Filter by target type
+  local_keys:
+    - download_auto     # Auto-download completed exports
+    - show_options      # Show/hide export options panel
+    - default_format    # User's preferred export format
+
+ui:
+  has_custom_ui: true   # Custom export job interface with format options

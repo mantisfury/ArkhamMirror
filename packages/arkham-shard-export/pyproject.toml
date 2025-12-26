@@ -1,0 +1,32 @@
+[project]
+name = "arkham-shard-export"
+version = "0.1.0"
+description = "Data export shard for ArkhamFrame - export documents, entities, claims, and analysis results in various formats"
+readme = "README.md"
+requires-python = ">=3.10"
+
+dependencies = [
+    "arkham-frame>=0.1.0",
+    "pydantic>=2.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-asyncio>=0.21.0",
+    "httpx>=0.24.0",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+
+[project.entry-points."arkham.shards"]
+export = "arkham_shard_export:ExportShard"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

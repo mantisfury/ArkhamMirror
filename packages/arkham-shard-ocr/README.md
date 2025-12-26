@@ -2,12 +2,25 @@
 
 OCR processing shard for ArkhamFrame.
 
+## Overview
+
+The OCR shard converts images to text using optical character recognition. It supports both traditional OCR (PaddleOCR) and vision-language models (Qwen-VL) for complex documents.
+
+**Category**: Data (order 11)
+
 ## Features
 
 - **PaddleOCR**: Fast, accurate OCR for printed text
 - **Qwen-VL**: Vision-language model for complex/handwritten text
 - Page-level and document-level processing
 - Bounding box extraction for text regions
+- GPU-accelerated processing
+
+## Capabilities
+
+- `ocr_processing` - Optical character recognition (PaddleOCR, Qwen-VL)
+- `gpu_acceleration` - Uses GPU worker pools for hardware acceleration
+- `background_processing` - Async processing via worker queues
 
 ## Installation
 

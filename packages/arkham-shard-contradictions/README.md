@@ -118,30 +118,31 @@ POST /api/contradictions/detect-chains
 GET /api/contradictions/chains
 ```
 
-## Configuration
+## Dependencies
 
-The shard requires these Frame services:
+### Required Frame Services
+- **database** - DatabaseService for storing contradictions (schema: arkham_contradictions)
+- **events** - EventBus for pub/sub communication
+- **vectors** - VectorService for semantic similarity matching
 
-- **database**: For storing contradictions (falls back to in-memory)
-- **events**: For event-driven analysis
-- **embeddings**: For semantic matching (falls back to keyword matching)
-- **llm** (optional): For enhanced verification
+### Optional Frame Services
+- **llm** - LLMService for enhanced contradiction verification (falls back to heuristic detection)
 
 ## Events
 
 ### Published Events
 
-- `contradictions.detected`: New contradiction detected
-- `contradictions.confirmed`: Analyst confirmed contradiction
-- `contradictions.dismissed`: Analyst dismissed false positive
-- `contradictions.chain_detected`: Contradiction chain detected
-- `contradictions.status_updated`: Status changed
+- `contradictions.contradiction.detected` - New contradiction detected
+- `contradictions.contradiction.confirmed` - Analyst confirmed contradiction
+- `contradictions.contradiction.dismissed` - Analyst dismissed false positive
+- `contradictions.chain.detected` - Contradiction chain detected
+- `contradictions.status.updated` - Status changed
 
 ### Subscribed Events
 
-- `document.ingested`: Triggers background analysis
-- `document.updated`: May trigger re-analysis
-- `llm.analysis.completed`: Processes verification results
+- `document.ingested` - Triggers background analysis against existing documents
+- `document.updated` - May trigger re-analysis if content changed
+- `llm.analysis.completed` - Processes LLM verification results
 
 ## Usage Example
 

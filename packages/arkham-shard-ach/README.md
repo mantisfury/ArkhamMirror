@@ -220,8 +220,15 @@ The shard publishes these events via the Frame EventBus:
 | `ach.rating.updated` | `{matrix_id, evidence_id, hypothesis_id, rating}` |
 | `ach.score.calculated` | `{matrix_id, hypothesis_count}` |
 
+## Production Compliance
+
+This shard is compliant with `shard_manifest_schema_prod.md` and serves as the **reference implementation** for all SHATTERED shards.
+
+See [production.md](production.md) for the compliance audit report.
+
 ## Documentation
 
+- [production.md](production.md) - Production compliance report
 - [IMPLEMENTATION_SUMMARY.md](IMPLEMENTATION_SUMMARY.md) - Technical implementation details
 - [INTEGRATION_GUIDE.md](INTEGRATION_GUIDE.md) - How to integrate with this shard
 - [CLAUDE.md](../../CLAUDE.md) - Project-wide shard standards

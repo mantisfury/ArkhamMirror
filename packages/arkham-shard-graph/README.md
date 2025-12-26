@@ -1,6 +1,10 @@
-# ArkhamFrame Graph Shard
+# Graph Shard
 
-Entity relationship visualization and graph analysis for ArkhamMirror.
+Entity relationship visualization and graph analysis for ArkhamFrame.
+
+**Version:** 0.1.0
+**Category:** Visualize
+**Frame Requirement:** >=0.1.0
 
 ## Features
 
@@ -328,14 +332,15 @@ neighbors = await graph_shard.get_neighbors(
 ## Events
 
 **Published:**
-- `graph.built` - When graph construction completes
-- `graph.updated` - When graph is modified
-- `graph.exported` - When graph is exported
+- `graph.graph.built` - When graph construction completes
+- `graph.graph.updated` - When graph is modified
+- `graph.communities.detected` - When community detection completes
+- `graph.path.found` - When path finding completes
 
 **Subscribed:**
-- `entities.created` - To update graph nodes
-- `entities.merged` - To merge graph nodes
-- `documents.deleted` - To update edge weights
+- `entity.entity.created` - To update graph nodes
+- `entity.entity.merged` - To merge graph nodes
+- `document.document.deleted` - To update edge weights
 
 ## Configuration
 

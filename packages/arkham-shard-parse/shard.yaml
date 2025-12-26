@@ -6,8 +6,8 @@ api_prefix: /api/parse
 requires_frame: ">=0.1.0"
 
 navigation:
-  category: Analysis
-  order: 40
+  category: Data
+  order: 12
   icon: FileSearch
   label: Parse & Extract
   route: /parse
@@ -23,12 +23,8 @@ dependencies:
   shards: []
 
 capabilities:
-  - named_entity_recognition
-  - date_extraction
-  - location_extraction
-  - entity_linking
-  - coreference_resolution
-  - text_chunking
+  - entity_extraction
+  - background_processing
 
 events:
   publishes:

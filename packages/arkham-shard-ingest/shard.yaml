@@ -23,12 +23,11 @@ dependencies:
   shards: []
 
 capabilities:
-  - file_intake
-  - type_detection
-  - quality_classification
-  - archive_extraction
-  - image_preprocessing
-  - worker_dispatch
+  - document_storage
+  - background_processing
+  - file_classification
+  - image_analysis
+  - batch_processing
 
 events:
   publishes:

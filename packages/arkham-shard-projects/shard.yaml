@@ -1,0 +1,78 @@
+# Projects Shard - Production Manifest v1.0
+# Compliant with shard_manifest_schema_prod.md
+# Project workspace management - groups related documents, entities, and analyses
+
+name: projects
+version: "0.1.0"
+description: Project workspace management - organize documents, entities, and analyses into collaborative workspaces
+entry_point: arkham_shard_projects:ProjectsShard
+api_prefix: /api/projects
+requires_frame: ">=0.1.0"
+
+navigation:
+  category: System
+  order: 2
+  icon: FolderKanban
+  label: Projects
+  route: /projects
+  badge_endpoint: /api/projects/count
+  badge_type: count
+  sub_routes:
+    - id: all
+      label: All Projects
+      route: /projects
+      icon: List
+    - id: active
+      label: Active
+      route: /projects/active
+      icon: FolderOpen
+    - id: archived
+      label: Archived
+      route: /projects/archived
+      icon: Archive
+
+dependencies:
+  services:
+    - database      # Required: stores projects, members, and associations
+    - events        # Required: publishes project events
+  optional:
+    - storage       # Optional: project-specific file storage
+  shards: []        # MUST be empty - no shard dependencies
+
+capabilities:
+  - project_management       # Create and manage project workspaces
+  - document_grouping        # Associate documents with projects
+  - permission_control       # Role-based project access
+  - project_templates        # Templated project creation
+  - activity_tracking        # Track project activity and changes
+
+events:
+  publishes:
+    - projects.project.created        # New project created
+    - projects.project.updated        # Project metadata updated
+    - projects.project.deleted        # Project deleted
+    - projects.project.archived       # Project archived
+    - projects.project.restored       # Project restored from archive
+    - projects.member.added           # Member added to project
+    - projects.member.removed         # Member removed from project
+    - projects.member.role_changed    # Member role updated
+    - projects.document.added         # Document associated with project
+    - projects.document.removed       # Document removed from project
+
+  subscribes:
+    - document.created                # Auto-associate documents with active project
+    - entity.created                  # Track entities created in project context
+
+state:
+  strategy: url
+  url_params:
+    - projectId         # Selected project
+    - view              # Display mode (grid, list, kanban)
+    - filter            # Status filter
+  local_keys:
+    - show_archived     # Include archived projects
+    - sort_order        # Project list sort preference
+    - view_mode         # Default view mode
+
+ui:
+  has_custom_ui: true   # Custom project workspace UI with activity feed

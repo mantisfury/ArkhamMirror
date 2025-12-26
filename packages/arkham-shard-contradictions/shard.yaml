@@ -7,7 +7,7 @@ requires_frame: ">=0.1.0"
 
 navigation:
   category: Analysis
-  order: 45
+  order: 35
   icon: Scale
   label: Contradictions
   route: /contradictions
@@ -24,21 +24,16 @@ dependencies:
   shards: []
 
 capabilities:
-  - claim_extraction
-  - semantic_matching
-  - contradiction_verification
-  - severity_scoring
-  - chain_detection
-  - analyst_workflow
-  - background_analysis
+  - contradiction_detection
+  - background_processing
 
 events:
   publishes:
-    - contradictions.detected
-    - contradictions.confirmed
-    - contradictions.dismissed
-    - contradictions.chain_detected
-    - contradictions.status_updated
+    - contradictions.contradiction.detected
+    - contradictions.contradiction.confirmed
+    - contradictions.contradiction.dismissed
+    - contradictions.chain.detected
+    - contradictions.status.updated
   subscribes:
     - document.ingested
     - document.updated

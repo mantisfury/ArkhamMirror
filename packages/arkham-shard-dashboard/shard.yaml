@@ -1,4 +1,6 @@
-# Dashboard Shard Manifest v5
+# Dashboard Shard - Production Manifest v1.0
+# Compliant with shard_manifest_schema_prod.md
+
 name: dashboard
 version: "0.1.0"
 description: "System monitoring, LLM configuration, database controls, and worker management"
@@ -9,7 +11,7 @@ requires_frame: ">=0.1.0"
 # Navigation - Shell integration
 navigation:
   category: System
-  order: 10
+  order: 0                    # Primary system shard (System: 0-9)
   icon: LayoutDashboard
   label: Dashboard
   route: /dashboard
@@ -35,40 +37,47 @@ navigation:
       route: /dashboard/events
       icon: Activity
 
-# Dependencies
+# Dependencies - Frame service names
 dependencies:
   services:
-    - config
-    - database
-    - events
-    - workers
+    - config              # Configuration access
+    - database            # Database health/controls
+    - events              # Event monitoring
+    - workers             # Worker management
   optional:
-    - llm
-  shards: []
+    - llm                 # LLM configuration
+    - resources           # Hardware tier info
+    - vectors             # Vector store status
+  shards: []              # No shard dependencies (required empty)
 
-# Capabilities
+# Capabilities - Standard capability names
 capabilities:
-  - service_health
-  - llm_config
-  - database_controls
+  - service_health_monitoring
+  - llm_configuration
+  - database_management
   - worker_management
-  - event_viewer
+  - event_monitoring
 
-# Events
+# Events - Format: {shard}.{entity}.{action}
 events:
   publishes:
-    - dashboard.service.health_checked
-    - dashboard.database.action_executed
-    - dashboard.workers.scaled
+    - dashboard.service.checked
+    - dashboard.database.migrated
+    - dashboard.database.reset
+    - dashboard.database.vacuumed
+    - dashboard.worker.scaled
+    - dashboard.worker.started
+    - dashboard.worker.stopped
+    - dashboard.llm.configured
   subscribes:
-    - "*"  # Dashboard monitors all events
+    - "*"                 # Dashboard monitors all events
 
 # State Management
 state:
   strategy: url
   url_params:
-    - tab
-    - timeRange
+    - tab                 # Active tab (overview, llm, database, workers, events)
+    - timeRange           # Time range filter for events
 
 # UI Configuration
 ui:

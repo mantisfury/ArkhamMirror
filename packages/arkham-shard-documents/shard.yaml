@@ -1,0 +1,78 @@
+# Documents Shard - Document Browser and Viewer
+# Production Manifest v1.0
+# Compliant with shard_manifest_schema_prod.md
+
+name: documents
+version: "0.1.0"
+description: Document browser with viewer and metadata editor - primary interface for document interaction
+entry_point: arkham_shard_documents:DocumentsShard
+api_prefix: /api/documents
+requires_frame: ">=0.1.0"
+
+# Navigation - Shell integration
+navigation:
+  category: Data
+  order: 13                   # Data category: 10-19
+  icon: FileText
+  label: Documents
+  route: /documents
+  badge_endpoint: /api/documents/count
+  badge_type: count
+  sub_routes:
+    - id: all
+      label: All Documents
+      route: /documents
+      icon: List
+    - id: recent
+      label: Recent
+      route: /documents/recent
+      icon: Clock
+    - id: processing
+      label: Processing
+      route: /documents/processing
+      icon: Loader
+
+# Dependencies - Frame service names
+dependencies:
+  services:
+    - database            # Document metadata persistence
+    - events              # Event publishing for document interactions
+  optional:
+    - storage             # File storage access
+    - documents           # Frame DocumentService for CRUD
+  shards: []              # No shard dependencies (required empty)
+
+# Capabilities - Standard capability names
+capabilities:
+  - document_viewing
+  - metadata_editing
+  - chunk_browsing
+  - status_tracking
+
+# Events - Format: {shard}.{entity}.{action}
+events:
+  publishes:
+    - documents.view.opened
+    - documents.metadata.updated
+    - documents.status.changed
+    - documents.selection.changed
+  subscribes:
+    - document.processed      # Frame event for new documents
+    - document.deleted        # Frame event for deleted documents
+
+# State Management
+state:
+  strategy: url
+  url_params:
+    - documentId          # Active document ID
+    - page                # Current page number for multi-page documents
+    - view                # View mode (metadata, content, chunks, entities)
+    - filter              # Active filter preset
+  local_keys:
+    - viewer_zoom         # Zoom level preference
+    - show_metadata       # Metadata panel visibility
+    - chunk_display_mode  # Chunk display preferences
+
+# UI Configuration - Custom UI for document viewer
+ui:
+  has_custom_ui: true

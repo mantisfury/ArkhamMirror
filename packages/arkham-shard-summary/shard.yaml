@@ -1,0 +1,78 @@
+# Summary Shard - Production Manifest v1.0
+# Compliant with shard_manifest_schema_prod.md
+# Auto-summarization of documents, collections, and analysis results using LLM
+
+name: summary
+version: "0.1.0"
+description: Auto-summarization of documents, collections, and analysis results using LLM
+entry_point: arkham_shard_summary:SummaryShard
+api_prefix: /api/summary
+requires_frame: ">=0.1.0"
+
+navigation:
+  category: Analysis
+  order: 39
+  icon: FileText
+  label: Summaries
+  route: /summary
+  badge_endpoint: /api/summary/count
+  badge_type: count
+  sub_routes:
+    - id: all
+      label: All Summaries
+      route: /summary
+      icon: List
+    - id: documents
+      label: Document Summaries
+      route: /summary/documents
+      icon: File
+    - id: collections
+      label: Collection Summaries
+      route: /summary/collections
+      icon: FolderOpen
+    - id: generate
+      label: Generate Summary
+      route: /summary/generate
+      icon: Sparkles
+
+dependencies:
+  services:
+    - database      # Required: stores summaries
+    - events        # Required: publishes summary events
+  optional:
+    - llm           # Optional but highly recommended: AI summarization
+    - workers       # Optional: background batch processing
+  shards: []        # MUST be empty - no shard dependencies
+
+capabilities:
+  - summarization               # Generate summaries of text
+  - llm_enrichment             # LLM-powered content generation
+  - multi_document_summary     # Summarize collections of documents
+  - batch_processing           # Background batch summarization
+
+events:
+  publishes:
+    - summary.summary.created       # New summary generated
+    - summary.summary.updated       # Summary regenerated
+    - summary.summary.deleted       # Summary removed
+    - summary.batch.started         # Batch summarization started
+    - summary.batch.completed       # Batch summarization finished
+    - summary.batch.failed          # Batch summarization failed
+
+  subscribes:
+    - document.processed            # Auto-summarize new documents
+    - documents.document.created    # Auto-summarize new documents
+
+state:
+  strategy: url
+  url_params:
+    - summaryId       # Selected summary
+    - sourceId        # Source document/collection
+    - type            # Summary type filter
+  local_keys:
+    - default_type        # Preferred summary type
+    - max_length          # Preferred max length
+    - auto_summarize      # Auto-summarize on document creation
+
+ui:
+  has_custom_ui: false   # Uses generic list/detail rendering

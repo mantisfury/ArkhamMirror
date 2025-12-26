@@ -7,7 +7,7 @@ requires_frame: ">=0.1.0"
 
 navigation:
   category: Visualize
-  order: 60
+  order: 40
   icon: Network
   label: Graph
   route: /graph
@@ -22,24 +22,23 @@ dependencies:
   shards: []
 
 capabilities:
-  - graph_building
+  - graph_visualization
   - path_finding
-  - centrality_metrics
+  - centrality_analysis
   - community_detection
   - graph_export
   - subgraph_extraction
-  - statistics
 
 events:
   publishes:
-    - graph.built
-    - graph.updated
-    - graph.communities_detected
-    - graph.paths_found
+    - graph.graph.built
+    - graph.graph.updated
+    - graph.communities.detected
+    - graph.path.found
   subscribes:
-    - entities.created
-    - entities.merged
-    - documents.deleted
+    - entity.entity.created
+    - entity.entity.merged
+    - document.document.deleted
 
 state:
   strategy: url

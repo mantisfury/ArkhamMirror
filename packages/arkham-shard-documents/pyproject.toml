@@ -1,0 +1,26 @@
+[project]
+name = "arkham-shard-documents"
+version = "0.1.0"
+description = "Document browser with viewer and metadata editor for ArkhamFrame"
+readme = "README.md"
+requires-python = ">=3.10"
+
+dependencies = [
+    "arkham-frame>=0.1.0",
+    "pydantic>=2.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-asyncio>=0.21.0",
+    "black>=23.0.0",
+    "mypy>=1.0.0",
+]
+
+[project.entry-points."arkham.shards"]
+documents = "arkham_shard_documents:DocumentsShard"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

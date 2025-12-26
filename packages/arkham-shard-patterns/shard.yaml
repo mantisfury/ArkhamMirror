@@ -1,0 +1,85 @@
+# Patterns Shard - Production Manifest v1.0
+# Compliant with shard_manifest_schema_prod.md
+# Cross-document pattern detection and recurring theme analysis
+
+name: patterns
+version: "0.1.0"
+description: Cross-document pattern detection - identifies recurring themes, behaviors, and relationships across the document corpus
+entry_point: arkham_shard_patterns:PatternsShard
+api_prefix: /api/patterns
+requires_frame: ">=0.1.0"
+
+navigation:
+  category: Analysis
+  order: 36
+  icon: Fingerprint
+  label: Patterns
+  route: /patterns
+  badge_endpoint: /api/patterns/count
+  badge_type: count
+  sub_routes:
+    - id: all
+      label: All Patterns
+      route: /patterns
+      icon: List
+    - id: recurring
+      label: Recurring
+      route: /patterns/recurring
+      icon: Repeat
+    - id: behavioral
+      label: Behavioral
+      route: /patterns/behavioral
+      icon: Activity
+    - id: temporal
+      label: Temporal
+      route: /patterns/temporal
+      icon: Clock
+
+dependencies:
+  services:
+    - database      # Required: stores patterns and matches
+    - events        # Required: publishes pattern events
+  optional:
+    - llm           # Optional: AI-powered pattern analysis
+    - vectors       # Optional: semantic similarity for pattern matching
+    - workers       # Optional: background pattern detection jobs
+  shards: []        # MUST be empty - no shard dependencies
+
+capabilities:
+  - pattern_detection        # Detect patterns across documents
+  - recurring_theme_analysis # Find recurring themes
+  - behavioral_analysis      # Identify behavioral patterns
+  - temporal_patterns        # Detect time-based patterns
+  - correlation_detection    # Find correlations between entities
+  - pattern_export           # Export patterns and evidence
+
+events:
+  publishes:
+    - patterns.pattern.detected       # New pattern detected
+    - patterns.pattern.updated        # Pattern updated with new evidence
+    - patterns.pattern.confirmed      # Pattern manually confirmed
+    - patterns.pattern.dismissed      # Pattern dismissed as noise
+    - patterns.match.added            # New match added to pattern
+    - patterns.analysis.started       # Pattern analysis job started
+    - patterns.analysis.completed     # Pattern analysis job completed
+
+  subscribes:
+    - document.processed              # Scan new documents for patterns
+    - entity.created                  # Check entities against patterns
+    - claims.claim.created            # Check claims for pattern matches
+    - timeline.event.created          # Check timeline events for patterns
+
+state:
+  strategy: url
+  url_params:
+    - patternId         # Selected pattern
+    - type              # Pattern type filter
+    - status            # Status filter
+    - view              # Display mode
+  local_keys:
+    - show_evidence     # Expand evidence panels
+    - sort_order        # Pattern list sort preference
+    - confidence_threshold  # Minimum confidence filter
+
+ui:
+  has_custom_ui: true   # Custom pattern viewer with evidence linking

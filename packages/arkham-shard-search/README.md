@@ -182,11 +182,32 @@ similar = await search_shard.find_similar(
 
 **Published:**
 - `search.query.executed` - When a search is performed
-- `search.results.found` - When results are returned
+- `search.results.returned` - When results are returned
+- `search.suggestions.generated` - When autocomplete suggestions are generated
 
 **Subscribed:**
-- `documents.indexed` - To invalidate caches
-- `documents.deleted` - To clean up caches
+- `document.indexed` - To invalidate caches
+- `document.deleted` - To clean up caches
+- `embed.completed` - When new embeddings are available
+
+## Navigation
+
+- **Category:** Search
+- **Order:** 20 (primary search shard)
+- **Route:** `/search`
+
+### Sub-routes
+
+| Route | Label | Description |
+|-------|-------|-------------|
+| `/search/semantic` | Semantic Search | Vector similarity search |
+| `/search/keyword` | Keyword Search | Full-text search |
+
+## Production Compliance
+
+This shard is compliant with `shard_manifest_schema_prod.md`.
+
+See [production.md](production.md) for the compliance audit report.
 
 ## Configuration
 

@@ -1,0 +1,83 @@
+# Credibility Shard - Production Manifest v1.0
+# Compliant with shard_manifest_schema_prod.md
+# Source credibility assessment and scoring for documents and entities
+
+name: credibility
+version: "0.1.0"
+description: Source credibility assessment and scoring - evaluate reliability of documents, entities, and sources for analysis
+entry_point: arkham_shard_credibility:CredibilityShard
+api_prefix: /api/credibility
+requires_frame: ">=0.1.0"
+
+navigation:
+  category: Analysis
+  order: 33
+  icon: ShieldCheck
+  label: Credibility
+  route: /credibility
+  badge_endpoint: /api/credibility/low/count
+  badge_type: count
+  sub_routes:
+    - id: all
+      label: All Assessments
+      route: /credibility
+      icon: List
+    - id: high
+      label: High Credibility
+      route: /credibility/high
+      icon: ShieldCheck
+    - id: low
+      label: Low Credibility
+      route: /credibility/low
+      icon: ShieldAlert
+    - id: sources
+      label: Source Analysis
+      route: /credibility/sources
+      icon: Database
+
+dependencies:
+  services:
+    - database      # Required: stores credibility assessments
+    - events        # Required: publishes credibility events
+  optional:
+    - llm           # Optional: AI-powered credibility assessment
+    - vectors       # Optional: semantic analysis of sources
+    - workers       # Optional: background assessment jobs
+  shards: []        # MUST be empty - no shard dependencies
+
+capabilities:
+  - credibility_scoring        # Assess source credibility
+  - source_assessment          # Evaluate source reliability
+  - reliability_tracking       # Track credibility over time
+  - factor_analysis            # Analyze credibility factors
+  - automated_assessment       # AI-powered assessment
+
+events:
+  publishes:
+    - credibility.assessment.created       # New credibility assessment created
+    - credibility.score.updated            # Credibility score changed
+    - credibility.source.rated             # Source credibility rated
+    - credibility.factor.applied           # Credibility factor applied
+    - credibility.analysis.completed       # Automated analysis finished
+    - credibility.threshold.breached       # Score crossed threshold
+
+  subscribes:
+    - document.processed                   # Assess newly processed documents
+    - claims.claim.verified                # Update source credibility from verified claims
+    - claims.claim.disputed                # Downgrade source credibility from disputed claims
+    - contradictions.contradiction.detected # Impact credibility of involved sources
+
+state:
+  strategy: url
+  url_params:
+    - assessmentId        # Selected assessment
+    - sourceType          # Filter by source type
+    - sourceId            # Filter by source
+    - minScore            # Minimum credibility score
+  local_keys:
+    - show_factors        # Expand factor details
+    - sort_order          # Assessment list sort preference
+    - score_threshold     # Display threshold preference
+
+ui:
+  has_custom_ui: true   # Custom credibility viewer with factor analysis

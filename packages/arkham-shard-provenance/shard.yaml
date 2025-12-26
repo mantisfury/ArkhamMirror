@@ -1,0 +1,83 @@
+# Provenance Shard - Evidence Chain Tracking and Data Lineage
+# Production Manifest v1.0
+# Compliant with shard_manifest_schema_prod.md
+
+name: provenance
+version: "0.1.0"
+description: Track evidence chains and data lineage for legal and journalism analysis
+entry_point: arkham_shard_provenance:ProvenanceShard
+api_prefix: /api/provenance
+requires_frame: ">=0.1.0"
+
+# Navigation - Shell integration
+navigation:
+  category: Analysis
+  order: 32                   # Analysis category: 30-39
+  icon: GitBranch
+  label: Provenance
+  route: /provenance
+  badge_endpoint: /api/provenance/count
+  badge_type: count
+  sub_routes:
+    - id: chains
+      label: Evidence Chains
+      route: /provenance/chains
+      icon: Network
+    - id: audit
+      label: Audit Trail
+      route: /provenance/audit
+      icon: FileCheck
+    - id: lineage
+      label: Data Lineage
+      route: /provenance/lineage
+      icon: GitMerge
+
+# Dependencies - Frame service names
+dependencies:
+  services:
+    - database            # Chain and lineage persistence
+    - events              # Track all creation/completion events
+  optional:
+    - storage             # For audit report exports
+  shards: []              # No shard dependencies (required empty)
+
+# Capabilities - Standard capability names
+capabilities:
+  - provenance_tracking
+  - audit_trail
+  - evidence_chains
+  - lineage_visualization
+  - data_export
+
+# Events - Format: {shard}.{entity}.{action}
+events:
+  publishes:
+    - provenance.chain.created
+    - provenance.chain.updated
+    - provenance.chain.deleted
+    - provenance.link.added
+    - provenance.link.removed
+    - provenance.link.verified
+    - provenance.audit.generated
+    - provenance.export.completed
+  subscribes:
+    - "*.*.created"       # Wildcard - track all creation events
+    - "*.*.completed"     # Track all completion events
+    - document.processed  # Track document processing chain
+
+# State Management
+state:
+  strategy: url
+  url_params:
+    - chainId             # Active evidence chain ID
+    - artifactId          # Selected artifact ID
+    - tab                 # Active tab (chain, lineage, audit)
+    - view                # View mode (tree, graph, list)
+  local_keys:
+    - graph_layout        # Graph layout preference
+    - show_metadata       # Metadata visibility
+    - expand_level        # Tree expansion level
+
+# UI Configuration - Custom UI for visualization
+ui:
+  has_custom_ui: true

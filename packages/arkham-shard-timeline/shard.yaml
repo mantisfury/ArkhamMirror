@@ -7,7 +7,7 @@ requires_frame: ">=0.1.0"
 
 navigation:
   category: Visualize
-  order: 65
+  order: 45
   icon: Calendar
   label: Timeline
   route: /timeline
@@ -22,23 +22,22 @@ dependencies:
   shards: []
 
 capabilities:
+  - timeline_construction
   - date_extraction
   - timeline_visualization
-  - timeline_merging
   - conflict_detection
-  - entity_timelines
   - date_normalization
 
 events:
   publishes:
-    - timeline.extracted
-    - timeline.merged
-    - timeline.conflicts_detected
-    - timeline.entity_timeline_built
+    - timeline.timeline.extracted
+    - timeline.timeline.merged
+    - timeline.conflict.detected
+    - timeline.entity_timeline.built
   subscribes:
-    - documents.indexed
-    - documents.deleted
-    - entities.created
+    - document.document.indexed
+    - document.document.deleted
+    - entity.entity.created
 
 state:
   strategy: url

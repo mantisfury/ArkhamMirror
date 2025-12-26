@@ -1,0 +1,81 @@
+# Settings Shard - Production Manifest v1.0
+# Compliant with shard_manifest_schema_prod.md
+# Application settings and configuration management
+
+name: settings
+version: "0.1.0"
+description: Application settings and configuration management - controls system behavior, user preferences, and shard configurations
+entry_point: arkham_shard_settings:SettingsShard
+api_prefix: /api/settings
+requires_frame: ">=0.1.0"
+
+navigation:
+  category: System
+  order: 5
+  icon: Settings
+  label: Settings
+  route: /settings
+  badge_endpoint: null  # No badge for settings
+  badge_type: null
+  sub_routes:
+    - id: general
+      label: General
+      route: /settings
+      icon: Sliders
+    - id: appearance
+      label: Appearance
+      route: /settings/appearance
+      icon: Palette
+    - id: shards
+      label: Shards
+      route: /settings/shards
+      icon: Puzzle
+    - id: integrations
+      label: Integrations
+      route: /settings/integrations
+      icon: Plug
+    - id: advanced
+      label: Advanced
+      route: /settings/advanced
+      icon: Wrench
+
+dependencies:
+  services:
+    - database      # Required: stores settings
+    - events        # Required: publishes settings changes
+  optional:
+    - storage       # Optional: backup/restore settings
+  shards: []        # MUST be empty - no shard dependencies
+
+capabilities:
+  - system_settings       # Configure system-wide settings
+  - user_preferences      # Manage user preferences
+  - shard_configuration   # Configure individual shards
+  - settings_export       # Export settings for backup
+  - settings_import       # Import settings from backup
+
+events:
+  publishes:
+    - settings.setting.updated        # Setting value changed
+    - settings.setting.reset          # Setting reset to default
+    - settings.category.updated       # Multiple settings in category changed
+    - settings.profile.applied        # Settings profile applied
+    - settings.backup.created         # Settings backup created
+    - settings.backup.restored        # Settings restored from backup
+
+  subscribes:
+    - shard.registered                # Update available shard configs
+    - shard.unregistered              # Clean up shard settings
+
+state:
+  strategy: url
+  url_params:
+    - category          # Current settings category
+    - search            # Search filter
+  local_keys:
+    - collapsed_sections    # Which sections are collapsed
+    - show_advanced         # Show advanced settings toggle
+    - last_category         # Last viewed category
+
+ui:
+  has_custom_ui: true   # Custom settings editor with validation

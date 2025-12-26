@@ -1,0 +1,76 @@
+# Letters Shard - Production Manifest v1.0
+# Compliant with shard_manifest_schema_prod.md
+# Generate formal letters from templates (FOIA requests, complaints, legal correspondence)
+
+name: letters
+version: "0.1.0"
+description: Letter generation shard - create formal letters from templates including FOIA requests, complaints, legal correspondence, and custom documents
+entry_point: arkham_shard_letters:LettersShard
+api_prefix: /api/letters
+requires_frame: ">=0.1.0"
+
+navigation:
+  category: Export
+  order: 51
+  icon: FileSignature
+  label: Letters
+  route: /letters
+  badge_endpoint: /api/letters/count
+  badge_type: count
+  sub_routes:
+    - id: drafts
+      label: Drafts
+      route: /letters/drafts
+      icon: FilePenLine
+    - id: finalized
+      label: Finalized
+      route: /letters/finalized
+      icon: FileCheck
+    - id: templates
+      label: Templates
+      route: /letters/templates
+      icon: FileText
+
+dependencies:
+  services:
+    - database      # Required: stores letters and templates
+    - events        # Required: publishes letter lifecycle events
+  optional:
+    - storage       # Optional: file storage for letter files
+    - llm           # Optional: AI-assisted letter generation
+  shards: []        # MUST be empty - no shard dependencies
+
+capabilities:
+  - letter_generation       # Generate formal letters
+  - template_rendering      # Apply templates to data
+  - document_export         # Export to multiple formats
+  - draft_management        # Manage letter drafts
+  - placeholder_substitution # Replace placeholders with data
+
+events:
+  publishes:
+    - letters.letter.created        # New letter created
+    - letters.letter.updated        # Letter content updated
+    - letters.letter.finalized      # Letter marked as finalized
+    - letters.letter.sent           # Letter marked as sent
+    - letters.letter.exported       # Letter exported to file
+    - letters.template.created      # New template created
+    - letters.template.applied      # Template applied to letter
+    - letters.template.updated      # Template updated
+
+  subscribes: []                    # No event subscriptions - triggered by API
+
+state:
+  strategy: url
+  url_params:
+    - letterId          # Selected letter
+    - templateId        # Selected template
+    - status            # Filter by status
+    - letterType        # Filter by letter type
+  local_keys:
+    - editor_mode       # Visual vs raw editor mode
+    - show_placeholders # Show placeholder hints
+    - auto_save         # Auto-save draft changes
+
+ui:
+  has_custom_ui: true   # Custom letter editor with template preview

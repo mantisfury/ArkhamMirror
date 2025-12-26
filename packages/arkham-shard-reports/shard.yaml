@@ -1,0 +1,87 @@
+# Reports Shard - Production Manifest v1.0
+# Compliant with shard_manifest_schema_prod.md
+# Analytical report generation from investigation data
+
+name: reports
+version: "0.1.0"
+description: Analytical report generation - creates summary reports, entity profiles, timeline reports, and custom analytical outputs
+entry_point: arkham_shard_reports:ReportsShard
+api_prefix: /api/reports
+requires_frame: ">=0.1.0"
+
+navigation:
+  category: Export
+  order: 55
+  icon: FileText
+  label: Reports
+  route: /reports
+  badge_endpoint: /api/reports/pending/count
+  badge_type: count
+  sub_routes:
+    - id: all
+      label: All Reports
+      route: /reports
+      icon: List
+    - id: pending
+      label: Pending
+      route: /reports/pending
+      icon: Clock
+    - id: completed
+      label: Completed
+      route: /reports/completed
+      icon: CheckCircle
+    - id: templates
+      label: Templates
+      route: /reports/templates
+      icon: FileTemplate
+    - id: schedules
+      label: Schedules
+      route: /reports/schedules
+      icon: Calendar
+
+dependencies:
+  services:
+    - database      # Required: stores reports and templates
+    - events        # Required: publishes report events
+  optional:
+    - llm           # Optional: AI-powered report generation
+    - storage       # Optional: file storage for generated reports
+    - workers       # Optional: background report generation
+  shards: []        # MUST be empty - no shard dependencies
+
+capabilities:
+  - summary_reports        # Generate system summary reports
+  - entity_reports         # Generate entity profile reports
+  - timeline_reports       # Generate timeline-based reports
+  - contradiction_reports  # Contradiction analysis reports
+  - ach_reports           # ACH analysis reports
+  - custom_reports        # Custom report templates
+  - scheduled_reports     # Scheduled report generation
+  - report_export         # Export reports in multiple formats
+
+events:
+  publishes:
+    - reports.report.generated       # Report generation completed
+    - reports.report.scheduled       # Report scheduled
+    - reports.report.failed          # Report generation failed
+    - reports.template.created       # New template created
+    - reports.template.updated       # Template updated
+    - reports.schedule.created       # New schedule created
+    - reports.schedule.executed      # Scheduled report executed
+
+  subscribes: []  # Reports are triggered by API calls, not events
+
+state:
+  strategy: url
+  url_params:
+    - reportId          # Selected report
+    - templateId        # Selected template
+    - status            # Filter by status
+    - view              # Display mode
+  local_keys:
+    - show_parameters   # Expand parameter panels
+    - sort_order        # Report list sort preference
+    - default_format    # Default export format
+
+ui:
+  has_custom_ui: true   # Custom report viewer and template editor

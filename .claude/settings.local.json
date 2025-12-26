@@ -5,7 +5,8 @@
       "Bash(wc:*)",
       "Bash(cat:*)",
       "Bash(find:*)",
-      "Bash(dir:*)"
+      "Bash(dir:*)",
+      "Bash(done)"
     ]
   }
 }

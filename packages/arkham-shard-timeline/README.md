@@ -1,6 +1,10 @@
-# ArkhamFrame Timeline Shard
+# Timeline Shard
 
-Temporal event extraction and timeline visualization for ArkhamMirror documents.
+Temporal event extraction and timeline visualization for ArkhamFrame.
+
+**Version:** 0.1.0
+**Category:** Visualize
+**Frame Requirement:** >=0.1.0
 
 ## Features
 
@@ -376,14 +380,15 @@ Identifies temporal conflicts:
 ## Events
 
 **Published:**
-- `timeline.events.extracted` - When events are extracted
-- `timeline.conflicts.detected` - When conflicts are found
-- `timeline.merged` - When timelines are merged
+- `timeline.timeline.extracted` - When events are extracted from a document
+- `timeline.timeline.merged` - When timelines are merged
+- `timeline.conflict.detected` - When temporal conflicts are found
+- `timeline.entity_timeline.built` - When entity timeline is constructed
 
 **Subscribed:**
-- `documents.indexed` - To extract timeline on new documents
-- `documents.deleted` - To clean up timeline events
-- `entities.created` - To link events with entities
+- `document.document.indexed` - To extract timeline on new documents
+- `document.document.deleted` - To clean up timeline events
+- `entity.entity.created` - To link events with entities
 
 ## Configuration
 

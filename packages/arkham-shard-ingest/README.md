@@ -4,12 +4,20 @@ Document ingestion shard for ArkhamFrame.
 
 ## Features
 
-- **File Intake**: Upload files via API or ingest from filesystem paths
-- **Type Classification**: Automatic file type detection (documents, images, audio, archives)
-- **Image Quality Assessment**: CLEAN/FIXABLE/MESSY classification for smart OCR routing
-- **Worker Dispatch**: Routes files through appropriate processing pipelines
+- **Document Storage**: Upload files via API or ingest from filesystem paths
+- **File Classification**: Automatic file type detection (documents, images, audio, archives)
+- **Image Analysis**: CLEAN/FIXABLE/MESSY quality assessment for smart OCR routing
+- **Background Processing**: Routes files through appropriate worker pool pipelines
 - **Batch Processing**: Handle multiple files as tracked batches
 - **Priority Queue**: User uploads prioritized over batch imports
+
+## Capabilities
+
+- `document_storage` - Stores and manages document files
+- `background_processing` - Uses worker pools for async processing
+- `file_classification` - Automatic file type and quality detection
+- `image_analysis` - Image quality assessment
+- `batch_processing` - Bulk file operations
 
 ## Installation
 

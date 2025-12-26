@@ -1,0 +1,84 @@
+# Claims Shard - Production Manifest v1.0
+# Compliant with shard_manifest_schema_prod.md
+# Foundation for contradiction detection and fact-checking
+
+name: claims
+version: "0.1.0"
+description: Claim extraction and tracking - identifies factual assertions from documents for verification and analysis
+entry_point: arkham_shard_claims:ClaimsShard
+api_prefix: /api/claims
+requires_frame: ">=0.1.0"
+
+navigation:
+  category: Analysis
+  order: 31
+  icon: Quote
+  label: Claims
+  route: /claims
+  badge_endpoint: /api/claims/unverified/count
+  badge_type: count
+  sub_routes:
+    - id: all
+      label: All Claims
+      route: /claims
+      icon: List
+    - id: unverified
+      label: Unverified
+      route: /claims/unverified
+      icon: AlertCircle
+    - id: verified
+      label: Verified
+      route: /claims/verified
+      icon: CheckCircle
+    - id: disputed
+      label: Disputed
+      route: /claims/disputed
+      icon: AlertTriangle
+
+dependencies:
+  services:
+    - database      # Required: stores claims and evidence
+    - events        # Required: publishes claim events
+  optional:
+    - llm           # Optional: AI-powered claim extraction
+    - vectors       # Optional: semantic similarity for claim matching
+    - workers       # Optional: background extraction jobs
+  shards: []        # MUST be empty - no shard dependencies
+
+capabilities:
+  - claim_extraction        # Extract factual claims from text
+  - claim_verification      # Track verification status
+  - evidence_linking        # Link claims to supporting/refuting evidence
+  - claim_matching          # Find similar/related claims
+  - claim_export            # Export claims with evidence
+
+events:
+  publishes:
+    - claims.claim.extracted       # New claim extracted from document
+    - claims.claim.verified        # Claim verification status changed
+    - claims.claim.disputed        # Claim marked as disputed
+    - claims.claim.merged          # Duplicate claims merged
+    - claims.evidence.linked       # Evidence linked to claim
+    - claims.evidence.unlinked     # Evidence removed from claim
+    - claims.extraction.started    # Batch extraction started
+    - claims.extraction.completed  # Batch extraction finished
+
+  subscribes:
+    - document.processed           # Extract claims from new documents
+    - parse.entity.created         # Link claims to entities
+    - contradictions.contradiction.detected  # Mark claims as disputed
+
+state:
+  strategy: url
+  url_params:
+    - claimId           # Selected claim
+    - documentId        # Filter by document
+    - status            # Filter by status
+    - view              # Display mode
+  local_keys:
+    - show_evidence     # Expand evidence panels
+    - sort_order        # Claim list sort preference
+    - confidence_threshold  # Minimum confidence filter
+
+ui:
+  has_custom_ui: true   # Custom claim viewer with evidence linking

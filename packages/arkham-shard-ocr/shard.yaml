@@ -6,8 +6,8 @@ api_prefix: /api/ocr
 requires_frame: ">=0.1.0"
 
 navigation:
-  category: Analysis
-  order: 35
+  category: Data
+  order: 11
   icon: ScanText
   label: OCR
   route: /ocr
@@ -23,11 +23,9 @@ dependencies:
   shards: []
 
 capabilities:
-  - paddle_ocr
-  - qwen_ocr
-  - page_processing
-  - text_extraction
-  - bounding_boxes
+  - ocr_processing
+  - gpu_acceleration
+  - background_processing
 
 events:
   publishes:

@@ -6,8 +6,8 @@ api_prefix: /api/embed
 requires_frame: ">=0.1.0"
 
 navigation:
-  category: Data
-  order: 50
+  category: Search
+  order: 25
   icon: Binary
   label: Embeddings
   route: /embed
@@ -22,23 +22,19 @@ dependencies:
   shards: []
 
 capabilities:
-  - text_embedding
-  - batch_embedding
-  - document_embedding
+  - embedding_generation
   - similarity_search
-  - nearest_neighbors
-  - model_management
+  - background_processing
+  - gpu_acceleration
 
 events:
   publishes:
-    - embed.text.completed
+    - embed.embedding.created
     - embed.batch.completed
-    - embed.document.completed
     - embed.model.loaded
   subscribes:
-    - documents.ingested
-    - documents.chunks.created
-    - parse.chunks.created
+    - document.ingested
+    - document.processed
 
 state:
   strategy: none

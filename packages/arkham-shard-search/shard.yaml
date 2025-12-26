@@ -1,47 +1,72 @@
+# Search Shard - Production Manifest v1.0
+# Compliant with shard_manifest_schema_prod.md
+
 name: search
-version: 0.1.0
+version: "0.1.0"
 description: Semantic and keyword search for documents
 entry_point: arkham_shard_search:SearchShard
 api_prefix: /api/search
 requires_frame: ">=0.1.0"
 
+# Navigation - Shell integration
 navigation:
   category: Search
-  order: 30
+  order: 20                   # Primary search shard (Search: 20-29)
   icon: Search
   label: Search
   route: /search
+  sub_routes:
+    - id: semantic
+      label: Semantic Search
+      route: /search/semantic
+      icon: Brain
+    - id: keyword
+      label: Keyword Search
+      route: /search/keyword
+      icon: Type
 
+# Dependencies - Frame service names
 dependencies:
   services:
-    - database
-    - vectors
-    - events
+    - database            # Keyword search (PostgreSQL full-text)
+    - vectors             # Semantic search (Qdrant)
+    - events              # Event publishing/subscription
   optional:
-    - llm
-  shards: []
+    - llm                 # Query expansion, natural language processing
+    - documents           # Document metadata lookup
+    - entities            # Entity-based filtering
+  shards: []              # No shard dependencies (required empty)
 
+# Capabilities - Standard capability names
 capabilities:
   - semantic_search
   - keyword_search
   - hybrid_search
   - similarity_search
-  - autocomplete
+  - autocomplete_suggestions
 
+# Events - Format: {shard}.{entity}.{action}
 events:
   publishes:
     - search.query.executed
-    - search.results.found
+    - search.results.returned
+    - search.suggestions.generated
   subscribes:
-    - documents.indexed
-    - documents.deleted
+    - document.indexed        # Invalidate caches
+    - document.deleted        # Clean up caches
+    - embed.completed         # New embeddings available
 
+# State Management
 state:
   strategy: url
   url_params:
-    - q
-    - type
-    - project
+    - q                   # Search query
+    - mode                # Search mode (hybrid, semantic, keyword)
+    - project             # Project filter
+  local_keys:
+    - search_mode_default # Preferred search mode
+    - results_per_page    # Results limit preference
 
+# UI Configuration
 ui:
   has_custom_ui: true

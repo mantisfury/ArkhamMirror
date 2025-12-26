@@ -1,0 +1,79 @@
+# Packets Shard - Production Manifest v1.0
+# Compliant with shard_manifest_schema_prod.md
+# Investigation packet creation and sharing for bundled analyses
+
+name: packets
+version: "0.1.0"
+description: Investigation packet management - bundle and share documents, entities, and analyses for archiving and collaboration
+entry_point: arkham_shard_packets:PacketsShard
+api_prefix: /api/packets
+requires_frame: ">=0.1.0"
+
+navigation:
+  category: Export
+  order: 58
+  icon: Package
+  label: Packets
+  route: /packets
+  badge_endpoint: /api/packets/count
+  badge_type: count
+  sub_routes:
+    - id: all
+      label: All Packets
+      route: /packets
+      icon: List
+    - id: draft
+      label: Draft Packets
+      route: /packets/draft
+      icon: FileEdit
+    - id: finalized
+      label: Finalized
+      route: /packets/finalized
+      icon: CheckCircle
+    - id: shared
+      label: Shared
+      route: /packets/shared
+      icon: Share2
+
+dependencies:
+  services:
+    - database      # Required: stores packets and contents
+    - events        # Required: publishes packet events
+  optional:
+    - storage       # Optional: file storage for packet exports
+  shards: []        # MUST be empty - no shard dependencies
+
+capabilities:
+  - packet_creation        # Create investigation packets
+  - packet_sharing         # Share packets with access control
+  - packet_import          # Import packets from files
+  - packet_versioning      # Version control for packets
+  - access_control         # Manage packet permissions
+
+events:
+  publishes:
+    - packets.packet.created       # New packet created
+    - packets.packet.updated       # Packet metadata updated
+    - packets.packet.finalized     # Packet finalized (locked)
+    - packets.packet.shared        # Packet shared with others
+    - packets.packet.exported      # Packet exported to file
+    - packets.packet.imported      # Packet imported from file
+    - packets.content.added        # Content added to packet
+    - packets.content.removed      # Content removed from packet
+    - packets.version.created      # Version snapshot created
+
+  subscribes: []    # Packets are API-triggered, not event-driven
+
+state:
+  strategy: url
+  url_params:
+    - packetId          # Selected packet
+    - view              # Display mode (contents, metadata, versions)
+    - filter            # Filter by status/visibility
+  local_keys:
+    - show_contents     # Expand content list
+    - sort_order        # Packet list sort preference
+    - view_mode         # Grid/list view toggle
+
+ui:
+  has_custom_ui: true   # Custom packet builder and viewer UI

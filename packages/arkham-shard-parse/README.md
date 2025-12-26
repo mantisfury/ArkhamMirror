@@ -2,6 +2,12 @@
 
 Entity extraction and parsing shard for ArkhamFrame.
 
+## Overview
+
+The Parse shard extracts structured information from unstructured text, including entities, dates, locations, and relationships. It processes documents through NER pipelines and prepares text for downstream analysis and embedding.
+
+**Category**: Data (order 12)
+
 ## Features
 
 - **Named Entity Recognition (NER)** - Extract persons, organizations, locations, dates, and more using spaCy
@@ -11,6 +17,11 @@ Entity extraction and parsing shard for ArkhamFrame.
 - **Entity Linking** - Map mentions to canonical entities
 - **Coreference Resolution** - Resolve pronouns to entities
 - **Text Chunking** - Split text into embedding-ready chunks
+
+## Capabilities
+
+- `entity_extraction` - Extracts entities (NER, dates, locations, entity linking)
+- `background_processing` - Uses worker pools for async processing
 
 ## Installation
 

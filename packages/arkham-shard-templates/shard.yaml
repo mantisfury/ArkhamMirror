@@ -1,0 +1,75 @@
+# Templates Shard - Production Manifest v1.0
+# Compliant with shard_manifest_schema_prod.md
+# Template management UI for reports, letters, and exports
+
+name: templates
+version: "0.1.0"
+description: Template management shard - create, edit, version, and render templates for reports, letters, and exports
+entry_point: arkham_shard_templates:TemplatesShard
+api_prefix: /api/templates
+requires_frame: ">=0.1.0"
+
+navigation:
+  category: Export
+  order: 52
+  icon: FileTemplate
+  label: Templates
+  route: /templates
+  badge_endpoint: /api/templates/count
+  badge_type: count
+  sub_routes:
+    - id: all
+      label: All Templates
+      route: /templates/all
+      icon: List
+    - id: create
+      label: Create Template
+      route: /templates/create
+      icon: Plus
+    - id: versions
+      label: Version History
+      route: /templates/versions
+      icon: History
+
+dependencies:
+  services:
+    - database      # Required: stores templates and versions
+    - events        # Required: publishes template events
+  optional:
+    - storage       # Optional: file storage for template exports
+  shards: []        # MUST be empty - no shard dependencies
+
+capabilities:
+  - template_management      # CRUD operations on templates
+  - template_rendering       # Render templates with data
+  - template_versioning      # Version control for templates
+  - placeholder_validation   # Validate placeholder usage
+  - template_export          # Export templates to file
+
+events:
+  publishes:
+    - templates.template.created       # New template created
+    - templates.template.updated       # Template modified
+    - templates.template.deleted       # Template removed
+    - templates.template.activated     # Template marked as active
+    - templates.template.deactivated   # Template marked as inactive
+    - templates.version.created        # New version created
+    - templates.version.restored       # Version restored
+    - templates.rendered               # Template rendered with data
+
+  subscribes: []              # No event subscriptions - triggered by API
+
+state:
+  strategy: url
+  url_params:
+    - templateId         # Selected template
+    - versionId          # Selected version
+    - type               # Filter by template type
+    - status             # Filter by active/inactive
+  local_keys:
+    - editor_preferences     # User editor settings
+    - preview_mode          # Preview mode preference
+    - show_placeholders     # Show placeholder hints
+
+ui:
+  has_custom_ui: true   # Custom template editor interface
