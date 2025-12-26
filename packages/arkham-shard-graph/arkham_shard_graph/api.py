@@ -112,6 +112,35 @@ async def build_graph(request: BuildGraphRequest) -> dict[str, Any]:
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.get("/stats")
+async def get_statistics(project_id: str = Query(...)) -> dict[str, Any]:
+    """
+    Get comprehensive graph statistics.
+
+    Returns metrics like density, diameter, clustering, etc.
+    """
+    if not _algorithms:
+        raise HTTPException(status_code=503, detail="Graph algorithms not available")
+
+    try:
+        # Get graph
+        if _storage:
+            graph = await _storage.load_graph(project_id)
+        elif _builder:
+            graph = await _builder.build_graph(project_id=project_id)
+        else:
+            raise HTTPException(status_code=503, detail="Graph service not available")
+
+        # Calculate statistics
+        stats = _algorithms.calculate_statistics(graph)
+
+        return stats.to_dict()
+
+    except Exception as e:
+        logger.error(f"Error calculating statistics: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/{project_id}")
 async def get_graph(project_id: str) -> GraphResponse:
     """
@@ -441,35 +470,6 @@ async def export_graph(request: ExportRequest) -> ExportResponse:
         raise
     except Exception as e:
         logger.error(f"Error exporting graph: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.get("/stats")
-async def get_statistics(project_id: str = Query(...)) -> dict[str, Any]:
-    """
-    Get comprehensive graph statistics.
-
-    Returns metrics like density, diameter, clustering, etc.
-    """
-    if not _algorithms:
-        raise HTTPException(status_code=503, detail="Graph algorithms not available")
-
-    try:
-        # Get graph
-        if _storage:
-            graph = await _storage.load_graph(project_id)
-        elif _builder:
-            graph = await _builder.build_graph(project_id=project_id)
-        else:
-            raise HTTPException(status_code=503, detail="Graph service not available")
-
-        # Calculate statistics
-        stats = _algorithms.calculate_statistics(graph)
-
-        return stats.to_dict()
-
-    except Exception as e:
-        logger.error(f"Error calculating statistics: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 

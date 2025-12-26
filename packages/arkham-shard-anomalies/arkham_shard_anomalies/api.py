@@ -241,6 +241,110 @@ async def list_anomalies(
         raise HTTPException(status_code=500, detail=f"List failed: {str(e)}")
 
 
+@router.get("/outliers", response_model=AnomalyListResponse)
+async def get_outliers(
+    limit: int = 20,
+    min_z_score: float = 3.0,
+):
+    """
+    Get statistical outliers based on embedding distance.
+
+    Returns documents that are semantically distant from
+    the corpus centroid.
+    """
+    if not _store:
+        raise HTTPException(status_code=503, detail="Anomaly service not initialized")
+
+    try:
+        # Filter to content anomalies with high scores
+        anomalies, total = await _store.list_anomalies(
+            offset=0,
+            limit=limit,
+            anomaly_type=AnomalyType.CONTENT,
+        )
+
+        # Filter by z-score
+        filtered = [a for a in anomalies if a.score >= min_z_score]
+
+        return AnomalyListResponse(
+            total=len(filtered),
+            items=[_anomaly_to_dict(a) for a in filtered],
+            offset=0,
+            limit=limit,
+            has_more=False,
+            facets={},
+        )
+
+    except Exception as e:
+        logger.error(f"Failed to get outliers: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Outliers failed: {str(e)}")
+
+
+@router.post("/patterns", response_model=dict)
+async def detect_patterns(request: PatternRequest):
+    """
+    Detect unusual patterns across anomalies.
+
+    Looks for recurring patterns that might indicate:
+    - Systematic issues
+    - Data quality problems
+    - Coordinated anomalies
+    """
+    if not _store:
+        raise HTTPException(status_code=503, detail="Anomaly service not initialized")
+
+    try:
+        logger.info("Pattern detection requested")
+
+        # In a real implementation, this would analyze anomalies for patterns
+        patterns = await _store.list_patterns()
+
+        return {
+            "patterns_found": len(patterns),
+            "patterns": [_pattern_to_dict(p) for p in patterns],
+        }
+
+    except Exception as e:
+        logger.error(f"Pattern detection failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Pattern detection failed: {str(e)}")
+
+
+@router.get("/stats", response_model=StatsResponse)
+async def get_stats():
+    """
+    Get anomaly statistics.
+
+    Returns aggregated statistics including:
+    - Total counts by type, status, severity
+    - Recent activity (last 24h)
+    - Quality metrics (false positive rate, avg confidence)
+    """
+    if not _store:
+        raise HTTPException(status_code=503, detail="Anomaly service not initialized")
+
+    try:
+        stats = await _store.get_stats()
+
+        return StatsResponse(
+            stats={
+                "total_anomalies": stats.total_anomalies,
+                "by_type": stats.by_type,
+                "by_status": stats.by_status,
+                "by_severity": stats.by_severity,
+                "detected_last_24h": stats.detected_last_24h,
+                "confirmed_last_24h": stats.confirmed_last_24h,
+                "dismissed_last_24h": stats.dismissed_last_24h,
+                "false_positive_rate": stats.false_positive_rate,
+                "avg_confidence": stats.avg_confidence,
+                "calculated_at": stats.calculated_at.isoformat(),
+            }
+        )
+
+    except Exception as e:
+        logger.error(f"Failed to get stats: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Stats failed: {str(e)}")
+
+
 @router.get("/{anomaly_id}", response_model=AnomalyResponse)
 async def get_anomaly(anomaly_id: str):
     """
@@ -357,110 +461,6 @@ async def add_note(anomaly_id: str, request: NoteRequest):
     except Exception as e:
         logger.error(f"Failed to add note: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Add note failed: {str(e)}")
-
-
-@router.get("/outliers", response_model=AnomalyListResponse)
-async def get_outliers(
-    limit: int = 20,
-    min_z_score: float = 3.0,
-):
-    """
-    Get statistical outliers based on embedding distance.
-
-    Returns documents that are semantically distant from
-    the corpus centroid.
-    """
-    if not _store:
-        raise HTTPException(status_code=503, detail="Anomaly service not initialized")
-
-    try:
-        # Filter to content anomalies with high scores
-        anomalies, total = await _store.list_anomalies(
-            offset=0,
-            limit=limit,
-            anomaly_type=AnomalyType.CONTENT,
-        )
-
-        # Filter by z-score
-        filtered = [a for a in anomalies if a.score >= min_z_score]
-
-        return AnomalyListResponse(
-            total=len(filtered),
-            items=[_anomaly_to_dict(a) for a in filtered],
-            offset=0,
-            limit=limit,
-            has_more=False,
-            facets={},
-        )
-
-    except Exception as e:
-        logger.error(f"Failed to get outliers: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Outliers failed: {str(e)}")
-
-
-@router.post("/patterns", response_model=dict)
-async def detect_patterns(request: PatternRequest):
-    """
-    Detect unusual patterns across anomalies.
-
-    Looks for recurring patterns that might indicate:
-    - Systematic issues
-    - Data quality problems
-    - Coordinated anomalies
-    """
-    if not _store:
-        raise HTTPException(status_code=503, detail="Anomaly service not initialized")
-
-    try:
-        logger.info("Pattern detection requested")
-
-        # In a real implementation, this would analyze anomalies for patterns
-        patterns = await _store.list_patterns()
-
-        return {
-            "patterns_found": len(patterns),
-            "patterns": [_pattern_to_dict(p) for p in patterns],
-        }
-
-    except Exception as e:
-        logger.error(f"Pattern detection failed: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Pattern detection failed: {str(e)}")
-
-
-@router.get("/stats", response_model=StatsResponse)
-async def get_stats():
-    """
-    Get anomaly statistics.
-
-    Returns aggregated statistics including:
-    - Total counts by type, status, severity
-    - Recent activity (last 24h)
-    - Quality metrics (false positive rate, avg confidence)
-    """
-    if not _store:
-        raise HTTPException(status_code=503, detail="Anomaly service not initialized")
-
-    try:
-        stats = await _store.get_stats()
-
-        return StatsResponse(
-            stats={
-                "total_anomalies": stats.total_anomalies,
-                "by_type": stats.by_type,
-                "by_status": stats.by_status,
-                "by_severity": stats.by_severity,
-                "detected_last_24h": stats.detected_last_24h,
-                "confirmed_last_24h": stats.confirmed_last_24h,
-                "dismissed_last_24h": stats.dismissed_last_24h,
-                "false_positive_rate": stats.false_positive_rate,
-                "avg_confidence": stats.avg_confidence,
-                "calculated_at": stats.calculated_at.isoformat(),
-            }
-        )
-
-    except Exception as e:
-        logger.error(f"Failed to get stats: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Stats failed: {str(e)}")
 
 
 # --- Helper Functions ---

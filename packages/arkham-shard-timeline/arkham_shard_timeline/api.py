@@ -209,6 +209,137 @@ async def extract_timeline(request: ExtractionRequest):
     )
 
 
+# NOTE: Static routes (/range, /stats) MUST be defined BEFORE the parametric /{document_id} route
+# Otherwise FastAPI will match "range" or "stats" as a document_id
+
+@router.get("/range", response_model=RangeResponse)
+async def get_events_in_range(
+    start_date: str,
+    end_date: str,
+    document_ids: Optional[str] = None,
+    entity_ids: Optional[str] = None,
+    event_types: Optional[str] = None,
+    limit: int = 100,
+    offset: int = 0,
+):
+    """
+    Get events within a date range across all documents.
+
+    Supports filtering by documents, entities, and event types.
+    """
+    if not _database_service:
+        raise HTTPException(status_code=503, detail="Database service not available")
+
+    # Parse comma-separated parameters
+    doc_id_list = document_ids.split(",") if document_ids else None
+    entity_id_list = entity_ids.split(",") if entity_ids else None
+    event_type_list = event_types.split(",") if event_types else None
+
+    # Build query (placeholder)
+    query = f"SELECT * FROM timeline_events WHERE date_start >= '{start_date}' AND date_start <= '{end_date}'"
+
+    if doc_id_list:
+        doc_ids_str = "','".join(doc_id_list)
+        query += f" AND document_id IN ('{doc_ids_str}')"
+
+    if event_type_list:
+        types_str = "','".join(event_type_list)
+        query += f" AND event_type IN ('{types_str}')"
+
+    query += f" ORDER BY date_start LIMIT {limit} OFFSET {offset}"
+
+    try:
+        # Placeholder
+        events = []  # await _database_service.execute(query)
+        total = 0  # await _database_service.count(...)
+    except Exception as e:
+        logger.error(f"Query failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Query failed: {str(e)}")
+
+    return RangeResponse(
+        events=[_event_to_dict(e) for e in events],
+        count=len(events),
+        total=total,
+        has_more=(offset + len(events)) < total,
+    )
+
+
+@router.get("/stats", response_model=StatsResponse)
+async def get_timeline_stats(
+    document_ids: Optional[str] = None,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+):
+    """
+    Timeline statistics across all documents.
+
+    Optionally filtered by documents and date range.
+    """
+    if not _database_service:
+        raise HTTPException(status_code=503, detail="Database service not available")
+
+    # Build query (placeholder)
+    query = "SELECT * FROM timeline_events WHERE 1=1"
+
+    if document_ids:
+        doc_id_list = document_ids.split(",")
+        doc_ids_str = "','".join(doc_id_list)
+        query += f" AND document_id IN ('{doc_ids_str}')"
+
+    if start_date:
+        query += f" AND date_start >= '{start_date}'"
+    if end_date:
+        query += f" AND date_start <= '{end_date}'"
+
+    try:
+        # Placeholder
+        events = []  # await _database_service.execute(query)
+    except Exception as e:
+        logger.error(f"Query failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Query failed: {str(e)}")
+
+    # Calculate stats
+    total_events = len(events)
+    total_documents = len(set(e.document_id for e in events)) if events else 0
+
+    date_range = None
+    if events:
+        from datetime import datetime
+        dates = [e.date_start for e in events]
+        date_range = {
+            "earliest": min(dates).isoformat(),
+            "latest": max(dates).isoformat(),
+        }
+
+    by_precision = {}
+    by_type = {}
+    total_confidence = 0.0
+
+    for event in events:
+        # Count by precision
+        prec = event.precision.value
+        by_precision[prec] = by_precision.get(prec, 0) + 1
+
+        # Count by type
+        evt_type = event.event_type.value
+        by_type[evt_type] = by_type.get(evt_type, 0) + 1
+
+        # Sum confidence
+        total_confidence += event.confidence
+
+    avg_confidence = total_confidence / total_events if total_events > 0 else 0.0
+
+    return StatsResponse(
+        total_events=total_events,
+        total_documents=total_documents,
+        date_range=date_range,
+        by_precision=by_precision,
+        by_type=by_type,
+        avg_confidence=round(avg_confidence, 2),
+        conflicts_detected=0,  # Would need to query conflicts table
+    )
+
+
 @router.get("/{document_id}", response_model=DocumentTimelineResponse)
 async def get_document_timeline(
     document_id: str,
@@ -340,58 +471,6 @@ async def merge_timelines(request: MergeRequest):
             "latest": result.date_range.end.isoformat() if result.date_range.end else None,
         },
         duplicates_removed=result.duplicates_removed,
-    )
-
-
-@router.get("/range", response_model=RangeResponse)
-async def get_events_in_range(
-    start_date: str,
-    end_date: str,
-    document_ids: Optional[str] = None,
-    entity_ids: Optional[str] = None,
-    event_types: Optional[str] = None,
-    limit: int = 100,
-    offset: int = 0,
-):
-    """
-    Get events within a date range across all documents.
-
-    Supports filtering by documents, entities, and event types.
-    """
-    if not _database_service:
-        raise HTTPException(status_code=503, detail="Database service not available")
-
-    # Parse comma-separated parameters
-    doc_id_list = document_ids.split(",") if document_ids else None
-    entity_id_list = entity_ids.split(",") if entity_ids else None
-    event_type_list = event_types.split(",") if event_types else None
-
-    # Build query (placeholder)
-    query = f"SELECT * FROM timeline_events WHERE date_start >= '{start_date}' AND date_start <= '{end_date}'"
-
-    if doc_id_list:
-        doc_ids_str = "','".join(doc_id_list)
-        query += f" AND document_id IN ('{doc_ids_str}')"
-
-    if event_type_list:
-        types_str = "','".join(event_type_list)
-        query += f" AND event_type IN ('{types_str}')"
-
-    query += f" ORDER BY date_start LIMIT {limit} OFFSET {offset}"
-
-    try:
-        # Placeholder
-        events = []  # await _database_service.execute(query)
-        total = 0  # await _database_service.count(...)
-    except Exception as e:
-        logger.error(f"Query failed: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Query failed: {str(e)}")
-
-    return RangeResponse(
-        events=[_event_to_dict(e) for e in events],
-        count=len(events),
-        total=total,
-        has_more=(offset + len(events)) < total,
     )
 
 
@@ -568,82 +647,6 @@ async def normalize_dates(request: NormalizeRequest):
             })
 
     return NormalizeResponse(normalized=results)
-
-
-@router.get("/stats", response_model=StatsResponse)
-async def get_timeline_stats(
-    document_ids: Optional[str] = None,
-    start_date: Optional[str] = None,
-    end_date: Optional[str] = None,
-):
-    """
-    Timeline statistics across all documents.
-
-    Optionally filtered by documents and date range.
-    """
-    if not _database_service:
-        raise HTTPException(status_code=503, detail="Database service not available")
-
-    # Build query (placeholder)
-    query = "SELECT * FROM timeline_events WHERE 1=1"
-
-    if document_ids:
-        doc_id_list = document_ids.split(",")
-        doc_ids_str = "','".join(doc_id_list)
-        query += f" AND document_id IN ('{doc_ids_str}')"
-
-    if start_date:
-        query += f" AND date_start >= '{start_date}'"
-    if end_date:
-        query += f" AND date_start <= '{end_date}'"
-
-    try:
-        # Placeholder
-        events = []  # await _database_service.execute(query)
-    except Exception as e:
-        logger.error(f"Query failed: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Query failed: {str(e)}")
-
-    # Calculate stats
-    total_events = len(events)
-    total_documents = len(set(e.document_id for e in events)) if events else 0
-
-    date_range = None
-    if events:
-        from datetime import datetime
-        dates = [e.date_start for e in events]
-        date_range = {
-            "earliest": min(dates).isoformat(),
-            "latest": max(dates).isoformat(),
-        }
-
-    by_precision = {}
-    by_type = {}
-    total_confidence = 0.0
-
-    for event in events:
-        # Count by precision
-        prec = event.precision.value
-        by_precision[prec] = by_precision.get(prec, 0) + 1
-
-        # Count by type
-        evt_type = event.event_type.value
-        by_type[evt_type] = by_type.get(evt_type, 0) + 1
-
-        # Sum confidence
-        total_confidence += event.confidence
-
-    avg_confidence = total_confidence / total_events if total_events > 0 else 0.0
-
-    return StatsResponse(
-        total_events=total_events,
-        total_documents=total_documents,
-        date_range=date_range,
-        by_precision=by_precision,
-        by_type=by_type,
-        avg_confidence=round(avg_confidence, 2),
-        conflicts_detected=0,  # Would need to query conflicts table
-    )
 
 
 # --- Helper Functions ---

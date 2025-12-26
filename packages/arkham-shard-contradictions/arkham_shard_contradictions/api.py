@@ -232,92 +232,6 @@ async def list_contradictions(
     )
 
 
-@router.get("/{contradiction_id}")
-async def get_contradiction(contradiction_id: str):
-    """Get specific contradiction details."""
-    if not _storage:
-        raise HTTPException(status_code=503, detail="Contradiction service not initialized")
-
-    contradiction = _storage.get(contradiction_id)
-    if not contradiction:
-        raise HTTPException(status_code=404, detail=f"Contradiction not found: {contradiction_id}")
-
-    return _contradiction_to_result(contradiction)
-
-
-@router.put("/{contradiction_id}/status")
-async def update_status(contradiction_id: str, request: UpdateStatusRequest):
-    """
-    Update contradiction status.
-
-    Supports analyst workflow: confirmed, dismissed, investigating.
-    """
-    if not _storage:
-        raise HTTPException(status_code=503, detail="Contradiction service not initialized")
-
-    # Parse status
-    try:
-        status = ContradictionStatus[request.status.upper()]
-    except KeyError:
-        raise HTTPException(status_code=400, detail=f"Invalid status: {request.status}")
-
-    # Update
-    contradiction = _storage.update_status(
-        contradiction_id, status, analyst_id=request.analyst_id
-    )
-
-    if not contradiction:
-        raise HTTPException(status_code=404, detail=f"Contradiction not found: {contradiction_id}")
-
-    # Add notes if provided
-    if request.notes:
-        _storage.add_note(contradiction_id, request.notes, request.analyst_id)
-
-    # Emit event
-    if _event_bus:
-        await _event_bus.emit(
-            "contradictions.status_updated",
-            {
-                "contradiction_id": contradiction_id,
-                "status": status.value,
-                "analyst_id": request.analyst_id,
-            },
-            source="contradictions-shard",
-        )
-
-        # Special events for confirmed/dismissed
-        if status == ContradictionStatus.CONFIRMED:
-            await _event_bus.emit(
-                "contradictions.confirmed",
-                {"contradiction_id": contradiction_id},
-                source="contradictions-shard",
-            )
-        elif status == ContradictionStatus.DISMISSED:
-            await _event_bus.emit(
-                "contradictions.dismissed",
-                {"contradiction_id": contradiction_id},
-                source="contradictions-shard",
-            )
-
-    return _contradiction_to_result(contradiction)
-
-
-@router.post("/{contradiction_id}/notes")
-async def add_notes(contradiction_id: str, request: AddNotesRequest):
-    """Add analyst notes to a contradiction."""
-    if not _storage:
-        raise HTTPException(status_code=503, detail="Contradiction service not initialized")
-
-    contradiction = _storage.add_note(
-        contradiction_id, request.notes, analyst_id=request.analyst_id
-    )
-
-    if not contradiction:
-        raise HTTPException(status_code=404, detail=f"Contradiction not found: {contradiction_id}")
-
-    return _contradiction_to_result(contradiction)
-
-
 @router.post("/claims")
 async def extract_claims(request: ClaimsRequest):
     """
@@ -469,6 +383,92 @@ async def get_chain(chain_id: str):
         "created_at": chain.created_at.isoformat(),
         "updated_at": chain.updated_at.isoformat(),
     }
+
+
+@router.get("/{contradiction_id}")
+async def get_contradiction(contradiction_id: str):
+    """Get specific contradiction details."""
+    if not _storage:
+        raise HTTPException(status_code=503, detail="Contradiction service not initialized")
+
+    contradiction = _storage.get(contradiction_id)
+    if not contradiction:
+        raise HTTPException(status_code=404, detail=f"Contradiction not found: {contradiction_id}")
+
+    return _contradiction_to_result(contradiction)
+
+
+@router.put("/{contradiction_id}/status")
+async def update_status(contradiction_id: str, request: UpdateStatusRequest):
+    """
+    Update contradiction status.
+
+    Supports analyst workflow: confirmed, dismissed, investigating.
+    """
+    if not _storage:
+        raise HTTPException(status_code=503, detail="Contradiction service not initialized")
+
+    # Parse status
+    try:
+        status = ContradictionStatus[request.status.upper()]
+    except KeyError:
+        raise HTTPException(status_code=400, detail=f"Invalid status: {request.status}")
+
+    # Update
+    contradiction = _storage.update_status(
+        contradiction_id, status, analyst_id=request.analyst_id
+    )
+
+    if not contradiction:
+        raise HTTPException(status_code=404, detail=f"Contradiction not found: {contradiction_id}")
+
+    # Add notes if provided
+    if request.notes:
+        _storage.add_note(contradiction_id, request.notes, request.analyst_id)
+
+    # Emit event
+    if _event_bus:
+        await _event_bus.emit(
+            "contradictions.status_updated",
+            {
+                "contradiction_id": contradiction_id,
+                "status": status.value,
+                "analyst_id": request.analyst_id,
+            },
+            source="contradictions-shard",
+        )
+
+        # Special events for confirmed/dismissed
+        if status == ContradictionStatus.CONFIRMED:
+            await _event_bus.emit(
+                "contradictions.confirmed",
+                {"contradiction_id": contradiction_id},
+                source="contradictions-shard",
+            )
+        elif status == ContradictionStatus.DISMISSED:
+            await _event_bus.emit(
+                "contradictions.dismissed",
+                {"contradiction_id": contradiction_id},
+                source="contradictions-shard",
+            )
+
+    return _contradiction_to_result(contradiction)
+
+
+@router.post("/{contradiction_id}/notes")
+async def add_notes(contradiction_id: str, request: AddNotesRequest):
+    """Add analyst notes to a contradiction."""
+    if not _storage:
+        raise HTTPException(status_code=503, detail="Contradiction service not initialized")
+
+    contradiction = _storage.add_note(
+        contradiction_id, request.notes, analyst_id=request.analyst_id
+    )
+
+    if not contradiction:
+        raise HTTPException(status_code=404, detail=f"Contradiction not found: {contradiction_id}")
+
+    return _contradiction_to_result(contradiction)
 
 
 @router.delete("/{contradiction_id}")
