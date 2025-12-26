@@ -4,62 +4,54 @@
 
 ![SHATTERED - Intelligence Analysis Platform](docs/Gemini_Generated_Image_4r91tk4r91tk4r91.png)
 
-**A modular intelligence analysis and investigative journalism platform**
+**A modular, local-first platform for document analysis and investigative research**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10+-green.svg)](https://python.org)
 [![TypeScript](https://img.shields.io/badge/TypeScript-React-blue.svg)](https://www.typescriptlang.org/)
 
-[Features](#features) | [Architecture](#architecture) | [Quick Start](#quick-start) | [Documentation](#documentation) | [Support](#support)
+[Philosophy](#philosophy) | [Architecture](#architecture) | [Use Cases](#use-cases) | [Quick Start](#quick-start) | [Documentation](#documentation)
 
 </div>
 
 ---
 
-## Overview
+## Philosophy
 
-SHATTERED is a production-ready platform for analysts, journalists, and researchers who need to process large document collections, extract structured information, detect patterns and contradictions, and generate professional reports.
+SHATTERED isn't a product — it's a **platform**. The shards are the products. Or rather, *bundles* of shards configured for specific use cases.
 
-Built on the **Voltron** architectural philosophy, SHATTERED uses a modular "distro-style" design where **shards** (feature modules) plug into a **frame** (core infrastructure). Add only the capabilities you need, or use the full suite for comprehensive intelligence analysis.
+**Core Principles:**
 
-### Key Use Cases
-
-- **Investigative Journalism**: Process leaked documents, track entities across sources, detect contradictions in official statements
-- **Intelligence Analysis**: Apply proven methodologies like ACH (Analysis of Competing Hypotheses) to evaluate competing theories
-- **Legal Discovery**: Ingest large document sets, extract entities and relationships, generate evidence packets
-- **Research**: Organize source materials, track claims and provenance, build knowledge graphs
+- **Build domain-agnostic infrastructure** that supports domain-specific applications
+- **Lower the bar for contribution** so non-coders can build custom shards
+- **Provide utility to people in need**, not just those who can pay
+- **Local-first**: data never leaves your machine unless you want it to
 
 ---
 
-## Features
+## The Meta-Pattern
 
-### Document Processing Pipeline
-- **Multi-format Ingestion**: PDFs, images, audio files, archives (ZIP, TAR)
-- **Intelligent OCR**: PaddleOCR for speed, Qwen-VL for complex layouts
-- **Entity Extraction**: Named Entity Recognition with spaCy, relationship detection
-- **Vector Embeddings**: Semantic search with BGE models and Qdrant
+Every workflow follows the same fundamental pattern:
 
-### Intelligence Analysis Tools
-- **ACH Matrices**: Analysis of Competing Hypotheses with evidence rating
-- **Contradiction Detection**: Multi-stage analysis (claim extraction, semantic matching, LLM verification)
-- **Anomaly Detection**: Identify outliers and unusual patterns
-- **Provenance Tracking**: Complete audit trails and evidence chains
-- **Credibility Scoring**: Assess source reliability
+```
+INGEST → EXTRACT → ORGANIZE → ANALYZE → ACT
+  │         │          │          │        │
+  │         │          │          │        └── Export, Generate, Notify
+  │         │          │          └── ACH, Contradictions, Patterns
+  │         │          └── Timeline, Graph, Matrix, Inventory
+  │         └── Entities, Claims, Events, Relationships
+  └── Documents, Data, Communications, Records
+```
 
-### Visualization & Discovery
-- **Entity Graphs**: Network visualization with PageRank, centrality metrics, community detection
-- **Timelines**: Temporal event extraction with conflict detection
-- **Hybrid Search**: Semantic + keyword search with Reciprocal Rank Fusion
-
-### Export & Collaboration
-- **Professional Reports**: Multiple templates (summary, entity, timeline, ACH)
-- **Evidence Packets**: Bundled investigations for archiving and sharing
-- **Multi-format Export**: JSON, CSV, PDF, DOCX, Markdown
-- **Letter Generation**: FOIA requests, formal complaints
+- **Core shards** handle INGEST and EXTRACT
+- **Domain shards** handle ORGANIZE and ANALYZE
+- **Output shards** handle ACT
 
 ---
 
 ## Architecture
+
+SHATTERED uses the **Voltron** architectural philosophy: a modular, plug-and-play system where self-contained shards combine into a unified application.
 
 ```
                     +------------------+
@@ -80,14 +72,80 @@ Built on the **Voltron** architectural philosophy, SHATTERED uses a modular "dis
    +---------+ +-----+ +-----------+ +-----+ +-------+
 ```
 
-### Core Principles
+### Core Design Principles
 
 1. **Frame is Immutable**: Shards depend on the Frame, never the reverse
 2. **No Shard Dependencies**: Shards communicate via events, not imports
 3. **Schema Isolation**: Each shard gets its own PostgreSQL schema
 4. **Graceful Degradation**: Works with or without AI/GPU capabilities
 
-### Available Shards (25 modules)
+---
+
+## Use Cases
+
+SHATTERED supports 67 pre-configured bundles across 17 user bases. Here are some examples:
+
+### Journalists & Investigators
+| Bundle | Purpose |
+|--------|---------|
+| **OSINT Kit** | Social media archiving, entity correlation, network mapping |
+| **FOIA Tracker** | Request templates, deadline tracking, response analysis |
+| **Publication Prep** | Claim extraction, citation tracing, fact-check reports |
+
+### Legal Self-Advocacy
+| Bundle | Purpose |
+|--------|---------|
+| **Tenant Defense** | Violation chronology, housing code matching, evidence packets |
+| **Employment Rights** | Incident documentation, labor law elements, EEOC prep |
+| **Consumer Protection** | Warranty extraction, demand letters, small claims prep |
+
+### Healthcare Self-Advocacy
+| Bundle | Purpose |
+|--------|---------|
+| **Chronic Illness Manager** | Lab results parsing, symptom tracking, treatment analysis |
+| **Insurance Fighter** | Denial tracking, appeal letters, medical necessity docs |
+| **Diagnosis Quest** | Test organization, symptom progression, specialist prep |
+
+### Civic Engagement
+| Bundle | Purpose |
+|--------|---------|
+| **Local Government Watch** | Meeting minutes parsing, vote tracking, promise vs action |
+| **Campaign Finance** | Donor identification, bundling detection, money flow mapping |
+
+### Financial Analysis
+| Bundle | Purpose |
+|--------|---------|
+| **Fraud Detection** | Benford analysis, transaction anomalies, duplicate detection |
+| **Investment Research** | SEC filings, financial statement analysis, news tracking |
+
+See [SHARDS_AND_BUNDLES.md](SHARDS_AND_BUNDLES.md) for the complete list of 67 bundles.
+
+---
+
+## Current Implementation
+
+### Frame Services (16 services)
+
+| Service | Description |
+|---------|-------------|
+| **ConfigService** | Environment + YAML configuration |
+| **ResourceService** | Hardware detection, GPU/CPU management, tier assignment |
+| **StorageService** | File/blob storage with categories |
+| **DatabaseService** | PostgreSQL with schema isolation |
+| **VectorService** | Qdrant vector store for embeddings |
+| **LLMService** | OpenAI-compatible LLM integration |
+| **ChunkService** | 8 text chunking strategies |
+| **EventBus** | Pub/sub for inter-shard communication |
+| **WorkerService** | Redis job queues with 14 worker pools |
+| **DocumentService** | Document CRUD with content access |
+| **EntityService** | Entity extraction and relationships |
+| **ProjectService** | Project management |
+| **ExportService** | Multi-format export (JSON, CSV, PDF, DOCX) |
+| **TemplateService** | Jinja2 template management |
+| **NotificationService** | Email/Webhook/Log notifications |
+| **SchedulerService** | APScheduler job scheduling |
+
+### Implemented Shards (25 shards)
 
 | Category | Shards |
 |----------|--------|
@@ -98,13 +156,17 @@ Built on the **Voltron** architectural philosophy, SHATTERED uses a modular "dis
 | **Visualize** | Graph, Timeline |
 | **Export** | Export, Letters, Templates, Reports, Packets |
 
+### Roadmap (58 total shards planned)
+
+See [SHARDS_AND_BUNDLES.md](SHARDS_AND_BUNDLES.md) for the complete shard inventory and build priority.
+
 ---
 
 ## Tech Stack
 
 ### Backend
 - **Python 3.10+** with FastAPI
-- **PostgreSQL** for document storage (schema isolation per shard)
+- **PostgreSQL** for document storage
 - **Redis** for job queues (14 worker pools)
 - **Qdrant** for vector search
 
@@ -141,14 +203,14 @@ cd SHATTERED
 cd packages/arkham-frame
 pip install -e .
 
-# Install shards (example: ACH shard)
+# Install shards you need
 cd ../arkham-shard-ach
 pip install -e .
 
-# Install spaCy model for entity extraction
+# Install spaCy model
 python -m spacy download en_core_web_sm
 
-# Install UI dependencies
+# Install UI
 cd ../arkham-shard-shell
 npm install
 ```
@@ -156,8 +218,7 @@ npm install
 ### Running
 
 ```bash
-# Terminal 1: Start the Frame API (auto-discovers installed shards)
-cd packages/arkham-frame
+# Terminal 1: Start the Frame API
 python -m uvicorn arkham_frame.main:app --host 127.0.0.1 --port 8100
 
 # Terminal 2: Start the UI
@@ -168,29 +229,18 @@ npm run dev
 python -m arkham_frame.workers --pool cpu-light --count 2
 ```
 
-Access the application:
-- **UI**: http://localhost:3100
-- **API Docs**: http://localhost:8100/docs
+**Access:**
+- UI: http://localhost:3100
+- API Docs: http://localhost:8100/docs
 
 ### Configuration
-
-Set environment variables or create a `.env` file:
 
 ```bash
 DATABASE_URL=postgresql://user:pass@localhost:5435/shattered
 REDIS_URL=redis://localhost:6380
 QDRANT_URL=http://localhost:6343
-LM_STUDIO_URL=http://localhost:1234/v1  # Optional: for AI features
+LM_STUDIO_URL=http://localhost:1234/v1  # Optional
 ```
-
-Default ports:
-| Service | Port |
-|---------|------|
-| PostgreSQL | 5435 |
-| Redis | 6380 |
-| Qdrant | 6343 |
-| Frame API | 8100 |
-| Shell UI | 3100 |
 
 ---
 
@@ -198,24 +248,20 @@ Default ports:
 
 | Document | Description |
 |----------|-------------|
-| [CLAUDE.md](CLAUDE.md) | Project guidelines and shard standards |
-| [docs/voltron_plan.md](docs/voltron_plan.md) | Architecture overview and implementation status |
-| [docs/frame_spec.md](docs/frame_spec.md) | Frame service specifications |
-| [docs/WORKER_ARCHITECTURE.md](docs/WORKER_ARCHITECTURE.md) | Worker pool design |
-| [docs/SHARD_MANIFEST_SCHEMA_v5.md](docs/SHARD_MANIFEST_SCHEMA_v5.md) | Shard manifest specification |
-
-Each shard includes its own README with API documentation.
+| [SHARDS_AND_BUNDLES.md](SHARDS_AND_BUNDLES.md) | Complete shard inventory and use-case bundles |
+| [full_frame_plan.md](full_frame_plan.md) | Frame implementation details and service specs |
+| [docs/shard_manifest_schema_prod.md](docs/shard_manifest_schema_prod.md) | Production manifest schema for shard development |
+| [CLAUDE.md](CLAUDE.md) | Project guidelines and development standards |
+| [docs/voltron_plan.md](docs/voltron_plan.md) | Architecture overview |
 
 ---
 
 ## Project Status
 
-SHATTERED has completed 7 development phases and is production-ready:
-
-- **1,469+ tests** across all shards
-- **25 shards** fully implemented and compliant
+- **25 production-ready shards** implemented
 - **16 Frame services** operational
-- **14 worker pools** for background processing
+- **1,469+ tests** across all components
+- **7 development phases** complete
 
 ---
 
@@ -231,44 +277,26 @@ If you find SHATTERED useful, consider supporting development:
 
 ## Contributing
 
-Contributions are welcome! Please read the [CLAUDE.md](CLAUDE.md) file for project guidelines and shard development standards.
+Contributions welcome! See [CLAUDE.md](CLAUDE.md) for project guidelines.
 
-When creating a new shard:
-1. Use `arkham-shard-ach` as the reference implementation
-2. Follow the v5 manifest schema
-3. Ensure schema isolation (no direct shard imports)
+**Creating a new shard:**
+1. Use `arkham-shard-ach` as reference implementation
+2. Follow the [production manifest schema](docs/shard_manifest_schema_prod.md)
+3. No direct shard imports — use events for communication
 4. Add comprehensive tests
 
 ---
 
 ## License
 
-MIT License
+MIT License - Copyright (c) 2024 Justin McHugh
 
-Copyright (c) 2024 Justin McHugh
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+See [LICENSE](LICENSE) for details.
 
 ---
 
 <div align="center">
 
-**SHATTERED** - *Break documents into pieces. Reassemble the truth.*
+**SHATTERED** — *Break documents into pieces. Reassemble the truth.*
 
 </div>
