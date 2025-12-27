@@ -159,21 +159,19 @@ class {Name}Shard(ArkhamShard):
 
 ## Current State
 
-### Completed (Standards Finalized)
+### Core Infrastructure
 - **arkham-frame**: Core infrastructure (IMMUTABLE)
 - **arkham-shard-shell**: UI shell (React/TypeScript)
-- **arkham-shard-ach**: Reference shard implementation
-- **arkham-shard-dashboard**: System monitoring shard
 
-### Needs Update to Standards
-- arkham-shard-ingest
-- arkham-shard-search
-- arkham-shard-parse
-- arkham-shard-embed
-- arkham-shard-graph
-- arkham-shard-timeline
-- arkham-shard-anomalies
-- arkham-shard-contradictions
+### Complete Shards (25 total)
+All shards have backend (shard.py + api.py) and frontend (pages/) implementations:
+
+**System**: dashboard, settings
+**Data**: ingest, documents, parse, embed
+**Search**: search, ocr
+**Analysis**: ach, anomalies, contradictions, entities, claims, credibility, patterns, provenance
+**Visualize**: graph, timeline
+**Export**: export, reports, letters, packets, templates, summary, projects
 
 ## Development Commands
 

@@ -1,6 +1,8 @@
 """Graph Shard - Entity relationship visualization and analysis."""
 
+import json
 import logging
+from typing import Any
 
 from arkham_frame.shard_interface import ArkhamShard
 
@@ -99,6 +101,10 @@ class GraphShard(ArkhamShard):
         # Subscribe to events
         if self._event_bus:
             await self._subscribe_to_events()
+
+        # Register self in app state for API access
+        if hasattr(frame, "app") and frame.app:
+            frame.app.state.graph_shard = self
 
         logger.info("Graph Shard initialized")
 
@@ -474,3 +480,28 @@ class GraphShard(ArkhamShard):
         stats = self.algorithms.calculate_statistics(graph)
 
         return stats
+
+    # === Private Helpers ===
+
+    def _parse_jsonb(self, value: Any, default: Any = None) -> Any:
+        """Parse a JSONB field that may be str, dict, list, or None.
+
+        PostgreSQL JSONB with SQLAlchemy may return:
+        - Already parsed Python objects (dict, list, bool, int, float)
+        - String that IS the value (when JSON string was stored)
+        - String that needs parsing (raw JSON)
+        """
+        if value is None:
+            return default
+        if isinstance(value, (dict, list, bool, int, float)):
+            return value
+        if isinstance(value, str):
+            if not value or value.strip() == "":
+                return default
+            # Try to parse as JSON first (for complex values)
+            try:
+                return json.loads(value)
+            except json.JSONDecodeError:
+                # If it's not valid JSON, it's already the string value
+                return value
+        return default

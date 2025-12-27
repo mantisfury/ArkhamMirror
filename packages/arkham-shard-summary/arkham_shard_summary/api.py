@@ -5,7 +5,7 @@ FastAPI endpoints for summary generation and management.
 """
 
 from typing import List, Optional
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 from .models import (
@@ -24,21 +24,13 @@ from .models import (
 
 router = APIRouter(prefix="/api/summary", tags=["summary"])
 
-# Global shard instance (set by shard initialization)
-_shard = None
 
-
-def init_api(shard):
-    """Initialize API with shard instance."""
-    global _shard
-    _shard = shard
-
-
-def get_shard():
-    """Get the shard instance."""
-    if _shard is None:
-        raise HTTPException(status_code=503, detail="Summary shard not initialized")
-    return _shard
+def get_shard(request: Request):
+    """Get the shard instance from app state."""
+    shard = getattr(request.app.state, "summary_shard", None)
+    if not shard:
+        raise HTTPException(status_code=503, detail="Summary shard not available")
+    return shard
 
 
 # === Pydantic API Models ===
@@ -130,13 +122,13 @@ class BatchResponse(BaseModel):
 # === API Endpoints ===
 
 @router.get("/health", response_model=HealthResponse)
-async def health():
+async def health(request: Request):
     """
     Health check endpoint.
 
     Returns service status and LLM availability.
     """
-    shard = get_shard()
+    shard = get_shard(request)
     return {
         "status": "healthy",
         "shard": "summary",
@@ -145,26 +137,26 @@ async def health():
 
 
 @router.get("/count", response_model=CountResponse)
-async def get_count():
+async def get_count(request: Request):
     """
     Get total summary count (for navigation badge).
 
     Returns:
         Count of all summaries in system
     """
-    shard = get_shard()
+    shard = get_shard(request)
     count = await shard.get_count()
     return {"count": count}
 
 
 @router.get("/capabilities", response_model=CapabilitiesResponse)
-async def get_capabilities():
+async def get_capabilities(request: Request):
     """
     Get shard capabilities.
 
     Shows what features are available based on service availability.
     """
-    shard = get_shard()
+    shard = get_shard(request)
     return {
         "llm_available": shard.llm_available,
         "workers_available": shard._workers is not None,
@@ -214,6 +206,7 @@ async def get_types():
 
 @router.get("/", response_model=SummaryListResponse)
 async def list_summaries(
+    request: Request,
     page: int = Query(1, ge=1, description="Page number"),
     page_size: int = Query(20, ge=1, le=100, description="Items per page"),
     summary_type: Optional[str] = Query(None, description="Filter by summary type"),
@@ -237,7 +230,7 @@ async def list_summaries(
     Returns:
         Paginated list of summaries
     """
-    shard = get_shard()
+    shard = get_shard(request)
 
     # Build filter
     filter = SummaryFilter()
@@ -301,29 +294,29 @@ async def list_summaries(
 
 
 @router.post("/", response_model=SummaryResult)
-async def create_summary(request: SummaryCreate):
+async def create_summary(body: SummaryCreate, request: Request):
     """
     Generate a new summary.
 
     Args:
-        request: Summary creation request
+        body: Summary creation request
 
     Returns:
         Generated summary result
     """
-    shard = get_shard()
+    shard = get_shard(request)
 
     # Convert to internal request model
     summary_request = SummaryRequest(
-        source_type=request.source_type,
-        source_ids=request.source_ids,
-        summary_type=request.summary_type,
-        target_length=request.target_length,
-        focus_areas=request.focus_areas,
-        exclude_topics=request.exclude_topics,
-        include_key_points=request.include_key_points,
-        include_title=request.include_title,
-        tags=request.tags,
+        source_type=body.source_type,
+        source_ids=body.source_ids,
+        summary_type=body.summary_type,
+        target_length=body.target_length,
+        focus_areas=body.focus_areas,
+        exclude_topics=body.exclude_topics,
+        include_key_points=body.include_key_points,
+        include_title=body.include_title,
+        tags=body.tags,
     )
 
     result = await shard.generate_summary(summary_request)
@@ -331,7 +324,7 @@ async def create_summary(request: SummaryCreate):
 
 
 @router.get("/{summary_id}", response_model=SummaryResponse)
-async def get_summary(summary_id: str):
+async def get_summary(summary_id: str, request: Request):
     """
     Get a summary by ID.
 
@@ -341,7 +334,7 @@ async def get_summary(summary_id: str):
     Returns:
         Summary details
     """
-    shard = get_shard()
+    shard = get_shard(request)
     summary = await shard.get_summary(summary_id)
 
     if not summary:
@@ -368,7 +361,7 @@ async def get_summary(summary_id: str):
 
 
 @router.delete("/{summary_id}")
-async def delete_summary(summary_id: str):
+async def delete_summary(summary_id: str, request: Request):
     """
     Delete a summary.
 
@@ -378,7 +371,7 @@ async def delete_summary(summary_id: str):
     Returns:
         Success status
     """
-    shard = get_shard()
+    shard = get_shard(request)
     deleted = await shard.delete_summary(summary_id)
 
     if not deleted:
@@ -388,17 +381,17 @@ async def delete_summary(summary_id: str):
 
 
 @router.post("/batch", response_model=BatchResponse)
-async def create_batch_summaries(request: BatchCreate):
+async def create_batch_summaries(body: BatchCreate, request: Request):
     """
     Generate summaries for multiple sources in batch.
 
     Args:
-        request: Batch summary request
+        body: Batch summary request
 
     Returns:
         Batch operation results
     """
-    shard = get_shard()
+    shard = get_shard(request)
 
     # Convert requests
     summary_requests = [
@@ -413,13 +406,13 @@ async def create_batch_summaries(request: BatchCreate):
             include_title=req.include_title,
             tags=req.tags,
         )
-        for req in request.requests
+        for req in body.requests
     ]
 
     batch_request = BatchSummaryRequest(
         requests=summary_requests,
-        parallel=request.parallel,
-        stop_on_error=request.stop_on_error,
+        parallel=body.parallel,
+        stop_on_error=body.stop_on_error,
     )
 
     result = await shard.generate_batch_summaries(batch_request)
@@ -429,6 +422,7 @@ async def create_batch_summaries(request: BatchCreate):
 @router.get("/document/{doc_id}", response_model=SummaryResponse)
 async def get_or_generate_document_summary(
     doc_id: str,
+    request: Request,
     summary_type: str = Query("detailed", description="Type of summary"),
     regenerate: bool = Query(False, description="Force regeneration"),
 ):
@@ -443,7 +437,7 @@ async def get_or_generate_document_summary(
     Returns:
         Summary for the document
     """
-    shard = get_shard()
+    shard = get_shard(request)
 
     # Check for existing summary
     if not regenerate:
@@ -479,13 +473,13 @@ async def get_or_generate_document_summary(
     except ValueError:
         raise HTTPException(status_code=400, detail=f"Invalid summary_type: {summary_type}")
 
-    request = SummaryRequest(
+    summary_request = SummaryRequest(
         source_type=SourceType.DOCUMENT,
         source_ids=[doc_id],
         summary_type=summary_type_enum,
     )
 
-    result = await shard.generate_summary(request)
+    result = await shard.generate_summary(summary_request)
 
     if result.status == SummaryStatus.FAILED:
         raise HTTPException(
@@ -519,13 +513,13 @@ async def get_or_generate_document_summary(
 
 
 @router.get("/stats", response_model=SummaryStatistics)
-async def get_statistics():
+async def get_statistics(request: Request):
     """
     Get summary statistics.
 
     Returns:
         Aggregate statistics about all summaries
     """
-    shard = get_shard()
+    shard = get_shard(request)
     stats = await shard.get_statistics()
     return stats

@@ -9,7 +9,6 @@ import type {
   ContradictionListResponse,
   StatsResponse,
   ContradictionStatus,
-  Severity,
 } from './types';
 
 const API_PREFIX = '/api/contradictions';

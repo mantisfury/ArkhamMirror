@@ -1,0 +1,1 @@
+export { GenericShardPage } from './GenericShardPage';

@@ -60,6 +60,11 @@ class ArkhamFrame:
 
         _frame_instance = self
 
+    @property
+    def database(self):
+        """Alias for db (for backwards compatibility with shards)."""
+        return self.db
+
     async def initialize(self) -> None:
         """Initialize all Frame services."""
         logger.info("Initializing ArkhamFrame...")

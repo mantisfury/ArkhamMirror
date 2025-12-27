@@ -136,7 +136,7 @@ export function GenericForm({
     e.preventDefault();
 
     if (!validateForm()) {
-      toast('Please fix the form errors', 'error');
+      toast.error('Please fix the form errors');
       return;
     }
 
@@ -155,16 +155,16 @@ export function GenericForm({
         // Handle validation errors from server
         if (result.errors && typeof result.errors === 'object') {
           setErrors(result.errors as FieldError);
-          toast('Please fix the form errors', 'error');
+          toast.error('Please fix the form errors');
           return;
         }
         throw new Error(result.detail || result.message || 'Form submission failed');
       }
 
-      toast(result.message || 'Success', 'success');
+      toast.success(result.message || 'Success');
       onSuccess?.(result);
     } catch (err) {
-      toast(err instanceof Error ? err.message : 'Form submission failed', 'error');
+      toast.error(err instanceof Error ? err.message : 'Form submission failed');
     } finally {
       setSubmitting(false);
     }

@@ -38,7 +38,7 @@ function ShardErrorFallback({ error, resetErrorBoundary, shardName }: FallbackPr
             Go to Dashboard
           </button>
         </div>
-        {process.env.NODE_ENV === 'development' && (
+        {import.meta.env.DEV && (
           <details className="error-details">
             <summary>Error Details</summary>
             <pre>{error.stack}</pre>

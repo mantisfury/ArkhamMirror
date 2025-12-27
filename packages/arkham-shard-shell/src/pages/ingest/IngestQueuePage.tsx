@@ -20,7 +20,7 @@ type StatusFilter = 'all' | 'pending' | 'processing' | 'completed' | 'failed';
 
 export function IngestQueuePage() {
   const { toast } = useToast();
-  const { confirm } = useConfirm();
+  const confirm = useConfirm();
   const navigate = useNavigate();
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
   const [limit, setLimit] = useState(50);
@@ -38,19 +38,20 @@ export function IngestQueuePage() {
   }, [refetch]);
 
   const handleRetry = async (jobId: string, filename: string) => {
-    const confirmed = await confirm(
-      `Retry job for "${filename}"?`,
-      'This will requeue the failed job for processing.'
-    );
+    const confirmed = await confirm({
+      title: 'Retry Job',
+      message: `Retry job for "${filename}"? This will requeue the failed job for processing.`,
+      confirmLabel: 'Retry',
+    });
 
     if (!confirmed) return;
 
     try {
       await retryJobMutation(jobId);
-      toast(`Retrying job: ${filename}`, 'success');
+      toast.success(`Retrying job: ${filename}`);
       refetch();
     } catch (error) {
-      toast(error instanceof Error ? error.message : 'Retry failed', 'error');
+      toast.error(error instanceof Error ? error.message : 'Retry failed');
     }
   };
 

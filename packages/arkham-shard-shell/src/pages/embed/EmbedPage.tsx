@@ -40,39 +40,39 @@ export function EmbedPage() {
 
   const handleSearch = async () => {
     if (!searchQuery.trim()) {
-      toast('Please enter a search query', 'warning');
+      toast.warning('Please enter a search query');
       return;
     }
 
     try {
       await search(searchQuery, { limit: searchLimit });
     } catch (error) {
-      toast(error instanceof Error ? error.message : 'Search failed', 'error');
+      toast.error(error instanceof Error ? error.message : 'Search failed');
     }
   };
 
   const handleEmbedDocument = async () => {
     if (!docIdInput.trim()) {
-      toast('Please enter a document ID', 'warning');
+      toast.warning('Please enter a document ID');
       return;
     }
 
     try {
       const result = await embedDoc(docIdInput);
-      toast(`Document embedding queued: ${result.job_id}`, 'success');
+      toast.success(`Document embedding queued: ${result.job_id}`);
       setDocIdInput('');
     } catch (error) {
-      toast(error instanceof Error ? error.message : 'Embedding failed', 'error');
+      toast.error(error instanceof Error ? error.message : 'Embedding failed');
     }
   };
 
   const handleClearCache = async () => {
     try {
       await clearCacheAPI();
-      toast('Cache cleared successfully', 'success');
+      toast.success('Cache cleared successfully');
       refetchCache();
     } catch (error) {
-      toast(error instanceof Error ? error.message : 'Clear cache failed', 'error');
+      toast.error(error instanceof Error ? error.message : 'Clear cache failed');
     }
   };
 
@@ -80,12 +80,13 @@ export function EmbedPage() {
     return num.toLocaleString();
   };
 
-  const formatBytes = (bytes: number): string => {
+  const _formatBytes = (bytes: number): string => {
     if (bytes < 1024) return `${bytes} B`;
     if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
     if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
     return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
   };
+  void _formatBytes;
 
   return (
     <div className="embed-page">

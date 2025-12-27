@@ -7,7 +7,6 @@
 import type {
   OCRResponse,
   OCRHealthResponse,
-  OCRRequest,
   OCREngine,
 } from './types';
 

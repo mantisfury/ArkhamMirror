@@ -120,14 +120,14 @@ export function DashboardPage() {
         <div className="actions-grid">
           <button
             className="action-card"
-            onClick={() => toast('Ingest shard coming soon', 'info')}
+            onClick={() => toast.info('Ingest shard coming soon')}
           >
             <Icon name="Upload" size={24} />
             <span>Ingest Documents</span>
           </button>
           <button
             className="action-card"
-            onClick={() => toast('Search shard coming soon', 'info')}
+            onClick={() => toast.info('Search shard coming soon')}
           >
             <Icon name="Search" size={24} />
             <span>Search</span>
@@ -141,7 +141,7 @@ export function DashboardPage() {
           </button>
           <button
             className="action-card"
-            onClick={() => toast('Export shard coming soon', 'info')}
+            onClick={() => toast.info('Export shard coming soon')}
           >
             <Icon name="Download" size={24} />
             <span>Export Data</span>

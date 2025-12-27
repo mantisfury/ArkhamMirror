@@ -26,7 +26,8 @@ interface ContradictionDetailProps {
 }
 
 export function ContradictionDetail({ contradictionId }: ContradictionDetailProps) {
-  const [searchParams, setSearchParams] = useSearchParams();
+  const [_searchParams, setSearchParams] = useSearchParams();
+  void _searchParams;
   const { toast } = useToast();
 
   const [contradiction, setContradiction] = useState<Contradiction | null>(null);
@@ -61,10 +62,10 @@ export function ContradictionDetail({ contradictionId }: ContradictionDetailProp
     setSubmitting(true);
     try {
       await api.updateStatus(contradiction.id, status);
-      toast(`Status updated to ${STATUS_LABELS[status]}`, 'success');
+      toast.success(`Status updated to ${STATUS_LABELS[status]}`);
       await fetchContradiction();
     } catch (err) {
-      toast(err instanceof Error ? err.message : 'Failed to update status', 'error');
+      toast.error(err instanceof Error ? err.message : 'Failed to update status');
     } finally {
       setSubmitting(false);
     }
@@ -77,11 +78,11 @@ export function ContradictionDetail({ contradictionId }: ContradictionDetailProp
     setSubmitting(true);
     try {
       await api.addNote(contradiction.id, noteText.trim());
-      toast('Note added', 'success');
+      toast.success('Note added');
       setNoteText('');
       await fetchContradiction();
     } catch (err) {
-      toast(err instanceof Error ? err.message : 'Failed to add note', 'error');
+      toast.error(err instanceof Error ? err.message : 'Failed to add note');
     } finally {
       setSubmitting(false);
     }

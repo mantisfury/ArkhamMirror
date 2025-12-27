@@ -75,4 +75,4 @@ state:
     - auto_summarize      # Auto-summarize on document creation
 
 ui:
-  has_custom_ui: false   # Uses generic list/detail rendering
+  has_custom_ui: true

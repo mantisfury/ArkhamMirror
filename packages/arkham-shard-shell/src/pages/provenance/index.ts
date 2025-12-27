@@ -1,0 +1,1 @@
+export { ProvenancePage } from './ProvenancePage';

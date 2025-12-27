@@ -23,7 +23,7 @@ export function SimilarityCalculator() {
 
   const handleCalculate = async () => {
     if (!text1.trim() || !text2.trim()) {
-      toast('Please enter text in both fields', 'warning');
+      toast.warning('Please enter text in both fields');
       return;
     }
 
@@ -33,22 +33,22 @@ export function SimilarityCalculator() {
       embedText1(text1);
       embedText2(text2);
     } catch (error) {
-      toast(error instanceof Error ? error.message : 'Calculation failed', 'error');
+      toast.error(error instanceof Error ? error.message : 'Calculation failed');
     }
   };
 
   const handleCopyEmbedding = async (embedNum: 1 | 2) => {
     const embedding = embedNum === 1 ? embed1Data?.embedding : embed2Data?.embedding;
     if (!embedding) {
-      toast('No embedding available to copy', 'warning');
+      toast.warning('No embedding available to copy');
       return;
     }
 
     try {
       await navigator.clipboard.writeText(JSON.stringify(embedding));
-      toast(`Embedding ${embedNum} copied to clipboard`, 'success');
+      toast.success(`Embedding ${embedNum} copied to clipboard`);
     } catch (error) {
-      toast('Failed to copy to clipboard', 'error');
+      toast.error('Failed to copy to clipboard');
     }
   };
 

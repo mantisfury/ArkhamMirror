@@ -112,6 +112,10 @@ class ProvenanceShard(ArkhamShard):
             await self._event_bus.subscribe("document.processed", self._on_document_processed)
             logger.info("Subscribed to provenance tracking events")
 
+        # Register self in app state for API access
+        if hasattr(frame, "app") and frame.app:
+            frame.app.state.provenance_shard = self
+
         logger.info("Provenance Shard initialized")
 
     async def shutdown(self) -> None:
@@ -143,76 +147,399 @@ class ProvenanceShard(ArkhamShard):
 
         logger.info("Creating provenance schema...")
 
-        # TODO: Implement actual schema creation
-        # This is a stub showing the intended structure
-        schema_sql = """
-        CREATE SCHEMA IF NOT EXISTS arkham_provenance;
+        # Records table - tracks provenance records
+        await self._db.execute("""
+            CREATE TABLE IF NOT EXISTS arkham_provenance_records (
+                id TEXT PRIMARY KEY,
+                entity_type TEXT NOT NULL,
+                entity_id TEXT NOT NULL,
+                source_type TEXT,
+                source_id TEXT,
+                source_url TEXT,
+                imported_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                imported_by TEXT,
+                metadata JSONB DEFAULT '{}',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
 
-        -- Evidence chains table
-        CREATE TABLE IF NOT EXISTS arkham_provenance.chains (
-            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            title TEXT NOT NULL,
-            description TEXT,
-            status TEXT DEFAULT 'active',
-            created_at TIMESTAMPTZ DEFAULT NOW(),
-            updated_at TIMESTAMPTZ DEFAULT NOW(),
-            created_by TEXT,
-            project_id UUID,
-            metadata JSONB DEFAULT '{}'
-        );
+        # Transformations table - tracks processing history
+        await self._db.execute("""
+            CREATE TABLE IF NOT EXISTS arkham_provenance_transformations (
+                id TEXT PRIMARY KEY,
+                record_id TEXT NOT NULL REFERENCES arkham_provenance_records(id) ON DELETE CASCADE,
+                transformation_type TEXT NOT NULL,
+                input_hash TEXT,
+                output_hash TEXT,
+                transformed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                transformer TEXT,
+                parameters JSONB DEFAULT '{}',
+                metadata JSONB DEFAULT '{}'
+            )
+        """)
 
-        -- Artifacts being tracked
-        CREATE TABLE IF NOT EXISTS arkham_provenance.artifacts (
-            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            artifact_id TEXT NOT NULL,
-            artifact_type TEXT NOT NULL,
-            shard_name TEXT NOT NULL,
-            created_at TIMESTAMPTZ DEFAULT NOW(),
-            metadata JSONB DEFAULT '{}',
-            UNIQUE(artifact_id, artifact_type)
-        );
+        # Audit table - tracks access and modifications
+        await self._db.execute("""
+            CREATE TABLE IF NOT EXISTS arkham_provenance_audit (
+                id TEXT PRIMARY KEY,
+                record_id TEXT NOT NULL REFERENCES arkham_provenance_records(id) ON DELETE CASCADE,
+                action TEXT NOT NULL,
+                actor TEXT,
+                details JSONB DEFAULT '{}',
+                occurred_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
 
-        -- Links between artifacts (provenance chain)
-        CREATE TABLE IF NOT EXISTS arkham_provenance.links (
-            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            chain_id UUID REFERENCES arkham_provenance.chains(id) ON DELETE CASCADE,
-            source_artifact_id UUID REFERENCES arkham_provenance.artifacts(id),
-            target_artifact_id UUID REFERENCES arkham_provenance.artifacts(id),
-            link_type TEXT NOT NULL,
-            confidence FLOAT DEFAULT 1.0,
-            verified BOOLEAN DEFAULT FALSE,
-            verified_by TEXT,
-            verified_at TIMESTAMPTZ,
-            created_at TIMESTAMPTZ DEFAULT NOW(),
-            metadata JSONB DEFAULT '{}'
-        );
+        # Create indexes
+        await self._db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_provenance_entity_type
+            ON arkham_provenance_records(entity_type)
+        """)
 
-        -- Comprehensive audit log
-        CREATE TABLE IF NOT EXISTS arkham_provenance.audit_log (
-            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            chain_id UUID REFERENCES arkham_provenance.chains(id) ON DELETE CASCADE,
-            event_type TEXT NOT NULL,
-            event_source TEXT NOT NULL,
-            event_data JSONB NOT NULL,
-            timestamp TIMESTAMPTZ DEFAULT NOW(),
-            user_id TEXT
-        );
+        await self._db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_provenance_entity_id
+            ON arkham_provenance_records(entity_id)
+        """)
 
-        -- Indexes for performance
-        CREATE INDEX IF NOT EXISTS idx_chains_status ON arkham_provenance.chains(status);
-        CREATE INDEX IF NOT EXISTS idx_chains_created ON arkham_provenance.chains(created_at DESC);
-        CREATE INDEX IF NOT EXISTS idx_artifacts_type ON arkham_provenance.artifacts(artifact_type);
-        CREATE INDEX IF NOT EXISTS idx_artifacts_shard ON arkham_provenance.artifacts(shard_name);
-        CREATE INDEX IF NOT EXISTS idx_links_chain ON arkham_provenance.links(chain_id);
-        CREATE INDEX IF NOT EXISTS idx_links_source ON arkham_provenance.links(source_artifact_id);
-        CREATE INDEX IF NOT EXISTS idx_links_target ON arkham_provenance.links(target_artifact_id);
-        CREATE INDEX IF NOT EXISTS idx_audit_chain ON arkham_provenance.audit_log(chain_id);
-        CREATE INDEX IF NOT EXISTS idx_audit_timestamp ON arkham_provenance.audit_log(timestamp DESC);
+        await self._db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_provenance_source_type
+            ON arkham_provenance_records(source_type)
+        """)
+
+        await self._db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_transformations_record
+            ON arkham_provenance_transformations(record_id)
+        """)
+
+        await self._db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_audit_record
+            ON arkham_provenance_audit(record_id)
+        """)
+
+        await self._db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_audit_occurred
+            ON arkham_provenance_audit(occurred_at DESC)
+        """)
+
+        logger.info("Provenance database schema created")
+
+    def _parse_jsonb(self, value: Any, default: Any = None) -> Any:
+        """Parse a JSONB field that may be str, dict, list, or None.
+
+        PostgreSQL JSONB with SQLAlchemy may return:
+        - Already parsed Python objects (dict, list, bool, int, float)
+        - String that IS the value (when JSON string was stored)
+        - String that needs parsing (raw JSON)
         """
+        if value is None:
+            return default
+        if isinstance(value, (dict, list, bool, int, float)):
+            return value
+        if isinstance(value, str):
+            if not value or value.strip() == "":
+                return default
+            # Try to parse as JSON first (for complex values)
+            try:
+                import json
+                return json.loads(value)
+            except json.JSONDecodeError:
+                # If it's not valid JSON, it's already the string value
+                return value
+        return default
 
-        # TODO: Execute schema creation
-        # await self._db.execute(schema_sql)
-        logger.info("Provenance schema created (stub)")
+    def _row_to_record(self, row: Dict[str, Any]) -> Dict[str, Any]:
+        """Convert database row to record object."""
+        import json
+        metadata = self._parse_jsonb(row.get("metadata"), {})
+
+        return {
+            "id": row["id"],
+            "entity_type": row["entity_type"],
+            "entity_id": row["entity_id"],
+            "source_type": row.get("source_type"),
+            "source_id": row.get("source_id"),
+            "source_url": row.get("source_url"),
+            "imported_at": row.get("imported_at").isoformat() if row.get("imported_at") else None,
+            "imported_by": row.get("imported_by"),
+            "metadata": metadata,
+            "created_at": row.get("created_at").isoformat() if row.get("created_at") else None,
+        }
+
+    def _row_to_transformation(self, row: Dict[str, Any]) -> Dict[str, Any]:
+        """Convert database row to transformation object."""
+        parameters = self._parse_jsonb(row.get("parameters"), {})
+        metadata = self._parse_jsonb(row.get("metadata"), {})
+
+        return {
+            "id": row["id"],
+            "record_id": row["record_id"],
+            "transformation_type": row["transformation_type"],
+            "input_hash": row.get("input_hash"),
+            "output_hash": row.get("output_hash"),
+            "transformed_at": row.get("transformed_at").isoformat() if row.get("transformed_at") else None,
+            "transformer": row.get("transformer"),
+            "parameters": parameters,
+            "metadata": metadata,
+        }
+
+    def _row_to_audit(self, row: Dict[str, Any]) -> Dict[str, Any]:
+        """Convert database row to audit object."""
+        details = self._parse_jsonb(row.get("details"), {})
+
+        return {
+            "id": row["id"],
+            "record_id": row["record_id"],
+            "action": row["action"],
+            "actor": row.get("actor"),
+            "details": details,
+            "occurred_at": row.get("occurred_at").isoformat() if row.get("occurred_at") else None,
+        }
+
+    # --- Public Service Methods ---
+
+    async def list_records(
+        self,
+        entity_type: Optional[str] = None,
+        limit: int = 20,
+        offset: int = 0
+    ) -> List[Dict[str, Any]]:
+        """
+        List provenance records with optional filtering.
+
+        Args:
+            entity_type: Filter by entity type
+            limit: Maximum records to return
+            offset: Number of records to skip
+
+        Returns:
+            List of provenance records
+        """
+        if not self._db:
+            raise RuntimeError("Shard not initialized")
+
+        query = "SELECT * FROM arkham_provenance_records"
+        params: Dict[str, Any] = {}
+
+        if entity_type:
+            query += " WHERE entity_type = :entity_type"
+            params["entity_type"] = entity_type
+
+        query += " ORDER BY created_at DESC LIMIT :limit OFFSET :offset"
+        params["limit"] = limit
+        params["offset"] = offset
+
+        rows = await self._db.fetch_all(query, params)
+        return [self._row_to_record(row) for row in rows]
+
+    async def get_record(self, id: str) -> Optional[Dict[str, Any]]:
+        """
+        Get a provenance record by ID.
+
+        Args:
+            id: Record ID
+
+        Returns:
+            Record object or None
+        """
+        if not self._db:
+            raise RuntimeError("Shard not initialized")
+
+        row = await self._db.fetch_one(
+            "SELECT * FROM arkham_provenance_records WHERE id = :id",
+            {"id": id}
+        )
+
+        if row:
+            return self._row_to_record(row)
+        return None
+
+    async def get_record_for_entity(
+        self,
+        entity_type: str,
+        entity_id: str
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Get provenance record for a specific entity.
+
+        Args:
+            entity_type: Type of entity
+            entity_id: Entity ID
+
+        Returns:
+            Record object or None
+        """
+        if not self._db:
+            raise RuntimeError("Shard not initialized")
+
+        row = await self._db.fetch_one(
+            """
+            SELECT * FROM arkham_provenance_records
+            WHERE entity_type = :entity_type AND entity_id = :entity_id
+            """,
+            {"entity_type": entity_type, "entity_id": entity_id}
+        )
+
+        if row:
+            return self._row_to_record(row)
+        return None
+
+    async def get_transformations(self, record_id: str) -> List[Dict[str, Any]]:
+        """
+        Get transformation history for a record.
+
+        Args:
+            record_id: Record ID
+
+        Returns:
+            List of transformations
+        """
+        if not self._db:
+            raise RuntimeError("Shard not initialized")
+
+        rows = await self._db.fetch_all(
+            """
+            SELECT * FROM arkham_provenance_transformations
+            WHERE record_id = :record_id
+            ORDER BY transformed_at DESC
+            """,
+            {"record_id": record_id}
+        )
+
+        return [self._row_to_transformation(row) for row in rows]
+
+    async def get_audit_trail(self, record_id: str) -> List[Dict[str, Any]]:
+        """
+        Get audit trail for a record.
+
+        Args:
+            record_id: Record ID
+
+        Returns:
+            List of audit records
+        """
+        if not self._db:
+            raise RuntimeError("Shard not initialized")
+
+        rows = await self._db.fetch_all(
+            """
+            SELECT * FROM arkham_provenance_audit
+            WHERE record_id = :record_id
+            ORDER BY occurred_at DESC
+            """,
+            {"record_id": record_id}
+        )
+
+        return [self._row_to_audit(row) for row in rows]
+
+    async def add_transformation(
+        self,
+        record_id: str,
+        transformation_type: str,
+        transformer: Optional[str] = None,
+        input_hash: Optional[str] = None,
+        output_hash: Optional[str] = None,
+        parameters: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        """
+        Add a transformation to a record.
+
+        Args:
+            record_id: Record ID
+            transformation_type: Type of transformation
+            transformer: Who/what performed the transformation
+            input_hash: Hash of input data
+            output_hash: Hash of output data
+            parameters: Transformation parameters
+
+        Returns:
+            Created transformation object
+        """
+        if not self._db:
+            raise RuntimeError("Shard not initialized")
+
+        import uuid
+        import json
+        from datetime import datetime
+
+        transformation_id = str(uuid.uuid4())
+
+        await self._db.execute(
+            """
+            INSERT INTO arkham_provenance_transformations
+            (id, record_id, transformation_type, input_hash, output_hash, transformer, parameters)
+            VALUES (:id, :record_id, :transformation_type, :input_hash, :output_hash, :transformer, :parameters)
+            """,
+            {
+                "id": transformation_id,
+                "record_id": record_id,
+                "transformation_type": transformation_type,
+                "input_hash": input_hash,
+                "output_hash": output_hash,
+                "transformer": transformer,
+                "parameters": json.dumps(parameters or {}),
+            }
+        )
+
+        # Log the transformation
+        await self.log_access(record_id, transformer or "system", "transformation_added", {
+            "transformation_id": transformation_id,
+            "transformation_type": transformation_type
+        })
+
+        # Emit event
+        if self._event_bus:
+            await self._event_bus.publish("provenance.transformation.added", {
+                "record_id": record_id,
+                "transformation_id": transformation_id,
+                "transformation_type": transformation_type
+            })
+
+        return {
+            "id": transformation_id,
+            "record_id": record_id,
+            "transformation_type": transformation_type,
+            "transformer": transformer,
+            "transformed_at": datetime.utcnow().isoformat()
+        }
+
+    async def log_access(
+        self,
+        record_id: str,
+        actor: str,
+        action: str,
+        details: Optional[Dict[str, Any]] = None
+    ) -> None:
+        """
+        Log access to a provenance record.
+
+        Args:
+            record_id: Record ID
+            actor: Who performed the action
+            action: Action performed
+            details: Additional details
+        """
+        if not self._db:
+            raise RuntimeError("Shard not initialized")
+
+        import uuid
+        import json
+
+        audit_id = str(uuid.uuid4())
+
+        await self._db.execute(
+            """
+            INSERT INTO arkham_provenance_audit
+            (id, record_id, action, actor, details)
+            VALUES (:id, :record_id, :action, :actor, :details)
+            """,
+            {
+                "id": audit_id,
+                "record_id": record_id,
+                "action": action,
+                "actor": actor,
+                "details": json.dumps(details or {}),
+            }
+        )
 
     # --- Event Handlers ---
 

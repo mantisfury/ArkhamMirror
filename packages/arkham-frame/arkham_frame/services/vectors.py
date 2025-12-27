@@ -162,7 +162,7 @@ class VectorService:
         try:
             from qdrant_client import QdrantClient
 
-            qdrant_url = self.config.get("qdrant.url", "http://localhost:6333")
+            qdrant_url = self.config.qdrant_url or "http://localhost:6333"
             self._client = QdrantClient(url=qdrant_url)
 
             # Test connection

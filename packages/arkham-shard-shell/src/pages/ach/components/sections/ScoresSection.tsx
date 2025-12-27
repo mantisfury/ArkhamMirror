@@ -16,8 +16,9 @@ interface ScoresSectionProps {
 export function ScoresSection({
   scores,
   closeRaceWarning,
-  onRecalculate,
+  onRecalculate: _onRecalculate,
 }: ScoresSectionProps) {
+  void _onRecalculate;
   const sortedScores = [...scores].sort((a, b) => a.rank - b.rank);
 
   return (

@@ -4,18 +4,22 @@ Settings Shard - Main Implementation
 Provides centralized settings management for ArkhamFrame.
 """
 
+import json
 import logging
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from arkham_frame import ArkhamShard
 
+from .defaults import DEFAULT_SETTINGS, get_default_settings
 from .models import (
     Setting,
     SettingCategory,
     SettingsBackup,
     SettingsProfile,
     SettingsValidationResult,
+    SettingType,
     ShardSettings,
 )
 
@@ -73,6 +77,10 @@ class SettingsShard(ArkhamShard):
         await self._event_bus.subscribe("shard.registered", self._on_shard_registered)
         await self._event_bus.subscribe("shard.unregistered", self._on_shard_unregistered)
 
+        # Register self in app state for API access
+        if hasattr(frame, "app") and frame.app:
+            frame.app.state.settings_shard = self
+
         logger.info("Settings shard initialized")
 
     async def shutdown(self) -> None:
@@ -119,7 +127,17 @@ class SettingsShard(ArkhamShard):
         if key in self._settings_cache:
             return self._settings_cache[key]
 
-        # Stub: return None (would query database)
+        # Query database
+        row = await self._db.fetch_one(
+            "SELECT * FROM arkham_settings WHERE key = :key",
+            {"key": key}
+        )
+
+        if row:
+            setting = self._row_to_setting(row)
+            self._settings_cache[key] = setting
+            return setting
+
         return None
 
     async def update_setting(
@@ -142,20 +160,68 @@ class SettingsShard(ArkhamShard):
         if not self._db:
             raise RuntimeError("Shard not initialized")
 
-        # Stub implementation
+        # Get existing setting
+        existing = await self.get_setting(key)
+        if not existing:
+            return None
+
+        # Check if readonly
+        if existing.is_readonly:
+            raise ValueError(f"Setting {key} is read-only")
+
+        # Validate if requested
         if validate:
             validation = await self.validate_setting(key, value)
             if not validation.is_valid:
                 raise ValueError(f"Invalid value: {validation.errors}")
+            value = validation.coerced_value
 
-        # Would update database and emit event
-        if self._event_bus:
+        old_value = existing.value
+
+        # Update in database
+        await self._db.execute(
+            """
+            UPDATE arkham_settings
+            SET value = :value, modified_at = :modified_at
+            WHERE key = :key
+            """,
+            {
+                "key": key,
+                "value": json.dumps(value),
+                "modified_at": datetime.utcnow(),
+            }
+        )
+
+        # Record change in history
+        await self._db.execute(
+            """
+            INSERT INTO arkham_settings_changes (setting_key, old_value, new_value)
+            VALUES (:key, :old_value, :new_value)
+            """,
+            {
+                "key": key,
+                "old_value": json.dumps(old_value),
+                "new_value": json.dumps(value),
+            }
+        )
+
+        # Invalidate cache
+        if key in self._settings_cache:
+            del self._settings_cache[key]
+
+        # Refetch updated setting
+        updated = await self.get_setting(key)
+
+        # Emit event
+        if self._event_bus and updated:
             await self._event_bus.publish("settings.setting.updated", {
                 "key": key,
-                "value": value,
+                "old_value": old_value,
+                "new_value": value,
+                "requires_restart": updated.requires_restart,
             })
 
-        return None
+        return updated
 
     async def reset_setting(self, key: str) -> Optional[Setting]:
         """
@@ -170,11 +236,16 @@ class SettingsShard(ArkhamShard):
         if not self._db:
             raise RuntimeError("Shard not initialized")
 
-        # Stub implementation
-        if self._event_bus:
-            await self._event_bus.publish("settings.setting.reset", {"key": key})
+        # Get existing setting
+        existing = await self.get_setting(key)
+        if not existing:
+            return None
 
-        return None
+        if existing.is_readonly:
+            raise ValueError(f"Setting {key} is read-only")
+
+        # Reset to default value
+        return await self.update_setting(key, existing.default_value, validate=False)
 
     async def get_category_settings(self, category: str) -> List[Setting]:
         """
@@ -189,8 +260,69 @@ class SettingsShard(ArkhamShard):
         if not self._db:
             raise RuntimeError("Shard not initialized")
 
-        # Stub: return empty list
-        return []
+        rows = await self._db.fetch_all(
+            """
+            SELECT * FROM arkham_settings
+            WHERE category = :category AND is_hidden = FALSE
+            ORDER BY display_order
+            """,
+            {"category": category}
+        )
+
+        settings = [self._row_to_setting(row) for row in rows]
+
+        # Update cache
+        for setting in settings:
+            self._settings_cache[setting.key] = setting
+
+        return settings
+
+    async def get_all_settings(
+        self,
+        category: Optional[str] = None,
+        search: Optional[str] = None,
+        modified_only: bool = False
+    ) -> List[Setting]:
+        """
+        Get all settings with optional filtering.
+
+        Args:
+            category: Filter by category
+            search: Search in key/label
+            modified_only: Only return modified settings
+
+        Returns:
+            List of settings
+        """
+        if not self._db:
+            raise RuntimeError("Shard not initialized")
+
+        # Build query with filters
+        query = "SELECT * FROM arkham_settings WHERE is_hidden = FALSE"
+        params: Dict[str, Any] = {}
+
+        if category:
+            query += " AND category = :category"
+            params["category"] = category
+
+        if search:
+            query += " AND (key ILIKE :search OR label ILIKE :search)"
+            params["search"] = f"%{search}%"
+
+        if modified_only:
+            query += " AND value != default_value"
+
+        query += " ORDER BY category, display_order"
+
+        rows = await self._db.fetch_all(query, params)
+
+        settings = [self._row_to_setting(row) for row in rows]
+
+        # Update cache
+        for setting in settings:
+            self._settings_cache[setting.key] = setting
+
+        return settings
 
     async def update_category_settings(
         self,
@@ -230,8 +362,78 @@ class SettingsShard(ArkhamShard):
         Returns:
             Validation result
         """
-        # Stub: always valid
-        return SettingsValidationResult(is_valid=True, coerced_value=value)
+        errors: List[str] = []
+        warnings: List[str] = []
+        coerced_value = value
+
+        # Get setting metadata
+        setting = await self.get_setting(key)
+        if not setting:
+            return SettingsValidationResult(
+                is_valid=False,
+                errors=[f"Setting not found: {key}"],
+                coerced_value=value
+            )
+
+        # Type coercion and validation based on data_type
+        data_type = setting.data_type
+
+        if data_type == SettingType.BOOLEAN:
+            if isinstance(value, str):
+                coerced_value = value.lower() in ("true", "1", "yes")
+            elif not isinstance(value, bool):
+                errors.append("Value must be a boolean")
+
+        elif data_type == SettingType.INTEGER:
+            try:
+                coerced_value = int(value)
+            except (ValueError, TypeError):
+                errors.append("Value must be an integer")
+
+        elif data_type == SettingType.FLOAT:
+            try:
+                coerced_value = float(value)
+            except (ValueError, TypeError):
+                errors.append("Value must be a number")
+
+        elif data_type == SettingType.STRING:
+            coerced_value = str(value)
+
+        elif data_type in (SettingType.SELECT, SettingType.MULTISELECT):
+            # Validate against options
+            if setting.options:
+                valid_values = [opt.get("value") for opt in setting.options]
+                if data_type == SettingType.SELECT:
+                    if value not in valid_values:
+                        errors.append(f"Value must be one of: {valid_values}")
+                else:
+                    if not isinstance(value, list):
+                        errors.append("Value must be a list")
+                    elif not all(v in valid_values for v in value):
+                        errors.append(f"All values must be in: {valid_values}")
+
+        # Validation rules from setting.validation
+        validation = setting.validation
+        if validation:
+            if "min" in validation and isinstance(coerced_value, (int, float)):
+                if coerced_value < validation["min"]:
+                    errors.append(f"Value must be at least {validation['min']}")
+
+            if "max" in validation and isinstance(coerced_value, (int, float)):
+                if coerced_value > validation["max"]:
+                    errors.append(f"Value must be at most {validation['max']}")
+
+            if "pattern" in validation and isinstance(coerced_value, str):
+                import re
+                if not re.match(validation["pattern"], coerced_value):
+                    errors.append(f"Value must match pattern: {validation['pattern']}")
+
+        return SettingsValidationResult(
+            is_valid=len(errors) == 0,
+            errors=errors,
+            warnings=warnings,
+            coerced_value=coerced_value
+        )
 
     # === Profiles ===
 
@@ -402,17 +604,165 @@ class SettingsShard(ArkhamShard):
 
     async def _create_schema(self) -> None:
         """Create database schema for settings."""
-        # Stub: would create tables
-        # arkham_settings: id, key, value, category, data_type, ...
-        # arkham_settings_profiles: id, name, settings, ...
-        # arkham_settings_backups: id, name, file_path, ...
-        # arkham_settings_changes: id, setting_key, old_value, new_value, ...
-        pass
+        # Create settings table
+        await self._db.execute("""
+            CREATE TABLE IF NOT EXISTS arkham_settings (
+                key TEXT PRIMARY KEY,
+                value JSONB NOT NULL,
+                default_value JSONB NOT NULL,
+                category TEXT NOT NULL,
+                data_type TEXT NOT NULL,
+                label TEXT NOT NULL,
+                description TEXT DEFAULT '',
+                validation JSONB DEFAULT '{}',
+                options JSONB DEFAULT '[]',
+                requires_restart BOOLEAN DEFAULT FALSE,
+                is_hidden BOOLEAN DEFAULT FALSE,
+                is_readonly BOOLEAN DEFAULT FALSE,
+                display_order INTEGER DEFAULT 0,
+                modified_at TIMESTAMP,
+                modified_by TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        # Create profiles table
+        await self._db.execute("""
+            CREATE TABLE IF NOT EXISTS arkham_settings_profiles (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                description TEXT DEFAULT '',
+                settings JSONB DEFAULT '{}',
+                is_default BOOLEAN DEFAULT FALSE,
+                is_builtin BOOLEAN DEFAULT FALSE,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                created_by TEXT,
+                metadata JSONB DEFAULT '{}'
+            )
+        """)
+
+        # Create change history table for auditing
+        await self._db.execute("""
+            CREATE TABLE IF NOT EXISTS arkham_settings_changes (
+                id SERIAL PRIMARY KEY,
+                setting_key TEXT NOT NULL,
+                old_value JSONB,
+                new_value JSONB,
+                changed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                changed_by TEXT,
+                reason TEXT
+            )
+        """)
+
+        # Create index on category for faster filtering
+        await self._db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_arkham_settings_category
+            ON arkham_settings(category)
+        """)
+
+        logger.info("Settings database schema created")
 
     async def _load_default_settings(self) -> None:
-        """Load default settings into cache."""
-        # Stub: would load defaults from config
-        pass
+        """Load default settings into database if not exists."""
+        for setting in DEFAULT_SETTINGS:
+            # Check if setting already exists
+            existing = await self._db.fetch_one(
+                "SELECT key FROM arkham_settings WHERE key = :key",
+                {"key": setting.key}
+            )
+
+            if not existing:
+                # Insert new setting
+                await self._db.execute(
+                    """
+                    INSERT INTO arkham_settings (
+                        key, value, default_value, category, data_type,
+                        label, description, validation, options,
+                        requires_restart, is_hidden, is_readonly, display_order
+                    ) VALUES (
+                        :key, :value, :default_value, :category, :data_type,
+                        :label, :description, :validation, :options,
+                        :requires_restart, :is_hidden, :is_readonly, :display_order
+                    )
+                    """,
+                    {
+                        "key": setting.key,
+                        "value": json.dumps(setting.value),
+                        "default_value": json.dumps(setting.default_value),
+                        "category": setting.category.value,
+                        "data_type": setting.data_type.value,
+                        "label": setting.label,
+                        "description": setting.description,
+                        "validation": json.dumps(setting.validation),
+                        "options": json.dumps(setting.options),
+                        "requires_restart": setting.requires_restart,
+                        "is_hidden": setting.is_hidden,
+                        "is_readonly": setting.is_readonly,
+                        "display_order": setting.order,
+                    }
+                )
+                logger.debug(f"Inserted default setting: {setting.key}")
+
+            # Cache the setting
+            self._settings_cache[setting.key] = setting
+
+        logger.info(f"Loaded {len(DEFAULT_SETTINGS)} default settings")
+
+    def _parse_jsonb(self, value: Any, default: Any = None) -> Any:
+        """Parse a JSONB field that may be str, dict, list, or None.
+
+        PostgreSQL JSONB with SQLAlchemy may return:
+        - Already parsed Python objects (dict, list, bool, int, float)
+        - String that IS the value (when JSON string was stored, e.g., "SHATTERED")
+        - String that needs parsing (raw JSON, e.g., '{"key": "value"}')
+        """
+        if value is None:
+            return default
+        if isinstance(value, (dict, list, bool, int, float)):
+            return value
+        if isinstance(value, str):
+            if not value or value.strip() == "":
+                return default
+            # Try to parse as JSON first (for complex values)
+            try:
+                return json.loads(value)
+            except json.JSONDecodeError:
+                # If it's not valid JSON, it's already the string value
+                # (e.g., JSONB stored "SHATTERED" comes back as 'SHATTERED')
+                return value
+        return default
+
+    def _row_to_setting(self, row: Dict[str, Any]) -> Setting:
+        """Convert a database row to a Setting object."""
+        # Debug log the raw row
+        logger.debug(f"Raw row for {row.get('key')}: value={row.get('value')!r} (type={type(row.get('value')).__name__})")
+
+        # Parse JSONB fields - handle both string and already-parsed formats
+        value = self._parse_jsonb(row.get("value"))
+        default_value = self._parse_jsonb(row.get("default_value"))
+        validation = self._parse_jsonb(row.get("validation"), {})
+        options = self._parse_jsonb(row.get("options"), [])
+
+        logger.debug(f"Parsed value for {row.get('key')}: {value!r}")
+
+        return Setting(
+            key=row["key"],
+            value=value,
+            default_value=default_value,
+            category=SettingCategory(row["category"]),
+            data_type=SettingType(row["data_type"]),
+            label=row["label"],
+            description=row.get("description", ""),
+            validation=validation,
+            options=options,
+            requires_restart=row.get("requires_restart", False),
+            is_hidden=row.get("is_hidden", False),
+            is_readonly=row.get("is_readonly", False),
+            order=row.get("display_order", 0),
+            modified_at=row.get("modified_at"),
+            modified_by=row.get("modified_by"),
+        )
 
     async def _on_shard_registered(self, event_data: Dict[str, Any]) -> None:
         """Handle shard registration events."""

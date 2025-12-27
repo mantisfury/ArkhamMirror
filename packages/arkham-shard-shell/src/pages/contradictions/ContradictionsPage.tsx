@@ -31,7 +31,8 @@ import {
 } from './types';
 
 export function ContradictionsPage() {
-  const [searchParams, setSearchParams] = useSearchParams();
+  const [searchParams, _setSearchParams] = useSearchParams();
+  void _setSearchParams;
   const contradictionId = searchParams.get('id');
 
   // Show detail view if ID is set, otherwise show list
@@ -47,8 +48,10 @@ export function ContradictionsPage() {
 // ============================================
 
 function ContradictionListView() {
-  const [searchParams, setSearchParams] = useSearchParams();
-  const { toast } = useToast();
+  const [_searchParams, setSearchParams] = useSearchParams();
+  void _searchParams;
+  const _toast = useToast();
+  void _toast;
 
   const [contradictions, setContradictions] = useState<ContradictionListItem[]>([]);
   const [stats, setStats] = useState<StatsResponse | null>(null);
@@ -290,7 +293,8 @@ function ContradictionListView() {
 // ============================================
 
 function ContradictionDetailView({ contradictionId }: { contradictionId: string }) {
-  const [searchParams, setSearchParams] = useSearchParams();
+  const [_searchParams, setSearchParams] = useSearchParams();
+  void _searchParams;
   const { toast } = useToast();
 
   const [contradiction, setContradiction] = useState<ContradictionListItem | null>(null);
@@ -325,10 +329,10 @@ function ContradictionDetailView({ contradictionId }: { contradictionId: string 
     setSubmitting(true);
     try {
       await api.updateStatus(contradiction.id, status);
-      toast(`Status updated to ${STATUS_LABELS[status]}`, 'success');
+      toast.success(`Status updated to ${STATUS_LABELS[status]}`);
       await fetchContradiction();
     } catch (err) {
-      toast(err instanceof Error ? err.message : 'Failed to update status', 'error');
+      toast.error(err instanceof Error ? err.message : 'Failed to update status');
     } finally {
       setSubmitting(false);
     }
@@ -341,11 +345,11 @@ function ContradictionDetailView({ contradictionId }: { contradictionId: string 
     setSubmitting(true);
     try {
       await api.addNote(contradiction.id, noteText.trim());
-      toast('Note added', 'success');
+      toast.success('Note added');
       setNoteText('');
       await fetchContradiction();
     } catch (err) {
-      toast(err instanceof Error ? err.message : 'Failed to add note', 'error');
+      toast.error(err instanceof Error ? err.message : 'Failed to add note');
     } finally {
       setSubmitting(false);
     }

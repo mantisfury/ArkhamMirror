@@ -100,3 +100,42 @@ class DatabaseService:
     async def get_stats(self) -> Dict[str, Any]:
         """Get database statistics."""
         return {"connected": self._connected}
+
+    async def execute(self, query: str, params: Optional[Dict[str, Any]] = None) -> None:
+        """Execute a query (for DDL, INSERT, UPDATE, DELETE)."""
+        if not self._connected:
+            raise DatabaseError("Database not connected")
+        try:
+            from sqlalchemy import text
+            with self._engine.connect() as conn:
+                conn.execute(text(query), params or {})
+                conn.commit()
+        except Exception as e:
+            raise QueryExecutionError(str(e), query)
+
+    async def fetch_one(self, query: str, params: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
+        """Fetch a single row."""
+        if not self._connected:
+            raise DatabaseError("Database not connected")
+        try:
+            from sqlalchemy import text
+            with self._engine.connect() as conn:
+                result = conn.execute(text(query), params or {})
+                row = result.fetchone()
+                if row:
+                    return dict(row._mapping)
+                return None
+        except Exception as e:
+            raise QueryExecutionError(str(e), query)
+
+    async def fetch_all(self, query: str, params: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+        """Fetch all rows."""
+        if not self._connected:
+            raise DatabaseError("Database not connected")
+        try:
+            from sqlalchemy import text
+            with self._engine.connect() as conn:
+                result = conn.execute(text(query), params or {})
+                return [dict(row._mapping) for row in result.fetchall()]
+        except Exception as e:
+            raise QueryExecutionError(str(e), query)

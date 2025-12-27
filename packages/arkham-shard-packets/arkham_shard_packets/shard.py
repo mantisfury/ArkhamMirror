@@ -57,12 +57,24 @@ class PacketsShard(ArkhamShard):
     async def initialize(self, frame) -> None:
         """Initialize shard with frame services."""
         self.frame = frame
-        self._db = frame.database
-        self._events = frame.events
-        self._storage = getattr(frame, "storage", None)
+        self._db = frame.get_service("database")
+        if not self._db:
+            raise RuntimeError("Database service required for Packets shard")
+
+        self._events = frame.get_service("events")
+        if not self._events:
+            raise RuntimeError("Events service required for Packets shard")
+
+        self._storage = frame.get_service("storage")
+        if not self._storage:
+            logger.info("Storage service not available - export features limited")
 
         # Create database schema
         await self._create_schema()
+
+        # Register self in app state for API access
+        if hasattr(frame, "app") and frame.app:
+            frame.app.state.packets_shard = self
 
         self._initialized = True
         logger.info(f"PacketsShard initialized (v{self.version})")

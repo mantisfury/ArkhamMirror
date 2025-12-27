@@ -1,0 +1,1 @@
+export { CredibilityPage } from './CredibilityPage';

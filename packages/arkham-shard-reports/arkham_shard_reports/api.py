@@ -4,10 +4,13 @@ Reports Shard - FastAPI Routes
 REST API endpoints for report generation and management.
 """
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
+
+if TYPE_CHECKING:
+    from .shard import ReportsShard
 
 from .models import (
     ReportFormat,
@@ -146,11 +149,9 @@ class HealthResponse(BaseModel):
 # === Helper Functions ===
 
 
-def _get_shard():
-    """Get the reports shard instance from the frame."""
-    from arkham_frame import get_frame
-    frame = get_frame()
-    shard = frame.get_shard("reports")
+def get_shard(request: Request) -> "ReportsShard":
+    """Get the reports shard instance from app state."""
+    shard = getattr(request.app.state, "reports_shard", None)
     if not shard:
         raise HTTPException(status_code=503, detail="Reports shard not available")
     return shard
@@ -211,9 +212,9 @@ def _schedule_to_response(schedule) -> ScheduleResponse:
 
 
 @router.get("/health", response_model=HealthResponse)
-async def health_check():
+async def health_check(request: Request):
     """Health check endpoint."""
-    shard = _get_shard()
+    shard = get_shard(request)
     return HealthResponse(
         status="healthy",
         version=shard.version,
@@ -229,18 +230,19 @@ async def health_check():
 
 @router.get("/count", response_model=CountResponse)
 async def get_reports_count(
+    request: Request,
     status: Optional[str] = Query(None, description="Filter by status"),
 ):
     """Get count of reports (used for badge)."""
-    shard = _get_shard()
+    shard = get_shard(request)
     count = await shard.get_count(status=status)
     return CountResponse(count=count)
 
 
 @router.get("/pending/count", response_model=CountResponse)
-async def get_pending_count():
+async def get_pending_count(request: Request):
     """Get count of pending reports (badge endpoint)."""
-    shard = _get_shard()
+    shard = get_shard(request)
     count = await shard.get_count(status="pending")
     return CountResponse(count=count)
 
@@ -250,6 +252,7 @@ async def get_pending_count():
 
 @router.get("/", response_model=ReportListResponse)
 async def list_reports(
+    request: Request,
     status: Optional[ReportStatus] = Query(None),
     report_type: Optional[ReportType] = Query(None),
     output_format: Optional[ReportFormat] = Query(None),
@@ -260,7 +263,7 @@ async def list_reports(
     """List reports with optional filtering."""
     from .models import ReportFilter
 
-    shard = _get_shard()
+    shard = get_shard(request)
 
     filter = ReportFilter(
         status=status,
@@ -281,24 +284,24 @@ async def list_reports(
 
 
 @router.post("/", response_model=ReportResponse, status_code=201)
-async def create_report(request: ReportCreate):
+async def create_report(request: Request, body: ReportCreate):
     """Generate a new report."""
-    shard = _get_shard()
+    shard = get_shard(request)
 
     report = await shard.generate_report(
-        report_type=request.report_type,
-        title=request.title,
-        parameters=request.parameters,
-        output_format=request.output_format,
+        report_type=body.report_type,
+        title=body.title,
+        parameters=body.parameters,
+        output_format=body.output_format,
     )
 
     return _report_to_response(report)
 
 
 @router.get("/{report_id}", response_model=ReportResponse)
-async def get_report(report_id: str):
+async def get_report(request: Request, report_id: str):
     """Get a specific report by ID."""
-    shard = _get_shard()
+    shard = get_shard(request)
     report = await shard.get_report(report_id)
 
     if not report:
@@ -308,9 +311,9 @@ async def get_report(report_id: str):
 
 
 @router.delete("/{report_id}", status_code=204)
-async def delete_report(report_id: str):
+async def delete_report(request: Request, report_id: str):
     """Delete a report."""
-    shard = _get_shard()
+    shard = get_shard(request)
 
     success = await shard.delete_report(report_id)
     if not success:
@@ -318,9 +321,9 @@ async def delete_report(report_id: str):
 
 
 @router.get("/{report_id}/download")
-async def download_report(report_id: str):
+async def download_report(request: Request, report_id: str):
     """Download a report file."""
-    shard = _get_shard()
+    shard = get_shard(request)
     report = await shard.get_report(report_id)
 
     if not report:
@@ -342,12 +345,13 @@ async def download_report(report_id: str):
 
 @router.get("/templates", response_model=List[TemplateResponse])
 async def list_templates(
+    request: Request,
     report_type: Optional[ReportType] = Query(None),
     limit: int = Query(100, ge=1, le=500),
     offset: int = Query(0, ge=0),
 ):
     """List report templates."""
-    shard = _get_shard()
+    shard = get_shard(request)
     templates = await shard.list_templates(
         report_type=report_type,
         limit=limit,
@@ -357,9 +361,9 @@ async def list_templates(
 
 
 @router.get("/templates/{template_id}", response_model=TemplateResponse)
-async def get_template(template_id: str):
+async def get_template(request: Request, template_id: str):
     """Get a specific template by ID."""
-    shard = _get_shard()
+    shard = get_shard(request)
     template = await shard.get_template(template_id)
 
     if not template:
@@ -369,17 +373,17 @@ async def get_template(template_id: str):
 
 
 @router.post("/templates", response_model=TemplateResponse, status_code=201)
-async def create_template(request: TemplateCreate):
+async def create_template(request: Request, body: TemplateCreate):
     """Create a new report template."""
-    shard = _get_shard()
+    shard = get_shard(request)
 
     template = await shard.create_template(
-        name=request.name,
-        report_type=request.report_type,
-        description=request.description,
-        parameters_schema=request.parameters_schema,
-        default_format=request.default_format,
-        template_content=request.template_content,
+        name=body.name,
+        report_type=body.report_type,
+        description=body.description,
+        parameters_schema=body.parameters_schema,
+        default_format=body.default_format,
+        template_content=body.template_content,
     )
 
     return _template_to_response(template)
@@ -390,12 +394,13 @@ async def create_template(request: TemplateCreate):
 
 @router.get("/schedules", response_model=List[ScheduleResponse])
 async def list_schedules(
+    request: Request,
     enabled_only: bool = Query(False),
     limit: int = Query(100, ge=1, le=500),
     offset: int = Query(0, ge=0),
 ):
     """List report schedules."""
-    shard = _get_shard()
+    shard = get_shard(request)
     schedules = await shard.list_schedules(
         enabled_only=enabled_only,
         limit=limit,
@@ -405,30 +410,30 @@ async def list_schedules(
 
 
 @router.post("/schedules", response_model=ScheduleResponse, status_code=201)
-async def create_schedule(request: ScheduleCreate):
+async def create_schedule(request: Request, body: ScheduleCreate):
     """Create a new report schedule."""
-    shard = _get_shard()
+    shard = get_shard(request)
 
     # Verify template exists
-    template = await shard.get_template(request.template_id)
+    template = await shard.get_template(body.template_id)
     if not template:
-        raise HTTPException(status_code=404, detail=f"Template {request.template_id} not found")
+        raise HTTPException(status_code=404, detail=f"Template {body.template_id} not found")
 
     schedule = await shard.create_schedule(
-        template_id=request.template_id,
-        cron_expression=request.cron_expression,
-        parameters=request.parameters,
-        output_format=request.output_format,
-        retention_days=request.retention_days,
+        template_id=body.template_id,
+        cron_expression=body.cron_expression,
+        parameters=body.parameters,
+        output_format=body.output_format,
+        retention_days=body.retention_days,
     )
 
     return _schedule_to_response(schedule)
 
 
 @router.delete("/schedules/{schedule_id}", status_code=204)
-async def delete_schedule(schedule_id: str):
+async def delete_schedule(request: Request, schedule_id: str):
     """Delete a report schedule."""
-    shard = _get_shard()
+    shard = get_shard(request)
 
     success = await shard.delete_schedule(schedule_id)
     if not success:
@@ -439,10 +444,10 @@ async def delete_schedule(schedule_id: str):
 
 
 @router.post("/preview", response_model=PreviewResponse)
-async def preview_report(request: PreviewRequest):
+async def preview_report(body: PreviewRequest):
     """Preview a report without saving it."""
     # Stub implementation
-    preview_content = f"# {request.title}\n\nReport Type: {request.report_type.value}\nFormat: {request.output_format.value}\n\n(Preview content would be generated here)"
+    preview_content = f"# {body.title}\n\nReport Type: {body.report_type.value}\nFormat: {body.output_format.value}\n\n(Preview content would be generated here)"
 
     return PreviewResponse(
         preview_content=preview_content,
@@ -455,9 +460,9 @@ async def preview_report(request: PreviewRequest):
 
 
 @router.get("/stats", response_model=StatisticsResponse)
-async def get_statistics():
+async def get_statistics(request: Request):
     """Get statistics about reports in the system."""
-    shard = _get_shard()
+    shard = get_shard(request)
     stats = await shard.get_statistics()
 
     return StatisticsResponse(
@@ -481,13 +486,14 @@ async def get_statistics():
 
 @router.get("/pending", response_model=ReportListResponse)
 async def list_pending_reports(
+    request: Request,
     limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
 ):
     """List pending reports."""
     from .models import ReportFilter
 
-    shard = _get_shard()
+    shard = get_shard(request)
     filter = ReportFilter(status=ReportStatus.PENDING)
     reports = await shard.list_reports(filter=filter, limit=limit, offset=offset)
     total = await shard.get_count(status="pending")
@@ -502,13 +508,14 @@ async def list_pending_reports(
 
 @router.get("/completed", response_model=ReportListResponse)
 async def list_completed_reports(
+    request: Request,
     limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
 ):
     """List completed reports."""
     from .models import ReportFilter
 
-    shard = _get_shard()
+    shard = get_shard(request)
     filter = ReportFilter(status=ReportStatus.COMPLETED)
     reports = await shard.list_reports(filter=filter, limit=limit, offset=offset)
     total = await shard.get_count(status="completed")
@@ -523,13 +530,14 @@ async def list_completed_reports(
 
 @router.get("/failed", response_model=ReportListResponse)
 async def list_failed_reports(
+    request: Request,
     limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
 ):
     """List failed reports."""
     from .models import ReportFilter
 
-    shard = _get_shard()
+    shard = get_shard(request)
     filter = ReportFilter(status=ReportStatus.FAILED)
     reports = await shard.list_reports(filter=filter, limit=limit, offset=offset)
     total = await shard.get_count(status="failed")

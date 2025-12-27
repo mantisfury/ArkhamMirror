@@ -15,7 +15,7 @@ navigation:
   icon: Settings
   label: Settings
   route: /settings
-  badge_endpoint: null  # No badge for settings
+  badge_endpoint: null
   badge_type: null
   sub_routes:
     - id: general
@@ -41,41 +41,90 @@ navigation:
 
 dependencies:
   services:
-    - database      # Required: stores settings
-    - events        # Required: publishes settings changes
+    - database
+    - events
   optional:
-    - storage       # Optional: backup/restore settings
-  shards: []        # MUST be empty - no shard dependencies
+    - storage
+  shards: []
 
 capabilities:
-  - system_settings       # Configure system-wide settings
-  - user_preferences      # Manage user preferences
-  - shard_configuration   # Configure individual shards
-  - settings_export       # Export settings for backup
-  - settings_import       # Import settings from backup
+  - system_settings
+  - user_preferences
+  - shard_configuration
+  - settings_export
+  - settings_import
 
 events:
   publishes:
-    - settings.setting.updated        # Setting value changed
-    - settings.setting.reset          # Setting reset to default
-    - settings.category.updated       # Multiple settings in category changed
-    - settings.profile.applied        # Settings profile applied
-    - settings.backup.created         # Settings backup created
-    - settings.backup.restored        # Settings restored from backup
-
+    - settings.setting.updated
+    - settings.setting.reset
+    - settings.category.updated
+    - settings.profile.applied
+    - settings.backup.created
+    - settings.backup.restored
   subscribes:
-    - shard.registered                # Update available shard configs
-    - shard.unregistered              # Clean up shard settings
+    - shard.registered
+    - shard.unregistered
 
 state:
   strategy: url
   url_params:
-    - category          # Current settings category
-    - search            # Search filter
+    - category
+    - search
   local_keys:
-    - collapsed_sections    # Which sections are collapsed
-    - show_advanced         # Show advanced settings toggle
-    - last_category         # Last viewed category
+    - collapsed_sections
+    - show_advanced
+    - last_category
 
 ui:
-  has_custom_ui: true   # Custom settings editor with validation
+  has_custom_ui: true
+  id_field: key
+  selectable: false
+  list_endpoint: /
+  detail_endpoint: /{key}
+  list_filters:
+    - name: search
+      type: search
+      label: Search settings
+      param: search
+    - name: category
+      type: select
+      label: Category
+      param: category
+      options:
+        - value: general
+          label: General
+        - value: appearance
+          label: Appearance
+        - value: shards
+          label: Shards
+        - value: integrations
+          label: Integrations
+        - value: advanced
+          label: Advanced
+  list_columns:
+    - field: key
+      label: Setting
+      type: text
+      sortable: true
+    - field: value
+      label: Value
+      type: text
+    - field: category
+      label: Category
+      type: badge
+    - field: is_modified
+      label: Modified
+      type: boolean
+  row_actions:
+    - label: Edit
+      type: link
+      route: /settings/{key}
+      icon: Edit
+    - label: Reset
+      type: api
+      endpoint: /{key}
+      method: DELETE
+      confirm: true
+      confirm_message: Reset this setting to its default value?
+      icon: RotateCcw

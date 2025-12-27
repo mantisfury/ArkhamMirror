@@ -4,10 +4,13 @@ Templates Shard - FastAPI Routes
 API endpoints for template management, versioning, and rendering.
 """
 
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
+
+if TYPE_CHECKING:
+    from .shard import TemplatesShard
 
 from .models import (
     BulkActionRequest,
@@ -30,28 +33,21 @@ from .models import (
 
 router = APIRouter(prefix="/api/templates", tags=["templates"])
 
-# Shard instance will be injected by the Frame
-_shard = None
 
-
-def get_shard():
-    """Get the shard instance."""
-    if _shard is None:
-        raise RuntimeError("Templates shard not initialized")
-    return _shard
-
-
-def set_shard(shard):
-    """Set the shard instance (called by Frame)."""
-    global _shard
-    _shard = shard
+def get_shard(request: Request) -> "TemplatesShard":
+    """Get the templates shard instance from app state."""
+    shard = getattr(request.app.state, "templates_shard", None)
+    if not shard:
+        raise HTTPException(status_code=503, detail="Templates shard not available")
+    return shard
 
 
 # === Health & Status ===
 
 @router.get("/health")
-async def health():
+async def health(request: Request):
     """Health check endpoint."""
+    shard = get_shard(request)
     return {
         "status": "healthy",
         "shard": "templates",
@@ -60,30 +56,37 @@ async def health():
 
 
 @router.get("/count")
-async def get_count(active_only: bool = Query(False, description="Count only active templates")):
+async def get_count(
+    request: Request,
+    active_only: bool = Query(False, description="Count only active templates")
+):
     """
     Get total template count (for navigation badge).
 
     Args:
+        request: FastAPI request
         active_only: Count only active templates
 
     Returns:
         Count response
     """
-    shard = get_shard()
+    shard = get_shard(request)
     count = await shard.get_count(active_only=active_only)
     return {"count": count}
 
 
 @router.get("/stats", response_model=TemplateStatistics)
-async def get_statistics():
+async def get_statistics(request: Request):
     """
     Get template statistics.
+
+    Args:
+        request: FastAPI request
 
     Returns:
         Template statistics including counts by type, versions, and recent templates
     """
-    shard = get_shard()
+    shard = get_shard(request)
     return await shard.get_statistics()
 
 
@@ -91,6 +94,7 @@ async def get_statistics():
 
 @router.get("/", response_model=TemplateListResponse)
 async def list_templates(
+    request: Request,
     page: int = Query(1, ge=1, description="Page number"),
     page_size: int = Query(20, ge=1, le=100, description="Items per page"),
     template_type: Optional[TemplateType] = Query(None, description="Filter by template type"),
@@ -103,6 +107,7 @@ async def list_templates(
     List templates with pagination and filtering.
 
     Args:
+        request: FastAPI request
         page: Page number (1-indexed)
         page_size: Number of items per page (max 100)
         template_type: Filter by template type
@@ -114,7 +119,7 @@ async def list_templates(
     Returns:
         Paginated list of templates
     """
-    shard = get_shard()
+    shard = get_shard(request)
 
     # Build filters
     filters = TemplateFilter(
@@ -141,12 +146,13 @@ async def list_templates(
 
 
 @router.post("/", response_model=Template, status_code=201)
-async def create_template(template_data: TemplateCreate):
+async def create_template(template_data: TemplateCreate, request: Request):
     """
     Create a new template.
 
     Args:
         template_data: Template creation data
+        request: FastAPI request
 
     Returns:
         Created template
@@ -154,7 +160,7 @@ async def create_template(template_data: TemplateCreate):
     Raises:
         HTTPException: If template creation fails
     """
-    shard = get_shard()
+    shard = get_shard(request)
 
     try:
         template = await shard.create_template(template_data)
@@ -166,12 +172,13 @@ async def create_template(template_data: TemplateCreate):
 
 
 @router.get("/{template_id}", response_model=Template)
-async def get_template(template_id: str):
+async def get_template(template_id: str, request: Request):
     """
     Get a template by ID.
 
     Args:
         template_id: Template ID
+        request: FastAPI request
 
     Returns:
         Template details
@@ -179,7 +186,7 @@ async def get_template(template_id: str):
     Raises:
         HTTPException: If template not found
     """
-    shard = get_shard()
+    shard = get_shard(request)
     template = await shard.get_template(template_id)
 
     if not template:
@@ -192,6 +199,7 @@ async def get_template(template_id: str):
 async def update_template(
     template_id: str,
     update_data: TemplateUpdate,
+    request: Request,
     create_version: bool = Query(True, description="Create new version on content change")
 ):
     """
@@ -200,6 +208,7 @@ async def update_template(
     Args:
         template_id: Template ID
         update_data: Update data
+        request: FastAPI request
         create_version: Whether to create new version on content change
 
     Returns:
@@ -208,7 +217,7 @@ async def update_template(
     Raises:
         HTTPException: If template not found or update fails
     """
-    shard = get_shard()
+    shard = get_shard(request)
 
     try:
         template = await shard.update_template(
@@ -228,12 +237,13 @@ async def update_template(
 
 
 @router.delete("/{template_id}")
-async def delete_template(template_id: str):
+async def delete_template(template_id: str, request: Request):
     """
     Delete a template.
 
     Args:
         template_id: Template ID
+        request: FastAPI request
 
     Returns:
         Success response
@@ -241,7 +251,7 @@ async def delete_template(template_id: str):
     Raises:
         HTTPException: If template not found
     """
-    shard = get_shard()
+    shard = get_shard(request)
     success = await shard.delete_template(template_id)
 
     if not success:
@@ -251,12 +261,13 @@ async def delete_template(template_id: str):
 
 
 @router.post("/{template_id}/activate", response_model=Template)
-async def activate_template(template_id: str):
+async def activate_template(template_id: str, request: Request):
     """
     Activate a template.
 
     Args:
         template_id: Template ID
+        request: FastAPI request
 
     Returns:
         Updated template
@@ -264,7 +275,7 @@ async def activate_template(template_id: str):
     Raises:
         HTTPException: If template not found
     """
-    shard = get_shard()
+    shard = get_shard(request)
     template = await shard.activate_template(template_id)
 
     if not template:
@@ -274,12 +285,13 @@ async def activate_template(template_id: str):
 
 
 @router.post("/{template_id}/deactivate", response_model=Template)
-async def deactivate_template(template_id: str):
+async def deactivate_template(template_id: str, request: Request):
     """
     Deactivate a template.
 
     Args:
         template_id: Template ID
+        request: FastAPI request
 
     Returns:
         Updated template
@@ -287,7 +299,7 @@ async def deactivate_template(template_id: str):
     Raises:
         HTTPException: If template not found
     """
-    shard = get_shard()
+    shard = get_shard(request)
     template = await shard.deactivate_template(template_id)
 
     if not template:
@@ -299,12 +311,13 @@ async def deactivate_template(template_id: str):
 # === Versioning ===
 
 @router.get("/{template_id}/versions", response_model=list[TemplateVersion])
-async def get_template_versions(template_id: str):
+async def get_template_versions(template_id: str, request: Request):
     """
     Get all versions of a template.
 
     Args:
         template_id: Template ID
+        request: FastAPI request
 
     Returns:
         List of template versions (newest first)
@@ -312,7 +325,7 @@ async def get_template_versions(template_id: str):
     Raises:
         HTTPException: If template not found
     """
-    shard = get_shard()
+    shard = get_shard(request)
 
     # Check template exists
     template = await shard.get_template(template_id)
@@ -326,7 +339,8 @@ async def get_template_versions(template_id: str):
 @router.post("/{template_id}/versions", response_model=TemplateVersion, status_code=201)
 async def create_template_version(
     template_id: str,
-    version_data: TemplateVersionCreate
+    version_data: TemplateVersionCreate,
+    request: Request
 ):
     """
     Create a new version of a template.
@@ -334,6 +348,7 @@ async def create_template_version(
     Args:
         template_id: Template ID
         version_data: Version creation data
+        request: FastAPI request
 
     Returns:
         Created version
@@ -341,7 +356,7 @@ async def create_template_version(
     Raises:
         HTTPException: If template not found
     """
-    shard = get_shard()
+    shard = get_shard(request)
     version = await shard.create_version(template_id, version_data)
 
     if not version:
@@ -351,13 +366,14 @@ async def create_template_version(
 
 
 @router.get("/{template_id}/versions/{version_id}", response_model=TemplateVersion)
-async def get_template_version(template_id: str, version_id: str):
+async def get_template_version(template_id: str, version_id: str, request: Request):
     """
     Get a specific template version.
 
     Args:
         template_id: Template ID
         version_id: Version ID
+        request: FastAPI request
 
     Returns:
         Template version
@@ -365,7 +381,7 @@ async def get_template_version(template_id: str, version_id: str):
     Raises:
         HTTPException: If template or version not found
     """
-    shard = get_shard()
+    shard = get_shard(request)
     version = await shard.get_version(template_id, version_id)
 
     if not version:
@@ -375,7 +391,7 @@ async def get_template_version(template_id: str, version_id: str):
 
 
 @router.post("/{template_id}/restore/{version_id}", response_model=Template)
-async def restore_template_version(template_id: str, version_id: str):
+async def restore_template_version(template_id: str, version_id: str, request: Request):
     """
     Restore a template to a previous version.
 
@@ -384,6 +400,7 @@ async def restore_template_version(template_id: str, version_id: str):
     Args:
         template_id: Template ID
         version_id: Version ID to restore
+        request: FastAPI request
 
     Returns:
         Updated template
@@ -391,7 +408,7 @@ async def restore_template_version(template_id: str, version_id: str):
     Raises:
         HTTPException: If template or version not found
     """
-    shard = get_shard()
+    shard = get_shard(request)
     template = await shard.restore_version(template_id, version_id)
 
     if not template:
@@ -403,13 +420,14 @@ async def restore_template_version(template_id: str, version_id: str):
 # === Rendering ===
 
 @router.post("/{template_id}/render", response_model=TemplateRenderResult)
-async def render_template(template_id: str, render_request: TemplateRenderRequest):
+async def render_template(template_id: str, render_request: TemplateRenderRequest, request: Request):
     """
     Render a template with provided data.
 
     Args:
         template_id: Template ID
         render_request: Render request with data and options
+        request: FastAPI request
 
     Returns:
         Rendered template result
@@ -417,7 +435,7 @@ async def render_template(template_id: str, render_request: TemplateRenderReques
     Raises:
         HTTPException: If template not found or rendering fails
     """
-    shard = get_shard()
+    shard = get_shard(request)
 
     try:
         result = await shard.render_template(template_id, render_request)
@@ -435,6 +453,7 @@ async def render_template(template_id: str, render_request: TemplateRenderReques
 @router.post("/{template_id}/preview", response_model=TemplateRenderResult)
 async def preview_template(
     template_id: str,
+    request: Request,
     data: Optional[dict] = None
 ):
     """
@@ -444,6 +463,7 @@ async def preview_template(
 
     Args:
         template_id: Template ID
+        request: FastAPI request
         data: Optional preview data
 
     Returns:
@@ -452,7 +472,7 @@ async def preview_template(
     Raises:
         HTTPException: If template not found or preview fails
     """
-    shard = get_shard()
+    shard = get_shard(request)
 
     try:
         result = await shard.preview_template(template_id, data)
@@ -466,13 +486,14 @@ async def preview_template(
 
 
 @router.post("/{template_id}/validate", response_model=list[PlaceholderWarning])
-async def validate_template_data(template_id: str, data: dict):
+async def validate_template_data(template_id: str, data: dict, request: Request):
     """
     Validate placeholder data without rendering.
 
     Args:
         template_id: Template ID
         data: Data to validate against placeholders
+        request: FastAPI request
 
     Returns:
         List of validation warnings and errors
@@ -480,7 +501,7 @@ async def validate_template_data(template_id: str, data: dict):
     Raises:
         HTTPException: If template not found
     """
-    shard = get_shard()
+    shard = get_shard(request)
 
     try:
         warnings = await shard.validate_placeholders(template_id, data)
@@ -492,24 +513,28 @@ async def validate_template_data(template_id: str, data: dict):
 # === Metadata ===
 
 @router.get("/types", response_model=list[TemplateTypeInfo])
-async def get_template_types():
+async def get_template_types(request: Request):
     """
     Get available template types with counts.
+
+    Args:
+        request: FastAPI request
 
     Returns:
         List of template type information
     """
-    shard = get_shard()
+    shard = get_shard(request)
     return await shard.get_template_types()
 
 
 @router.get("/{template_id}/placeholders", response_model=list)
-async def get_template_placeholders(template_id: str):
+async def get_template_placeholders(template_id: str, request: Request):
     """
     Get placeholder definitions for a template.
 
     Args:
         template_id: Template ID
+        request: FastAPI request
 
     Returns:
         List of placeholder definitions
@@ -517,7 +542,7 @@ async def get_template_placeholders(template_id: str):
     Raises:
         HTTPException: If template not found
     """
-    shard = get_shard()
+    shard = get_shard(request)
     template = await shard.get_template(template_id)
 
     if not template:
@@ -529,23 +554,24 @@ async def get_template_placeholders(template_id: str):
 # === Bulk Actions ===
 
 @router.post("/batch/activate", response_model=BulkActionResponse)
-async def bulk_activate(request: BulkActionRequest):
+async def bulk_activate(bulk_request: BulkActionRequest, request: Request):
     """
     Activate multiple templates.
 
     Args:
-        request: Bulk action request with template IDs
+        bulk_request: Bulk action request with template IDs
+        request: FastAPI request
 
     Returns:
         Bulk action result
     """
-    shard = get_shard()
+    shard = get_shard(request)
 
     processed = 0
     failed = 0
     errors = []
 
-    for template_id in request.template_ids:
+    for template_id in bulk_request.template_ids:
         try:
             result = await shard.activate_template(template_id)
             if result:
@@ -567,23 +593,24 @@ async def bulk_activate(request: BulkActionRequest):
 
 
 @router.post("/batch/deactivate", response_model=BulkActionResponse)
-async def bulk_deactivate(request: BulkActionRequest):
+async def bulk_deactivate(bulk_request: BulkActionRequest, request: Request):
     """
     Deactivate multiple templates.
 
     Args:
-        request: Bulk action request with template IDs
+        bulk_request: Bulk action request with template IDs
+        request: FastAPI request
 
     Returns:
         Bulk action result
     """
-    shard = get_shard()
+    shard = get_shard(request)
 
     processed = 0
     failed = 0
     errors = []
 
-    for template_id in request.template_ids:
+    for template_id in bulk_request.template_ids:
         try:
             result = await shard.deactivate_template(template_id)
             if result:
@@ -605,23 +632,24 @@ async def bulk_deactivate(request: BulkActionRequest):
 
 
 @router.post("/batch/delete", response_model=BulkActionResponse)
-async def bulk_delete(request: BulkActionRequest):
+async def bulk_delete(bulk_request: BulkActionRequest, request: Request):
     """
     Delete multiple templates.
 
     Args:
-        request: Bulk action request with template IDs
+        bulk_request: Bulk action request with template IDs
+        request: FastAPI request
 
     Returns:
         Bulk action result
     """
-    shard = get_shard()
+    shard = get_shard(request)
 
     processed = 0
     failed = 0
     errors = []
 
-    for template_id in request.template_ids:
+    for template_id in bulk_request.template_ids:
         try:
             result = await shard.delete_template(template_id)
             if result:

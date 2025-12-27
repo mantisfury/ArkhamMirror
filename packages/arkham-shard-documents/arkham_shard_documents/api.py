@@ -1,14 +1,27 @@
 """Documents Shard API endpoints."""
 
 import logging
-from typing import List, Optional
+from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel
+
+if TYPE_CHECKING:
+    from .shard import DocumentsShard
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/documents", tags=["documents"])
+
+
+# === Helper to get shard instance ===
+
+def get_shard(request: Request) -> "DocumentsShard":
+    """Get the documents shard instance from app state."""
+    shard = getattr(request.app.state, "documents_shard", None)
+    if not shard:
+        raise HTTPException(status_code=503, detail="Documents shard not available")
+    return shard
 
 
 # --- Request/Response Models ---
@@ -102,13 +115,38 @@ class EntityListResponse(BaseModel):
     total: int
 
 
+# --- Helper Functions ---
+
+
+def document_to_response(doc) -> DocumentMetadata:
+    """Convert DocumentRecord to API response."""
+    return DocumentMetadata(
+        id=doc.id,
+        title=doc.title,
+        filename=doc.filename,
+        file_type=doc.file_type,
+        file_size=doc.file_size,
+        status=doc.status.value if hasattr(doc.status, 'value') else doc.status,
+        page_count=doc.page_count,
+        chunk_count=doc.chunk_count,
+        entity_count=doc.entity_count,
+        created_at=doc.created_at.isoformat() if doc.created_at else "",
+        updated_at=doc.updated_at.isoformat() if doc.updated_at else "",
+        project_id=doc.project_id,
+        tags=doc.tags,
+        custom_metadata=doc.custom_metadata,
+    )
+
+
 # --- Health Check ---
 
 
 @router.get("/health")
-async def health():
+async def health(request: Request):
     """Health check endpoint."""
-    return {"status": "healthy", "shard": "documents"}
+    shard = get_shard(request)
+    count = await shard.get_document_count()
+    return {"status": "healthy", "shard": "documents", "document_count": count}
 
 
 # --- Document Management Endpoints ---
@@ -116,6 +154,7 @@ async def health():
 
 @router.get("/items", response_model=DocumentListResponse)
 async def list_documents(
+    request: Request,
     page: int = Query(1, ge=1, description="Page number"),
     page_size: int = Query(20, ge=1, le=100, description="Items per page"),
     sort: str = Query("created_at", description="Sort field"),
@@ -130,40 +169,53 @@ async def list_documents(
 
     Supports filtering by status, file type, and project.
     """
-    # TODO: Implement document listing
-    # - Query database with filters
-    # - Apply pagination
-    # - Return formatted response
-    logger.info(f"Listing documents: page={page}, page_size={page_size}, status={status}")
+    shard = get_shard(request)
+
+    offset = (page - 1) * page_size
+
+    documents = await shard.list_documents(
+        search=q,
+        status=status,
+        file_type=file_type,
+        project_id=project_id,
+        limit=page_size,
+        offset=offset,
+        sort=sort,
+        order=order,
+    )
+
+    # Get total count for pagination
+    total = await shard.get_document_count(status=status)
 
     return DocumentListResponse(
-        items=[],
-        total=0,
+        items=[document_to_response(doc) for doc in documents],
+        total=total,
         page=page,
         page_size=page_size,
     )
 
 
 @router.get("/items/{document_id}", response_model=DocumentMetadata)
-async def get_document(document_id: str):
+async def get_document(document_id: str, request: Request):
     """
     Get a single document by ID.
 
     Returns full document metadata including counts.
     """
-    # TODO: Implement document retrieval
-    # - Query document from database or DocumentService
-    # - Get chunk count, entity count
-    # - Return metadata
-    logger.info(f"Getting document: {document_id}")
+    shard = get_shard(request)
+    document = await shard.get_document(document_id)
 
-    raise HTTPException(status_code=404, detail="Document not found")
+    if not document:
+        raise HTTPException(status_code=404, detail=f"Document not found: {document_id}")
+
+    return document_to_response(document)
 
 
 @router.patch("/items/{document_id}", response_model=DocumentMetadata)
 async def update_document_metadata(
     document_id: str,
-    request: UpdateMetadataRequest,
+    body: UpdateMetadataRequest,
+    request: Request,
 ):
     """
     Update document metadata.
@@ -171,31 +223,39 @@ async def update_document_metadata(
     Allows updating title, tags, and custom metadata fields.
     Publishes documents.metadata.updated event.
     """
-    # TODO: Implement metadata update
-    # - Validate document exists
-    # - Update metadata in database
-    # - Publish documents.metadata.updated event
-    # - Return updated metadata
-    logger.info(f"Updating document metadata: {document_id}")
+    shard = get_shard(request)
 
-    raise HTTPException(status_code=404, detail="Document not found")
+    try:
+        document = await shard.update_document(
+            document_id,
+            title=body.title,
+            tags=body.tags,
+            custom_metadata=body.custom_metadata,
+        )
+
+        if not document:
+            raise HTTPException(status_code=404, detail=f"Document not found: {document_id}")
+
+        return document_to_response(document)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @router.delete("/items/{document_id}")
-async def delete_document(document_id: str):
+async def delete_document(document_id: str, request: Request):
     """
     Delete a document.
 
     Removes document and all associated data.
     """
-    # TODO: Implement document deletion
-    # - Validate document exists
-    # - Delete via DocumentService or database
-    # - Clean up shard-specific data
-    # - Document service will publish document.deleted event
-    logger.info(f"Deleting document: {document_id}")
+    shard = get_shard(request)
 
-    raise HTTPException(status_code=404, detail="Document not found")
+    success = await shard.delete_document(document_id)
+
+    if not success:
+        raise HTTPException(status_code=404, detail=f"Document not found: {document_id}")
+
+    return {"deleted": True, "document_id": document_id}
 
 
 # --- Document Content Endpoints ---
@@ -304,6 +364,7 @@ async def get_full_metadata(document_id: str):
 
 @router.get("/count")
 async def get_document_count(
+    request: Request,
     status: Optional[str] = Query(None, description="Filter by status"),
 ):
     """
@@ -311,35 +372,29 @@ async def get_document_count(
 
     Optionally filter by status.
     """
-    # TODO: Implement count query
-    # - Count documents in database
-    # - Filter by status if provided
-    logger.info(f"Getting document count: status={status}")
-
-    return {"count": 0}
+    shard = get_shard(request)
+    count = await shard.get_document_count(status=status)
+    return {"count": count}
 
 
 @router.get("/stats", response_model=DocumentStats)
-async def get_document_stats():
+async def get_document_stats(request: Request):
     """
     Get document statistics.
 
     Returns counts, totals, and aggregate data.
     """
-    # TODO: Implement statistics aggregation
-    # - Count documents by status
-    # - Sum file sizes
-    # - Sum pages and chunks
-    logger.info("Getting document statistics")
+    shard = get_shard(request)
+    stats = await shard.get_document_stats()
 
     return DocumentStats(
-        total_documents=0,
-        processed_documents=0,
-        processing_documents=0,
-        failed_documents=0,
-        total_size_bytes=0,
-        total_pages=0,
-        total_chunks=0,
+        total_documents=stats["total_documents"],
+        processed_documents=stats["processed_documents"],
+        processing_documents=stats["processing_documents"],
+        failed_documents=stats["failed_documents"],
+        total_size_bytes=stats["total_size_bytes"],
+        total_pages=stats["total_pages"],
+        total_chunks=stats["total_chunks"],
     )
 
 

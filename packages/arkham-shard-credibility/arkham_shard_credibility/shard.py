@@ -69,6 +69,10 @@ class CredibilityShard(ArkhamShard):
         # Subscribe to events
         await self._subscribe_to_events()
 
+        # Register self in app state for API access
+        if hasattr(frame, "app") and frame.app:
+            frame.app.state.credibility_shard = self
+
         self._initialized = True
         logger.info(f"CredibilityShard initialized (v{self.version})")
 

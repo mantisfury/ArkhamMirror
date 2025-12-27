@@ -42,7 +42,7 @@ export function GenericList({ apiPrefix, ui }: GenericListProps) {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const { toast } = useToast();
-  const { confirm } = useConfirm();
+  const confirm = useConfirm();
 
   // State
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
@@ -184,7 +184,7 @@ export function GenericList({ apiPrefix, ui }: GenericListProps) {
 
   const handleBulkAction = useCallback(async (action: BulkAction) => {
     if (selectedIds.size === 0) {
-      toast('No items selected', 'warning');
+      toast.warning('No items selected');
       return;
     }
 
@@ -211,11 +211,11 @@ export function GenericList({ apiPrefix, ui }: GenericListProps) {
         throw new Error(result.detail || result.message || 'Bulk action failed');
       }
 
-      toast(result.message || `${action.label} completed`, 'success');
+      toast.success(result.message || `${action.label} completed`);
       setSelectedIds(new Set());
       refetch();
     } catch (err) {
-      toast(err instanceof Error ? err.message : 'Bulk action failed', 'error');
+      toast.error(err instanceof Error ? err.message : 'Bulk action failed');
     } finally {
       setBulkLoading(false);
     }
@@ -255,10 +255,10 @@ export function GenericList({ apiPrefix, ui }: GenericListProps) {
           throw new Error(result.detail || result.message || 'Action failed');
         }
 
-        toast(result.message || `${action.label} completed`, 'success');
+        toast.success(result.message || `${action.label} completed`);
         refetch();
       } catch (err) {
-        toast(err instanceof Error ? err.message : 'Action failed', 'error');
+        toast.error(err instanceof Error ? err.message : 'Action failed');
       }
     }
   }, [apiPrefix, ui.id_field, navigate, toast, confirm, refetch]);

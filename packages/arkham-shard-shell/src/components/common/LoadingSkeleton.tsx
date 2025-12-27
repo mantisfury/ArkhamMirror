@@ -2,8 +2,23 @@
  * LoadingSkeleton - Loading placeholder for shard content
  */
 
+type SkeletonType = 'list' | 'detail' | 'card' | 'table' | 'page' | 'default';
+
+interface LoadingSkeletonProps {
+  className?: string;
+  type?: SkeletonType;
+}
+
 // Generic loading skeleton - can be used anywhere
-export function LoadingSkeleton({ className = '' }: { className?: string }) {
+export function LoadingSkeleton({ className = '', type = 'default' }: LoadingSkeletonProps) {
+  if (type === 'list' || type === 'table') {
+    return <TableSkeleton />;
+  }
+
+  if (type === 'detail' || type === 'card' || type === 'page') {
+    return <ShardLoadingSkeleton />;
+  }
+
   return (
     <div className={`ach-loading ${className}`}>
       <span className="spin">Loading...</span>

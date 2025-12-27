@@ -69,6 +69,10 @@ class ExportShard(ArkhamShard):
         # Create database schema
         await self._create_schema()
 
+        # Register self in app state for API access
+        if hasattr(frame, "app") and frame.app:
+            frame.app.state.export_shard = self
+
         self._initialized = True
         logger.info(f"ExportShard initialized (v{self.version})")
 

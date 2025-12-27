@@ -56,7 +56,8 @@ import {
 // ============================================
 
 export function ACHPage() {
-  const [searchParams, setSearchParams] = useSearchParams();
+  const [searchParams, _setSearchParams] = useSearchParams();
+  void _setSearchParams;
   const matrixId = searchParams.get('matrixId');
   const view = searchParams.get('view') || 'list';
 
@@ -77,9 +78,10 @@ export function ACHPage() {
 // ============================================
 
 function MatrixListView() {
-  const [searchParams, setSearchParams] = useSearchParams();
+  const [_searchParams, setSearchParams] = useSearchParams();
+  void _searchParams;
   const { toast } = useToast();
-  const { confirm } = useConfirm();
+  const confirm = useConfirm();
 
   const [matrices, setMatrices] = useState<MatrixListItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -113,10 +115,10 @@ function MatrixListView() {
     if (confirmed) {
       try {
         await api.deleteMatrix(matrix.id);
-        toast(`Matrix "${matrix.title}" deleted`, 'success');
+        toast.success(`Matrix "${matrix.title}" deleted`);
         fetchMatrices();
       } catch (err) {
-        toast(err instanceof Error ? err.message : 'Failed to delete matrix', 'error');
+        toast.error(err instanceof Error ? err.message : 'Failed to delete matrix');
       }
     }
   };
@@ -221,7 +223,8 @@ function MatrixListView() {
 // ============================================
 
 function CreateMatrixView() {
-  const [searchParams, setSearchParams] = useSearchParams();
+  const [_searchParams, setSearchParams] = useSearchParams();
+  void _searchParams;
   const { toast } = useToast();
 
   const [title, setTitle] = useState('');
@@ -232,17 +235,17 @@ function CreateMatrixView() {
     e.preventDefault();
 
     if (!title.trim()) {
-      toast('Title is required', 'error');
+      toast.error('Title is required');
       return;
     }
 
     setSubmitting(true);
     try {
       const result = await api.createMatrix({ title: title.trim(), description: description.trim() });
-      toast(`Analysis "${title}" created`, 'success');
+      toast.success(`Analysis "${title}" created`);
       setSearchParams({ matrixId: result.matrix_id });
     } catch (err) {
-      toast(err instanceof Error ? err.message : 'Failed to create analysis', 'error');
+      toast.error(err instanceof Error ? err.message : 'Failed to create analysis');
     } finally {
       setSubmitting(false);
     }
@@ -323,9 +326,11 @@ function CreateMatrixView() {
 // ============================================
 
 function MatrixDetailView({ matrixId }: { matrixId: string }) {
-  const [searchParams, setSearchParams] = useSearchParams();
+  const [_searchParams, setSearchParams] = useSearchParams();
+  void _searchParams;
   const { toast } = useToast();
-  const { confirm } = useConfirm();
+  const _confirm = useConfirm();
+  void _confirm;
 
   // State
   const [matrix, setMatrix] = useState<ACHMatrix | null>(null);
@@ -334,7 +339,7 @@ function MatrixDetailView({ matrixId }: { matrixId: string }) {
   const [zoom, setZoom] = useState(1);
 
   // Step management (persisted in URL)
-  const stepFromUrl = parseInt(searchParams.get('step') || '1', 10);
+  const stepFromUrl = parseInt(_searchParams.get('step') || '1', 10);
   const [currentStep, setCurrentStepState] = useState(
     stepFromUrl >= 1 && stepFromUrl <= 8 ? stepFromUrl : 1
   );
@@ -382,7 +387,8 @@ function MatrixDetailView({ matrixId }: { matrixId: string }) {
   const [consistencyChecks, setConsistencyChecks] = useState<ConsistencyCheck[]>([]);
 
   // Diagnosticity
-  const [diagnosticityReport, setDiagnosticityReport] = useState<DiagnosticityReport | null>(null);
+  const _diagnosticityReport = useState<DiagnosticityReport | null>(null)[0];
+  void _diagnosticityReport;
 
   // Milestones
   const [milestones, setMilestones] = useState<any[]>([]);
@@ -535,11 +541,11 @@ function MatrixDetailView({ matrixId }: { matrixId: string }) {
         rating,
         reasoning,
       });
-      toast('Rating updated', 'success');
+      toast.success('Rating updated');
       setEditingRating(null);
       await fetchMatrix();
     } catch (err) {
-      toast(err instanceof Error ? err.message : 'Failed to update rating', 'error');
+      toast.error(err instanceof Error ? err.message : 'Failed to update rating');
       setEditingRating(null);
     }
   };
@@ -548,11 +554,11 @@ function MatrixDetailView({ matrixId }: { matrixId: string }) {
   const handleAddHypothesis = async (title: string, description: string) => {
     try {
       await api.addHypothesis({ matrix_id: matrixId, title, description });
-      toast('Hypothesis added', 'success');
+      toast.success('Hypothesis added');
       setShowAddHypothesis(false);
       await fetchMatrix();
     } catch (err) {
-      toast(err instanceof Error ? err.message : 'Failed to add hypothesis', 'error');
+      toast.error(err instanceof Error ? err.message : 'Failed to add hypothesis');
       setShowAddHypothesis(false);
     }
   };
@@ -564,10 +570,10 @@ function MatrixDetailView({ matrixId }: { matrixId: string }) {
     if (confirmed) {
       try {
         await api.removeHypothesis(matrixId, hypothesisId);
-        toast('Hypothesis removed', 'success');
+        toast.success('Hypothesis removed');
         await fetchMatrix();
       } catch (err) {
-        toast(err instanceof Error ? err.message : 'Failed to remove hypothesis', 'error');
+        toast.error(err instanceof Error ? err.message : 'Failed to remove hypothesis');
       }
     }
   };
@@ -582,11 +588,11 @@ function MatrixDetailView({ matrixId }: { matrixId: string }) {
         evidence_type: evidenceType,
         credibility,
       });
-      toast('Evidence added', 'success');
+      toast.success('Evidence added');
       setShowAddEvidence(false);
       await fetchMatrix();
     } catch (err) {
-      toast(err instanceof Error ? err.message : 'Failed to add evidence', 'error');
+      toast.error(err instanceof Error ? err.message : 'Failed to add evidence');
       setShowAddEvidence(false);
     }
   };
@@ -597,10 +603,10 @@ function MatrixDetailView({ matrixId }: { matrixId: string }) {
     if (confirmed) {
       try {
         await api.removeEvidence(matrixId, evidenceId);
-        toast('Evidence removed', 'success');
+        toast.success('Evidence removed');
         await fetchMatrix();
       } catch (err) {
-        toast(err instanceof Error ? err.message : 'Failed to remove evidence', 'error');
+        toast.error(err instanceof Error ? err.message : 'Failed to remove evidence');
       }
     }
   };
@@ -609,10 +615,10 @@ function MatrixDetailView({ matrixId }: { matrixId: string }) {
   const handleRecalculateScores = async () => {
     try {
       await api.calculateScores(matrixId);
-      toast('Scores recalculated', 'success');
+      toast.success('Scores recalculated');
       await fetchMatrix();
     } catch (err) {
-      toast(err instanceof Error ? err.message : 'Failed to calculate scores', 'error');
+      toast.error(err instanceof Error ? err.message : 'Failed to calculate scores');
     }
   };
 
@@ -631,7 +637,7 @@ function MatrixDetailView({ matrixId }: { matrixId: string }) {
       })));
       setShowAIHypotheses(true);
     } catch (err) {
-      toast(err instanceof Error ? err.message : 'Failed to get suggestions', 'error');
+      toast.error(err instanceof Error ? err.message : 'Failed to get suggestions');
     } finally {
       setAiLoading(false);
     }
@@ -646,7 +652,7 @@ function MatrixDetailView({ matrixId }: { matrixId: string }) {
         title: suggestion.title,
         description: suggestion.description,
       });
-      toast('Hypothesis added', 'success');
+      toast.success('Hypothesis added');
       const remaining = hypothesisSuggestions.filter((_, i) => i !== index);
       setHypothesisSuggestions(remaining);
       if (remaining.length === 0) {
@@ -654,7 +660,7 @@ function MatrixDetailView({ matrixId }: { matrixId: string }) {
       }
       await fetchMatrix();
     } catch (err) {
-      toast(err instanceof Error ? err.message : 'Failed to add hypothesis', 'error');
+      toast.error(err instanceof Error ? err.message : 'Failed to add hypothesis');
     }
   };
 
@@ -670,7 +676,7 @@ function MatrixDetailView({ matrixId }: { matrixId: string }) {
         // Continue with others
       }
     }
-    toast('All hypotheses added', 'success');
+    toast.success('All hypotheses added');
     setShowAIHypotheses(false);
     setHypothesisSuggestions([]);
     await fetchMatrix();
@@ -691,7 +697,7 @@ function MatrixDetailView({ matrixId }: { matrixId: string }) {
       })));
       setShowAIEvidence(true);
     } catch (err) {
-      toast(err instanceof Error ? err.message : 'Failed to get suggestions', 'error');
+      toast.error(err instanceof Error ? err.message : 'Failed to get suggestions');
     } finally {
       setAiLoading(false);
     }
@@ -707,7 +713,7 @@ function MatrixDetailView({ matrixId }: { matrixId: string }) {
         evidence_type: suggestion.evidence_type,
         source: suggestion.source,
       });
-      toast('Evidence added', 'success');
+      toast.success('Evidence added');
       const remaining = evidenceSuggestions.filter((_, i) => i !== index);
       setEvidenceSuggestions(remaining);
       if (remaining.length === 0) {
@@ -715,7 +721,7 @@ function MatrixDetailView({ matrixId }: { matrixId: string }) {
       }
       await fetchMatrix();
     } catch (err) {
-      toast(err instanceof Error ? err.message : 'Failed to add evidence', 'error');
+      toast.error(err instanceof Error ? err.message : 'Failed to add evidence');
     }
   };
 
@@ -735,7 +741,7 @@ function MatrixDetailView({ matrixId }: { matrixId: string }) {
       setRatingEvidenceLabel(evidence.description.substring(0, 50));
       setShowAIRatings(true);
     } catch (err) {
-      toast(err instanceof Error ? err.message : 'Failed to get suggestions', 'error');
+      toast.error(err instanceof Error ? err.message : 'Failed to get suggestions');
     } finally {
       setAiLoading(false);
     }
@@ -752,10 +758,10 @@ function MatrixDetailView({ matrixId }: { matrixId: string }) {
         rating,
         reasoning: suggestion.explanation,
       });
-      toast('Rating updated', 'success');
+      toast.success('Rating updated');
       setRatingSuggestions(prev => prev.filter(s => s.hypothesis_id !== hypothesisId));
     } catch (err) {
-      toast(err instanceof Error ? err.message : 'Failed to update rating', 'error');
+      toast.error(err instanceof Error ? err.message : 'Failed to update rating');
     }
   };
 
@@ -773,7 +779,7 @@ function MatrixDetailView({ matrixId }: { matrixId: string }) {
       }]);
       setShowDevilsAdvocate(true);
     } catch (err) {
-      toast(err instanceof Error ? err.message : 'Failed to run analysis', 'error');
+      toast.error(err instanceof Error ? err.message : 'Failed to run analysis');
     } finally {
       setAiLoading(false);
     }
@@ -784,7 +790,7 @@ function MatrixDetailView({ matrixId }: { matrixId: string }) {
       `[${c.hypothesis_label}]\nCounter-argument: ${c.counter_argument}\nDisproof: ${c.disproof_evidence}\nAlternative: ${c.alternative_angle}`
     ).join('\n\n');
     setSensitivityNotes(prev => prev + '\n\n--- AI Challenges ---\n' + notesText);
-    toast('Challenges saved to notes', 'success');
+    toast.success('Challenges saved to notes');
     setShowDevilsAdvocate(false);
   };
 
@@ -817,12 +823,12 @@ function MatrixDetailView({ matrixId }: { matrixId: string }) {
       setSensitivityResults(results);
 
       if (results.length === 0) {
-        toast(`Sensitivity: ${result.sensitivity} - ${result.uncertain_evidence_count} uncertain evidence items`, 'info');
+        toast.info(`Sensitivity: ${result.sensitivity} - ${result.uncertain_evidence_count} uncertain evidence items`);
       } else {
-        toast('Sensitivity analysis complete', 'success');
+        toast.success('Sensitivity analysis complete');
       }
     } catch (err) {
-      toast(err instanceof Error ? err.message : 'Failed to run analysis', 'error');
+      toast.error(err instanceof Error ? err.message : 'Failed to run analysis');
     } finally {
       setSensitivityLoading(false);
     }
@@ -840,9 +846,9 @@ function MatrixDetailView({ matrixId }: { matrixId: string }) {
       a.download = `${matrix?.title || 'ach-analysis'}.md`;
       a.click();
       URL.revokeObjectURL(url);
-      toast('Exported to Markdown', 'success');
+      toast.success('Exported to Markdown');
     } catch (err) {
-      toast(err instanceof Error ? err.message : 'Failed to export', 'error');
+      toast.error(err instanceof Error ? err.message : 'Failed to export');
     }
   };
 
@@ -856,9 +862,9 @@ function MatrixDetailView({ matrixId }: { matrixId: string }) {
       a.download = `${matrix?.title || 'ach-analysis'}.json`;
       a.click();
       URL.revokeObjectURL(url);
-      toast('Exported to JSON', 'success');
+      toast.success('Exported to JSON');
     } catch (err) {
-      toast(err instanceof Error ? err.message : 'Failed to export', 'error');
+      toast.error(err instanceof Error ? err.message : 'Failed to export');
     }
   };
 
@@ -870,10 +876,10 @@ function MatrixDetailView({ matrixId }: { matrixId: string }) {
       if (win) {
         win.document.write(result.content as string);
         win.document.close();
-        toast('PDF preview opened - use Print to save as PDF', 'info');
+        toast.info('PDF preview opened - use Print to save as PDF');
       }
     } catch (err) {
-      toast(err instanceof Error ? err.message : 'Failed to export', 'error');
+      toast.error(err instanceof Error ? err.message : 'Failed to export');
     }
   };
 
@@ -1010,7 +1016,7 @@ function MatrixDetailView({ matrixId }: { matrixId: string }) {
           isLoading={sensitivityLoading}
           onRunAnalysis={handleRunSensitivity}
           onNotesChange={setSensitivityNotes}
-          onSaveNotes={() => toast('Notes saved', 'success')}
+          onSaveNotes={() => toast.success('Notes saved')}
         />;
       case 8:
         return <MilestonesSection
@@ -1027,7 +1033,7 @@ function MatrixDetailView({ matrixId }: { matrixId: string }) {
               setMilestoneSuggestions(result.suggestions);
               setShowAIMilestones(true);
             } catch (err) {
-              toast(err instanceof Error ? err.message : 'Failed to get suggestions', 'error');
+              toast.error(err instanceof Error ? err.message : 'Failed to get suggestions');
             } finally {
               setAiLoading(false);
             }
@@ -1052,7 +1058,7 @@ function MatrixDetailView({ matrixId }: { matrixId: string }) {
                 updated_at: new Date().toISOString(),
               };
               setMilestones(prev => [...prev, newMilestone]);
-              toast('Milestone added', 'success');
+              toast.success('Milestone added');
             }
           }}
           onEditMilestone={(id) => {
@@ -1063,14 +1069,14 @@ function MatrixDetailView({ matrixId }: { matrixId: string }) {
                 setMilestones(prev => prev.map(m =>
                   m.id === id ? { ...m, description: newDesc, updated_at: new Date().toISOString() } : m
                 ));
-                toast('Milestone updated', 'success');
+                toast.success('Milestone updated');
               }
             }
           }}
           onDeleteMilestone={(id) => {
             if (window.confirm('Delete this milestone?')) {
               setMilestones(prev => prev.filter(m => m.id !== id));
-              toast('Milestone deleted', 'success');
+              toast.success('Milestone deleted');
             }
           }}
           onExportMarkdown={handleExportMarkdown}
@@ -1219,10 +1225,10 @@ function MatrixDetailView({ matrixId }: { matrixId: string }) {
                   reasoning: suggestion.explanation,
                 });
               } catch (err) {
-                toast(err instanceof Error ? err.message : 'Failed to update rating', 'error');
+                toast.error(err instanceof Error ? err.message : 'Failed to update rating');
               }
             }
-            toast('All ratings applied', 'success');
+            toast.success('All ratings applied');
             setRatingSuggestions([]);
             setShowAIRatings(false);
             await fetchMatrix();
@@ -1256,7 +1262,7 @@ function MatrixDetailView({ matrixId }: { matrixId: string }) {
               updated_at: new Date().toISOString(),
             };
             setMilestones(prev => [...prev, newMilestone]);
-            toast(`Milestone for ${s.hypothesis_label} added`, 'success');
+            toast.success(`Milestone for ${s.hypothesis_label} added`);
             const remaining = milestoneSuggestions.filter(m => m.hypothesis_id !== s.hypothesis_id);
             setMilestoneSuggestions(remaining);
             if (remaining.length === 0) {
@@ -1278,7 +1284,7 @@ function MatrixDetailView({ matrixId }: { matrixId: string }) {
             }));
             setMilestones(prev => [...prev, ...newMilestones]);
             setMilestoneSuggestions([]);
-            toast('All milestones added', 'success');
+            toast.success('All milestones added');
             setShowAIMilestones(false);
           }}
           onClose={() => setShowAIMilestones(false)}

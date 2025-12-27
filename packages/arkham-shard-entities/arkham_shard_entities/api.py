@@ -1,10 +1,13 @@
 """Entities Shard API endpoints."""
 
 import logging
-from typing import Annotated
+from typing import Annotated, TYPE_CHECKING
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel
+
+if TYPE_CHECKING:
+    from .shard import EntitiesShard
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +32,14 @@ def init_api(db, event_bus, vectors_service, entity_service):
         logger.info("Entities API: Vector service available for merge suggestions")
     else:
         logger.info("Entities API: Vector service not available")
+
+
+def get_shard(request: Request) -> "EntitiesShard":
+    """Get the entities shard instance from app state."""
+    shard = getattr(request.app.state, "entities_shard", None)
+    if not shard:
+        raise HTTPException(status_code=503, detail="Entities shard not available")
+    return shard
 
 
 # --- Request/Response Models ---
@@ -120,6 +131,24 @@ class MergeCandidateResponse(BaseModel):
     common_documents: int
 
 
+# --- Helper Functions ---
+
+
+def entity_to_response(entity) -> EntityResponse:
+    """Convert Entity dataclass to EntityResponse."""
+    return EntityResponse(
+        id=entity.id,
+        name=entity.name,
+        entity_type=entity.entity_type.value,
+        canonical_id=entity.canonical_id,
+        aliases=entity.aliases,
+        metadata=entity.metadata,
+        mention_count=0,  # Will be populated from database if needed
+        created_at=entity.created_at.isoformat() if entity.created_at else "",
+        updated_at=entity.updated_at.isoformat() if entity.updated_at else "",
+    )
+
+
 # --- Endpoints ---
 
 
@@ -136,6 +165,7 @@ async def health():
 
 @router.get("/items", response_model=EntityListResponse)
 async def list_entities(
+    request: Request,
     page: int = 1,
     page_size: int = 20,
     sort: str = "name",
@@ -156,48 +186,53 @@ async def list_entities(
         filter: Filter by entity type (PERSON, ORGANIZATION, etc.)
         show_merged: Include entities that have been merged
     """
-    # Stub implementation
-    logger.debug(
-        f"Listing entities: page={page}, size={page_size}, filter={filter}, search={q}"
-    )
+    shard = get_shard(request)
 
     # Validation
     page = max(1, page)
     page_size = min(max(1, page_size), 100)
+    offset = (page - 1) * page_size
 
-    # Stub: Would query database with filters
-    # Example query logic:
-    # - Filter by entity_type if provided
-    # - Filter by canonical_id IS NULL if show_merged=False
-    # - Search name/aliases with q parameter
-    # - Apply sorting
-    # - Paginate results
+    # Get entities from shard
+    entities = await shard.list_entities(
+        search=q,
+        entity_type=filter,
+        limit=page_size,
+        offset=offset,
+        show_merged=show_merged
+    )
+
+    # Get total count for pagination
+    # For now, return the items we got
+    # TODO: Add total count query for accurate pagination
+    total = len(entities)
 
     return EntityListResponse(
-        items=[],
-        total=0,
+        items=[entity_to_response(e) for e in entities],
+        total=total,
         page=page,
         page_size=page_size,
     )
 
 
 @router.get("/items/{entity_id}", response_model=EntityResponse)
-async def get_entity(entity_id: str):
+async def get_entity(entity_id: str, request: Request):
     """
     Get a single entity by ID.
 
     Args:
-        entity_id: Entity UUID
+        entity_id: Entity ID
 
     Returns:
         Entity details with mention count
     """
-    # Stub implementation
-    logger.debug(f"Getting entity: {entity_id}")
+    shard = get_shard(request)
+    entity = await shard.get_entity(entity_id)
 
-    # Stub: Would query database
-    # If entity not found, raise 404
-    raise HTTPException(status_code=404, detail="Entity not found")
+    if not entity:
+        raise HTTPException(status_code=404, detail=f"Entity not found: {entity_id}")
+
+    return entity_to_response(entity)
 
 
 @router.put("/items/{entity_id}", response_model=EntityResponse)
@@ -250,6 +285,7 @@ async def delete_entity(entity_id: str):
 
 @router.get("/count")
 async def get_count(
+    request: Request,
     filter: Annotated[str | None, Query(description="Entity type filter")] = None,
 ):
     """
@@ -261,14 +297,13 @@ async def get_count(
     Returns:
         Count object
     """
-    # Stub implementation
-    logger.debug(f"Getting entity count: filter={filter}")
+    shard = get_shard(request)
+    stats = await shard.get_entity_stats()
 
-    # Stub: Would count entities in database
-    # Would filter by entity_type if provided
-    # Would exclude merged entities (canonical_id IS NULL)
+    if filter and filter in stats:
+        return {"count": stats[filter]}
 
-    return {"count": 0}
+    return {"count": stats.get("TOTAL", 0)}
 
 
 # --- Merge Endpoints ---
@@ -335,45 +370,31 @@ async def get_merge_suggestions(
 
 
 @router.post("/merge")
-async def merge_entities(request: MergeEntitiesRequest):
+async def merge_entities(merge_request: MergeEntitiesRequest, request: Request):
     """
     Merge multiple entities into a canonical entity.
 
     Args:
-        request: Merge request with entity IDs and canonical ID
+        merge_request: Merge request with entity IDs and canonical ID
 
     Returns:
         Merged entity details
     """
-    # Stub implementation
-    logger.debug(
-        f"Merging entities {request.entity_ids} into {request.canonical_id}"
-    )
+    shard = get_shard(request)
 
-    # Stub: Would perform merge
-    # - Update non-canonical entities to set canonical_id
-    # - Update entity name if canonical_name provided
-    # - Migrate all mentions to canonical entity
-    # - Preserve all relationships
-    # - Merge aliases
+    # Merge each entity into the canonical one
+    for entity_id in merge_request.entity_ids:
+        if entity_id != merge_request.canonical_id:
+            await shard.merge_entities(entity_id, merge_request.canonical_id)
 
-    # Would publish event: entities.entity.merged
-    if _event_bus:
-        # await _event_bus.emit(
-        #     "entities.entity.merged",
-        #     {
-        #         "canonical_id": request.canonical_id,
-        #         "merged_ids": request.entity_ids,
-        #         "canonical_name": request.canonical_name,
-        #     },
-        #     source="entities",
-        # )
-        pass
+    # Get the updated canonical entity
+    canonical = await shard.get_entity(merge_request.canonical_id)
 
     return {
         "success": True,
-        "canonical_id": request.canonical_id,
-        "merged_count": len(request.entity_ids),
+        "canonical_id": merge_request.canonical_id,
+        "merged_count": len([eid for eid in merge_request.entity_ids if eid != merge_request.canonical_id]),
+        "canonical_entity": entity_to_response(canonical) if canonical else None,
     }
 
 
@@ -505,6 +526,7 @@ async def get_entity_relationships(entity_id: str):
 @router.get("/{entity_id}/mentions", response_model=list[MentionResponse])
 async def get_entity_mentions(
     entity_id: str,
+    request: Request,
     page: int = 1,
     page_size: int = 50,
 ):
@@ -512,32 +534,38 @@ async def get_entity_mentions(
     Get all mentions for a specific entity.
 
     Args:
-        entity_id: Entity UUID
+        entity_id: Entity ID
         page: Page number
         page_size: Items per page
 
     Returns:
         List of mentions with document references
     """
-    # Stub implementation
-    logger.debug(f"Getting mentions for entity: {entity_id}")
+    shard = get_shard(request)
+    mentions_data = await shard.get_entity_mentions(entity_id)
 
-    # Stub: Would query mentions table
-    # - Filter by entity_id
-    # - Include canonical entity mentions if this entity is merged
-    # - Order by created_at DESC
-    # - Paginate results
-
-    # Would publish event: entities.entity.viewed
+    # Publish event
     if _event_bus:
-        # await _event_bus.emit(
-        #     "entities.entity.viewed",
-        #     {"entity_id": entity_id},
-        #     source="entities",
-        # )
-        pass
+        await _event_bus.publish("entities.entity.viewed", {"entity_id": entity_id})
 
-    return []
+    # Convert to response models
+    mentions = []
+    for mention in mentions_data:
+        mentions.append(MentionResponse(
+            id=mention["id"],
+            entity_id=mention["entity_id"],
+            document_id=mention["document_id"],
+            mention_text=mention["mention_text"],
+            confidence=mention["confidence"],
+            start_offset=mention["start_offset"],
+            end_offset=mention["end_offset"],
+            created_at=mention["created_at"] or "",
+        ))
+
+    # Simple pagination
+    start = (page - 1) * page_size
+    end = start + page_size
+    return mentions[start:end]
 
 
 # --- Batch Operations ---

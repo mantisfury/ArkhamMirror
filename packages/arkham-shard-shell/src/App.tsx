@@ -25,7 +25,7 @@ import { ToastProvider } from './context/ToastContext';
 import { ConfirmProvider } from './context/ConfirmContext';
 import { BadgeProvider } from './context/BadgeContext';
 import { Shell } from './components/layout/Shell';
-import { ShardUnavailable } from './components/common/ShardUnavailable';
+import { GenericShardPage } from './pages/generic';
 
 // Page imports
 import { DashboardPage } from './pages/dashboard';
@@ -37,6 +37,32 @@ import { ParsePage } from './pages/parse';
 import { EmbedPage } from './pages/embed';
 import { ContradictionsPage } from './pages/contradictions';
 import { AnomaliesPage } from './pages/anomalies';
+import { SettingsPage } from './pages/settings';
+
+// Wave 1 shard imports
+import { GraphPage } from './pages/graph';
+import { TimelinePage } from './pages/timeline';
+import { DocumentsPage } from './pages/documents';
+
+// Wave 2 shard imports
+import { EntitiesPage } from './pages/entities';
+import { ProjectsPage } from './pages/projects';
+import { ClaimsPage } from './pages/claims';
+
+// Wave 3 shard imports
+import { CredibilityPage } from './pages/credibility';
+import { PatternsPage } from './pages/patterns';
+import { ProvenancePage } from './pages/provenance';
+
+// Wave 4 shard imports
+import { ExportPage } from './pages/export';
+import { ReportsPage } from './pages/reports';
+import { LettersPage } from './pages/letters';
+
+// Wave 5 shard imports
+import { PacketsPage } from './pages/packets';
+import { TemplatesPage } from './pages/templates';
+import { SummaryPage } from './pages/summary';
 
 export function App() {
   return (
@@ -81,8 +107,61 @@ export function App() {
                   {/* Anomalies shard */}
                   <Route path="/anomalies" element={<AnomaliesPage />} />
 
-                  {/* Catch-all for unknown shard routes */}
-                  <Route path="*" element={<ShardUnavailable />} />
+                  {/* Settings shard */}
+                  <Route path="/settings" element={<SettingsPage />} />
+
+                  {/* Wave 1 shards */}
+                  {/* Graph shard */}
+                  <Route path="/graph" element={<GraphPage />} />
+
+                  {/* Timeline shard */}
+                  <Route path="/timeline" element={<TimelinePage />} />
+
+                  {/* Documents shard */}
+                  <Route path="/documents" element={<DocumentsPage />} />
+
+                  {/* Wave 2 shards */}
+                  {/* Entities shard */}
+                  <Route path="/entities" element={<EntitiesPage />} />
+
+                  {/* Projects shard */}
+                  <Route path="/projects" element={<ProjectsPage />} />
+
+                  {/* Claims shard */}
+                  <Route path="/claims" element={<ClaimsPage />} />
+
+                  {/* Wave 3 shards */}
+                  {/* Credibility shard */}
+                  <Route path="/credibility" element={<CredibilityPage />} />
+
+                  {/* Patterns shard */}
+                  <Route path="/patterns" element={<PatternsPage />} />
+
+                  {/* Provenance shard */}
+                  <Route path="/provenance" element={<ProvenancePage />} />
+
+                  {/* Wave 4 shards */}
+                  {/* Export shard */}
+                  <Route path="/export" element={<ExportPage />} />
+
+                  {/* Reports shard */}
+                  <Route path="/reports" element={<ReportsPage />} />
+
+                  {/* Letters shard */}
+                  <Route path="/letters" element={<LettersPage />} />
+
+                  {/* Wave 5 shards */}
+                  {/* Packets shard */}
+                  <Route path="/packets" element={<PacketsPage />} />
+
+                  {/* Templates shard */}
+                  <Route path="/templates" element={<TemplatesPage />} />
+
+                  {/* Summary shard */}
+                  <Route path="/summary" element={<SummaryPage />} />
+
+                  {/* Catch-all: try to render shard with generic UI */}
+                  <Route path="*" element={<GenericShardPage />} />
                 </Route>
               </Routes>
             </BadgeProvider>

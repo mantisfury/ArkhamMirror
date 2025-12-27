@@ -6,7 +6,7 @@
 
 import { Icon } from '../../../components/common/Icon';
 import type { ConsistencyRating, EvidenceType } from '../types';
-import { RATING_COLORS, RATING_LABELS } from '../types';
+import { RATING_COLORS } from '../types';
 
 // ============================================
 // AI Hypothesis Suggestions Dialog

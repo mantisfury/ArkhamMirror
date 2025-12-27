@@ -6,7 +6,7 @@ REST API endpoints for project workspace management.
 
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 from .models import ProjectRole, ProjectStatus
@@ -115,11 +115,9 @@ class HealthResponse(BaseModel):
 # === Helper Functions ===
 
 
-def _get_shard():
-    """Get the projects shard instance from the frame."""
-    from arkham_frame import get_frame
-    frame = get_frame()
-    shard = frame.get_shard("projects")
+def _get_shard(request: Request):
+    """Get the projects shard instance from app state."""
+    shard = getattr(request.app.state, "projects_shard", None)
     if not shard:
         raise HTTPException(status_code=503, detail="Projects shard not available")
     return shard
@@ -183,24 +181,26 @@ def _activity_to_response(activity) -> ActivityResponse:
 
 
 @router.get("/health", response_model=HealthResponse)
-async def health_check():
+async def health_check(request: Request):
     """Health check endpoint."""
-    shard = _get_shard()
+    shard = _get_shard(request)
     return HealthResponse(status="healthy", version=shard.version)
 
 
 @router.get("/count", response_model=CountResponse)
 async def get_projects_count(
+    request: Request,
     status: Optional[str] = Query(None, description="Filter by status"),
 ):
     """Get count of projects (used for badge)."""
-    shard = _get_shard()
+    shard = _get_shard(request)
     count = await shard.get_count(status=status)
     return CountResponse(count=count)
 
 
 @router.get("/", response_model=ProjectListResponse)
 async def list_projects(
+    request: Request,
     status: Optional[ProjectStatus] = Query(None),
     owner_id: Optional[str] = Query(None),
     search: Optional[str] = Query(None, description="Search in name/description"),
@@ -210,7 +210,7 @@ async def list_projects(
     """List projects with optional filtering."""
     from .models import ProjectFilter
 
-    shard = _get_shard()
+    shard = _get_shard(request)
 
     filter = ProjectFilter(
         status=status,
@@ -230,9 +230,9 @@ async def list_projects(
 
 
 @router.post("/", response_model=ProjectResponse, status_code=201)
-async def create_project(request: ProjectCreate):
+async def create_project(req: Request, request: ProjectCreate):
     """Create a new project."""
-    shard = _get_shard()
+    shard = _get_shard(req)
 
     project = await shard.create_project(
         name=request.name,
@@ -247,9 +247,9 @@ async def create_project(request: ProjectCreate):
 
 
 @router.get("/{project_id}", response_model=ProjectResponse)
-async def get_project(project_id: str):
+async def get_project(request: Request, project_id: str):
     """Get a specific project by ID."""
-    shard = _get_shard()
+    shard = _get_shard(request)
     project = await shard.get_project(project_id)
 
     if not project:
@@ -259,9 +259,9 @@ async def get_project(project_id: str):
 
 
 @router.put("/{project_id}", response_model=ProjectResponse)
-async def update_project(project_id: str, request: ProjectUpdate):
+async def update_project(req: Request, project_id: str, request: ProjectUpdate):
     """Update a project."""
-    shard = _get_shard()
+    shard = _get_shard(req)
 
     project = await shard.update_project(
         project_id=project_id,
@@ -279,9 +279,9 @@ async def update_project(project_id: str, request: ProjectUpdate):
 
 
 @router.delete("/{project_id}", status_code=204)
-async def delete_project(project_id: str):
+async def delete_project(request: Request, project_id: str):
     """Delete a project."""
-    shard = _get_shard()
+    shard = _get_shard(request)
 
     success = await shard.delete_project(project_id)
 
@@ -290,9 +290,9 @@ async def delete_project(project_id: str):
 
 
 @router.post("/{project_id}/archive", response_model=ProjectResponse)
-async def archive_project(project_id: str):
+async def archive_project(request: Request, project_id: str):
     """Archive a project."""
-    shard = _get_shard()
+    shard = _get_shard(request)
 
     project = await shard.update_project(
         project_id=project_id,
@@ -306,9 +306,9 @@ async def archive_project(project_id: str):
 
 
 @router.post("/{project_id}/restore", response_model=ProjectResponse)
-async def restore_project(project_id: str):
+async def restore_project(request: Request, project_id: str):
     """Restore an archived project."""
-    shard = _get_shard()
+    shard = _get_shard(request)
 
     project = await shard.update_project(
         project_id=project_id,
@@ -325,9 +325,9 @@ async def restore_project(project_id: str):
 
 
 @router.get("/{project_id}/documents", response_model=List[DocumentResponse])
-async def get_project_documents(project_id: str):
+async def get_project_documents(request: Request, project_id: str):
     """Get all documents in a project."""
-    shard = _get_shard()
+    shard = _get_shard(request)
 
     # Verify project exists
     project = await shard.get_project(project_id)
@@ -339,9 +339,9 @@ async def get_project_documents(project_id: str):
 
 
 @router.post("/{project_id}/documents", response_model=DocumentResponse, status_code=201)
-async def add_project_document(project_id: str, request: DocumentAdd):
+async def add_project_document(req: Request, project_id: str, request: DocumentAdd):
     """Add a document to a project."""
-    shard = _get_shard()
+    shard = _get_shard(req)
 
     # Verify project exists
     project = await shard.get_project(project_id)
@@ -358,9 +358,9 @@ async def add_project_document(project_id: str, request: DocumentAdd):
 
 
 @router.delete("/{project_id}/documents/{document_id}", status_code=204)
-async def remove_project_document(project_id: str, document_id: str):
+async def remove_project_document(request: Request, project_id: str, document_id: str):
     """Remove a document from a project."""
-    shard = _get_shard()
+    shard = _get_shard(request)
 
     success = await shard.remove_document(project_id, document_id)
 
@@ -372,9 +372,9 @@ async def remove_project_document(project_id: str, document_id: str):
 
 
 @router.get("/{project_id}/members", response_model=List[MemberResponse])
-async def get_project_members(project_id: str):
+async def get_project_members(request: Request, project_id: str):
     """Get all members of a project."""
-    shard = _get_shard()
+    shard = _get_shard(request)
 
     # Verify project exists
     project = await shard.get_project(project_id)
@@ -386,9 +386,9 @@ async def get_project_members(project_id: str):
 
 
 @router.post("/{project_id}/members", response_model=MemberResponse, status_code=201)
-async def add_project_member(project_id: str, request: MemberAdd):
+async def add_project_member(req: Request, project_id: str, request: MemberAdd):
     """Add a member to a project."""
-    shard = _get_shard()
+    shard = _get_shard(req)
 
     # Verify project exists
     project = await shard.get_project(project_id)
@@ -405,9 +405,9 @@ async def add_project_member(project_id: str, request: MemberAdd):
 
 
 @router.delete("/{project_id}/members/{user_id}", status_code=204)
-async def remove_project_member(project_id: str, user_id: str):
+async def remove_project_member(request: Request, project_id: str, user_id: str):
     """Remove a member from a project."""
-    shard = _get_shard()
+    shard = _get_shard(request)
 
     success = await shard.remove_member(project_id, user_id)
 
@@ -420,12 +420,13 @@ async def remove_project_member(project_id: str, user_id: str):
 
 @router.get("/{project_id}/activity", response_model=List[ActivityResponse])
 async def get_project_activity(
+    request: Request,
     project_id: str,
     limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
 ):
     """Get activity log for a project."""
-    shard = _get_shard()
+    shard = _get_shard(request)
 
     # Verify project exists
     project = await shard.get_project(project_id)

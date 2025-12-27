@@ -6,7 +6,7 @@ REST API endpoints for claim management.
 
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 from .models import (
@@ -169,11 +169,9 @@ class CountResponse(BaseModel):
 # === Helper Functions ===
 
 
-def _get_shard():
-    """Get the claims shard instance from the frame."""
-    from arkham_frame import get_frame
-    frame = get_frame()
-    shard = frame.get_shard("claims")
+def _get_shard(request):
+    """Get the claims shard instance from app state."""
+    shard = getattr(request.app.state, "claims_shard", None)
     if not shard:
         raise HTTPException(status_code=503, detail="Claims shard not available")
     return shard
@@ -227,16 +225,18 @@ def _evidence_to_response(evidence) -> EvidenceResponse:
 
 @router.get("/count", response_model=CountResponse)
 async def get_claims_count(
+    request: Request,
     status: Optional[str] = Query(None, description="Filter by status"),
 ):
     """Get count of claims (used for badge)."""
-    shard = _get_shard()
+    shard = _get_shard(request)
     count = await shard.get_count(status=status)
     return CountResponse(count=count)
 
 
 @router.get("/", response_model=ClaimListResponse)
 async def list_claims(
+    request: Request,
     status: Optional[ClaimStatus] = Query(None),
     claim_type: Optional[ClaimType] = Query(None),
     document_id: Optional[str] = Query(None),
@@ -252,7 +252,7 @@ async def list_claims(
     """List claims with optional filtering."""
     from .models import ClaimFilter
 
-    shard = _get_shard()
+    shard = _get_shard(request)
 
     filter = ClaimFilter(
         status=status,
@@ -278,29 +278,29 @@ async def list_claims(
 
 
 @router.post("/", response_model=ClaimResponse, status_code=201)
-async def create_claim(request: ClaimCreate):
+async def create_claim(request: Request, body: ClaimCreate):
     """Create a new claim."""
-    shard = _get_shard()
+    shard = _get_shard(request)
 
     claim = await shard.create_claim(
-        text=request.text,
-        claim_type=request.claim_type,
-        source_document_id=request.source_document_id,
-        source_start_char=request.source_start_char,
-        source_end_char=request.source_end_char,
-        source_context=request.source_context,
-        confidence=request.confidence,
-        entity_ids=request.entity_ids,
-        metadata=request.metadata,
+        text=body.text,
+        claim_type=body.claim_type,
+        source_document_id=body.source_document_id,
+        source_start_char=body.source_start_char,
+        source_end_char=body.source_end_char,
+        source_context=body.source_context,
+        confidence=body.confidence,
+        entity_ids=body.entity_ids,
+        metadata=body.metadata,
     )
 
     return _claim_to_response(claim)
 
 
 @router.get("/{claim_id}", response_model=ClaimResponse)
-async def get_claim(claim_id: str):
+async def get_claim(request: Request, claim_id: str):
     """Get a specific claim by ID."""
-    shard = _get_shard()
+    shard = _get_shard(request)
     claim = await shard.get_claim(claim_id)
 
     if not claim:
@@ -310,14 +310,14 @@ async def get_claim(claim_id: str):
 
 
 @router.patch("/{claim_id}/status", response_model=ClaimResponse)
-async def update_claim_status(claim_id: str, request: StatusUpdateRequest):
+async def update_claim_status(request: Request, claim_id: str, body: StatusUpdateRequest):
     """Update the status of a claim."""
-    shard = _get_shard()
+    shard = _get_shard(request)
 
     claim = await shard.update_claim_status(
         claim_id=claim_id,
-        status=request.status,
-        notes=request.notes,
+        status=body.status,
+        notes=body.notes,
     )
 
     if not claim:
@@ -327,9 +327,9 @@ async def update_claim_status(claim_id: str, request: StatusUpdateRequest):
 
 
 @router.delete("/{claim_id}", status_code=204)
-async def delete_claim(claim_id: str):
+async def delete_claim(request: Request, claim_id: str):
     """Delete a claim (marks as retracted)."""
-    shard = _get_shard()
+    shard = _get_shard(request)
 
     claim = await shard.update_claim_status(
         claim_id=claim_id,
@@ -345,9 +345,9 @@ async def delete_claim(claim_id: str):
 
 
 @router.get("/{claim_id}/evidence", response_model=List[EvidenceResponse])
-async def get_claim_evidence(claim_id: str):
+async def get_claim_evidence(request: Request, claim_id: str):
     """Get all evidence for a claim."""
-    shard = _get_shard()
+    shard = _get_shard(request)
 
     # Verify claim exists
     claim = await shard.get_claim(claim_id)
@@ -359,9 +359,9 @@ async def get_claim_evidence(claim_id: str):
 
 
 @router.post("/{claim_id}/evidence", response_model=EvidenceResponse, status_code=201)
-async def add_claim_evidence(claim_id: str, request: EvidenceCreate):
+async def add_claim_evidence(request: Request, claim_id: str, body: EvidenceCreate):
     """Add evidence to a claim."""
-    shard = _get_shard()
+    shard = _get_shard(request)
 
     # Verify claim exists
     claim = await shard.get_claim(claim_id)
@@ -370,13 +370,13 @@ async def add_claim_evidence(claim_id: str, request: EvidenceCreate):
 
     evidence = await shard.add_evidence(
         claim_id=claim_id,
-        evidence_type=request.evidence_type,
-        reference_id=request.reference_id,
-        relationship=request.relationship,
-        strength=request.strength,
-        reference_title=request.reference_title,
-        excerpt=request.excerpt,
-        notes=request.notes,
+        evidence_type=body.evidence_type,
+        reference_id=body.reference_id,
+        relationship=body.relationship,
+        strength=body.strength,
+        reference_title=body.reference_title,
+        excerpt=body.excerpt,
+        notes=body.notes,
     )
 
     return _evidence_to_response(evidence)
@@ -386,14 +386,14 @@ async def add_claim_evidence(claim_id: str, request: EvidenceCreate):
 
 
 @router.post("/extract", response_model=ExtractionResponse)
-async def extract_claims(request: ExtractionRequest):
+async def extract_claims(request: Request, body: ExtractionRequest):
     """Extract claims from text using LLM."""
-    shard = _get_shard()
+    shard = _get_shard(request)
 
     result = await shard.extract_claims_from_text(
-        text=request.text,
-        document_id=request.document_id,
-        extraction_model=request.extraction_model,
+        text=body.text,
+        document_id=body.document_id,
+        extraction_model=body.extraction_model,
     )
 
     return ExtractionResponse(
@@ -411,9 +411,9 @@ async def extract_claims(request: ExtractionRequest):
 
 
 @router.post("/{claim_id}/similar", response_model=List[ClaimMatchResponse])
-async def find_similar_claims(claim_id: str, request: SimilarityRequest):
+async def find_similar_claims(request: Request, claim_id: str, body: SimilarityRequest):
     """Find claims similar to the given claim."""
-    shard = _get_shard()
+    shard = _get_shard(request)
 
     # Verify claim exists
     claim = await shard.get_claim(claim_id)
@@ -422,8 +422,8 @@ async def find_similar_claims(claim_id: str, request: SimilarityRequest):
 
     matches = await shard.find_similar_claims(
         claim_id=claim_id,
-        threshold=request.threshold,
-        limit=request.limit,
+        threshold=body.threshold,
+        limit=body.limit,
     )
 
     return [
@@ -439,9 +439,9 @@ async def find_similar_claims(claim_id: str, request: SimilarityRequest):
 
 
 @router.post("/{claim_id}/merge", response_model=MergeResponse)
-async def merge_claims(claim_id: str, request: MergeRequest):
+async def merge_claims(request: Request, claim_id: str, body: MergeRequest):
     """Merge duplicate claims into a primary claim."""
-    shard = _get_shard()
+    shard = _get_shard(request)
 
     # Verify primary claim exists
     claim = await shard.get_claim(claim_id)
@@ -450,7 +450,7 @@ async def merge_claims(claim_id: str, request: MergeRequest):
 
     result = await shard.merge_claims(
         primary_claim_id=claim_id,
-        claim_ids_to_merge=request.claim_ids_to_merge,
+        claim_ids_to_merge=body.claim_ids_to_merge,
     )
 
     return MergeResponse(
@@ -465,9 +465,9 @@ async def merge_claims(claim_id: str, request: MergeRequest):
 
 
 @router.get("/stats/overview", response_model=StatisticsResponse)
-async def get_statistics():
+async def get_statistics(request: Request):
     """Get statistics about claims in the system."""
-    shard = _get_shard()
+    shard = _get_shard(request)
     stats = await shard.get_statistics()
 
     return StatisticsResponse(
@@ -490,13 +490,14 @@ async def get_statistics():
 
 @router.get("/status/unverified", response_model=ClaimListResponse)
 async def list_unverified_claims(
+    request: Request,
     limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
 ):
     """List unverified claims."""
     from .models import ClaimFilter
 
-    shard = _get_shard()
+    shard = _get_shard(request)
     filter = ClaimFilter(status=ClaimStatus.UNVERIFIED)
     claims = await shard.list_claims(filter=filter, limit=limit, offset=offset)
     total = await shard.get_count(status="unverified")
@@ -511,13 +512,14 @@ async def list_unverified_claims(
 
 @router.get("/status/verified", response_model=ClaimListResponse)
 async def list_verified_claims(
+    request: Request,
     limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
 ):
     """List verified claims."""
     from .models import ClaimFilter
 
-    shard = _get_shard()
+    shard = _get_shard(request)
     filter = ClaimFilter(status=ClaimStatus.VERIFIED)
     claims = await shard.list_claims(filter=filter, limit=limit, offset=offset)
     total = await shard.get_count(status="verified")
@@ -532,13 +534,14 @@ async def list_verified_claims(
 
 @router.get("/status/disputed", response_model=ClaimListResponse)
 async def list_disputed_claims(
+    request: Request,
     limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
 ):
     """List disputed claims."""
     from .models import ClaimFilter
 
-    shard = _get_shard()
+    shard = _get_shard(request)
     filter = ClaimFilter(status=ClaimStatus.DISPUTED)
     claims = await shard.list_claims(filter=filter, limit=limit, offset=offset)
     total = await shard.get_count(status="disputed")
@@ -556,6 +559,7 @@ async def list_disputed_claims(
 
 @router.get("/by-document/{document_id}", response_model=ClaimListResponse)
 async def list_claims_by_document(
+    request: Request,
     document_id: str,
     limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
@@ -563,7 +567,7 @@ async def list_claims_by_document(
     """List claims extracted from a specific document."""
     from .models import ClaimFilter
 
-    shard = _get_shard()
+    shard = _get_shard(request)
     filter = ClaimFilter(document_id=document_id)
     claims = await shard.list_claims(filter=filter, limit=limit, offset=offset)
 
@@ -580,6 +584,7 @@ async def list_claims_by_document(
 
 @router.get("/by-entity/{entity_id}", response_model=ClaimListResponse)
 async def list_claims_by_entity(
+    request: Request,
     entity_id: str,
     limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
@@ -587,7 +592,7 @@ async def list_claims_by_entity(
     """List claims linked to a specific entity."""
     from .models import ClaimFilter
 
-    shard = _get_shard()
+    shard = _get_shard(request)
     filter = ClaimFilter(entity_id=entity_id)
     claims = await shard.list_claims(filter=filter, limit=limit, offset=offset)
 

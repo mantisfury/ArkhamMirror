@@ -69,6 +69,10 @@ class ClaimsShard(ArkhamShard):
         # Subscribe to events
         await self._subscribe_to_events()
 
+        # Register self in app state for API access
+        if hasattr(frame, "app") and frame.app:
+            frame.app.state.claims_shard = self
+
         self._initialized = True
         logger.info(f"ClaimsShard initialized (v{self.version})")
 

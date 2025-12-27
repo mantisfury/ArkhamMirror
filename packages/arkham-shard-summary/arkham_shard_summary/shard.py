@@ -126,9 +126,9 @@ class SummaryShard(ArkhamShard):
             self._events.subscribe("documents.document.created", self._on_document_created)
             logger.info("Subscribed to document events for auto-summarization")
 
-        # Initialize API with shard instance
-        from . import api
-        api.init_api(self)
+        # Register self in app state for API access
+        if hasattr(frame, "app") and frame.app:
+            frame.app.state.summary_shard = self
 
         logger.info("Summary Shard initialized")
 
@@ -348,11 +348,25 @@ class SummaryShard(ArkhamShard):
 
     async def get_summary(self, summary_id: str) -> Optional[Summary]:
         """Get a summary by ID."""
-        if self._db:
-            # TODO: Implement database retrieval
-            pass
+        if not self._db:
+            raise RuntimeError("Shard not initialized")
 
-        return self._summaries.get(summary_id)
+        # Check memory cache first
+        if summary_id in self._summaries:
+            return self._summaries[summary_id]
+
+        # Query database
+        row = await self._db.fetch_one(
+            "SELECT * FROM arkham_summaries WHERE id = :id",
+            {"id": summary_id}
+        )
+
+        if row:
+            summary = self._row_to_summary(row)
+            self._summaries[summary_id] = summary
+            return summary
+
+        return None
 
     async def list_summaries(
         self,
@@ -361,43 +375,74 @@ class SummaryShard(ArkhamShard):
         page_size: int = 20,
     ) -> List[Summary]:
         """List summaries with optional filtering."""
-        summaries = list(self._summaries.values())
+        if not self._db:
+            raise RuntimeError("Shard not initialized")
 
-        # Apply filters
+        # Build query with filters
+        query = "SELECT * FROM arkham_summaries WHERE 1=1"
+        params: Dict[str, Any] = {}
+
         if filter:
             if filter.summary_type:
-                summaries = [s for s in summaries if s.summary_type == filter.summary_type]
+                query += " AND summary_type = :summary_type"
+                params["summary_type"] = filter.summary_type.value
             if filter.source_type:
-                summaries = [s for s in summaries if s.source_type == filter.source_type]
+                query += " AND source_type = :source_type"
+                params["source_type"] = filter.source_type.value
             if filter.source_id:
-                summaries = [s for s in summaries if filter.source_id in s.source_ids]
+                query += " AND source_ids @> :source_id"
+                import json
+                params["source_id"] = json.dumps([filter.source_id])
             if filter.status:
-                summaries = [s for s in summaries if s.status == filter.status]
+                query += " AND status = :status"
+                params["status"] = filter.status.value
+            if filter.search_text:
+                query += " AND (content ILIKE :search OR title ILIKE :search)"
+                params["search"] = f"%{filter.search_text}%"
 
-        # Pagination
-        start = (page - 1) * page_size
-        end = start + page_size
-        return summaries[start:end]
+        query += " ORDER BY created_at DESC"
+        query += f" LIMIT {page_size} OFFSET {(page - 1) * page_size}"
+
+        rows = await self._db.fetch_all(query, params)
+        summaries = [self._row_to_summary(row) for row in rows]
+
+        # Update cache
+        for summary in summaries:
+            self._summaries[summary.id] = summary
+
+        return summaries
 
     async def delete_summary(self, summary_id: str) -> bool:
         """Delete a summary."""
+        if not self._db:
+            raise RuntimeError("Shard not initialized")
+
+        # Delete from database
+        result = await self._db.execute(
+            "DELETE FROM arkham_summaries WHERE id = :id",
+            {"id": summary_id}
+        )
+
+        # Remove from cache
         if summary_id in self._summaries:
             del self._summaries[summary_id]
 
-            if self._events:
-                await self._events.emit(
-                    "summary.summary.deleted",
-                    {"summary_id": summary_id},
-                    source=self.name,
-                )
+        if self._events:
+            await self._events.emit(
+                "summary.summary.deleted",
+                {"summary_id": summary_id},
+                source=self.name,
+            )
 
-            return True
-
-        return False
+        return True
 
     async def get_count(self) -> int:
         """Get total number of summaries."""
-        return len(self._summaries)
+        if not self._db:
+            raise RuntimeError("Shard not initialized")
+
+        row = await self._db.fetch_one("SELECT COUNT(*) as count FROM arkham_summaries")
+        return row["count"] if row else 0
 
     async def get_statistics(self) -> SummaryStatistics:
         """Get statistics about summaries."""
@@ -612,6 +657,70 @@ Length: {length_map.get(request.target_length, "medium-length")}
 
         return content, key_points, title
 
+    # === Helper Methods ===
+
+    def _parse_jsonb(self, value: Any, default: Any = None) -> Any:
+        """Parse a JSONB field that may be str, dict, list, or None.
+
+        PostgreSQL JSONB with SQLAlchemy may return:
+        - Already parsed Python objects (dict, list, bool, int, float)
+        - String that IS the value (when JSON string was stored)
+        - String that needs parsing (raw JSON)
+        """
+        if value is None:
+            return default
+        if isinstance(value, (dict, list, bool, int, float)):
+            return value
+        if isinstance(value, str):
+            if not value or value.strip() == "":
+                return default
+            # Try to parse as JSON first (for complex values)
+            try:
+                import json
+                return json.loads(value)
+            except json.JSONDecodeError:
+                # If it's not valid JSON, it's already the string value
+                return value
+        return default
+
+    def _row_to_summary(self, row: Dict[str, Any]) -> Summary:
+        """Convert database row to Summary object."""
+        # Parse JSONB fields
+        source_ids = self._parse_jsonb(row.get("source_ids"), [])
+        source_titles = self._parse_jsonb(row.get("source_titles"), [])
+        key_points = self._parse_jsonb(row.get("key_points"), [])
+        focus_areas = self._parse_jsonb(row.get("focus_areas"), [])
+        exclude_topics = self._parse_jsonb(row.get("exclude_topics"), [])
+        metadata = self._parse_jsonb(row.get("metadata"), {})
+        tags = self._parse_jsonb(row.get("tags"), [])
+
+        return Summary(
+            id=row["id"],
+            summary_type=SummaryType(row["summary_type"]),
+            status=SummaryStatus(row["status"]),
+            source_type=SourceType(row["source_type"]),
+            source_ids=source_ids,
+            source_titles=source_titles,
+            content=row.get("content", ""),
+            key_points=key_points,
+            title=row.get("title"),
+            model_used=row.get("model_used"),
+            token_count=row.get("token_count", 0),
+            word_count=row.get("word_count", 0),
+            target_length=SummaryLength(row["target_length"]),
+            confidence=row.get("confidence", 1.0),
+            completeness=row.get("completeness", 1.0),
+            focus_areas=focus_areas,
+            exclude_topics=exclude_topics,
+            processing_time_ms=row.get("processing_time_ms", 0),
+            error_message=row.get("error_message"),
+            created_at=row.get("created_at", datetime.utcnow()),
+            updated_at=row.get("updated_at", datetime.utcnow()),
+            source_updated_at=row.get("source_updated_at"),
+            metadata=metadata,
+            tags=tags,
+        )
+
     # === Data Access ===
 
     async def _fetch_source_content(
@@ -643,17 +752,113 @@ Length: {length_map.get(request.target_length, "medium-length")}
         self._summaries[summary.id] = summary
 
         if self._db:
-            # TODO: Implement database storage
-            pass
+            import json
+            await self._db.execute(
+                """
+                INSERT INTO arkham_summaries (
+                    id, summary_type, status, source_type, source_ids, source_titles,
+                    content, key_points, title, model_used, token_count, word_count,
+                    target_length, confidence, completeness, focus_areas, exclude_topics,
+                    processing_time_ms, error_message, created_at, updated_at,
+                    source_updated_at, metadata, tags
+                ) VALUES (
+                    :id, :summary_type, :status, :source_type, :source_ids, :source_titles,
+                    :content, :key_points, :title, :model_used, :token_count, :word_count,
+                    :target_length, :confidence, :completeness, :focus_areas, :exclude_topics,
+                    :processing_time_ms, :error_message, :created_at, :updated_at,
+                    :source_updated_at, :metadata, :tags
+                )
+                ON CONFLICT (id) DO UPDATE SET
+                    content = EXCLUDED.content,
+                    key_points = EXCLUDED.key_points,
+                    title = EXCLUDED.title,
+                    updated_at = EXCLUDED.updated_at
+                """,
+                {
+                    "id": summary.id,
+                    "summary_type": summary.summary_type.value,
+                    "status": summary.status.value,
+                    "source_type": summary.source_type.value,
+                    "source_ids": json.dumps(summary.source_ids),
+                    "source_titles": json.dumps(summary.source_titles),
+                    "content": summary.content,
+                    "key_points": json.dumps(summary.key_points),
+                    "title": summary.title,
+                    "model_used": summary.model_used,
+                    "token_count": summary.token_count,
+                    "word_count": summary.word_count,
+                    "target_length": summary.target_length.value,
+                    "confidence": summary.confidence,
+                    "completeness": summary.completeness,
+                    "focus_areas": json.dumps(summary.focus_areas),
+                    "exclude_topics": json.dumps(summary.exclude_topics),
+                    "processing_time_ms": summary.processing_time_ms,
+                    "error_message": summary.error_message,
+                    "created_at": summary.created_at,
+                    "updated_at": summary.updated_at,
+                    "source_updated_at": summary.source_updated_at,
+                    "metadata": json.dumps(summary.metadata),
+                    "tags": json.dumps(summary.tags),
+                }
+            )
 
     async def _create_schema(self) -> None:
         """Create database schema for summaries."""
         if not self._db:
             return
 
-        # TODO: Implement schema creation
-        # Would create arkham_summary.summaries table
-        pass
+        # Create summaries table
+        await self._db.execute("""
+            CREATE TABLE IF NOT EXISTS arkham_summaries (
+                id TEXT PRIMARY KEY,
+                summary_type TEXT NOT NULL,
+                status TEXT NOT NULL,
+                source_type TEXT NOT NULL,
+                source_ids JSONB NOT NULL DEFAULT '[]',
+                source_titles JSONB NOT NULL DEFAULT '[]',
+                content TEXT NOT NULL DEFAULT '',
+                key_points JSONB NOT NULL DEFAULT '[]',
+                title TEXT,
+                model_used TEXT,
+                token_count INTEGER DEFAULT 0,
+                word_count INTEGER DEFAULT 0,
+                target_length TEXT NOT NULL,
+                confidence REAL DEFAULT 1.0,
+                completeness REAL DEFAULT 1.0,
+                focus_areas JSONB DEFAULT '[]',
+                exclude_topics JSONB DEFAULT '[]',
+                processing_time_ms REAL DEFAULT 0,
+                error_message TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                source_updated_at TIMESTAMP,
+                metadata JSONB DEFAULT '{}',
+                tags JSONB DEFAULT '[]'
+            )
+        """)
+
+        # Create indexes
+        await self._db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_arkham_summaries_source_type
+            ON arkham_summaries(source_type)
+        """)
+
+        await self._db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_arkham_summaries_summary_type
+            ON arkham_summaries(summary_type)
+        """)
+
+        await self._db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_arkham_summaries_status
+            ON arkham_summaries(status)
+        """)
+
+        await self._db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_arkham_summaries_created_at
+            ON arkham_summaries(created_at DESC)
+        """)
+
+        logger.info("Summary database schema created")
 
     # === Event Handlers ===
 

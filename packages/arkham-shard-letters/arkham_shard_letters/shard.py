@@ -64,6 +64,10 @@ class LettersShard(ArkhamShard):
         # Create database schema
         await self._create_schema()
 
+        # Register self in app state for API access
+        if hasattr(frame, "app") and frame.app:
+            frame.app.state.letters_shard = self
+
         self._initialized = True
         logger.info(f"LettersShard initialized (v{self.version})")
 

@@ -4,9 +4,9 @@ Export Shard - FastAPI Routes
 REST API endpoints for export management.
 """
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
@@ -16,7 +16,21 @@ from .models import (
     ExportTarget,
 )
 
+if TYPE_CHECKING:
+    from .shard import ExportShard
+
 router = APIRouter(prefix="/api/export", tags=["export"])
+
+
+# === Helper to get shard instance ===
+
+def get_shard(request: Request) -> "ExportShard":
+    """Get the export shard instance from app state."""
+    shard = getattr(request.app.state, "export_shard", None)
+    if not shard:
+        raise HTTPException(status_code=503, detail="Export shard not available")
+    return shard
+
 
 # === Pydantic Request/Response Models ===
 
@@ -136,16 +150,6 @@ class PreviewResponse(BaseModel):
 # === Helper Functions ===
 
 
-def _get_shard():
-    """Get the export shard instance from the frame."""
-    from arkham_frame import get_frame
-    frame = get_frame()
-    shard = frame.get_shard("export")
-    if not shard:
-        raise HTTPException(status_code=503, detail="Export shard not available")
-    return shard
-
-
 def _job_to_response(job) -> ExportJobResponse:
     """Convert ExportJob object to response model."""
     return ExportJobResponse(
@@ -174,16 +178,18 @@ def _job_to_response(job) -> ExportJobResponse:
 
 @router.get("/count", response_model=CountResponse)
 async def get_export_count(
+    request: Request,
     status: Optional[str] = Query(None, description="Filter by status"),
 ):
     """Get count of export jobs (used for badge)."""
-    shard = _get_shard()
+    shard = get_shard(request)
     count = await shard.get_count(status=status)
     return CountResponse(count=count)
 
 
 @router.get("/jobs", response_model=ExportJobListResponse)
 async def list_jobs(
+    request: Request,
     status: Optional[ExportStatus] = Query(None),
     format: Optional[ExportFormat] = Query(None),
     target: Optional[ExportTarget] = Query(None),
@@ -194,7 +200,7 @@ async def list_jobs(
     """List export jobs with optional filtering."""
     from .models import ExportFilter
 
-    shard = _get_shard()
+    shard = get_shard(request)
 
     filter = ExportFilter(
         status=status,
@@ -215,32 +221,32 @@ async def list_jobs(
 
 
 @router.post("/jobs", response_model=ExportJobResponse, status_code=201)
-async def create_job(request: ExportJobCreate):
+async def create_job(body: ExportJobCreate, request: Request):
     """Create a new export job."""
     from .models import ExportOptions
 
-    shard = _get_shard()
+    shard = get_shard(request)
 
     # Convert request options to ExportOptions
     options = None
-    if request.options:
+    if body.options:
         from datetime import datetime
         options = ExportOptions(
-            include_metadata=request.options.include_metadata,
-            include_relationships=request.options.include_relationships,
-            date_range_start=datetime.fromisoformat(request.options.date_range_start) if request.options.date_range_start else None,
-            date_range_end=datetime.fromisoformat(request.options.date_range_end) if request.options.date_range_end else None,
-            entity_types=request.options.entity_types,
-            flatten=request.options.flatten,
-            max_records=request.options.max_records,
-            sort_by=request.options.sort_by,
-            sort_order=request.options.sort_order,
+            include_metadata=body.options.include_metadata,
+            include_relationships=body.options.include_relationships,
+            date_range_start=datetime.fromisoformat(body.options.date_range_start) if body.options.date_range_start else None,
+            date_range_end=datetime.fromisoformat(body.options.date_range_end) if body.options.date_range_end else None,
+            entity_types=body.options.entity_types,
+            flatten=body.options.flatten,
+            max_records=body.options.max_records,
+            sort_by=body.options.sort_by,
+            sort_order=body.options.sort_order,
         )
 
     job = await shard.create_export_job(
-        format=request.format,
-        target=request.target,
-        filters=request.filters,
+        format=body.format,
+        target=body.target,
+        filters=body.filters,
         options=options,
     )
 
@@ -248,9 +254,9 @@ async def create_job(request: ExportJobCreate):
 
 
 @router.get("/jobs/{job_id}", response_model=ExportJobResponse)
-async def get_job(job_id: str):
+async def get_job(job_id: str, request: Request):
     """Get a specific export job by ID."""
-    shard = _get_shard()
+    shard = get_shard(request)
     job = await shard.get_job_status(job_id)
 
     if not job:
@@ -260,9 +266,9 @@ async def get_job(job_id: str):
 
 
 @router.delete("/jobs/{job_id}", status_code=204)
-async def cancel_job(job_id: str):
+async def cancel_job(job_id: str, request: Request):
     """Cancel a pending export job."""
-    shard = _get_shard()
+    shard = get_shard(request)
 
     job = await shard.cancel_job(job_id)
 
@@ -271,9 +277,9 @@ async def cancel_job(job_id: str):
 
 
 @router.get("/jobs/{job_id}/download")
-async def download_job(job_id: str):
+async def download_job(job_id: str, request: Request):
     """Download the export file for a completed job."""
-    shard = _get_shard()
+    shard = get_shard(request)
 
     job = await shard.get_job_status(job_id)
     if not job:
@@ -312,9 +318,9 @@ async def download_job(job_id: str):
 
 
 @router.get("/formats", response_model=List[FormatInfoResponse])
-async def get_formats():
+async def get_formats(request: Request):
     """Get list of supported export formats."""
-    shard = _get_shard()
+    shard = get_shard(request)
     formats = shard.get_supported_formats()
 
     return [
@@ -334,9 +340,9 @@ async def get_formats():
 
 
 @router.get("/targets", response_model=List[TargetInfoResponse])
-async def get_targets():
+async def get_targets(request: Request):
     """Get list of available export targets."""
-    shard = _get_shard()
+    shard = get_shard(request)
     targets = shard.get_export_targets()
 
     return [
@@ -353,12 +359,12 @@ async def get_targets():
 
 
 @router.post("/preview", response_model=PreviewResponse)
-async def preview_export(request: PreviewRequest):
+async def preview_export(body: PreviewRequest, request: Request):
     """Preview export without creating a file."""
     # Stub implementation
     return PreviewResponse(
-        format=request.format.value,
-        target=request.target.value,
+        format=body.format.value,
+        target=body.target.value,
         estimated_record_count=0,
         preview_records=[],
         estimated_file_size_bytes=0,
@@ -366,9 +372,9 @@ async def preview_export(request: PreviewRequest):
 
 
 @router.get("/stats", response_model=StatisticsResponse)
-async def get_statistics():
+async def get_statistics(request: Request):
     """Get export statistics."""
-    shard = _get_shard()
+    shard = get_shard(request)
     stats = await shard.get_statistics()
 
     return StatisticsResponse(

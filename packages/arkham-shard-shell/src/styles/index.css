@@ -4532,3 +4532,96 @@ a:hover {
   color: var(--arkham-text-secondary);
   line-height: 1.6;
 }
+
+/* ============================================
+   Generic Shard Page
+   ============================================ */
+
+.generic-shard-page {
+  padding: var(--arkham-space-lg);
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.shard-header {
+  display: flex;
+  align-items: center;
+  gap: var(--arkham-space-md);
+  margin-bottom: var(--arkham-space-lg);
+  padding-bottom: var(--arkham-space-md);
+  border-bottom: 1px solid var(--arkham-border);
+}
+
+.shard-header svg {
+  color: var(--arkham-accent-primary);
+  flex-shrink: 0;
+}
+
+.shard-header h1 {
+  font-size: var(--arkham-font-size-xl);
+  font-weight: 600;
+  margin: 0;
+  color: var(--arkham-text-primary);
+}
+
+.shard-header .shard-description {
+  font-size: var(--arkham-font-size-sm);
+  color: var(--arkham-text-secondary);
+  margin: var(--arkham-space-xs) 0 0 0;
+}
+
+.shard-header .connection-warning {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: var(--arkham-space-xs);
+  color: var(--arkham-warning);
+  font-size: var(--arkham-font-size-sm);
+}
+
+.shard-message {
+  background: var(--arkham-bg-secondary);
+  border: 1px solid var(--arkham-border);
+  border-radius: var(--arkham-radius-md);
+  padding: var(--arkham-space-lg);
+  text-align: center;
+  color: var(--arkham-text-secondary);
+}
+
+.shard-no-ui {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  color: var(--arkham-text-secondary);
+}
+
+.shard-no-ui svg {
+  color: var(--arkham-text-muted);
+  margin-bottom: var(--arkham-space-md);
+}
+
+.shard-no-ui h2 {
+  font-size: var(--arkham-font-size-lg);
+  color: var(--arkham-text-primary);
+  margin: 0 0 var(--arkham-space-sm) 0;
+}
+
+.shard-no-ui p {
+  margin: 0 0 var(--arkham-space-md) 0;
+}
+
+.shard-no-ui .api-hint {
+  margin-bottom: var(--arkham-space-lg);
+}
+
+.shard-no-ui .api-hint code {
+  background: var(--arkham-bg-tertiary);
+  padding: var(--arkham-space-xs) var(--arkham-space-sm);
+  border-radius: var(--arkham-radius-sm);
+  font-family: var(--arkham-font-mono);
+  font-size: var(--arkham-font-size-sm);
+}

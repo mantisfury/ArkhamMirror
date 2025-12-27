@@ -4,9 +4,9 @@ Packets Shard - FastAPI Routes
 REST API endpoints for packet management.
 """
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 from .models import (
@@ -16,6 +16,9 @@ from .models import (
     SharePermission,
     ExportFormat,
 )
+
+if TYPE_CHECKING:
+    from .shard import PacketsShard
 
 router = APIRouter(prefix="/api/packets", tags=["packets"])
 
@@ -173,11 +176,9 @@ class HealthResponse(BaseModel):
 # === Helper Functions ===
 
 
-def _get_shard():
-    """Get the packets shard instance from the frame."""
-    from arkham_frame import get_frame
-    frame = get_frame()
-    shard = frame.get_shard("packets")
+def get_shard(request: Request) -> "PacketsShard":
+    """Get the packets shard instance from app state."""
+    shard = getattr(request.app.state, "packets_shard", None)
     if not shard:
         raise HTTPException(status_code=503, detail="Packets shard not available")
     return shard
@@ -245,9 +246,9 @@ def _version_to_response(version) -> VersionResponse:
 
 
 @router.get("/health", response_model=HealthResponse)
-async def health_check():
+async def health_check(request: Request):
     """Health check endpoint."""
-    shard = _get_shard()
+    shard = get_shard(request)
     return HealthResponse(
         status="healthy",
         shard=shard.name,
@@ -257,16 +258,18 @@ async def health_check():
 
 @router.get("/count", response_model=CountResponse)
 async def get_packets_count(
+    request: Request,
     status: Optional[str] = Query(None, description="Filter by status"),
 ):
     """Get count of packets (used for badge)."""
-    shard = _get_shard()
+    shard = get_shard(request)
     count = await shard.get_count(status=status)
     return CountResponse(count=count)
 
 
 @router.get("/", response_model=PacketListResponse)
 async def list_packets(
+    request: Request,
     status: Optional[PacketStatus] = Query(None),
     visibility: Optional[PacketVisibility] = Query(None),
     created_by: Optional[str] = Query(None),
@@ -279,7 +282,7 @@ async def list_packets(
     """List packets with optional filtering."""
     from .models import PacketFilter
 
-    shard = _get_shard()
+    shard = get_shard(request)
 
     filter = PacketFilter(
         status=status,
@@ -302,24 +305,24 @@ async def list_packets(
 
 
 @router.post("/", response_model=PacketResponse, status_code=201)
-async def create_packet(request: PacketCreate):
+async def create_packet(body: PacketCreate, request: Request):
     """Create a new packet."""
-    shard = _get_shard()
+    shard = get_shard(request)
 
     packet = await shard.create_packet(
-        name=request.name,
-        description=request.description,
-        visibility=request.visibility,
-        metadata=request.metadata,
+        name=body.name,
+        description=body.description,
+        visibility=body.visibility,
+        metadata=body.metadata,
     )
 
     return _packet_to_response(packet)
 
 
 @router.get("/{packet_id}", response_model=PacketResponse)
-async def get_packet(packet_id: str):
+async def get_packet(packet_id: str, request: Request):
     """Get a specific packet by ID."""
-    shard = _get_shard()
+    shard = get_shard(request)
     packet = await shard.get_packet(packet_id)
 
     if not packet:
@@ -329,16 +332,16 @@ async def get_packet(packet_id: str):
 
 
 @router.put("/{packet_id}", response_model=PacketResponse)
-async def update_packet(packet_id: str, request: PacketUpdate):
+async def update_packet(packet_id: str, body: PacketUpdate, request: Request):
     """Update packet metadata."""
-    shard = _get_shard()
+    shard = get_shard(request)
 
     packet = await shard.update_packet(
         packet_id=packet_id,
-        name=request.name,
-        description=request.description,
-        visibility=request.visibility,
-        metadata=request.metadata,
+        name=body.name,
+        description=body.description,
+        visibility=body.visibility,
+        metadata=body.metadata,
     )
 
     if not packet:
@@ -348,9 +351,9 @@ async def update_packet(packet_id: str, request: PacketUpdate):
 
 
 @router.delete("/{packet_id}", status_code=204)
-async def delete_packet(packet_id: str):
+async def delete_packet(packet_id: str, request: Request):
     """Delete a packet (archives it)."""
-    shard = _get_shard()
+    shard = get_shard(request)
 
     packet = await shard.archive_packet(packet_id)
 
@@ -362,9 +365,9 @@ async def delete_packet(packet_id: str):
 
 
 @router.post("/{packet_id}/finalize", response_model=PacketResponse)
-async def finalize_packet(packet_id: str):
+async def finalize_packet(packet_id: str, request: Request):
     """Finalize a packet (lock for sharing)."""
-    shard = _get_shard()
+    shard = get_shard(request)
 
     packet = await shard.finalize_packet(packet_id)
 
@@ -375,9 +378,9 @@ async def finalize_packet(packet_id: str):
 
 
 @router.post("/{packet_id}/archive", response_model=PacketResponse)
-async def archive_packet(packet_id: str):
+async def archive_packet_endpoint(packet_id: str, request: Request):
     """Archive a packet."""
-    shard = _get_shard()
+    shard = get_shard(request)
 
     packet = await shard.archive_packet(packet_id)
 
@@ -391,9 +394,9 @@ async def archive_packet(packet_id: str):
 
 
 @router.get("/{packet_id}/contents", response_model=List[ContentResponse])
-async def get_packet_contents(packet_id: str):
+async def get_packet_contents(packet_id: str, request: Request):
     """Get all contents for a packet."""
-    shard = _get_shard()
+    shard = get_shard(request)
 
     # Verify packet exists
     packet = await shard.get_packet(packet_id)
@@ -405,17 +408,17 @@ async def get_packet_contents(packet_id: str):
 
 
 @router.post("/{packet_id}/contents", response_model=ContentResponse, status_code=201)
-async def add_packet_content(packet_id: str, request: ContentCreate):
+async def add_packet_content(packet_id: str, body: ContentCreate, request: Request):
     """Add content to a packet."""
-    shard = _get_shard()
+    shard = get_shard(request)
 
     try:
         content = await shard.add_content(
             packet_id=packet_id,
-            content_type=request.content_type,
-            content_id=request.content_id,
-            content_title=request.content_title,
-            order=request.order,
+            content_type=body.content_type,
+            content_id=body.content_id,
+            content_title=body.content_title,
+            order=body.order,
         )
         return _content_to_response(content)
     except ValueError as e:
@@ -423,9 +426,9 @@ async def add_packet_content(packet_id: str, request: ContentCreate):
 
 
 @router.delete("/{packet_id}/contents/{content_id}", status_code=204)
-async def remove_packet_content(packet_id: str, content_id: str):
+async def remove_packet_content(packet_id: str, content_id: str, request: Request):
     """Remove content from a packet."""
-    shard = _get_shard()
+    shard = get_shard(request)
 
     success = await shard.remove_content(packet_id, content_id)
 
@@ -440,24 +443,24 @@ async def remove_packet_content(packet_id: str, content_id: str):
 
 
 @router.post("/{packet_id}/share", response_model=ShareResponse, status_code=201)
-async def share_packet(packet_id: str, request: ShareCreate):
+async def share_packet(packet_id: str, body: ShareCreate, request: Request):
     """Create a share for a packet."""
-    shard = _get_shard()
+    shard = get_shard(request)
 
     from datetime import datetime
 
     expires_at = None
-    if request.expires_at:
+    if body.expires_at:
         try:
-            expires_at = datetime.fromisoformat(request.expires_at)
+            expires_at = datetime.fromisoformat(body.expires_at)
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid expires_at format")
 
     try:
         share = await shard.share_packet(
             packet_id=packet_id,
-            shared_with=request.shared_with,
-            permissions=request.permissions,
+            shared_with=body.shared_with,
+            permissions=body.permissions,
             expires_at=expires_at,
         )
         return _share_to_response(share)
@@ -466,9 +469,9 @@ async def share_packet(packet_id: str, request: ShareCreate):
 
 
 @router.get("/{packet_id}/shares", response_model=List[ShareResponse])
-async def get_packet_shares(packet_id: str):
+async def get_packet_shares(packet_id: str, request: Request):
     """Get all shares for a packet."""
-    shard = _get_shard()
+    shard = get_shard(request)
 
     # Verify packet exists
     packet = await shard.get_packet(packet_id)
@@ -480,9 +483,9 @@ async def get_packet_shares(packet_id: str):
 
 
 @router.delete("/{packet_id}/shares/{share_id}", status_code=204)
-async def revoke_share(packet_id: str, share_id: str):
+async def revoke_share(packet_id: str, share_id: str, request: Request):
     """Revoke a packet share."""
-    shard = _get_shard()
+    shard = get_shard(request)
 
     success = await shard.revoke_share(share_id)
 
@@ -494,14 +497,14 @@ async def revoke_share(packet_id: str, share_id: str):
 
 
 @router.post("/{packet_id}/export", response_model=ExportResponse)
-async def export_packet(packet_id: str, request: ExportRequest):
+async def export_packet(packet_id: str, body: ExportRequest, request: Request):
     """Export a packet to a file."""
-    shard = _get_shard()
+    shard = get_shard(request)
 
     try:
         result = await shard.export_packet(
             packet_id=packet_id,
-            format=request.format,
+            format=body.format,
         )
         return ExportResponse(
             packet_id=result.packet_id,
@@ -517,13 +520,13 @@ async def export_packet(packet_id: str, request: ExportRequest):
 
 
 @router.post("/import", response_model=ImportResponse, status_code=201)
-async def import_packet(request: ImportRequest):
+async def import_packet(body: ImportRequest, request: Request):
     """Import a packet from a file."""
-    shard = _get_shard()
+    shard = get_shard(request)
 
     result = await shard.import_packet(
-        file_path=request.file_path,
-        merge_mode=request.merge_mode,
+        file_path=body.file_path,
+        merge_mode=body.merge_mode,
     )
 
     return ImportResponse(
@@ -540,9 +543,9 @@ async def import_packet(request: ImportRequest):
 
 
 @router.get("/{packet_id}/versions", response_model=List[VersionResponse])
-async def get_packet_versions(packet_id: str):
+async def get_packet_versions(packet_id: str, request: Request):
     """Get version history for a packet."""
-    shard = _get_shard()
+    shard = get_shard(request)
 
     # Verify packet exists
     packet = await shard.get_packet(packet_id)
@@ -556,10 +559,11 @@ async def get_packet_versions(packet_id: str):
 @router.post("/{packet_id}/versions", response_model=VersionResponse, status_code=201)
 async def create_version_snapshot(
     packet_id: str,
+    request: Request,
     changes_summary: str = Query(..., description="Summary of changes"),
 ):
     """Create a version snapshot."""
-    shard = _get_shard()
+    shard = get_shard(request)
 
     try:
         version = await shard._create_version_snapshot(packet_id, changes_summary)
@@ -572,9 +576,9 @@ async def create_version_snapshot(
 
 
 @router.get("/stats/overview", response_model=StatisticsResponse)
-async def get_statistics():
+async def get_statistics(request: Request):
     """Get statistics about packets in the system."""
-    shard = _get_shard()
+    shard = get_shard(request)
     stats = await shard.get_statistics()
 
     return StatisticsResponse(
@@ -597,13 +601,14 @@ async def get_statistics():
 
 @router.get("/status/draft", response_model=PacketListResponse)
 async def list_draft_packets(
+    request: Request,
     limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
 ):
     """List draft packets."""
     from .models import PacketFilter
 
-    shard = _get_shard()
+    shard = get_shard(request)
     filter = PacketFilter(status=PacketStatus.DRAFT)
     packets = await shard.list_packets(filter=filter, limit=limit, offset=offset)
     total = await shard.get_count(status="draft")
@@ -618,13 +623,14 @@ async def list_draft_packets(
 
 @router.get("/status/finalized", response_model=PacketListResponse)
 async def list_finalized_packets(
+    request: Request,
     limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
 ):
     """List finalized packets."""
     from .models import PacketFilter
 
-    shard = _get_shard()
+    shard = get_shard(request)
     filter = PacketFilter(status=PacketStatus.FINALIZED)
     packets = await shard.list_packets(filter=filter, limit=limit, offset=offset)
     total = await shard.get_count(status="finalized")
@@ -639,13 +645,14 @@ async def list_finalized_packets(
 
 @router.get("/status/shared", response_model=PacketListResponse)
 async def list_shared_packets(
+    request: Request,
     limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
 ):
     """List shared packets."""
     from .models import PacketFilter
 
-    shard = _get_shard()
+    shard = get_shard(request)
     filter = PacketFilter(status=PacketStatus.SHARED)
     packets = await shard.list_packets(filter=filter, limit=limit, offset=offset)
     total = await shard.get_count(status="shared")

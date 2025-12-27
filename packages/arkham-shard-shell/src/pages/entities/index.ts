@@ -1,0 +1,1 @@
+export { EntitiesPage } from './EntitiesPage';

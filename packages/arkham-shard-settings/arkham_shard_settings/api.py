@@ -4,11 +4,25 @@ Settings Shard - API Endpoints
 FastAPI router for settings management.
 """
 
-from typing import Any, Dict, List, Optional
-from fastapi import APIRouter, HTTPException, Query
+from typing import Any, Dict, List, Optional, TYPE_CHECKING
+from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
+if TYPE_CHECKING:
+    from .shard import SettingsShard
+
 router = APIRouter(prefix="/api/settings", tags=["settings"])
+
+
+# === Helper to get shard instance ===
+
+def get_shard(request: Request) -> "SettingsShard":
+    """Get the settings shard instance from app state."""
+    shard = getattr(request.app.state, "settings_shard", None)
+    if not shard:
+        raise HTTPException(status_code=503, detail="Settings shard not available")
+    return shard
+
 
 # === Request/Response Models ===
 
@@ -24,7 +38,10 @@ class SettingResponse(BaseModel):
     description: str
     requires_restart: bool = False
     is_modified: bool = False
+    is_readonly: bool = False
+    order: int = 0
     options: List[Dict[str, Any]] = []
+    validation: Dict[str, Any] = {}
 
 
 class SettingUpdateRequest(BaseModel):
@@ -86,43 +103,58 @@ class HealthResponse(BaseModel):
     status: str
     shard: str
     version: str
-    storage_available: bool
+    settings_count: int
 
 
-# === Module-level service references ===
-
-_db = None
-_event_bus = None
-_storage = None
-
-
-def init_api(db, event_bus, storage=None):
-    """Initialize API with service references."""
-    global _db, _event_bus, _storage
-    _db = db
-    _event_bus = event_bus
-    _storage = storage
+class ValidationResponse(BaseModel):
+    """Response model for validation."""
+    is_valid: bool
+    errors: List[str] = []
+    warnings: List[str] = []
+    coerced_value: Any = None
 
 
 # === Endpoints ===
 
 
+def setting_to_response(setting) -> SettingResponse:
+    """Convert a Setting dataclass to a response model."""
+    return SettingResponse(
+        key=setting.key,
+        value=setting.value,
+        default_value=setting.default_value,
+        category=setting.category.value,
+        data_type=setting.data_type.value,
+        label=setting.label,
+        description=setting.description,
+        requires_restart=setting.requires_restart,
+        is_modified=setting.is_modified,
+        is_readonly=setting.is_readonly,
+        order=setting.order,
+        options=setting.options,
+        validation=setting.validation,
+    )
+
+
 @router.get("/health", response_model=HealthResponse)
-async def health_check():
+async def health_check(request: Request):
     """Health check endpoint."""
+    shard = get_shard(request)
+    settings = await shard.get_all_settings()
     return HealthResponse(
         status="healthy",
         shard="settings",
         version="0.1.0",
-        storage_available=_storage is not None,
+        settings_count=len(settings),
     )
 
 
 @router.get("/count")
-async def get_modified_count():
+async def get_modified_count(request: Request):
     """Get count of modified settings (for badge)."""
-    # Stub: return 0
-    return {"count": 0}
+    shard = get_shard(request)
+    all_settings = await shard.get_all_settings(modified_only=True)
+    return {"count": len(all_settings)}
 
 
 # === Settings CRUD ===
@@ -130,57 +162,81 @@ async def get_modified_count():
 
 @router.get("/", response_model=List[SettingResponse])
 async def list_settings(
+    request: Request,
     category: Optional[str] = Query(None, description="Filter by category"),
     search: Optional[str] = Query(None, description="Search in key/label"),
     modified_only: bool = Query(False, description="Only show modified settings"),
 ):
     """List all settings."""
-    # Stub: return empty list
-    return []
+    shard = get_shard(request)
+    settings = await shard.get_all_settings(
+        category=category,
+        search=search,
+        modified_only=modified_only
+    )
+    return [setting_to_response(s) for s in settings]
 
 
 @router.get("/{key:path}", response_model=SettingResponse)
-async def get_setting(key: str):
+async def get_setting(key: str, request: Request):
     """Get a specific setting by key."""
-    # Stub: return 404
-    raise HTTPException(status_code=404, detail=f"Setting not found: {key}")
+    shard = get_shard(request)
+    setting = await shard.get_setting(key)
+    if not setting:
+        raise HTTPException(status_code=404, detail=f"Setting not found: {key}")
+    return setting_to_response(setting)
 
 
 @router.put("/{key:path}", response_model=SettingResponse)
-async def update_setting(key: str, request: SettingUpdateRequest):
+async def update_setting(key: str, body: SettingUpdateRequest, request: Request):
     """Update a setting value."""
-    # Stub: return 404
-    raise HTTPException(status_code=404, detail=f"Setting not found: {key}")
+    shard = get_shard(request)
+    try:
+        setting = await shard.update_setting(key, body.value)
+        if not setting:
+            raise HTTPException(status_code=404, detail=f"Setting not found: {key}")
+        return setting_to_response(setting)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @router.delete("/{key:path}", response_model=SettingResponse)
-async def reset_setting(key: str):
+async def reset_setting(key: str, request: Request):
     """Reset a setting to its default value."""
-    # Stub: return 404
-    raise HTTPException(status_code=404, detail=f"Setting not found: {key}")
+    shard = get_shard(request)
+    try:
+        setting = await shard.reset_setting(key)
+        if not setting:
+            raise HTTPException(status_code=404, detail=f"Setting not found: {key}")
+        return setting_to_response(setting)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 # === Category Operations ===
 
 
 @router.get("/category/{category}", response_model=List[SettingResponse])
-async def get_category_settings(category: str):
+async def get_category_settings(category: str, request: Request):
     """Get all settings in a category."""
-    # Stub: return empty list
-    return []
+    shard = get_shard(request)
+    settings = await shard.get_category_settings(category)
+    return [setting_to_response(s) for s in settings]
 
 
 @router.put("/category/{category}")
 async def update_category_settings(
     category: str,
-    request: BulkSettingsUpdateRequest,
+    body: BulkSettingsUpdateRequest,
+    request: Request,
 ):
     """Bulk update settings in a category."""
-    # Stub: return success
+    shard = get_shard(request)
+    updated = await shard.update_category_settings(category, body.settings)
     return {
         "success": True,
         "category": category,
-        "updated_count": len(request.settings),
+        "updated_count": len(updated),
     }
 
 
@@ -365,13 +421,20 @@ async def import_settings(
 # === Validation ===
 
 
-@router.post("/validate")
-async def validate_setting(key: str, value: Any):
+class ValidateRequest(BaseModel):
+    """Request to validate a setting."""
+    key: str
+    value: Any
+
+
+@router.post("/validate", response_model=ValidationResponse)
+async def validate_setting(body: ValidateRequest, request: Request):
     """Validate a setting value without saving."""
-    # Stub: always valid
-    return {
-        "is_valid": True,
-        "errors": [],
-        "warnings": [],
-        "coerced_value": value,
-    }
+    shard = get_shard(request)
+    result = await shard.validate_setting(body.key, body.value)
+    return ValidationResponse(
+        is_valid=result.is_valid,
+        errors=result.errors,
+        warnings=result.warnings,
+        coerced_value=result.coerced_value,
+    )

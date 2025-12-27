@@ -1,16 +1,19 @@
 """Provenance Shard API endpoints."""
 
 import logging
-from typing import Annotated, List, Optional
+from typing import Annotated, List, Optional, TYPE_CHECKING
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel
+
+if TYPE_CHECKING:
+    from .shard import ProvenanceShard
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/provenance", tags=["provenance"])
 
-# These get set by the shard on initialization
+# These get set by the shard on initialization (legacy, kept for compatibility)
 _chain_manager = None
 _lineage_tracker = None
 _audit_logger = None
@@ -35,7 +38,52 @@ def init_api(
     logger.info("Provenance API initialized")
 
 
+def get_shard(request: Request) -> "ProvenanceShard":
+    """Get the provenance shard instance from app state."""
+    shard = getattr(request.app.state, "provenance_shard", None)
+    if not shard:
+        raise HTTPException(status_code=503, detail="Provenance shard not available")
+    return shard
+
+
 # --- Request/Response Models ---
+
+
+class ProvenanceRecordResponse(BaseModel):
+    """Provenance record response."""
+    id: str
+    entity_type: str
+    entity_id: str
+    source_type: Optional[str] = None
+    source_id: Optional[str] = None
+    source_url: Optional[str] = None
+    imported_at: Optional[str] = None
+    imported_by: Optional[str] = None
+    metadata: dict = {}
+    created_at: Optional[str] = None
+
+
+class TransformationResponse(BaseModel):
+    """Transformation response."""
+    id: str
+    record_id: str
+    transformation_type: str
+    input_hash: Optional[str] = None
+    output_hash: Optional[str] = None
+    transformed_at: Optional[str] = None
+    transformer: Optional[str] = None
+    parameters: dict = {}
+    metadata: dict = {}
+
+
+class AuditRecordResponse(BaseModel):
+    """Audit record response."""
+    id: str
+    record_id: str
+    action: str
+    actor: Optional[str] = None
+    details: dict = {}
+    occurred_at: Optional[str] = None
 
 
 class CreateChainRequest(BaseModel):
@@ -174,18 +222,142 @@ async def health():
 
 
 @router.get("/count")
-async def get_count():
+async def get_count(request: Request):
     """
-    Get total chain count for navigation badge.
+    Get total provenance record count for navigation badge.
 
     Returns:
         dict: {"count": int}
     """
-    # TODO: Implement actual count
-    return {"count": 0}
+    shard = get_shard(request)
+    try:
+        records = await shard.list_records(limit=1000)
+        return {"count": len(records)}
+    except Exception as e:
+        logger.error(f"Error getting count: {e}")
+        return {"count": 0}
 
 
-# --- Evidence Chain Endpoints ---
+# --- Provenance Record Endpoints ---
+
+
+@router.get("/", response_model=List[ProvenanceRecordResponse])
+async def list_records(
+    request: Request,
+    entity_type: Optional[str] = Query(None, description="Filter by entity type"),
+    limit: int = Query(20, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+):
+    """
+    List provenance records with optional filtering.
+
+    Args:
+        entity_type: Filter by entity type
+        limit: Maximum records to return
+        offset: Number of records to skip
+
+    Returns:
+        List of provenance records
+    """
+    shard = get_shard(request)
+    try:
+        records = await shard.list_records(entity_type=entity_type, limit=limit, offset=offset)
+        return records
+    except Exception as e:
+        logger.error(f"Error listing records: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/{id}", response_model=ProvenanceRecordResponse)
+async def get_record(id: str, request: Request):
+    """
+    Get a provenance record by ID.
+
+    Args:
+        id: Record ID
+
+    Returns:
+        Provenance record
+    """
+    shard = get_shard(request)
+    try:
+        record = await shard.get_record(id)
+        if not record:
+            raise HTTPException(status_code=404, detail=f"Record not found: {id}")
+        return record
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting record: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/entity/{entity_type}/{entity_id}", response_model=ProvenanceRecordResponse)
+async def get_entity_record(entity_type: str, entity_id: str, request: Request):
+    """
+    Get provenance record for a specific entity.
+
+    Args:
+        entity_type: Type of entity
+        entity_id: Entity ID
+
+    Returns:
+        Provenance record
+    """
+    shard = get_shard(request)
+    try:
+        record = await shard.get_record_for_entity(entity_type, entity_id)
+        if not record:
+            raise HTTPException(status_code=404, detail=f"Record not found for {entity_type}/{entity_id}")
+        return record
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting entity record: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/{id}/transformations", response_model=List[TransformationResponse])
+async def get_transformations(id: str, request: Request):
+    """
+    Get transformation history for a record.
+
+    Args:
+        id: Record ID
+
+    Returns:
+        List of transformations
+    """
+    shard = get_shard(request)
+    try:
+        transformations = await shard.get_transformations(id)
+        return transformations
+    except Exception as e:
+        logger.error(f"Error getting transformations: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/{id}/audit", response_model=List[AuditRecordResponse])
+async def get_audit_trail(id: str, request: Request):
+    """
+    Get audit trail for a record.
+
+    Args:
+        id: Record ID
+
+    Returns:
+        List of audit records
+    """
+    shard = get_shard(request)
+    try:
+        audit_records = await shard.get_audit_trail(id)
+        return audit_records
+    except Exception as e:
+        logger.error(f"Error getting audit trail: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# --- Evidence Chain Endpoints (Legacy/Future) ---
 
 
 @router.get("/chains", response_model=ChainListResponse)

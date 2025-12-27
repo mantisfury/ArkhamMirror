@@ -27,9 +27,10 @@ import {
 // ============================================
 
 export function AnomalyDetail({ anomalyId }: { anomalyId: string }) {
-  const [searchParams, setSearchParams] = useSearchParams();
+  const [_searchParams, setSearchParams] = useSearchParams();
+  void _searchParams;
   const { toast } = useToast();
-  const { confirm } = useConfirm();
+  const confirm = useConfirm();
 
   const [anomaly, setAnomaly] = useState<Anomaly | null>(null);
   const [loading, setLoading] = useState(true);
@@ -78,9 +79,9 @@ export function AnomalyDetail({ anomalyId }: { anomalyId: string }) {
           'analyst' // TODO: Get from user context
         );
         setAnomaly(response.anomaly);
-        toast(`Status updated to ${STATUS_LABELS[status]}`, 'success');
+        toast.success(`Status updated to ${STATUS_LABELS[status]}`);
       } catch (err) {
-        toast(err instanceof Error ? err.message : 'Failed to update status', 'error');
+        toast.error(err instanceof Error ? err.message : 'Failed to update status');
       }
     }
   };
@@ -90,11 +91,11 @@ export function AnomalyDetail({ anomalyId }: { anomalyId: string }) {
 
     try {
       await api.addNote(anomaly.id, content, 'analyst'); // TODO: Get from user context
-      toast('Note added', 'success');
+      toast.success('Note added');
       setShowNoteDialog(false);
       fetchAnomaly();
     } catch (err) {
-      toast(err instanceof Error ? err.message : 'Failed to add note', 'error');
+      toast.error(err instanceof Error ? err.message : 'Failed to add note');
     }
   };
 

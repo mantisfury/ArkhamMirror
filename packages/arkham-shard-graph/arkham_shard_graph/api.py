@@ -2,9 +2,9 @@
 
 import logging
 from datetime import datetime
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 
 from .models import (
     BuildGraphRequest,
@@ -23,6 +23,9 @@ from .models import (
     CentralityMetric,
 )
 
+if TYPE_CHECKING:
+    from .shard import GraphShard
+
 logger = logging.getLogger(__name__)
 
 # Router
@@ -34,6 +37,16 @@ _algorithms = None
 _exporter = None
 _storage = None
 _event_bus = None
+
+
+# === Helper to get shard instance ===
+
+def get_shard(request: Request) -> "GraphShard":
+    """Get the graph shard instance from app state."""
+    shard = getattr(request.app.state, "graph_shard", None)
+    if not shard:
+        raise HTTPException(status_code=503, detail="Graph shard not available")
+    return shard
 
 
 def init_api(builder, algorithms, exporter, storage=None, event_bus=None):

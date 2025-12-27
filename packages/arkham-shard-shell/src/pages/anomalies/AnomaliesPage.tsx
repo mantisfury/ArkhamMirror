@@ -9,13 +9,11 @@ import { useSearchParams } from 'react-router-dom';
 import { useToast } from '../../context/ToastContext';
 import { Icon } from '../../components/common/Icon';
 import { LoadingSkeleton } from '../../components/common/LoadingSkeleton';
+import { AnomalyDetail } from './AnomalyDetail';
 
 import * as api from './api';
 import type {
   Anomaly,
-  AnomalyType,
-  AnomalyStatus,
-  SeverityLevel,
   DetectionConfig,
 } from './types';
 import {
@@ -35,7 +33,8 @@ import {
 // ============================================
 
 export function AnomaliesPage() {
-  const [searchParams, setSearchParams] = useSearchParams();
+  const [searchParams, _setSearchParams] = useSearchParams();
+  void _setSearchParams;
   const anomalyId = searchParams.get('anomalyId');
 
   // Show detail view if anomalyId is set
@@ -51,7 +50,8 @@ export function AnomaliesPage() {
 // ============================================
 
 function AnomaliesListView() {
-  const [searchParams, setSearchParams] = useSearchParams();
+  const [_searchParams, setSearchParams] = useSearchParams();
+  void _searchParams;
   const { toast } = useToast();
 
   // State
@@ -400,12 +400,12 @@ function AnomaliesListView() {
           onSubmit={async (config) => {
             try {
               const result = await api.detectAnomalies({ config });
-              toast(`Detection started - ${result.anomalies_detected} anomalies found`, 'success');
+              toast.success(`Detection started - ${result.anomalies_detected} anomalies found`);
               setShowDetectDialog(false);
               fetchAnomalies();
               fetchStats();
             } catch (err) {
-              toast(err instanceof Error ? err.message : 'Failed to run detection', 'error');
+              toast.error(err instanceof Error ? err.message : 'Failed to run detection');
             }
           }}
           onCancel={() => setShowDetectDialog(false)}
@@ -420,8 +420,6 @@ function AnomaliesListView() {
 // ============================================
 
 function AnomalyDetailView({ anomalyId }: { anomalyId: string }) {
-  // Import the full detail component
-  const AnomalyDetail = require('./AnomalyDetail').AnomalyDetail;
   return <AnomalyDetail anomalyId={anomalyId} />;
 }
 

@@ -4,9 +4,9 @@ Letters Shard - FastAPI Routes
 REST API endpoints for letter generation and management.
 """
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 from .models import (
@@ -14,6 +14,9 @@ from .models import (
     LetterStatus,
     LetterType,
 )
+
+if TYPE_CHECKING:
+    from .shard import LettersShard
 
 router = APIRouter(prefix="/api/letters", tags=["letters"])
 
@@ -178,11 +181,9 @@ class HealthResponse(BaseModel):
 # === Helper Functions ===
 
 
-def _get_shard():
-    """Get the letters shard instance from the frame."""
-    from arkham_frame import get_frame
-    frame = get_frame()
-    shard = frame.get_shard("letters")
+def get_shard(request: Request) -> "LettersShard":
+    """Get the letters shard instance from app state."""
+    shard = getattr(request.app.state, "letters_shard", None)
     if not shard:
         raise HTTPException(status_code=503, detail="Letters shard not available")
     return shard
@@ -241,9 +242,9 @@ def _template_to_response(template) -> TemplateResponse:
 
 
 @router.get("/health", response_model=HealthResponse)
-async def health_check():
+async def health_check(request: Request):
     """Health check endpoint."""
-    shard = _get_shard()
+    shard = get_shard(request)
     return HealthResponse(
         status="healthy",
         version=shard.version,
@@ -258,10 +259,11 @@ async def health_check():
 
 @router.get("/count", response_model=CountResponse)
 async def get_letters_count(
+    request: Request,
     status: Optional[str] = Query(None, description="Filter by status"),
 ):
     """Get count of letters (used for badge)."""
-    shard = _get_shard()
+    shard = get_shard(request)
     count = await shard.get_count(status=status)
     return CountResponse(count=count)
 
@@ -271,6 +273,7 @@ async def get_letters_count(
 
 @router.get("/", response_model=LetterListResponse)
 async def list_letters(
+    request: Request,
     status: Optional[LetterStatus] = Query(None),
     letter_type: Optional[LetterType] = Query(None),
     template_id: Optional[str] = Query(None),
@@ -281,7 +284,7 @@ async def list_letters(
     """List letters with optional filtering."""
     from .models import LetterFilter
 
-    shard = _get_shard()
+    shard = get_shard(request)
 
     filter = LetterFilter(
         status=status,
@@ -302,28 +305,28 @@ async def list_letters(
 
 
 @router.post("/", response_model=LetterResponse, status_code=201)
-async def create_letter(request: LetterCreate):
+async def create_letter(body: LetterCreate, request: Request):
     """Create a new letter."""
-    shard = _get_shard()
+    shard = get_shard(request)
 
     letter = await shard.create_letter(
-        title=request.title,
-        letter_type=request.letter_type,
-        content=request.content,
-        template_id=request.template_id,
-        recipient_name=request.recipient_name,
-        recipient_address=request.recipient_address,
-        subject=request.subject,
-        metadata=request.metadata,
+        title=body.title,
+        letter_type=body.letter_type,
+        content=body.content,
+        template_id=body.template_id,
+        recipient_name=body.recipient_name,
+        recipient_address=body.recipient_address,
+        subject=body.subject,
+        metadata=body.metadata,
     )
 
     return _letter_to_response(letter)
 
 
 @router.get("/{letter_id}", response_model=LetterResponse)
-async def get_letter(letter_id: str):
+async def get_letter(letter_id: str, request: Request):
     """Get a specific letter by ID."""
-    shard = _get_shard()
+    shard = get_shard(request)
     letter = await shard.get_letter(letter_id)
 
     if not letter:
@@ -333,19 +336,19 @@ async def get_letter(letter_id: str):
 
 
 @router.put("/{letter_id}", response_model=LetterResponse)
-async def update_letter(letter_id: str, request: LetterUpdate):
+async def update_letter(letter_id: str, body: LetterUpdate, request: Request):
     """Update a letter."""
-    shard = _get_shard()
+    shard = get_shard(request)
 
     letter = await shard.update_letter(
         letter_id=letter_id,
-        title=request.title,
-        content=request.content,
-        status=request.status,
-        recipient_name=request.recipient_name,
-        recipient_address=request.recipient_address,
-        subject=request.subject,
-        metadata=request.metadata,
+        title=body.title,
+        content=body.content,
+        status=body.status,
+        recipient_name=body.recipient_name,
+        recipient_address=body.recipient_address,
+        subject=body.subject,
+        metadata=body.metadata,
     )
 
     if not letter:
@@ -355,9 +358,9 @@ async def update_letter(letter_id: str, request: LetterUpdate):
 
 
 @router.delete("/{letter_id}", status_code=204)
-async def delete_letter(letter_id: str):
+async def delete_letter(letter_id: str, request: Request):
     """Delete a letter."""
-    shard = _get_shard()
+    shard = get_shard(request)
 
     success = await shard.delete_letter(letter_id)
     if not success:
@@ -368,13 +371,13 @@ async def delete_letter(letter_id: str):
 
 
 @router.post("/{letter_id}/export", response_model=ExportResponse)
-async def export_letter(letter_id: str, request: ExportRequest):
+async def export_letter(letter_id: str, body: ExportRequest, request: Request):
     """Export a letter to a file format."""
-    shard = _get_shard()
+    shard = get_shard(request)
 
     result = await shard.export_letter(
         letter_id=letter_id,
-        export_format=request.export_format,
+        export_format=body.export_format,
     )
 
     return ExportResponse(
@@ -390,9 +393,9 @@ async def export_letter(letter_id: str, request: ExportRequest):
 
 
 @router.get("/{letter_id}/download")
-async def download_letter(letter_id: str):
+async def download_letter(letter_id: str, request: Request):
     """Download the last exported letter file."""
-    shard = _get_shard()
+    shard = get_shard(request)
     letter = await shard.get_letter(letter_id)
 
     if not letter:
@@ -414,12 +417,13 @@ async def download_letter(letter_id: str):
 
 @router.get("/templates", response_model=List[TemplateResponse])
 async def list_templates(
+    request: Request,
     letter_type: Optional[LetterType] = Query(None),
     limit: int = Query(100, ge=1, le=500),
     offset: int = Query(0, ge=0),
 ):
     """List letter templates."""
-    shard = _get_shard()
+    shard = get_shard(request)
     templates = await shard.list_templates(
         letter_type=letter_type,
         limit=limit,
@@ -429,9 +433,9 @@ async def list_templates(
 
 
 @router.get("/templates/{template_id}", response_model=TemplateResponse)
-async def get_template(template_id: str):
+async def get_template(template_id: str, request: Request):
     """Get a specific template by ID."""
-    shard = _get_shard()
+    shard = get_shard(request)
     template = await shard.get_template(template_id)
 
     if not template:
@@ -441,35 +445,35 @@ async def get_template(template_id: str):
 
 
 @router.post("/templates", response_model=TemplateResponse, status_code=201)
-async def create_template(request: TemplateCreate):
+async def create_template(body: TemplateCreate, request: Request):
     """Create a new letter template."""
-    shard = _get_shard()
+    shard = get_shard(request)
 
     template = await shard.create_template(
-        name=request.name,
-        letter_type=request.letter_type,
-        description=request.description,
-        content_template=request.content_template,
-        subject_template=request.subject_template,
-        default_sender_name=request.default_sender_name,
-        default_sender_address=request.default_sender_address,
-        metadata=request.metadata,
+        name=body.name,
+        letter_type=body.letter_type,
+        description=body.description,
+        content_template=body.content_template,
+        subject_template=body.subject_template,
+        default_sender_name=body.default_sender_name,
+        default_sender_address=body.default_sender_address,
+        metadata=body.metadata,
     )
 
     return _template_to_response(template)
 
 
 @router.put("/templates/{template_id}", response_model=TemplateResponse)
-async def update_template(template_id: str, request: TemplateUpdate):
+async def update_template(template_id: str, body: TemplateUpdate, request: Request):
     """Update a template."""
-    shard = _get_shard()
+    shard = get_shard(request)
 
     template = await shard.update_template(
         template_id=template_id,
-        name=request.name,
-        description=request.description,
-        content_template=request.content_template,
-        subject_template=request.subject_template,
+        name=body.name,
+        description=body.description,
+        content_template=body.content_template,
+        subject_template=body.subject_template,
     )
 
     if not template:
@@ -479,9 +483,9 @@ async def update_template(template_id: str, request: TemplateUpdate):
 
 
 @router.delete("/templates/{template_id}", status_code=204)
-async def delete_template(template_id: str):
+async def delete_template(template_id: str, request: Request):
     """Delete a template."""
-    shard = _get_shard()
+    shard = get_shard(request)
 
     success = await shard.delete_template(template_id)
     if not success:
@@ -492,25 +496,25 @@ async def delete_template(template_id: str):
 
 
 @router.post("/apply-template", response_model=LetterResponse, status_code=201)
-async def apply_template(request: ApplyTemplateRequest):
+async def apply_template(body: ApplyTemplateRequest, request: Request):
     """Create a new letter from a template."""
     from .models import PlaceholderValue
 
-    shard = _get_shard()
+    shard = get_shard(request)
 
     # Convert request placeholders to domain models
     placeholders = [
         PlaceholderValue(key=pv.key, value=pv.value, required=pv.required)
-        for pv in request.placeholder_values
+        for pv in body.placeholder_values
     ]
 
     try:
         letter = await shard.apply_template(
-            template_id=request.template_id,
-            title=request.title,
+            template_id=body.template_id,
+            title=body.title,
             placeholder_values=placeholders,
-            recipient_name=request.recipient_name,
-            recipient_address=request.recipient_address,
+            recipient_name=body.recipient_name,
+            recipient_address=body.recipient_address,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -522,9 +526,9 @@ async def apply_template(request: ApplyTemplateRequest):
 
 
 @router.get("/stats", response_model=StatisticsResponse)
-async def get_statistics():
+async def get_statistics(request: Request):
     """Get statistics about letters in the system."""
-    shard = _get_shard()
+    shard = get_shard(request)
     stats = await shard.get_statistics()
 
     return StatisticsResponse(
@@ -546,13 +550,14 @@ async def get_statistics():
 
 @router.get("/drafts", response_model=LetterListResponse)
 async def list_draft_letters(
+    request: Request,
     limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
 ):
     """List draft letters."""
     from .models import LetterFilter
 
-    shard = _get_shard()
+    shard = get_shard(request)
     filter = LetterFilter(status=LetterStatus.DRAFT)
     letters = await shard.list_letters(filter=filter, limit=limit, offset=offset)
     total = await shard.get_count(status="draft")
@@ -567,13 +572,14 @@ async def list_draft_letters(
 
 @router.get("/finalized", response_model=LetterListResponse)
 async def list_finalized_letters(
+    request: Request,
     limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
 ):
     """List finalized letters."""
     from .models import LetterFilter
 
-    shard = _get_shard()
+    shard = get_shard(request)
     filter = LetterFilter(status=LetterStatus.FINALIZED)
     letters = await shard.list_letters(filter=filter, limit=limit, offset=offset)
     total = await shard.get_count(status="finalized")
@@ -588,13 +594,14 @@ async def list_finalized_letters(
 
 @router.get("/sent", response_model=LetterListResponse)
 async def list_sent_letters(
+    request: Request,
     limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
 ):
     """List sent letters."""
     from .models import LetterFilter
 
-    shard = _get_shard()
+    shard = get_shard(request)
     filter = LetterFilter(status=LetterStatus.SENT)
     letters = await shard.list_letters(filter=filter, limit=limit, offset=offset)
     total = await shard.get_count(status="sent")

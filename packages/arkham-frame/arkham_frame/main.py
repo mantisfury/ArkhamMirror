@@ -75,6 +75,9 @@ async def lifespan(app: FastAPI):
     frame = ArkhamFrame()
     await frame.initialize()
 
+    # Store app reference on frame for shards to access
+    frame.app = app
+
     # Load shards
     await load_shards(frame, app)
 

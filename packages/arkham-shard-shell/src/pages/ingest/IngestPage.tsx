@@ -78,21 +78,22 @@ export function IngestPage() {
 
   const handleUpload = useCallback(async () => {
     if (selectedFiles.length === 0) {
-      toast('Please select files to upload', 'error');
+      toast.error('Please select files to upload');
       return;
     }
 
     try {
       const result = await uploadBatch(selectedFiles, 'user');
-      toast(
-        `Uploaded ${result.total_files} file(s)${result.failed > 0 ? `, ${result.failed} failed` : ''}`,
-        result.failed > 0 ? 'warning' : 'success'
-      );
+      if (result.failed > 0) {
+        toast.warning(`Uploaded ${result.total_files} file(s), ${result.failed} failed`);
+      } else {
+        toast.success(`Uploaded ${result.total_files} file(s)`);
+      }
       setSelectedFiles([]);
       refetchQueue();
       refetchPending();
     } catch (error) {
-      toast(error instanceof Error ? error.message : 'Upload failed', 'error');
+      toast.error(error instanceof Error ? error.message : 'Upload failed');
     }
   }, [selectedFiles, uploadBatch, toast, refetchQueue, refetchPending]);
 
@@ -102,7 +103,7 @@ export function IngestPage() {
     return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
   };
 
-  const getStatusColor = (status: string): string => {
+  const _getStatusColor = (status: string): string => {
     switch (status.toLowerCase()) {
       case 'completed':
         return '#22c55e';
@@ -115,6 +116,7 @@ export function IngestPage() {
         return '#6b7280';
     }
   };
+  void _getStatusColor;
 
   const formatDate = (dateStr: string): string => {
     const date = new Date(dateStr);

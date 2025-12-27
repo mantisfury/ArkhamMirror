@@ -13,7 +13,7 @@ import { useShell } from '../../context/ShellContext';
 import { useBadgeContext } from '../../context/BadgeContext';
 import { Icon } from '../common/Icon';
 import { BadgeStatusIndicator } from '../common/BadgeStatusIndicator';
-import type { ShardManifest, NavigationConfig } from '../../types';
+import type { ShardManifest } from '../../types';
 
 // Category order and labels
 const CATEGORY_ORDER = ['System', 'Data', 'Search', 'Analysis', 'Visualize', 'Export'] as const;

@@ -2,9 +2,9 @@
 
 import logging
 import time
-from typing import Annotated, Optional
+from typing import Annotated, Optional, TYPE_CHECKING
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel
 
 from .models import (
@@ -17,6 +17,9 @@ from .models import (
     DateRange,
     ExtractionContext,
 )
+
+if TYPE_CHECKING:
+    from .shard import TimelineShard
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +55,14 @@ def init_api(
     _documents_service = documents_service
     _entities_service = entities_service
     _event_bus = event_bus
+
+
+def get_shard(request: Request) -> "TimelineShard":
+    """Get the timeline shard instance from app state."""
+    shard = getattr(request.app.state, "timeline_shard", None)
+    if not shard:
+        raise HTTPException(status_code=503, detail="Timeline shard not available")
+    return shard
 
 
 # --- Request/Response Models ---
@@ -139,6 +150,85 @@ class StatsResponse(BaseModel):
 
 
 # --- Endpoints ---
+
+
+@router.get("/health")
+async def health_check(request: Request):
+    """Health check endpoint."""
+    shard = get_shard(request)
+
+    # Count total events
+    if shard.database_service:
+        result = await shard.database_service.fetch_one(
+            "SELECT COUNT(*) as count FROM arkham_timeline_events"
+        )
+        event_count = result["count"] if result else 0
+    else:
+        event_count = 0
+
+    return {
+        "status": "healthy",
+        "shard": "timeline",
+        "version": "0.1.0",
+        "event_count": event_count,
+    }
+
+
+@router.get("/count")
+async def get_event_count(request: Request):
+    """Get count of timeline events (for badge)."""
+    shard = get_shard(request)
+
+    if shard.database_service:
+        result = await shard.database_service.fetch_one(
+            "SELECT COUNT(*) as count FROM arkham_timeline_events"
+        )
+        count = result["count"] if result else 0
+    else:
+        count = 0
+
+    return {"count": count}
+
+
+@router.get("/events")
+async def list_all_events(
+    request: Request,
+    limit: int = Query(100, ge=1, le=1000),
+    offset: int = Query(0, ge=0),
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+):
+    """List all timeline events with pagination and optional date filtering."""
+    shard = get_shard(request)
+
+    if not shard.database_service:
+        raise HTTPException(status_code=503, detail="Database service not available")
+
+    # Build query
+    query = "SELECT * FROM arkham_timeline_events WHERE 1=1"
+    params = {}
+
+    if start_date:
+        query += " AND date_start >= :start_date"
+        params["start_date"] = start_date
+
+    if end_date:
+        query += " AND date_start <= :end_date"
+        params["end_date"] = end_date
+
+    query += " ORDER BY date_start DESC LIMIT :limit OFFSET :offset"
+    params["limit"] = limit
+    params["offset"] = offset
+
+    rows = await shard.database_service.fetch_all(query, params)
+    events = [shard._row_to_event(row) for row in rows]
+
+    return {
+        "events": [_event_to_dict(e) for e in events],
+        "count": len(events),
+        "limit": limit,
+        "offset": offset,
+    }
 
 
 @router.post("/extract", response_model=ExtractionResponse)

@@ -6,7 +6,7 @@ REST API endpoints for credibility assessment management.
 
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 from .models import (
@@ -151,11 +151,9 @@ class HistoryResponse(BaseModel):
 # === Helper Functions ===
 
 
-def _get_shard():
-    """Get the credibility shard instance from the frame."""
-    from arkham_frame import get_frame
-    frame = get_frame()
-    shard = frame.get_shard("credibility")
+def _get_shard(request):
+    """Get the credibility shard instance from app state."""
+    shard = getattr(request.app.state, "credibility_shard", None)
     if not shard:
         raise HTTPException(status_code=503, detail="Credibility shard not available")
     return shard
@@ -218,25 +216,27 @@ async def health():
 
 @router.get("/count", response_model=CountResponse)
 async def get_count(
+    request: Request,
     level: Optional[str] = Query(None, description="Filter by credibility level"),
     source_type: Optional[str] = Query(None, description="Filter by source type"),
 ):
     """Get count of assessments (used for badge)."""
-    shard = _get_shard()
+    shard = _get_shard(request)
     count = await shard.get_count(level=level, source_type=source_type)
     return CountResponse(count=count)
 
 
 @router.get("/low/count", response_model=CountResponse)
-async def get_low_count():
+async def get_low_count(request: Request):
     """Get count of low-credibility assessments (for badge)."""
-    shard = _get_shard()
+    shard = _get_shard(request)
     count = await shard.get_count(level="low")
     return CountResponse(count=count)
 
 
 @router.get("/", response_model=AssessmentListResponse)
 async def list_assessments(
+    request: Request,
     source_type: Optional[SourceType] = Query(None),
     source_id: Optional[str] = Query(None),
     min_score: Optional[int] = Query(None, ge=0, le=100),
@@ -252,7 +252,7 @@ async def list_assessments(
     """List credibility assessments with optional filtering."""
     from .models import CredibilityFilter
 
-    shard = _get_shard()
+    shard = _get_shard(request)
 
     filter = CredibilityFilter(
         source_type=source_type,
@@ -278,31 +278,31 @@ async def list_assessments(
 
 
 @router.post("/", response_model=AssessmentResponse, status_code=201)
-async def create_assessment(request: AssessmentCreate):
+async def create_assessment(body: AssessmentCreate, request: Request):
     """Create a new credibility assessment."""
-    shard = _get_shard()
+    shard = _get_shard(request)
 
-    factors = _models_to_factors(request.factors) if request.factors else None
+    factors = _models_to_factors(body.factors) if body.factors else None
 
     assessment = await shard.create_assessment(
-        source_type=request.source_type,
-        source_id=request.source_id,
-        score=request.score,
-        confidence=request.confidence,
+        source_type=body.source_type,
+        source_id=body.source_id,
+        score=body.score,
+        confidence=body.confidence,
         factors=factors,
-        assessed_by=request.assessed_by,
-        assessor_id=request.assessor_id,
-        notes=request.notes,
-        metadata=request.metadata,
+        assessed_by=body.assessed_by,
+        assessor_id=body.assessor_id,
+        notes=body.notes,
+        metadata=body.metadata,
     )
 
     return _assessment_to_response(assessment)
 
 
 @router.get("/{assessment_id}", response_model=AssessmentResponse)
-async def get_assessment(assessment_id: str):
+async def get_assessment(assessment_id: str, request: Request):
     """Get a specific assessment by ID."""
-    shard = _get_shard()
+    shard = _get_shard(request)
     assessment = await shard.get_assessment(assessment_id)
 
     if not assessment:
@@ -312,18 +312,18 @@ async def get_assessment(assessment_id: str):
 
 
 @router.put("/{assessment_id}", response_model=AssessmentResponse)
-async def update_assessment(assessment_id: str, request: AssessmentUpdate):
+async def update_assessment(assessment_id: str, body: AssessmentUpdate, request: Request):
     """Update an existing assessment."""
-    shard = _get_shard()
+    shard = _get_shard(request)
 
-    factors = _models_to_factors(request.factors) if request.factors else None
+    factors = _models_to_factors(body.factors) if body.factors else None
 
     assessment = await shard.update_assessment(
         assessment_id=assessment_id,
-        score=request.score,
-        confidence=request.confidence,
+        score=body.score,
+        confidence=body.confidence,
         factors=factors,
-        notes=request.notes,
+        notes=body.notes,
     )
 
     if not assessment:
@@ -333,9 +333,9 @@ async def update_assessment(assessment_id: str, request: AssessmentUpdate):
 
 
 @router.delete("/{assessment_id}", status_code=204)
-async def delete_assessment(assessment_id: str):
+async def delete_assessment(assessment_id: str, request: Request):
     """Delete an assessment."""
-    shard = _get_shard()
+    shard = _get_shard(request)
     success = await shard.delete_assessment(assessment_id)
 
     if not success:
@@ -346,9 +346,9 @@ async def delete_assessment(assessment_id: str):
 
 
 @router.get("/source/{source_type}/{source_id}", response_model=SourceCredibilityResponse)
-async def get_source_credibility(source_type: SourceType, source_id: str):
+async def get_source_credibility(source_type: SourceType, source_id: str, request: Request):
     """Get aggregate credibility for a source."""
-    shard = _get_shard()
+    shard = _get_shard(request)
     source_cred = await shard.get_source_credibility(source_type, source_id)
 
     if not source_cred:
@@ -371,9 +371,9 @@ async def get_source_credibility(source_type: SourceType, source_id: str):
 
 
 @router.get("/source/{source_type}/{source_id}/history", response_model=HistoryResponse)
-async def get_source_history(source_type: SourceType, source_id: str):
+async def get_source_history(source_type: SourceType, source_id: str, request: Request):
     """Get credibility history for a source."""
-    shard = _get_shard()
+    shard = _get_shard(request)
     history = await shard.get_source_history(source_type, source_id)
 
     return HistoryResponse(
@@ -388,14 +388,14 @@ async def get_source_history(source_type: SourceType, source_id: str):
 
 
 @router.post("/calculate", response_model=CalculationResponse)
-async def calculate_credibility(request: CalculateRequest):
+async def calculate_credibility(body: CalculateRequest, request: Request):
     """Calculate credibility score for a source."""
-    shard = _get_shard()
+    shard = _get_shard(request)
 
     calculation = await shard.calculate_credibility(
-        source_type=request.source_type,
-        source_id=request.source_id,
-        use_llm=request.use_llm,
+        source_type=body.source_type,
+        source_id=body.source_id,
+        use_llm=body.use_llm,
     )
 
     factors = [
@@ -425,9 +425,9 @@ async def calculate_credibility(request: CalculateRequest):
 
 
 @router.get("/factors", response_model=List[StandardFactorResponse])
-async def list_standard_factors():
+async def list_standard_factors(request: Request):
     """Get list of standard credibility factors."""
-    shard = _get_shard()
+    shard = _get_shard(request)
     factors = shard.get_standard_factors()
 
     return [
@@ -445,9 +445,9 @@ async def list_standard_factors():
 
 
 @router.get("/stats", response_model=StatisticsResponse)
-async def get_statistics():
+async def get_statistics(request: Request):
     """Get statistics about credibility assessments."""
-    shard = _get_shard()
+    shard = _get_shard(request)
     stats = await shard.get_statistics()
 
     return StatisticsResponse(
@@ -468,9 +468,9 @@ async def get_statistics():
 
 
 @router.get("/stats/by-source-type", response_model=Dict[str, int])
-async def get_stats_by_source_type():
+async def get_stats_by_source_type(request: Request):
     """Get assessment counts by source type."""
-    shard = _get_shard()
+    shard = _get_shard(request)
     stats = await shard.get_statistics()
     return stats.by_source_type
 
@@ -480,13 +480,14 @@ async def get_stats_by_source_type():
 
 @router.get("/level/high", response_model=AssessmentListResponse)
 async def list_high_credibility(
+    request: Request,
     limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
 ):
     """List high-credibility assessments."""
     from .models import CredibilityFilter
 
-    shard = _get_shard()
+    shard = _get_shard(request)
     filter = CredibilityFilter(level=CredibilityLevel.HIGH)
     assessments = await shard.list_assessments(filter=filter, limit=limit, offset=offset)
     total = await shard.get_count(level="high")
@@ -501,13 +502,14 @@ async def list_high_credibility(
 
 @router.get("/level/low", response_model=AssessmentListResponse)
 async def list_low_credibility(
+    request: Request,
     limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
 ):
     """List low-credibility assessments."""
     from .models import CredibilityFilter
 
-    shard = _get_shard()
+    shard = _get_shard(request)
     filter = CredibilityFilter(level=CredibilityLevel.LOW)
     assessments = await shard.list_assessments(filter=filter, limit=limit, offset=offset)
     total = await shard.get_count(level="low")
@@ -522,13 +524,14 @@ async def list_low_credibility(
 
 @router.get("/level/unreliable", response_model=AssessmentListResponse)
 async def list_unreliable(
+    request: Request,
     limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
 ):
     """List unreliable assessments."""
     from .models import CredibilityFilter
 
-    shard = _get_shard()
+    shard = _get_shard(request)
     filter = CredibilityFilter(level=CredibilityLevel.UNRELIABLE)
     assessments = await shard.list_assessments(filter=filter, limit=limit, offset=offset)
     total = await shard.get_count(level="unreliable")
@@ -543,13 +546,14 @@ async def list_unreliable(
 
 @router.get("/level/verified", response_model=AssessmentListResponse)
 async def list_verified(
+    request: Request,
     limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
 ):
     """List verified/high-credibility assessments."""
     from .models import CredibilityFilter
 
-    shard = _get_shard()
+    shard = _get_shard(request)
     filter = CredibilityFilter(level=CredibilityLevel.VERIFIED)
     assessments = await shard.list_assessments(filter=filter, limit=limit, offset=offset)
     total = await shard.get_count(level="verified")

@@ -65,6 +65,10 @@ class ReportsShard(ArkhamShard):
         # Create database schema
         await self._create_schema()
 
+        # Register self in app state for API access
+        if hasattr(frame, "app") and frame.app:
+            frame.app.state.reports_shard = self
+
         self._initialized = True
         logger.info(f"ReportsShard initialized (v{self.version})")
 
@@ -515,6 +519,31 @@ class ReportsShard(ArkhamShard):
 
     # === Private Helper Methods ===
 
+    def _parse_jsonb(self, value: Any, default: Any = None) -> Any:
+        """Parse a JSONB field that may be str, dict, list, or None.
+
+        PostgreSQL JSONB with SQLAlchemy may return:
+        - Already parsed Python objects (dict, list, bool, int, float)
+        - String that IS the value (when JSON string was stored, e.g., "SHATTERED")
+        - String that needs parsing (raw JSON, e.g., '{"key": "value"}')
+        """
+        if value is None:
+            return default
+        if isinstance(value, (dict, list, bool, int, float)):
+            return value
+        if isinstance(value, str):
+            if not value or value.strip() == "":
+                return default
+            # Try to parse as JSON first (for complex values)
+            try:
+                import json
+                return json.loads(value)
+            except json.JSONDecodeError:
+                # If it's not valid JSON, it's already the string value
+                # (e.g., JSONB stored "SHATTERED" comes back as 'SHATTERED')
+                return value
+        return default
+
     async def _generate_report_inline(self, report: Report) -> ReportGenerationResult:
         """Generate report inline (stub implementation)."""
         import time
@@ -707,7 +736,6 @@ class ReportsShard(ArkhamShard):
 
     def _row_to_report(self, row: Dict[str, Any]) -> Report:
         """Convert database row to Report object."""
-        import json
         return Report(
             id=row["id"],
             report_type=ReportType(row["report_type"]),
@@ -715,33 +743,31 @@ class ReportsShard(ArkhamShard):
             status=ReportStatus(row["status"]),
             created_at=datetime.fromisoformat(row["created_at"]) if row["created_at"] else datetime.utcnow(),
             completed_at=datetime.fromisoformat(row["completed_at"]) if row["completed_at"] else None,
-            parameters=json.loads(row["parameters"] or "{}"),
+            parameters=self._parse_jsonb(row.get("parameters"), {}),
             output_format=ReportFormat(row["output_format"]) if row["output_format"] else ReportFormat.HTML,
             file_path=row["file_path"],
             file_size=row["file_size"],
             error=row["error"],
-            metadata=json.loads(row["metadata"] or "{}"),
+            metadata=self._parse_jsonb(row.get("metadata"), {}),
         )
 
     def _row_to_template(self, row: Dict[str, Any]) -> ReportTemplate:
         """Convert database row to ReportTemplate object."""
-        import json
         return ReportTemplate(
             id=row["id"],
             name=row["name"],
             report_type=ReportType(row["report_type"]),
             description=row["description"] or "",
-            parameters_schema=json.loads(row["parameters_schema"] or "{}"),
+            parameters_schema=self._parse_jsonb(row.get("parameters_schema"), {}),
             default_format=ReportFormat(row["default_format"]) if row["default_format"] else ReportFormat.HTML,
             template_content=row["template_content"] or "",
             created_at=datetime.fromisoformat(row["created_at"]) if row["created_at"] else datetime.utcnow(),
             updated_at=datetime.fromisoformat(row["updated_at"]) if row["updated_at"] else datetime.utcnow(),
-            metadata=json.loads(row["metadata"] or "{}"),
+            metadata=self._parse_jsonb(row.get("metadata"), {}),
         )
 
     def _row_to_schedule(self, row: Dict[str, Any]) -> ReportSchedule:
         """Convert database row to ReportSchedule object."""
-        import json
         return ReportSchedule(
             id=row["id"],
             template_id=row["template_id"],
@@ -749,9 +775,9 @@ class ReportsShard(ArkhamShard):
             enabled=bool(row["enabled"]),
             last_run=datetime.fromisoformat(row["last_run"]) if row["last_run"] else None,
             next_run=datetime.fromisoformat(row["next_run"]) if row["next_run"] else None,
-            parameters=json.loads(row["parameters"] or "{}"),
+            parameters=self._parse_jsonb(row.get("parameters"), {}),
             output_format=ReportFormat(row["output_format"]) if row["output_format"] else ReportFormat.HTML,
             retention_days=row["retention_days"] or 30,
-            email_recipients=json.loads(row["email_recipients"] or "[]"),
-            metadata=json.loads(row["metadata"] or "{}"),
+            email_recipients=self._parse_jsonb(row.get("email_recipients"), []),
+            metadata=self._parse_jsonb(row.get("metadata"), {}),
         )

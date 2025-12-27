@@ -103,6 +103,10 @@ class TimelineShard(ArkhamShard):
         if self.database_service:
             await self._create_schema()
 
+        # Register self in app state for API access
+        if hasattr(frame, "app") and frame.app:
+            frame.app.state.timeline_shard = self
+
         logger.info("Timeline Shard initialized")
 
     async def shutdown(self) -> None:
@@ -137,49 +141,68 @@ class TimelineShard(ArkhamShard):
 
         logger.info("Creating timeline schema...")
 
-        # This is a placeholder - actual implementation would use SQLAlchemy models
-        # or execute CREATE TABLE statements
+        # Create timeline events table
+        await self.database_service.execute("""
+            CREATE TABLE IF NOT EXISTS arkham_timeline_events (
+                id TEXT PRIMARY KEY,
+                document_id TEXT NOT NULL,
+                text TEXT NOT NULL,
+                date_start TIMESTAMP NOT NULL,
+                date_end TIMESTAMP,
+                precision TEXT NOT NULL,
+                confidence REAL NOT NULL,
+                entities JSONB DEFAULT '[]',
+                event_type TEXT NOT NULL,
+                span_start INTEGER,
+                span_end INTEGER,
+                metadata JSONB DEFAULT '{}',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
 
-        schema_sql = """
-        CREATE TABLE IF NOT EXISTS timeline_events (
-            id VARCHAR(36) PRIMARY KEY,
-            document_id VARCHAR(255) NOT NULL,
-            text TEXT NOT NULL,
-            date_start TIMESTAMP NOT NULL,
-            date_end TIMESTAMP,
-            precision VARCHAR(20) NOT NULL,
-            confidence FLOAT NOT NULL,
-            entities TEXT[],
-            event_type VARCHAR(20) NOT NULL,
-            span_start INTEGER,
-            span_end INTEGER,
-            metadata JSONB,
-            created_at TIMESTAMP DEFAULT NOW(),
-            INDEX idx_document_id (document_id),
-            INDEX idx_date_start (date_start),
-            INDEX idx_event_type (event_type)
-        );
+        # Create indexes for timeline events
+        await self.database_service.execute("""
+            CREATE INDEX IF NOT EXISTS idx_arkham_timeline_events_document_id
+            ON arkham_timeline_events(document_id)
+        """)
 
-        CREATE TABLE IF NOT EXISTS timeline_conflicts (
-            id VARCHAR(36) PRIMARY KEY,
-            type VARCHAR(20) NOT NULL,
-            severity VARCHAR(20) NOT NULL,
-            event_ids TEXT[],
-            description TEXT NOT NULL,
-            document_ids TEXT[],
-            suggested_resolution TEXT,
-            metadata JSONB,
-            created_at TIMESTAMP DEFAULT NOW(),
-            INDEX idx_type (type),
-            INDEX idx_severity (severity)
-        );
-        """
+        await self.database_service.execute("""
+            CREATE INDEX IF NOT EXISTS idx_arkham_timeline_events_date_start
+            ON arkham_timeline_events(date_start)
+        """)
 
-        try:
-            # await self.database_service.execute(schema_sql)
-            logger.info("Timeline schema created successfully")
-        except Exception as e:
-            logger.error(f"Failed to create timeline schema: {e}")
+        await self.database_service.execute("""
+            CREATE INDEX IF NOT EXISTS idx_arkham_timeline_events_event_type
+            ON arkham_timeline_events(event_type)
+        """)
+
+        # Create timeline conflicts table
+        await self.database_service.execute("""
+            CREATE TABLE IF NOT EXISTS arkham_timeline_conflicts (
+                id TEXT PRIMARY KEY,
+                type TEXT NOT NULL,
+                severity TEXT NOT NULL,
+                event_ids JSONB DEFAULT '[]',
+                description TEXT NOT NULL,
+                document_ids JSONB DEFAULT '[]',
+                suggested_resolution TEXT,
+                metadata JSONB DEFAULT '{}',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        # Create indexes for conflicts
+        await self.database_service.execute("""
+            CREATE INDEX IF NOT EXISTS idx_arkham_timeline_conflicts_type
+            ON arkham_timeline_conflicts(type)
+        """)
+
+        await self.database_service.execute("""
+            CREATE INDEX IF NOT EXISTS idx_arkham_timeline_conflicts_severity
+            ON arkham_timeline_conflicts(severity)
+        """)
+
+        logger.info("Timeline schema created successfully")
 
     async def _on_document_indexed(self, event: dict) -> None:
         """
@@ -441,15 +464,42 @@ class TimelineShard(ArkhamShard):
         if not self.database_service:
             return
 
-        # Placeholder - actual implementation would use ORM
+        import json
         for event in events:
-            insert_sql = """
-            INSERT INTO timeline_events
-            (id, document_id, text, date_start, date_end, precision, confidence,
-             entities, event_type, span_start, span_end, metadata)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """
-            # await self.database_service.execute(insert_sql, ...)
+            await self.database_service.execute(
+                """
+                INSERT INTO arkham_timeline_events
+                (id, document_id, text, date_start, date_end, precision, confidence,
+                 entities, event_type, span_start, span_end, metadata)
+                VALUES (:id, :document_id, :text, :date_start, :date_end, :precision,
+                        :confidence, :entities, :event_type, :span_start, :span_end, :metadata)
+                ON CONFLICT (id) DO UPDATE SET
+                    text = EXCLUDED.text,
+                    date_start = EXCLUDED.date_start,
+                    date_end = EXCLUDED.date_end,
+                    precision = EXCLUDED.precision,
+                    confidence = EXCLUDED.confidence,
+                    entities = EXCLUDED.entities,
+                    event_type = EXCLUDED.event_type,
+                    span_start = EXCLUDED.span_start,
+                    span_end = EXCLUDED.span_end,
+                    metadata = EXCLUDED.metadata
+                """,
+                {
+                    "id": event.id,
+                    "document_id": event.document_id,
+                    "text": event.text,
+                    "date_start": event.date_start,
+                    "date_end": event.date_end,
+                    "precision": event.precision.value,
+                    "confidence": event.confidence,
+                    "entities": json.dumps(event.entities),
+                    "event_type": event.event_type.value,
+                    "span_start": event.span[0] if event.span else None,
+                    "span_end": event.span[1] if event.span else None,
+                    "metadata": json.dumps(event.metadata),
+                }
+            )
 
         logger.debug(f"Stored {len(events)} timeline events")
 
@@ -458,15 +508,35 @@ class TimelineShard(ArkhamShard):
         if not self.database_service:
             return
 
-        # Placeholder - actual implementation would use ORM
+        import json
         for conflict in conflicts:
-            insert_sql = """
-            INSERT INTO timeline_conflicts
-            (id, type, severity, event_ids, description, document_ids,
-             suggested_resolution, metadata)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """
-            # await self.database_service.execute(insert_sql, ...)
+            await self.database_service.execute(
+                """
+                INSERT INTO arkham_timeline_conflicts
+                (id, type, severity, event_ids, description, document_ids,
+                 suggested_resolution, metadata)
+                VALUES (:id, :type, :severity, :event_ids, :description, :document_ids,
+                        :suggested_resolution, :metadata)
+                ON CONFLICT (id) DO UPDATE SET
+                    type = EXCLUDED.type,
+                    severity = EXCLUDED.severity,
+                    event_ids = EXCLUDED.event_ids,
+                    description = EXCLUDED.description,
+                    document_ids = EXCLUDED.document_ids,
+                    suggested_resolution = EXCLUDED.suggested_resolution,
+                    metadata = EXCLUDED.metadata
+                """,
+                {
+                    "id": conflict.id,
+                    "type": conflict.type.value,
+                    "severity": conflict.severity.value,
+                    "event_ids": json.dumps(conflict.events),
+                    "description": conflict.description,
+                    "document_ids": json.dumps(conflict.documents),
+                    "suggested_resolution": conflict.suggested_resolution,
+                    "metadata": json.dumps(conflict.metadata),
+                }
+            )
 
         logger.debug(f"Stored {len(conflicts)} conflicts")
 
@@ -475,39 +545,71 @@ class TimelineShard(ArkhamShard):
         if not self.database_service:
             return []
 
-        # Placeholder - actual implementation would use ORM
-        # query = "SELECT * FROM timeline_events WHERE document_id = ?"
-        # results = await self.database_service.execute(query, document_id)
-        # return [self._row_to_event(row) for row in results]
+        rows = await self.database_service.fetch_all(
+            "SELECT * FROM arkham_timeline_events WHERE document_id = :document_id ORDER BY date_start",
+            {"document_id": document_id}
+        )
 
-        return []
+        return [self._row_to_event(row) for row in rows]
 
     async def _get_events_for_entity(self, entity_id: str) -> list[TimelineEvent]:
         """Get all timeline events mentioning an entity."""
         if not self.database_service:
             return []
 
-        # Placeholder - actual implementation would use ORM
-        # query = "SELECT * FROM timeline_events WHERE ? = ANY(entities)"
-        # results = await self.database_service.execute(query, entity_id)
-        # return [self._row_to_event(row) for row in results]
+        # Query events where entity_id is in the entities JSONB array
+        rows = await self.database_service.fetch_all(
+            """
+            SELECT * FROM arkham_timeline_events
+            WHERE entities::jsonb @> :entity_array::jsonb
+            ORDER BY date_start
+            """,
+            {"entity_array": f'["{entity_id}"]'}
+        )
 
-        return []
+        return [self._row_to_event(row) for row in rows]
+
+    def _parse_jsonb(self, value, default=None):
+        """Parse a JSONB field that may be str, dict, list, or None.
+
+        PostgreSQL JSONB with SQLAlchemy may return:
+        - Already parsed Python objects (dict, list, bool, int, float)
+        - String that IS the value (when JSON string was stored)
+        - String that needs parsing (raw JSON)
+        """
+        import json
+        if value is None:
+            return default
+        if isinstance(value, (dict, list, bool, int, float)):
+            return value
+        if isinstance(value, str):
+            if not value or value.strip() == "":
+                return default
+            # Try to parse as JSON first (for complex values)
+            try:
+                return json.loads(value)
+            except json.JSONDecodeError:
+                # If it's not valid JSON, it's already the string value
+                return value
+        return default
 
     def _row_to_event(self, row) -> TimelineEvent:
         """Convert database row to TimelineEvent."""
         from .models import EventType, DatePrecision
+
+        entities = self._parse_jsonb(row.get("entities"), [])
+        metadata = self._parse_jsonb(row.get("metadata"), {})
 
         return TimelineEvent(
             id=row["id"],
             document_id=row["document_id"],
             text=row["text"],
             date_start=row["date_start"],
-            date_end=row["date_end"],
+            date_end=row.get("date_end"),
             precision=DatePrecision(row["precision"]),
             confidence=row["confidence"],
-            entities=row["entities"] or [],
+            entities=entities,
             event_type=EventType(row["event_type"]),
-            span=(row["span_start"], row["span_end"]) if row["span_start"] else None,
-            metadata=row["metadata"] or {},
+            span=(row["span_start"], row["span_end"]) if row.get("span_start") is not None else None,
+            metadata=metadata,
         )

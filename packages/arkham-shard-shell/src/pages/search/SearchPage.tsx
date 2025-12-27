@@ -40,7 +40,7 @@ export function SearchPage() {
   // Update URL when search is executed
   const executeSearch = () => {
     if (!query.trim()) {
-      toast('Please enter a search query', 'warning');
+      toast.warning('Please enter a search query');
       return;
     }
 
@@ -72,7 +72,7 @@ export function SearchPage() {
 
   // Handle view document
   const handleViewDocument = (docId: string) => {
-    toast(`View document: ${docId}`, 'info');
+    toast.info(`View document: ${docId}`);
     // TODO: Navigate to document viewer when available
   };
 
@@ -82,13 +82,13 @@ export function SearchPage() {
     const params = new URLSearchParams();
     params.set('similar', docId);
     setSearchParams(params);
-    toast('Finding similar documents...', 'info');
+    toast.info('Finding similar documents...');
   };
 
   // Show error toast if search fails
   useEffect(() => {
     if (error) {
-      toast(`Search failed: ${error.message}`, 'error');
+      toast.error(`Search failed: ${error.message}`);
     }
   }, [error, toast]);
 

@@ -55,13 +55,13 @@ class EventBus:
         self._subscribers.clear()
         logger.info("EventBus shut down")
 
-    def subscribe(self, pattern: str, callback: Callable) -> None:
+    async def subscribe(self, pattern: str, callback: Callable) -> None:
         """Subscribe to events matching pattern."""
         if pattern not in self._subscribers:
             self._subscribers[pattern] = []
         self._subscribers[pattern].append(callback)
 
-    def unsubscribe(self, pattern: str, callback: Callable) -> None:
+    async def unsubscribe(self, pattern: str, callback: Callable) -> None:
         """Unsubscribe from events."""
         if pattern in self._subscribers:
             try:

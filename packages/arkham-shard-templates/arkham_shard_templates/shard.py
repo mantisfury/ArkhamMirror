@@ -99,6 +99,10 @@ class TemplatesShard(ArkhamShard):
         # Initialize database schema
         await self._create_schema()
 
+        # Register self in app state for API access
+        if hasattr(frame, "app") and frame.app:
+            frame.app.state.templates_shard = self
+
         logger.info("Templates shard initialized")
 
     async def shutdown(self) -> None:
@@ -747,12 +751,57 @@ class TemplatesShard(ArkhamShard):
 
     async def _create_schema(self) -> None:
         """Create database schema for templates."""
-        # Production implementation would create:
-        # - arkham_templates.templates table
-        # - arkham_templates.template_versions table
-        # - arkham_templates.template_renders table (optional)
-        # - Indexes on frequently queried fields
-        pass
+        # Create templates table
+        await self._db.execute("""
+            CREATE TABLE IF NOT EXISTS arkham_templates (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                template_type TEXT NOT NULL,
+                description TEXT DEFAULT '',
+                content TEXT NOT NULL,
+                placeholders JSONB DEFAULT '[]',
+                version INTEGER DEFAULT 1,
+                is_active BOOLEAN DEFAULT TRUE,
+                metadata JSONB DEFAULT '{}',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                created_by TEXT,
+                updated_by TEXT
+            )
+        """)
+
+        # Create template versions table
+        await self._db.execute("""
+            CREATE TABLE IF NOT EXISTS arkham_template_versions (
+                id TEXT PRIMARY KEY,
+                template_id TEXT NOT NULL,
+                version_number INTEGER NOT NULL,
+                content TEXT NOT NULL,
+                placeholders JSONB DEFAULT '[]',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                created_by TEXT,
+                changes TEXT DEFAULT '',
+                FOREIGN KEY (template_id) REFERENCES arkham_templates(id) ON DELETE CASCADE
+            )
+        """)
+
+        # Create indexes for performance
+        await self._db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_arkham_templates_type
+            ON arkham_templates(template_type)
+        """)
+
+        await self._db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_arkham_templates_active
+            ON arkham_templates(is_active)
+        """)
+
+        await self._db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_arkham_template_versions_template_id
+            ON arkham_template_versions(template_id)
+        """)
+
+        logger.info("Templates database schema created")
 
     async def _create_version_record(
         self,
