@@ -160,10 +160,10 @@ class DocumentChunkRecord:
     content: str
 
     # Chunk metadata
+    token_count: int = 0
+    word_count: int = 0
+    char_count: int = 0
     page_number: Optional[int] = None
-    token_count: int
-    word_count: int
-    char_count: int
 
     # Embeddings
     embedding_id: Optional[str] = None
