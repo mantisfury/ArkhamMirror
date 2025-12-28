@@ -87,8 +87,8 @@ class AnomaliesShard(ArkhamShard):
 
         # Subscribe to events
         if self._event_bus:
-            self._event_bus.subscribe("embeddings.created", self._on_embedding_created)
-            self._event_bus.subscribe("documents.indexed", self._on_document_indexed)
+            await self._event_bus.subscribe("embeddings.created", self._on_embedding_created)
+            await self._event_bus.subscribe("documents.indexed", self._on_document_indexed)
             logger.info("Subscribed to embeddings and document events")
 
         logger.info("Anomalies Shard initialized")
@@ -99,8 +99,8 @@ class AnomaliesShard(ArkhamShard):
 
         # Unsubscribe from events
         if self._event_bus:
-            self._event_bus.unsubscribe("embeddings.created", self._on_embedding_created)
-            self._event_bus.unsubscribe("documents.indexed", self._on_document_indexed)
+            await self._event_bus.unsubscribe("embeddings.created", self._on_embedding_created)
+            await self._event_bus.unsubscribe("documents.indexed", self._on_document_indexed)
 
         # Clear components
         self.detector = None

@@ -48,6 +48,7 @@ class CredibilityShard(ArkhamShard):
     description = "Source credibility assessment and scoring for reliability evaluation"
 
     def __init__(self):
+        super().__init__()  # Auto-loads manifest from shard.yaml
         self.frame = None
         self._db = None
         self._events = None

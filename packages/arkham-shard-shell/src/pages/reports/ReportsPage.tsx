@@ -9,6 +9,7 @@ import { useState } from 'react';
 import { Icon } from '../../components/common/Icon';
 import { useToast } from '../../context/ToastContext';
 import { useFetch } from '../../hooks/useFetch';
+import { usePaginatedFetch } from '../../hooks';
 import './ReportsPage.css';
 
 // Types
@@ -40,13 +41,6 @@ interface ReportTemplate {
   metadata: Record<string, unknown>;
 }
 
-interface ReportListResponse {
-  reports: Report[];
-  total: number;
-  limit: number;
-  offset: number;
-}
-
 const REPORT_TYPES = [
   { value: 'summary', label: 'System Summary', icon: 'FileText' },
   { value: 'entity_profile', label: 'Entity Profile', icon: 'User' },
@@ -73,10 +67,13 @@ export function ReportsPage() {
   const [outputFormat, setOutputFormat] = useState('html');
   const [creating, setCreating] = useState(false);
 
-  // Fetch reports
-  const { data: reportData, loading: reportsLoading, error: reportsError, refetch: refetchReports } = useFetch<ReportListResponse>(
-    '/api/reports/'
-  );
+  // Fetch reports with pagination
+  const {
+    items: reports,
+    loading: reportsLoading,
+    error: reportsError,
+    refetch: refetchReports,
+  } = usePaginatedFetch<Report>('/api/reports/');
 
   // Fetch templates
   const { data: templates, loading: templatesLoading, error: templatesError, refetch: refetchTemplates } = useFetch<ReportTemplate[]>(
@@ -253,9 +250,9 @@ export function ReportsPage() {
                 Retry
               </button>
             </div>
-          ) : reportData && reportData.reports.length > 0 ? (
+          ) : reports && reports.length > 0 ? (
             <div className="reports-list">
-              {reportData.reports.map(report => (
+              {reports.map(report => (
                 <div key={report.id} className="report-card">
                   <div className="report-header">
                     <div className="report-title-row">

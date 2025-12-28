@@ -48,6 +48,7 @@ class PacketsShard(ArkhamShard):
     description = "Investigation packet management for bundling and sharing materials"
 
     def __init__(self):
+        super().__init__()  # Auto-loads manifest from shard.yaml
         self.frame = None
         self._db = None
         self._events = None

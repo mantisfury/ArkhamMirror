@@ -10,6 +10,11 @@
 
 import { useState, useEffect, useCallback, useRef } from 'react';
 
+interface UseFetchOptions {
+  /** Timeout in milliseconds (default: 30000) */
+  timeout?: number;
+}
+
 interface UseFetchResult<T> {
   data: T | null;
   loading: boolean;
@@ -17,11 +22,16 @@ interface UseFetchResult<T> {
   refetch: () => void;
 }
 
-export function useFetch<T>(url: string | null): UseFetchResult<T> {
+const DEFAULT_TIMEOUT = 30000; // 30 seconds
+
+export function useFetch<T>(url: string | null, options?: UseFetchOptions): UseFetchResult<T> {
   const [data, setData] = useState<T | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<Error | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const timeout = options?.timeout ?? DEFAULT_TIMEOUT;
 
   const fetchData = useCallback(async () => {
     if (!url) {
@@ -29,12 +39,20 @@ export function useFetch<T>(url: string | null): UseFetchResult<T> {
       return;
     }
 
-    // Abort previous request
+    // Abort previous request and clear timeout
     abortRef.current?.abort();
+    if (timeoutRef.current) {
+      clearTimeout(timeoutRef.current);
+    }
     abortRef.current = new AbortController();
 
     setLoading(true);
     setError(null);
+
+    // Set up timeout
+    timeoutRef.current = setTimeout(() => {
+      abortRef.current?.abort();
+    }, timeout);
 
     try {
       const response = await fetch(url, {
@@ -49,20 +67,33 @@ export function useFetch<T>(url: string | null): UseFetchResult<T> {
       setData(result);
       setError(null);
     } catch (err) {
-      // Don't set error for aborted requests
+      // Don't set error for aborted requests (unless it was a timeout)
       if (err instanceof Error && err.name === 'AbortError') {
+        // Check if this was a timeout abort
+        if (timeoutRef.current === null) {
+          setError(new Error(`Request timed out after ${timeout / 1000}s`));
+        }
         return;
       }
       setError(err instanceof Error ? err : new Error('Unknown error'));
       // Keep existing data on error (stale-while-revalidate pattern)
     } finally {
+      if (timeoutRef.current) {
+        clearTimeout(timeoutRef.current);
+        timeoutRef.current = null;
+      }
       setLoading(false);
     }
-  }, [url]);
+  }, [url, timeout]);
 
   useEffect(() => {
     fetchData();
-    return () => abortRef.current?.abort();
+    return () => {
+      abortRef.current?.abort();
+      if (timeoutRef.current) {
+        clearTimeout(timeoutRef.current);
+      }
+    };
   }, [fetchData]);
 
   const refetch = useCallback(() => {

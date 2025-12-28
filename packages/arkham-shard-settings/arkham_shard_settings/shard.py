@@ -214,12 +214,12 @@ class SettingsShard(ArkhamShard):
 
         # Emit event
         if self._event_bus and updated:
-            await self._event_bus.publish("settings.setting.updated", {
+            await self._event_bus.emit("settings.setting.updated", {
                 "key": key,
                 "old_value": old_value,
                 "new_value": value,
                 "requires_restart": updated.requires_restart,
-            })
+            }, "settings")
 
         return updated
 
@@ -344,10 +344,10 @@ class SettingsShard(ArkhamShard):
 
         # Stub implementation
         if self._event_bus:
-            await self._event_bus.publish("settings.category.updated", {
+            await self._event_bus.emit("settings.category.updated", {
                 "category": category,
                 "count": len(settings),
-            })
+            }, "settings")
 
         return []
 
@@ -495,9 +495,9 @@ class SettingsShard(ArkhamShard):
 
         # Stub implementation
         if self._event_bus:
-            await self._event_bus.publish("settings.profile.applied", {
+            await self._event_bus.emit("settings.profile.applied", {
                 "profile_id": profile_id,
-            })
+            }, "settings")
 
         return True
 
@@ -561,7 +561,7 @@ class SettingsShard(ArkhamShard):
 
         # Stub implementation
         if self._event_bus:
-            await self._event_bus.publish("settings.backup.created", {"name": name})
+            await self._event_bus.emit("settings.backup.created", {"name": name}, "settings")
 
         return None
 
@@ -587,9 +587,9 @@ class SettingsShard(ArkhamShard):
 
         # Stub implementation
         if self._event_bus:
-            await self._event_bus.publish("settings.backup.restored", {
+            await self._event_bus.emit("settings.backup.restored", {
                 "backup_id": backup_id,
-            })
+            }, "settings")
 
         return True
 
@@ -665,6 +665,21 @@ class SettingsShard(ArkhamShard):
 
     async def _load_default_settings(self) -> None:
         """Load default settings into database if not exists."""
+        # Get set of valid setting keys from defaults
+        valid_keys = [setting.key for setting in DEFAULT_SETTINGS]
+
+        # Remove orphaned settings that no longer exist in defaults
+        # Build placeholders for the IN clause
+        if valid_keys:
+            try:
+                placeholders = ", ".join(f"'{k}'" for k in valid_keys)
+                await self._db.execute(
+                    f"DELETE FROM arkham_settings WHERE key NOT IN ({placeholders})"
+                )
+                logger.debug("Cleaned up orphaned settings")
+            except Exception as e:
+                logger.warning(f"Failed to clean up orphaned settings: {e}")
+
         for setting in DEFAULT_SETTINGS:
             # Check if setting already exists
             existing = await self._db.fetch_one(

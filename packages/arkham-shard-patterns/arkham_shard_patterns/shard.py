@@ -52,6 +52,7 @@ class PatternsShard(ArkhamShard):
     description = "Cross-document pattern detection and recurring theme analysis"
 
     def __init__(self):
+        super().__init__()  # Auto-loads manifest from shard.yaml
         self.frame = None
         self._db = None
         self._events = None

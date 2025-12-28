@@ -75,8 +75,9 @@ class DatabaseService:
         if not self._connected or not self._engine:
             return False
         try:
+            from sqlalchemy import text
             with self._engine.connect() as conn:
-                conn.execute("SELECT 1")
+                conn.execute(text("SELECT 1"))
             return True
         except Exception:
             return False

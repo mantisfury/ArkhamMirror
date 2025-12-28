@@ -78,6 +78,13 @@ async def test_llm_connection() -> Dict[str, Any]:
     return await shard.test_llm_connection()
 
 
+@router.post("/llm/reset")
+async def reset_llm_config() -> Dict[str, Any]:
+    """Reset LLM configuration to defaults."""
+    shard = get_dashboard_shard()
+    return await shard.reset_llm_config()
+
+
 # === Database ===
 
 @router.get("/database")

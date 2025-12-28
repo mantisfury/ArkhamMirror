@@ -177,6 +177,226 @@ async def list_settings(
     return [setting_to_response(s) for s in settings]
 
 
+# === Data Management Endpoints ===
+# NOTE: These must be defined BEFORE the /{key:path} catch-all route
+
+
+class StorageStatsResponse(BaseModel):
+    """Response model for storage statistics."""
+    database_connected: bool
+    database_schemas: List[str]
+    vector_store_connected: bool
+    vector_collections: List[Dict[str, Any]]
+    storage_categories: Dict[str, int]
+    total_storage_bytes: int
+
+
+class DataActionResponse(BaseModel):
+    """Response for data management actions."""
+    success: bool
+    message: str
+    details: Dict[str, Any] = {}
+
+
+@router.get("/data/stats", response_model=StorageStatsResponse)
+async def get_storage_stats(request: Request):
+    """Get storage and database statistics."""
+    shard = get_shard(request)
+    frame = shard._frame
+
+    # Database info
+    db = frame.get_service("database")
+    db_connected = await db.is_connected() if db else False
+    db_schemas = await db.list_schemas() if db and db_connected else []
+
+    # Vector store info
+    vectors = frame.get_service("vectors")
+    vector_connected = False
+    vector_collections = []
+    if vectors:
+        try:
+            collections = await vectors.list_collections()
+            vector_connected = True
+            vector_collections = [c.to_dict() for c in collections]
+        except Exception:
+            vector_connected = False
+
+    # Storage info
+    storage = frame.get_service("storage")
+    storage_categories = {}
+    total_bytes = 0
+    if storage:
+        try:
+            stats = await storage.get_stats()
+            storage_categories = stats.get("by_category", {})
+            total_bytes = stats.get("used_bytes", 0)
+        except Exception:
+            pass
+
+    return StorageStatsResponse(
+        database_connected=db_connected,
+        database_schemas=db_schemas,
+        vector_store_connected=vector_connected,
+        vector_collections=vector_collections,
+        storage_categories=storage_categories,
+        total_storage_bytes=total_bytes,
+    )
+
+
+@router.post("/data/clear-vectors", response_model=DataActionResponse)
+async def clear_vector_store(request: Request):
+    """Clear all vector embeddings."""
+    shard = get_shard(request)
+    frame = shard._frame
+    vectors = frame.get_service("vectors")
+
+    if not vectors:
+        raise HTTPException(status_code=503, detail="Vector service not available")
+
+    try:
+        collections = await vectors.list_collections()
+        deleted_count = 0
+        for coll in collections:
+            await vectors.delete_collection(coll.name)
+            deleted_count += 1
+
+        return DataActionResponse(
+            success=True,
+            message=f"Cleared {deleted_count} vector collection(s)",
+            details={"collections_deleted": deleted_count},
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to clear vectors: {str(e)}")
+
+
+@router.post("/data/clear-database", response_model=DataActionResponse)
+async def clear_database(request: Request):
+    """Clear all database tables (truncate arkham schemas)."""
+    shard = get_shard(request)
+    frame = shard._frame
+    db = frame.get_service("database")
+
+    if not db:
+        raise HTTPException(status_code=503, detail="Database service not available")
+
+    try:
+        # Get all arkham schemas
+        schemas = await db.list_schemas()
+        tables_cleared = 0
+
+        for schema in schemas:
+            # Get tables in this schema
+            tables = await db.fetch_all(
+                "SELECT table_name FROM information_schema.tables "
+                "WHERE table_schema = :schema AND table_type = 'BASE TABLE'",
+                {"schema": schema}
+            )
+
+            for table in tables:
+                table_name = table["table_name"]
+                # Skip settings tables to preserve user preferences
+                if table_name in ("settings", "settings_profiles"):
+                    continue
+                await db.execute(f'TRUNCATE TABLE "{schema}"."{table_name}" CASCADE')
+                tables_cleared += 1
+
+        return DataActionResponse(
+            success=True,
+            message=f"Cleared {tables_cleared} database table(s)",
+            details={"tables_cleared": tables_cleared, "schemas": schemas},
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to clear database: {str(e)}")
+
+
+@router.post("/data/clear-temp", response_model=DataActionResponse)
+async def clear_temp_storage(request: Request):
+    """Clear temporary files from storage."""
+    shard = get_shard(request)
+    frame = shard._frame
+    storage = frame.get_service("storage")
+
+    if not storage:
+        raise HTTPException(status_code=503, detail="Storage service not available")
+
+    try:
+        files_deleted = await storage.cleanup_temp(force=True)
+        return DataActionResponse(
+            success=True,
+            message=f"Cleared {files_deleted} temporary file(s)",
+            details={"files_deleted": files_deleted},
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to clear temp storage: {str(e)}")
+
+
+@router.post("/data/reset-all", response_model=DataActionResponse)
+async def reset_all_data(request: Request):
+    """Reset all data - database, vectors, and temp files."""
+    shard = get_shard(request)
+    frame = shard._frame
+
+    results = {
+        "database": {"success": False, "message": "Not attempted"},
+        "vectors": {"success": False, "message": "Not attempted"},
+        "temp_storage": {"success": False, "message": "Not attempted"},
+    }
+
+    # Clear database
+    db = frame.get_service("database")
+    if db:
+        try:
+            schemas = await db.list_schemas()
+            tables_cleared = 0
+            for schema in schemas:
+                tables = await db.fetch_all(
+                    "SELECT table_name FROM information_schema.tables "
+                    "WHERE table_schema = :schema AND table_type = 'BASE TABLE'",
+                    {"schema": schema}
+                )
+                for table in tables:
+                    table_name = table["table_name"]
+                    if table_name in ("settings", "settings_profiles"):
+                        continue
+                    await db.execute(f'TRUNCATE TABLE "{schema}"."{table_name}" CASCADE')
+                    tables_cleared += 1
+            results["database"] = {"success": True, "message": f"Cleared {tables_cleared} tables"}
+        except Exception as e:
+            results["database"] = {"success": False, "message": str(e)}
+
+    # Clear vectors
+    vectors = frame.get_service("vectors")
+    if vectors:
+        try:
+            collections = await vectors.list_collections()
+            for coll in collections:
+                await vectors.delete_collection(coll.name)
+            results["vectors"] = {"success": True, "message": f"Cleared {len(collections)} collections"}
+        except Exception as e:
+            results["vectors"] = {"success": False, "message": str(e)}
+
+    # Clear temp storage
+    storage = frame.get_service("storage")
+    if storage:
+        try:
+            files_deleted = await storage.cleanup_temp(force=True)
+            results["temp_storage"] = {"success": True, "message": f"Cleared {files_deleted} files"}
+        except Exception as e:
+            results["temp_storage"] = {"success": False, "message": str(e)}
+
+    all_success = all(r["success"] for r in results.values() if r["message"] != "Not attempted")
+
+    return DataActionResponse(
+        success=all_success,
+        message="Data reset completed" if all_success else "Some operations failed",
+        details=results,
+    )
+
+
+# === Individual Setting Operations ===
+# NOTE: /{key:path} is a catch-all route - must come AFTER specific routes
+
+
 @router.get("/{key:path}", response_model=SettingResponse)
 async def get_setting(key: str, request: Request):
     """Get a specific setting by key."""

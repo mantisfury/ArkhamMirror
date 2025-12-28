@@ -2,7 +2,8 @@
 LLMService - OpenAI-compatible LLM abstraction with structured output.
 
 Provides chat completions, structured JSON extraction, streaming responses,
-and prompt template management for local LLM services (LM Studio, Ollama, etc.).
+and prompt template management for local LLM services (LM Studio, Ollama, etc.)
+and cloud providers (OpenAI, etc.) with API key support.
 """
 
 from typing import List, Dict, Any, Optional, AsyncIterator, Type, TypeVar, Union
@@ -12,6 +13,7 @@ from enum import Enum
 import logging
 import json
 import re
+import os
 
 logger = logging.getLogger(__name__)
 
@@ -126,6 +128,7 @@ class LLMService:
         self._client = None
         self._available = False
         self._model_name = "local-model"
+        self._api_key: Optional[str] = None
         self._prompts: Dict[str, PromptTemplate] = {}
 
         # Statistics
@@ -140,8 +143,27 @@ class LLMService:
         endpoint = self.config.get("llm.endpoint", "http://localhost:1234/v1")
         self._model_name = self.config.get("llm.model", "local-model")
 
+        # Load API key from environment (never from config file for security)
+        # Supports multiple env var names for compatibility with various providers
+        self._api_key = (
+            os.environ.get("LLM_API_KEY") or
+            os.environ.get("OPENAI_API_KEY") or
+            os.environ.get("OPENROUTER_API_KEY") or
+            os.environ.get("TOGETHER_API_KEY") or
+            os.environ.get("GROQ_API_KEY") or
+            os.environ.get("ANTHROPIC_API_KEY") or
+            None
+        )
+
+        # Build headers with API key if present
+        headers = {}
+        if self._api_key:
+            headers["Authorization"] = f"Bearer {self._api_key}"
+            logger.info("LLM API key configured from environment")
+
         self._client = httpx.AsyncClient(
             base_url=endpoint,
+            headers=headers,
             timeout=120,
         )
 
@@ -155,6 +177,9 @@ class LLMService:
                 if "data" in data and data["data"]:
                     self._model_name = data["data"][0].get("id", self._model_name)
                 logger.info(f"LLM connected: {endpoint} (model: {self._model_name})")
+            elif response.status_code == 401:
+                self._available = False
+                logger.warning("LLM authentication failed - check API key")
             else:
                 self._available = False
                 logger.warning(f"LLM returned {response.status_code}")
@@ -183,6 +208,27 @@ class LLMService:
     def get_model(self) -> str:
         """Get current model name."""
         return self._model_name
+
+    def has_api_key(self) -> bool:
+        """Check if an API key is configured (without exposing the key)."""
+        return self._api_key is not None and len(self._api_key) > 0
+
+    def get_api_key_source(self) -> Optional[str]:
+        """Get which environment variable provided the API key (for debugging)."""
+        # Check in same order as initialization
+        if os.environ.get("LLM_API_KEY"):
+            return "LLM_API_KEY"
+        elif os.environ.get("OPENAI_API_KEY"):
+            return "OPENAI_API_KEY"
+        elif os.environ.get("OPENROUTER_API_KEY"):
+            return "OPENROUTER_API_KEY"
+        elif os.environ.get("TOGETHER_API_KEY"):
+            return "TOGETHER_API_KEY"
+        elif os.environ.get("GROQ_API_KEY"):
+            return "GROQ_API_KEY"
+        elif os.environ.get("ANTHROPIC_API_KEY"):
+            return "ANTHROPIC_API_KEY"
+        return None
 
     # =========================================================================
     # Core Chat/Completion
@@ -598,6 +644,8 @@ class LLMService:
             "available": self._available,
             "endpoint": self.get_endpoint(),
             "model": self._model_name,
+            "api_key_configured": self.has_api_key(),
+            "api_key_source": self.get_api_key_source(),
             "total_requests": self._total_requests,
             "total_tokens_prompt": self._total_tokens_prompt,
             "total_tokens_completion": self._total_tokens_completion,

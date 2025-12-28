@@ -122,8 +122,8 @@ class SummaryShard(ArkhamShard):
         # Subscribe to events
         if self._events:
             # Auto-summarize new documents
-            self._events.subscribe("document.processed", self._on_document_processed)
-            self._events.subscribe("documents.document.created", self._on_document_created)
+            await self._events.subscribe("document.processed", self._on_document_processed)
+            await self._events.subscribe("documents.document.created", self._on_document_created)
             logger.info("Subscribed to document events for auto-summarization")
 
         # Register self in app state for API access
@@ -138,8 +138,8 @@ class SummaryShard(ArkhamShard):
 
         # Unsubscribe from events
         if self._events:
-            self._events.unsubscribe("document.processed", self._on_document_processed)
-            self._events.unsubscribe("documents.document.created", self._on_document_created)
+            await self._events.unsubscribe("document.processed", self._on_document_processed)
+            await self._events.unsubscribe("documents.document.created", self._on_document_created)
 
         # Clear in-memory storage
         self._summaries.clear()

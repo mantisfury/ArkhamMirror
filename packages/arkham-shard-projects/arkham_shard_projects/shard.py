@@ -43,6 +43,7 @@ class ProjectsShard(ArkhamShard):
     description = "Project workspace management for organizing documents, entities, and analyses"
 
     def __init__(self):
+        super().__init__()  # Auto-loads manifest from shard.yaml
         self.frame = None
         self._db = None
         self._events = None

@@ -102,9 +102,9 @@ class EmbedShard(ArkhamShard):
 
         # Subscribe to document events for auto-embedding
         if event_bus:
-            event_bus.subscribe("documents.ingested", self._on_document_ingested)
-            event_bus.subscribe("documents.chunks.created", self._on_chunks_created)
-            event_bus.subscribe("parse.chunks.created", self._on_chunks_created)
+            await event_bus.subscribe("documents.ingested", self._on_document_ingested)
+            await event_bus.subscribe("documents.chunks.created", self._on_chunks_created)
+            await event_bus.subscribe("parse.chunks.created", self._on_chunks_created)
             logger.info("Subscribed to document events")
 
         logger.info("Embed Shard initialized")
@@ -125,9 +125,9 @@ class EmbedShard(ArkhamShard):
         if self.frame:
             event_bus = self.frame.get_service("events")
             if event_bus:
-                event_bus.unsubscribe("documents.ingested", self._on_document_ingested)
-                event_bus.unsubscribe("documents.chunks.created", self._on_chunks_created)
-                event_bus.unsubscribe("parse.chunks.created", self._on_chunks_created)
+                await event_bus.unsubscribe("documents.ingested", self._on_document_ingested)
+                await event_bus.unsubscribe("documents.chunks.created", self._on_chunks_created)
+                await event_bus.unsubscribe("parse.chunks.created", self._on_chunks_created)
 
         # Clear cache
         if self.embedding_manager:

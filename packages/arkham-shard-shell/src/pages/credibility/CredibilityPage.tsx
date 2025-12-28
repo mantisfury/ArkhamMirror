@@ -9,6 +9,7 @@ import { useState, useCallback } from 'react';
 import { Icon } from '../../components/common/Icon';
 import { useToast } from '../../context/ToastContext';
 import { useFetch } from '../../hooks/useFetch';
+import { usePaginatedFetch } from '../../hooks';
 import './CredibilityPage.css';
 
 // Types
@@ -65,23 +66,14 @@ export function CredibilityPage() {
   const [selectedAssessment, setSelectedAssessment] = useState<Assessment | null>(null);
   const [showFactors, setShowFactors] = useState(true);
 
-  // Build API URL based on filter
-  const getApiUrl = () => {
-    if (selectedLevel) {
-      return `/api/credibility/level/${selectedLevel}`;
-    }
-    return '/api/credibility/';
-  };
+  // Fetch assessments with usePaginatedFetch
+  const baseUrl = selectedLevel
+    ? `/api/credibility/level/${selectedLevel}`
+    : '/api/credibility/';
 
-  // Fetch assessments
-  const { data: listData, loading, error, refetch } = useFetch<{
-    assessments: Assessment[];
-    total: number;
-    limit: number;
-    offset: number;
-  }>(getApiUrl());
-
-  const assessments = listData?.assessments || [];
+  const { items: assessments, loading, error, refetch } = usePaginatedFetch<Assessment>(
+    baseUrl
+  );
 
   // Fetch statistics
   const { data: stats } = useFetch<Statistics>('/api/credibility/stats');

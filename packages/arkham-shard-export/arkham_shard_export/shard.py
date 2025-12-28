@@ -48,6 +48,7 @@ class ExportShard(ArkhamShard):
     description = "Data export in multiple formats (JSON, CSV, PDF, DOCX)"
 
     def __init__(self):
+        super().__init__()  # Auto-loads manifest from shard.yaml
         self.frame = None
         self._db = None
         self._events = None

@@ -1,46 +1,68 @@
 /**
- * DashboardPage - Dashboard shard placeholder
+ * DashboardPage - System monitoring and configuration dashboard
  *
- * Phase 1: Placeholder with sample data
- * Phase 2+: Will use GenericShardPage with manifest-driven UI
+ * Provides tabs for:
+ * - Overview: Service health and queue status
+ * - LLM Config: Configure local LLM connection
+ * - Database: Database operations and maintenance
+ * - Workers: Queue management and monitoring
+ * - Events: System event log
  */
 
-import { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { Icon } from '../../components/common/Icon';
-import { useToast } from '../../context/ToastContext';
+import { OverviewTab, LLMConfigTab, DatabaseTab, WorkersTab, EventsTab } from './tabs';
+import './DashboardPage.css';
 
-interface SystemStats {
-  documents: number;
-  entities: number;
-  chunks: number;
-  vectors: number;
+type TabId = 'overview' | 'llm' | 'database' | 'workers' | 'events';
+
+interface TabInfo {
+  id: TabId;
+  label: string;
+  icon: string;
+  description: string;
+  route: string;
 }
 
-interface ServiceStatus {
-  name: string;
-  status: 'healthy' | 'degraded' | 'offline';
-  latency?: number;
+const TABS: TabInfo[] = [
+  { id: 'overview', label: 'Overview', icon: 'LayoutDashboard', description: 'Service health and queue status', route: '/dashboard' },
+  { id: 'llm', label: 'LLM Config', icon: 'Brain', description: 'Configure LLM connection', route: '/dashboard/llm' },
+  { id: 'database', label: 'Database', icon: 'Database', description: 'Database operations', route: '/dashboard/database' },
+  { id: 'workers', label: 'Workers', icon: 'Cpu', description: 'Queue management', route: '/dashboard/workers' },
+  { id: 'events', label: 'Events', icon: 'ScrollText', description: 'System event log', route: '/dashboard/events' },
+];
+
+// Map URL paths to tab IDs
+function getTabFromPath(pathname: string): TabId {
+  if (pathname === '/dashboard' || pathname === '/dashboard/') return 'overview';
+  const segment = pathname.replace('/dashboard/', '').split('/')[0];
+  if (['llm', 'database', 'workers', 'events'].includes(segment)) {
+    return segment as TabId;
+  }
+  return 'overview';
 }
 
 export function DashboardPage() {
-  const { toast } = useToast();
+  const location = useLocation();
   const navigate = useNavigate();
+  const activeTab = getTabFromPath(location.pathname);
 
-  // Placeholder data - in Phase 2, this will come from Frame API
-  const [stats] = useState<SystemStats>({
-    documents: 1247,
-    entities: 8432,
-    chunks: 45230,
-    vectors: 45230,
-  });
-
-  const [services] = useState<ServiceStatus[]>([
-    { name: 'PostgreSQL', status: 'healthy', latency: 12 },
-    { name: 'Qdrant', status: 'healthy', latency: 8 },
-    { name: 'Redis', status: 'healthy', latency: 2 },
-    { name: 'LM Studio', status: 'degraded', latency: 245 },
-  ]);
+  const renderTab = () => {
+    switch (activeTab) {
+      case 'overview':
+        return <OverviewTab />;
+      case 'llm':
+        return <LLMConfigTab />;
+      case 'database':
+        return <DatabaseTab />;
+      case 'workers':
+        return <WorkersTab />;
+      case 'events':
+        return <EventsTab />;
+      default:
+        return <OverviewTab />;
+    }
+  };
 
   return (
     <div className="dashboard-page">
@@ -49,105 +71,34 @@ export function DashboardPage() {
           <Icon name="LayoutDashboard" size={28} />
           <div>
             <h1>Dashboard</h1>
-            <p className="page-description">System monitoring and status overview</p>
+            <p className="page-description">System monitoring and configuration</p>
           </div>
         </div>
       </header>
 
-      {/* Stats Grid */}
-      <section className="stats-grid">
-        <div className="stat-card">
-          <Icon name="FileText" size={24} className="stat-icon" />
-          <div className="stat-content">
-            <div className="stat-value">{stats.documents.toLocaleString()}</div>
-            <div className="stat-label">Documents</div>
-          </div>
-        </div>
-        <div className="stat-card">
-          <Icon name="Users" size={24} className="stat-icon" />
-          <div className="stat-content">
-            <div className="stat-value">{stats.entities.toLocaleString()}</div>
-            <div className="stat-label">Entities</div>
-          </div>
-        </div>
-        <div className="stat-card">
-          <Icon name="Layers" size={24} className="stat-icon" />
-          <div className="stat-content">
-            <div className="stat-value">{stats.chunks.toLocaleString()}</div>
-            <div className="stat-label">Chunks</div>
-          </div>
-        </div>
-        <div className="stat-card">
-          <Icon name="Binary" size={24} className="stat-icon" />
-          <div className="stat-content">
-            <div className="stat-value">{stats.vectors.toLocaleString()}</div>
-            <div className="stat-label">Vectors</div>
-          </div>
-        </div>
-      </section>
-
-      {/* Services Status */}
-      <section className="services-section">
-        <h2>
-          <Icon name="Server" size={20} />
-          Services
-        </h2>
-        <div className="services-grid">
-          {services.map(service => (
-            <div key={service.name} className={`service-card status-${service.status}`}>
-              <div className="service-header">
-                <span className="service-name">{service.name}</span>
-                <span className={`status-badge ${service.status}`}>
-                  {service.status}
-                </span>
+      <div className="dashboard-layout">
+        {/* Tab Navigation */}
+        <nav className="dashboard-nav">
+          {TABS.map((tab) => (
+            <button
+              key={tab.id}
+              className={`nav-tab ${activeTab === tab.id ? 'active' : ''}`}
+              onClick={() => navigate(tab.route)}
+            >
+              <Icon name={tab.icon} size={20} />
+              <div className="nav-content">
+                <span className="nav-label">{tab.label}</span>
+                <span className="nav-description">{tab.description}</span>
               </div>
-              {service.latency && (
-                <div className="service-latency">
-                  {service.latency}ms
-                </div>
-              )}
-            </div>
+            </button>
           ))}
-        </div>
-      </section>
+        </nav>
 
-      {/* Quick Actions */}
-      <section className="actions-section">
-        <h2>
-          <Icon name="Zap" size={20} />
-          Quick Actions
-        </h2>
-        <div className="actions-grid">
-          <button
-            className="action-card"
-            onClick={() => toast.info('Ingest shard coming soon')}
-          >
-            <Icon name="Upload" size={24} />
-            <span>Ingest Documents</span>
-          </button>
-          <button
-            className="action-card"
-            onClick={() => toast.info('Search shard coming soon')}
-          >
-            <Icon name="Search" size={24} />
-            <span>Search</span>
-          </button>
-          <button
-            className="action-card"
-            onClick={() => navigate('/ach?view=new')}
-          >
-            <Icon name="Scale" size={24} />
-            <span>New ACH Analysis</span>
-          </button>
-          <button
-            className="action-card"
-            onClick={() => toast.info('Export shard coming soon')}
-          >
-            <Icon name="Download" size={24} />
-            <span>Export Data</span>
-          </button>
-        </div>
-      </section>
+        {/* Tab Content */}
+        <main className="dashboard-content">
+          {renderTab()}
+        </main>
+      </div>
     </div>
   );
 }

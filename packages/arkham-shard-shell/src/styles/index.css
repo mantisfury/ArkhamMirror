@@ -183,13 +183,44 @@ a:hover {
   margin-bottom: var(--arkham-space-md);
 }
 
+/* Category header (clickable to collapse) */
+.nav-group-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding: var(--arkham-space-sm) var(--arkham-space-sm);
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.nav-group-header:hover {
+  background-color: var(--arkham-bg-tertiary);
+}
+
 .nav-group-label {
   font-size: var(--arkham-font-size-xs);
   font-weight: 600;
   text-transform: uppercase;
   color: var(--arkham-text-muted);
-  padding: var(--arkham-space-sm) var(--arkham-space-sm);
   letter-spacing: 0.05em;
+}
+
+.nav-group-chevron {
+  color: var(--arkham-text-muted);
+  transition: transform 0.2s ease;
+  flex-shrink: 0;
+}
+
+.nav-group-header.collapsed .nav-group-chevron {
+  transform: rotate(-90deg);
+}
+
+/* Collapsed category just shows the header */
+.nav-group.collapsed {
+  margin-bottom: var(--arkham-space-xs);
 }
 
 /* Navigation Items */
@@ -213,6 +244,48 @@ a:hover {
 .nav-item.active {
   background-color: var(--arkham-accent-primary);
   color: white;
+}
+
+/* Nav item row with toggle button */
+.nav-item-row {
+  display: flex;
+  align-items: center;
+  gap: 0;
+}
+
+.nav-item-row .nav-item {
+  flex: 1;
+  min-width: 0;
+}
+
+/* Sub-routes toggle button */
+.nav-subroutes-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  margin-right: var(--arkham-space-xs);
+  border: none;
+  background: transparent;
+  color: var(--arkham-text-muted);
+  cursor: pointer;
+  border-radius: var(--arkham-radius-sm);
+  transition: all 0.15s ease;
+  flex-shrink: 0;
+}
+
+.nav-subroutes-toggle:hover {
+  background-color: var(--arkham-bg-tertiary);
+  color: var(--arkham-text-primary);
+}
+
+.nav-subroutes-toggle svg {
+  transition: transform 0.2s ease;
+}
+
+.nav-subroutes-toggle.collapsed svg {
+  transform: rotate(-90deg);
 }
 
 .nav-icon {

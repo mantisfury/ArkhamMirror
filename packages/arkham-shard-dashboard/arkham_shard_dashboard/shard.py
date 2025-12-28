@@ -93,11 +93,20 @@ class DashboardShard(ArkhamShard):
 
     async def get_llm_config(self) -> Dict[str, Any]:
         """Get current LLM configuration."""
-        return {
+        config = {
             "endpoint": self.frame.config.llm_endpoint,
             "model": self.frame.config.get("llm.model", "local-model"),
             "available": self.frame.llm.is_available() if self.frame.llm else False,
+            "api_key_configured": False,
+            "api_key_source": None,
         }
+
+        # Add API key status (never expose the actual key)
+        if self.frame.llm:
+            config["api_key_configured"] = self.frame.llm.has_api_key()
+            config["api_key_source"] = self.frame.llm.get_api_key_source()
+
+        return config
 
     async def update_llm_config(
         self,
@@ -109,6 +118,22 @@ class DashboardShard(ArkhamShard):
             self.frame.config.set("llm_endpoint", endpoint)
         if model:
             self.frame.config.set("llm.model", model)
+
+        # Reinitialize LLM service
+        if self.frame.llm:
+            await self.frame.llm.shutdown()
+            await self.frame.llm.initialize()
+
+        return await self.get_llm_config()
+
+    async def reset_llm_config(self) -> Dict[str, Any]:
+        """Reset LLM configuration to defaults."""
+        # Default values
+        default_endpoint = "http://localhost:1234/v1"
+        default_model = "local-model"
+
+        self.frame.config.set("llm_endpoint", default_endpoint)
+        self.frame.config.set("llm.model", default_model)
 
         # Reinitialize LLM service
         if self.frame.llm:

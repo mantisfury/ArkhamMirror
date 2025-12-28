@@ -9,6 +9,7 @@ import { useState } from 'react';
 import { Icon } from '../../components/common/Icon';
 import { useToast } from '../../context/ToastContext';
 import { useFetch } from '../../hooks/useFetch';
+import { usePaginatedFetch } from '../../hooks';
 import './PacketsPage.css';
 
 // Types
@@ -52,13 +53,11 @@ export function PacketsPage() {
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [showAddContentModal, setShowAddContentModal] = useState(false);
 
-  // Fetch packets
-  const { data: packetsData, loading, error, refetch } = useFetch<{
-    packets: Packet[];
-    total: number;
-  }>('/api/packets/');
+  // Fetch packets with usePaginatedFetch
+  const { items: packets, loading, error, refetch } = usePaginatedFetch<Packet>(
+    '/api/packets/'
+  );
 
-  const packets = packetsData?.packets || [];
   const selectedPacketData = packets.find(p => p.id === selectedPacket);
 
   // Fetch contents for selected packet

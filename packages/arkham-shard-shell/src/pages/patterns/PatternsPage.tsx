@@ -8,6 +8,7 @@ import { useState } from 'react';
 import { Icon } from '../../components/common/Icon';
 import { useToast } from '../../context/ToastContext';
 import { useFetch } from '../../hooks/useFetch';
+import { usePaginatedFetch } from '../../hooks';
 import './PatternsPage.css';
 
 // Types
@@ -84,30 +85,26 @@ export function PatternsPage() {
   const [typeFilter, setTypeFilter] = useState<string>('');
   const [searchQuery, setSearchQuery] = useState('');
 
-  // Build query params
-  const buildQuery = () => {
-    const params = new URLSearchParams();
-    if (statusFilter) params.set('status', statusFilter);
-    if (typeFilter) params.set('pattern_type', typeFilter);
-    if (searchQuery) params.set('q', searchQuery);
-    const query = params.toString();
-    return query ? `?${query}` : '';
-  };
+  // Build filter params
+  const filterParams: Record<string, string> = {};
+  if (statusFilter) filterParams.status = statusFilter;
+  if (typeFilter) filterParams.pattern_type = typeFilter;
+  if (searchQuery) filterParams.q = searchQuery;
 
-  // Fetch patterns
-  const { data: patternsData, loading, error, refetch } = useFetch<{ items: Pattern[]; total: number }>(
-    `/api/patterns/${buildQuery()}`
+  // Fetch patterns with pagination
+  const { items: patterns, loading, error, refetch } = usePaginatedFetch<Pattern>(
+    '/api/patterns/',
+    { params: filterParams }
   );
 
   // Fetch stats
   const { data: stats } = useFetch<Stats>('/api/patterns/stats');
 
-  // Fetch matches for selected pattern
+  // Fetch matches for selected pattern (keep as useFetch - secondary detail fetch)
   const { data: matchesData, loading: matchesLoading } = useFetch<{ items: PatternMatch[]; total: number }>(
     selectedPattern ? `/api/patterns/${selectedPattern.id}/matches` : null
   );
 
-  const patterns = patternsData?.items || [];
   const matches = matchesData?.items || [];
 
   const handleConfirmPattern = async (patternId: string) => {

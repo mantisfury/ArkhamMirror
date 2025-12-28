@@ -8,7 +8,7 @@
 import { useState } from 'react';
 import { Icon } from '../../components/common/Icon';
 import { useToast } from '../../context/ToastContext';
-import { useFetch } from '../../hooks/useFetch';
+import { usePaginatedFetch } from '../../hooks';
 import './TemplatesPage.css';
 
 // Types
@@ -75,18 +75,13 @@ export function TemplatesPage() {
   const [versions, setVersions] = useState<TemplateVersion[]>([]);
   const [showVersions, setShowVersions] = useState(false);
 
-  // Build query params for filtering
-  const queryParams = selectedType ? `?template_type=${selectedType}` : '';
-
-  // Fetch templates list
-  const { data: response, loading, error, refetch } = useFetch<{
-    items: Template[];
-    total: number;
-    page: number;
-    page_size: number;
-  }>(`/api/templates/${queryParams}`);
-
-  const templates = response?.items || [];
+  // Fetch templates list with pagination
+  const { items: templates, loading, error, refetch } = usePaginatedFetch<Template>(
+    '/api/templates/',
+    {
+      params: selectedType ? { template_type: selectedType } : {},
+    }
+  );
 
   const handleCreateTemplate = () => {
     setSelectedTemplate(null);

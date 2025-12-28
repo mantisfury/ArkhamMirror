@@ -17,7 +17,7 @@ class SettingCategory(str, Enum):
     GENERAL = "general"           # Language, timezone, formats
     APPEARANCE = "appearance"     # Theme, layout, fonts
     NOTIFICATIONS = "notifications"  # Alerts, emails
-    PRIVACY = "privacy"           # Data sharing, analytics
+    DATA = "data"                 # Data management, storage, cleanup
     PERFORMANCE = "performance"   # Caching, batch sizes
     ADVANCED = "advanced"         # Developer options
     SHARD = "shard"              # Shard-specific settings

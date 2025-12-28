@@ -12,7 +12,7 @@
 
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { useFetch } from '../../hooks/useFetch';
+import { useFetch, usePageSize } from '../../hooks';
 import { useToast } from '../../context/ToastContext';
 import { useConfirm } from '../../context/ConfirmContext';
 import { Icon } from '../common/Icon';
@@ -44,13 +44,16 @@ export function GenericList({ apiPrefix, ui }: GenericListProps) {
   const { toast } = useToast();
   const confirm = useConfirm();
 
+  // Get page size from settings
+  const defaultPageSize = usePageSize();
+
   // State
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [bulkLoading, setBulkLoading] = useState(false);
 
   // Parse URL params for filters and pagination
   const page = parseInt(searchParams.get('page') || '1', 10);
-  const pageSize = parseInt(searchParams.get('page_size') || '20', 10);
+  const pageSize = parseInt(searchParams.get('page_size') || String(defaultPageSize), 10);
 
   // Sort state from URL
   const sortState: SortState = useMemo(() => {

@@ -74,8 +74,8 @@ class IngestShard(ArkhamShard):
 
         # Subscribe to worker events
         if event_bus:
-            event_bus.subscribe("worker.job.completed", self._on_job_completed)
-            event_bus.subscribe("worker.job.failed", self._on_job_failed)
+            await event_bus.subscribe("worker.job.completed", self._on_job_completed)
+            await event_bus.subscribe("worker.job.failed", self._on_job_failed)
 
         # Register workers with Frame
         if worker_service:
@@ -106,8 +106,8 @@ class IngestShard(ArkhamShard):
         if self._frame:
             event_bus = self._frame.get_service("events")
             if event_bus:
-                event_bus.unsubscribe("worker.job.completed", self._on_job_completed)
-                event_bus.unsubscribe("worker.job.failed", self._on_job_failed)
+                await event_bus.unsubscribe("worker.job.completed", self._on_job_completed)
+                await event_bus.unsubscribe("worker.job.failed", self._on_job_failed)
 
         self.intake_manager = None
         self.job_dispatcher = None

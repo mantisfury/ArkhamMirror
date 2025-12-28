@@ -48,6 +48,7 @@ class ClaimsShard(ArkhamShard):
     description = "Claim extraction and tracking for contradiction detection and fact-checking"
 
     def __init__(self):
+        super().__init__()  # Auto-loads manifest from shard.yaml
         self.frame = None
         self._db = None
         self._events = None

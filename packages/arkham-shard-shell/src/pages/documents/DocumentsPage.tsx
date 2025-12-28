@@ -8,6 +8,7 @@ import { useState, useCallback } from 'react';
 import { Icon } from '../../components/common/Icon';
 import { useToast } from '../../context/ToastContext';
 import { useFetch } from '../../hooks/useFetch';
+import { usePaginatedFetch } from '../../hooks';
 import './DocumentsPage.css';
 
 // Types
@@ -75,21 +76,17 @@ export function DocumentsPage() {
   const [statusFilter, setStatusFilter] = useState<string>('');
   const [viewMode, setViewMode] = useState<'list' | 'grid'>('list');
 
-  // Build API query
-  const buildQuery = () => {
-    const params = new URLSearchParams();
-    if (searchQuery) params.append('q', searchQuery);
-    if (statusFilter) params.append('status', statusFilter);
-    return params.toString() ? `?${params.toString()}` : '';
-  };
-
-  // Fetch documents
-  const { data: documentsData, loading, error, refetch } = useFetch<{
-    items: Document[];
-    total: number;
-    page: number;
-    page_size: number;
-  }>(`/api/documents/items${buildQuery()}`);
+  // Fetch documents with pagination
+  const { items: documents, total, loading, error, refetch } = usePaginatedFetch<Document>(
+    '/api/documents/items',
+    {
+      params: {
+        ...(searchQuery && { q: searchQuery }),
+        ...(statusFilter && { status: statusFilter }),
+      },
+      syncToUrl: false, // This page doesn't use URL-based pagination
+    }
+  );
 
   // Fetch stats
   const { data: stats } = useFetch<DocumentStats>('/api/documents/stats');
@@ -135,7 +132,6 @@ export function DocumentsPage() {
     setStatusFilter('');
   };
 
-  const documents = documentsData?.items || [];
   const hasFilters = searchQuery || statusFilter;
 
   return (
@@ -340,10 +336,10 @@ export function DocumentsPage() {
         )}
       </main>
 
-      {documentsData && documentsData.total > documentsData.page_size && (
+      {total > 0 && (
         <div className="pagination">
           <span>
-            Showing {documents.length} of {documentsData.total} documents
+            Showing {documents.length} of {total} documents
           </span>
         </div>
       )}

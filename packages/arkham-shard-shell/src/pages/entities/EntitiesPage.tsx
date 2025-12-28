@@ -9,6 +9,7 @@ import { useState } from 'react';
 import { Icon } from '../../components/common/Icon';
 import { useToast } from '../../context/ToastContext';
 import { useFetch } from '../../hooks/useFetch';
+import { usePaginatedFetch } from '../../hooks';
 import './EntitiesPage.css';
 
 // Types
@@ -22,13 +23,6 @@ interface Entity {
   mention_count: number;
   created_at: string;
   updated_at: string;
-}
-
-interface EntityListResponse {
-  items: Entity[];
-  total: number;
-  page: number;
-  page_size: number;
 }
 
 interface Mention {
@@ -65,15 +59,17 @@ export function EntitiesPage() {
   const [selectedEntity, setSelectedEntity] = useState<Entity | null>(null);
   const [viewingMentions, setViewingMentions] = useState(false);
 
-  // Build API URL with filters
-  const apiUrl = `/api/entities/items?${new URLSearchParams({
-    ...(searchQuery && { q: searchQuery }),
-    ...(typeFilter && { filter: typeFilter }),
-    page_size: '50',
-  }).toString()}`;
-
-  // Fetch entities
-  const { data: entitiesData, loading, error, refetch } = useFetch<EntityListResponse>(apiUrl);
+  // Fetch entities with pagination
+  const { items: entities, loading, error, refetch } = usePaginatedFetch<Entity>(
+    '/api/entities/items',
+    {
+      params: {
+        ...(searchQuery && { q: searchQuery }),
+        ...(typeFilter && { filter: typeFilter }),
+      },
+      syncToUrl: false, // This page doesn't use URL-based pagination
+    }
+  );
 
   // Fetch mentions for selected entity
   const { data: mentions, loading: loadingMentions } = useFetch<Mention[]>(
@@ -159,9 +155,9 @@ export function EntitiesPage() {
                   Retry
                 </button>
               </div>
-            ) : entitiesData && entitiesData.items.length > 0 ? (
+            ) : entities && entities.length > 0 ? (
               <div className="entity-items">
-                {entitiesData.items.map(entity => (
+                {entities.map(entity => (
                   <div
                     key={entity.id}
                     className={`entity-card ${selectedEntity?.id === entity.id ? 'selected' : ''}`}

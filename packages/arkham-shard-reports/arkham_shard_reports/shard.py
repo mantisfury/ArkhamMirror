@@ -45,6 +45,7 @@ class ReportsShard(ArkhamShard):
     description = "Analytical report generation - summary reports, entity profiles, timeline reports"
 
     def __init__(self):
+        super().__init__()  # Auto-loads manifest from shard.yaml
         self.frame = None
         self._db = None
         self._events = None

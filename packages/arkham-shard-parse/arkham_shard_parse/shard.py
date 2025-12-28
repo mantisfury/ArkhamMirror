@@ -114,8 +114,8 @@ class ParseShard(ArkhamShard):
 
         # Subscribe to events
         if event_bus:
-            event_bus.subscribe("ingest.job.completed", self._on_document_ingested)
-            event_bus.subscribe("worker.job.completed", self._on_worker_completed)
+            await event_bus.subscribe("ingest.job.completed", self._on_document_ingested)
+            await event_bus.subscribe("worker.job.completed", self._on_worker_completed)
 
         logger.info("Parse Shard initialized")
 
@@ -135,8 +135,8 @@ class ParseShard(ArkhamShard):
         if self._frame:
             event_bus = self._frame.get_service("events")
             if event_bus:
-                event_bus.unsubscribe("ingest.job.completed", self._on_document_ingested)
-                event_bus.unsubscribe("worker.job.completed", self._on_worker_completed)
+                await event_bus.unsubscribe("ingest.job.completed", self._on_document_ingested)
+                await event_bus.unsubscribe("worker.job.completed", self._on_worker_completed)
 
         self.ner_extractor = None
         self.date_extractor = None

@@ -46,6 +46,7 @@ class LettersShard(ArkhamShard):
     description = "Letter generation - create formal letters from templates"
 
     def __init__(self):
+        super().__init__()  # Auto-loads manifest from shard.yaml
         self.frame = None
         self._db = None
         self._events = None

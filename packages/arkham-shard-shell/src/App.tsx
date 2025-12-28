@@ -3,29 +3,42 @@
  *
  * Provider nesting order (from UI_SHELL_IMPL_REF):
  * <BrowserRouter>
- *   <ShellProvider>
- *     <ToastProvider>
- *       <ConfirmProvider>
- *         <BadgeProvider>
- *           <Routes>
- *             <Shell>
- *               <Outlet />
- *             </Shell>
- *           </Routes>
- *         </BadgeProvider>
- *       </ConfirmProvider>
- *     </ToastProvider>
- *   </ShellProvider>
+ *   <ThemeProvider>
+ *     <ShellProvider>
+ *       <ToastProvider>
+ *         <ConfirmProvider>
+ *           <BadgeProvider>
+ *             <Routes>
+ *               <Shell>
+ *                 <Outlet />
+ *               </Shell>
+ *             </Routes>
+ *           </BadgeProvider>
+ *         </ConfirmProvider>
+ *       </ToastProvider>
+ *     </ShellProvider>
+ *   </ThemeProvider>
  * </BrowserRouter>
  */
 
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+import { ThemeProvider } from './context/ThemeContext';
 import { ShellProvider } from './context/ShellContext';
 import { ToastProvider } from './context/ToastContext';
 import { ConfirmProvider } from './context/ConfirmContext';
 import { BadgeProvider } from './context/BadgeContext';
 import { Shell } from './components/layout/Shell';
 import { GenericShardPage } from './pages/generic';
+import { useStartPage } from './hooks';
+
+/**
+ * StartPageRedirect - Redirects to the user's configured start page.
+ * Must be used inside providers so settings can be loaded.
+ */
+function StartPageRedirect() {
+  const startPage = useStartPage();
+  return <Navigate to={startPage} replace />;
+}
 
 // Page imports
 import { DashboardPage } from './pages/dashboard';
@@ -67,18 +80,23 @@ import { SummaryPage } from './pages/summary';
 export function App() {
   return (
     <BrowserRouter>
-      <ShellProvider>
-        <ToastProvider>
-          <ConfirmProvider>
-            <BadgeProvider>
-              <Routes>
+      <ThemeProvider>
+        <ShellProvider>
+          <ToastProvider>
+            <ConfirmProvider>
+              <BadgeProvider>
+                <Routes>
                 {/* Shell layout wrapper */}
                 <Route element={<Shell />}>
-                  {/* Default redirect */}
-                  <Route path="/" element={<Navigate to="/dashboard" replace />} />
+                  {/* Default redirect to user's configured start page */}
+                  <Route path="/" element={<StartPageRedirect />} />
 
-                  {/* Dashboard shard */}
+                  {/* Dashboard shard with sub-routes */}
                   <Route path="/dashboard" element={<DashboardPage />} />
+                  <Route path="/dashboard/llm" element={<DashboardPage />} />
+                  <Route path="/dashboard/database" element={<DashboardPage />} />
+                  <Route path="/dashboard/workers" element={<DashboardPage />} />
+                  <Route path="/dashboard/events" element={<DashboardPage />} />
 
                   {/* ACH shard with sub-routes */}
                   <Route path="/ach" element={<ACHPage />} />
@@ -107,8 +125,14 @@ export function App() {
                   {/* Anomalies shard */}
                   <Route path="/anomalies" element={<AnomaliesPage />} />
 
-                  {/* Settings shard */}
+                  {/* Settings shard with sub-routes */}
                   <Route path="/settings" element={<SettingsPage />} />
+                  <Route path="/settings/appearance" element={<SettingsPage />} />
+                  <Route path="/settings/notifications" element={<SettingsPage />} />
+                  <Route path="/settings/performance" element={<SettingsPage />} />
+                  <Route path="/settings/data" element={<SettingsPage />} />
+                  <Route path="/settings/advanced" element={<SettingsPage />} />
+                  <Route path="/settings/shards" element={<SettingsPage />} />
 
                   {/* Wave 1 shards */}
                   {/* Graph shard */}
@@ -163,11 +187,12 @@ export function App() {
                   {/* Catch-all: try to render shard with generic UI */}
                   <Route path="*" element={<GenericShardPage />} />
                 </Route>
-              </Routes>
-            </BadgeProvider>
-          </ConfirmProvider>
-        </ToastProvider>
-      </ShellProvider>
+                </Routes>
+              </BadgeProvider>
+            </ConfirmProvider>
+          </ToastProvider>
+        </ShellProvider>
+      </ThemeProvider>
     </BrowserRouter>
   );
 }

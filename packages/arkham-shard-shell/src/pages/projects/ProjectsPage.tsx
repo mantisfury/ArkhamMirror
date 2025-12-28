@@ -8,7 +8,7 @@
 import { useState, useCallback } from 'react';
 import { Icon } from '../../components/common/Icon';
 import { useToast } from '../../context/ToastContext';
-import { useFetch } from '../../hooks/useFetch';
+import { usePaginatedFetch } from '../../hooks';
 import './ProjectsPage.css';
 
 // Types
@@ -24,13 +24,6 @@ interface Project {
   metadata: Record<string, unknown>;
   member_count: number;
   document_count: number;
-}
-
-interface ProjectListResponse {
-  projects: Project[];
-  total: number;
-  limit: number;
-  offset: number;
 }
 
 const STATUS_COLORS: Record<string, string> = {
@@ -55,19 +48,16 @@ export function ProjectsPage() {
   const [selectedProject, setSelectedProject] = useState<Project | null>(null);
   const [showEditModal, setShowEditModal] = useState(false);
 
-  // Build query string
-  const queryParams = new URLSearchParams();
-  if (statusFilter) queryParams.append('status', statusFilter);
-  if (searchQuery) queryParams.append('search', searchQuery);
-  const queryString = queryParams.toString();
-
-  // Fetch projects
-  const { data, loading, error, refetch } = useFetch<ProjectListResponse>(
-    `/api/projects/${queryString ? `?${queryString}` : ''}`
+  // Fetch projects with usePaginatedFetch
+  const { items: projects, total, loading, error, refetch } = usePaginatedFetch<Project>(
+    '/api/projects/',
+    {
+      params: {
+        status: statusFilter || undefined,
+        search: searchQuery || undefined,
+      },
+    }
   );
-
-  const projects = data?.projects || [];
-  const total = data?.total || 0;
 
   const handleCreateProject = useCallback(async (name: string, description: string) => {
     try {

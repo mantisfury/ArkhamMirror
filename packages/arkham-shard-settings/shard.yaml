@@ -26,18 +26,26 @@ navigation:
       label: Appearance
       route: /settings/appearance
       icon: Palette
-    - id: shards
-      label: Shards
-      route: /settings/shards
-      icon: Puzzle
-    - id: integrations
-      label: Integrations
-      route: /settings/integrations
-      icon: Plug
+    - id: notifications
+      label: Notifications
+      route: /settings/notifications
+      icon: Bell
+    - id: performance
+      label: Performance
+      route: /settings/performance
+      icon: Zap
+    - id: data
+      label: Data
+      route: /settings/data
+      icon: Database
     - id: advanced
       label: Advanced
       route: /settings/advanced
       icon: Wrench
+    - id: shards
+      label: Shards
+      route: /settings/shards
+      icon: Puzzle
 
 dependencies:
   services:
@@ -96,12 +104,16 @@ ui:
           label: General
         - value: appearance
           label: Appearance
-        - value: shards
-          label: Shards
-        - value: integrations
-          label: Integrations
+        - value: notifications
+          label: Notifications
+        - value: performance
+          label: Performance
+        - value: data
+          label: Data
         - value: advanced
           label: Advanced
+        - value: shards
+          label: Shards
   list_columns:
     - field: key
       label: Setting

@@ -95,9 +95,9 @@ class TimelineShard(ArkhamShard):
 
         # Subscribe to document events
         if event_bus:
-            event_bus.subscribe("documents.indexed", self._on_document_indexed)
-            event_bus.subscribe("documents.deleted", self._on_document_deleted)
-            event_bus.subscribe("entities.created", self._on_entity_created)
+            await event_bus.subscribe("documents.indexed", self._on_document_indexed)
+            await event_bus.subscribe("documents.deleted", self._on_document_deleted)
+            await event_bus.subscribe("entities.created", self._on_entity_created)
 
         # Create database schema if needed
         if self.database_service:
@@ -117,9 +117,9 @@ class TimelineShard(ArkhamShard):
         if self.frame:
             event_bus = self.frame.get_service("events")
             if event_bus:
-                event_bus.unsubscribe("documents.indexed", self._on_document_indexed)
-                event_bus.unsubscribe("documents.deleted", self._on_document_deleted)
-                event_bus.unsubscribe("entities.created", self._on_entity_created)
+                await event_bus.unsubscribe("documents.indexed", self._on_document_indexed)
+                await event_bus.unsubscribe("documents.deleted", self._on_document_deleted)
+                await event_bus.unsubscribe("entities.created", self._on_entity_created)
 
         self.extractor = None
         self.merger = None

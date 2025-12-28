@@ -97,8 +97,8 @@ class SearchShard(ArkhamShard):
 
         # Subscribe to document events
         if event_bus:
-            event_bus.subscribe("documents.indexed", self._on_document_indexed)
-            event_bus.subscribe("documents.deleted", self._on_document_deleted)
+            await event_bus.subscribe("documents.indexed", self._on_document_indexed)
+            await event_bus.subscribe("documents.deleted", self._on_document_deleted)
 
         logger.info("Search Shard initialized")
 
@@ -110,8 +110,8 @@ class SearchShard(ArkhamShard):
         if self.frame:
             event_bus = self.frame.get_service("events")
             if event_bus:
-                event_bus.unsubscribe("documents.indexed", self._on_document_indexed)
-                event_bus.unsubscribe("documents.deleted", self._on_document_deleted)
+                await event_bus.unsubscribe("documents.indexed", self._on_document_indexed)
+                await event_bus.unsubscribe("documents.deleted", self._on_document_deleted)
 
         self.semantic_engine = None
         self.keyword_engine = None

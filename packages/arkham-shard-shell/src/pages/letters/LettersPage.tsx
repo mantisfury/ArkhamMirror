@@ -9,6 +9,7 @@ import { useState, useCallback } from 'react';
 import { Icon } from '../../components/common/Icon';
 import { useToast } from '../../context/ToastContext';
 import { useFetch } from '../../hooks/useFetch';
+import { usePaginatedFetch } from '../../hooks';
 import './LettersPage.css';
 
 // Types
@@ -74,10 +75,18 @@ export function LettersPage() {
   const [filterStatus, setFilterStatus] = useState<string>('');
   const [searchQuery, setSearchQuery] = useState('');
 
-  // Fetch data
-  const { data: letters, loading: loadingLetters, error: lettersError, refetch: refetchLetters } = useFetch<{ letters: Letter[]; total: number }>(
-    `/api/letters/?${filterStatus ? `status=${filterStatus}&` : ''}${searchQuery ? `search=${searchQuery}` : ''}`
-  );
+  // Fetch letters with pagination
+  const {
+    items: letters,
+    loading: loadingLetters,
+    error: lettersError,
+    refetch: refetchLetters,
+  } = usePaginatedFetch<Letter>('/api/letters/', {
+    params: {
+      status: filterStatus || undefined,
+      search: searchQuery || undefined,
+    },
+  });
 
   const { data: templates, loading: loadingTemplates } = useFetch<Template[]>(
     '/api/letters/templates'
@@ -319,9 +328,9 @@ export function LettersPage() {
                   Retry
                 </button>
               </div>
-            ) : letters && letters.letters.length > 0 ? (
+            ) : letters && letters.length > 0 ? (
               <div className="letters-list">
-                {letters.letters.map(letter => (
+                {letters.map(letter => (
                   <div key={letter.id} className="letter-card">
                     <div className="letter-header">
                       <div className="letter-title">

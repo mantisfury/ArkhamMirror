@@ -5,10 +5,11 @@
  * extracted from documents with evidence linking and verification workflow.
  */
 
-import { useState, useCallback } from 'react';
+import { useState } from 'react';
 import { Icon } from '../../components/common/Icon';
 import { useToast } from '../../context/ToastContext';
 import { useFetch } from '../../hooks/useFetch';
+import { usePaginatedFetch } from '../../hooks';
 import './ClaimsPage.css';
 
 // Types
@@ -49,13 +50,6 @@ interface Evidence {
   metadata: Record<string, unknown>;
 }
 
-interface ClaimListResponse {
-  claims: Claim[];
-  total: number;
-  limit: number;
-  offset: number;
-}
-
 const STATUS_FILTERS = [
   { value: '', label: 'All Claims' },
   { value: 'unverified', label: 'Unverified' },
@@ -88,17 +82,16 @@ export function ClaimsPage() {
   const [selectedClaim, setSelectedClaim] = useState<Claim | null>(null);
   const [showEvidence, setShowEvidence] = useState(false);
 
-  // Fetch claims with filtering
-  const buildUrl = useCallback(() => {
-    const params = new URLSearchParams();
-    if (statusFilter) params.append('status', statusFilter);
-    if (searchQuery) params.append('search', searchQuery);
-    params.append('limit', '50');
-    const queryString = params.toString();
-    return `/api/claims/${queryString ? `?${queryString}` : ''}`;
-  }, [statusFilter, searchQuery]);
-
-  const { data, loading, error, refetch } = useFetch<ClaimListResponse>(buildUrl());
+  // Fetch claims with filtering using usePaginatedFetch
+  const { items: claims, total, loading, error, refetch } = usePaginatedFetch<Claim>(
+    '/api/claims/',
+    {
+      params: {
+        status: statusFilter || undefined,
+        search: searchQuery || undefined,
+      },
+    }
+  );
 
   // Fetch evidence for selected claim
   const { data: evidence, loading: evidenceLoading } = useFetch<Evidence[]>(
@@ -199,11 +192,9 @@ export function ClaimsPage() {
           />
         </div>
 
-        {data && (
-          <div className="filter-info">
-            Showing {data.claims.length} of {data.total} claims
-          </div>
-        )}
+        <div className="filter-info">
+          Showing {claims.length} of {total} claims
+        </div>
       </div>
 
       <main className="claims-content">
@@ -220,9 +211,9 @@ export function ClaimsPage() {
               Retry
             </button>
           </div>
-        ) : data && data.claims.length > 0 ? (
+        ) : claims.length > 0 ? (
           <div className="claims-list">
-            {data.claims.map((claim) => (
+            {claims.map((claim) => (
               <div
                 key={claim.id}
                 className={`claim-card ${selectedClaim?.id === claim.id ? 'selected' : ''}`}

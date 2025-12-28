@@ -8,6 +8,7 @@ import { useState } from 'react';
 import { Icon } from '../../components/common/Icon';
 import { useToast } from '../../context/ToastContext';
 import { useFetch } from '../../hooks/useFetch';
+import { usePaginatedFetch } from '../../hooks';
 import './SummaryPage.css';
 
 // Types
@@ -67,10 +68,13 @@ export function SummaryPage() {
   const [view, setView] = useState<'list' | 'generate'>('list');
   const [selectedSummary, setSelectedSummary] = useState<Summary | null>(null);
 
-  // Fetch summaries
-  const { data: summaries, loading, error, refetch } = useFetch<{ items: Summary[]; total: number }>(
-    '/api/summary/'
-  );
+  // Fetch summaries with pagination
+  const {
+    items: summaries,
+    loading,
+    error,
+    refetch,
+  } = usePaginatedFetch<Summary>('/api/summary/');
 
   // Fetch capabilities
   const { data: capabilities } = useFetch<Capabilities>('/api/summary/capabilities');
@@ -241,9 +245,9 @@ export function SummaryPage() {
                   Retry
                 </button>
               </div>
-            ) : summaries && summaries.items.length > 0 ? (
+            ) : summaries && summaries.length > 0 ? (
               <div className="summary-items">
-                {summaries.items.map(summary => (
+                {summaries.map(summary => (
                   <button
                     key={summary.id}
                     className={`summary-item ${selectedSummary?.id === summary.id ? 'active' : ''}`}
