@@ -2,21 +2,34 @@
 Health check endpoints.
 """
 
+import os
+from pathlib import Path
 from fastapi import APIRouter
+from fastapi.responses import FileResponse, JSONResponse
 from typing import Dict, Any
 
 router = APIRouter()
 
 
 @router.get("/")
-async def root() -> Dict[str, str]:
-    """Root endpoint."""
-    return {"message": "ArkhamFrame API", "version": "0.1.0"}
+async def root():
+    """Root endpoint - serves Shell UI in production, API info otherwise."""
+    # Check if we should serve the Shell UI
+    if os.environ.get("ARKHAM_SERVE_SHELL", "false").lower() == "true":
+        # Look for the built frontend
+        shell_dist = Path("/app/frontend/dist")
+        index_path = shell_dist / "index.html"
+        if index_path.exists():
+            return FileResponse(index_path)
+
+    # Default API response
+    return JSONResponse({"message": "ArkhamFrame API", "version": "0.1.0"})
 
 
 @router.get("/health")
+@router.get("/api/health")
 async def health_check() -> Dict[str, Any]:
-    """Health check endpoint."""
+    """Health check endpoint (available at /health and /api/health)."""
     from ..main import get_frame
 
     try:

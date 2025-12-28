@@ -140,7 +140,7 @@ class LLMService:
         """Initialize LLM connection."""
         import httpx
 
-        endpoint = self.config.get("llm.endpoint", "http://localhost:1234/v1")
+        endpoint = self.config.llm_endpoint or "http://localhost:1234/v1"
         self._model_name = self.config.get("llm.model", "local-model")
 
         # Load API key from environment (never from config file for security)
@@ -203,7 +203,7 @@ class LLMService:
 
     def get_endpoint(self) -> str:
         """Get LLM endpoint URL."""
-        return self.config.get("llm.endpoint", "http://localhost:1234/v1")
+        return self.config.llm_endpoint or "http://localhost:1234/v1"
 
     def get_model(self) -> str:
         """Get current model name."""

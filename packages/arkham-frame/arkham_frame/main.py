@@ -81,6 +81,12 @@ async def lifespan(app: FastAPI):
     # Load shards
     await load_shards(frame, app)
 
+    # Set up SPA static serving AFTER shards are loaded
+    # This ensures shard routes have priority over the catch-all
+    import os
+    if os.environ.get("ARKHAM_SERVE_SHELL", "false").lower() == "true":
+        setup_static_serving()
+
     yield
 
     # Shutdown shards
@@ -134,7 +140,7 @@ app.include_router(scheduler.router, prefix="/api/scheduler", tags=["Scheduler"]
 
 
 # Static file serving for Shell UI
-# In production, Frame serves the built React app from arkham-shard-shell/dist
+# In production/Docker, Frame serves the built React app
 def setup_static_serving():
     """Set up static file serving for the Shell UI."""
     import os
@@ -143,11 +149,17 @@ def setup_static_serving():
     from fastapi.responses import FileResponse
 
     # Look for Shell dist directory
-    # Try relative paths from Frame package location
+    # Try multiple paths for different deployment scenarios
     possible_paths = [
+        # Docker container path
+        Path("/app/frontend/dist"),
+        # Development paths (relative to Frame package)
         Path(__file__).parent.parent.parent / "arkham-shard-shell" / "dist",
         Path(__file__).parent.parent.parent.parent / "arkham-shard-shell" / "dist",
+        # CWD-relative paths
+        Path.cwd() / "packages" / "arkham-shard-shell" / "dist",
         Path.cwd() / "arkham-shard-shell" / "dist",
+        Path.cwd() / "frontend" / "dist",
     ]
 
     shell_dist = None
@@ -160,7 +172,9 @@ def setup_static_serving():
         logger.info(f"Serving Shell UI from: {shell_dist}")
 
         # Mount static assets
-        app.mount("/assets", StaticFiles(directory=shell_dist / "assets"), name="assets")
+        assets_path = shell_dist / "assets"
+        if assets_path.exists():
+            app.mount("/assets", StaticFiles(directory=assets_path), name="assets")
 
         # Serve index.html for all non-API routes (SPA fallback)
         @app.get("/{path:path}")
@@ -179,12 +193,7 @@ def setup_static_serving():
     else:
         logger.info("Shell UI dist not found - static serving disabled")
         logger.info("Build the Shell with 'npm run build' in arkham-shard-shell/")
-
-
-# Only set up static serving in production mode
-import os
-if os.environ.get("ARKHAM_SERVE_SHELL", "false").lower() == "true":
-    setup_static_serving()
+        logger.info(f"Searched paths: {[str(p) for p in possible_paths]}")
 
 
 def get_frame() -> ArkhamFrame:

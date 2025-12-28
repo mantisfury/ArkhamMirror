@@ -39,8 +39,8 @@ class ConfigService:
             "http://localhost:6343"
         )
         self._config["llm_endpoint"] = os.environ.get(
-            "LM_STUDIO_URL",
-            "http://localhost:1234/v1"
+            "LLM_ENDPOINT",
+            os.environ.get("LM_STUDIO_URL", "http://localhost:1234/v1")
         )
 
     def _load_yaml(self, path: str):

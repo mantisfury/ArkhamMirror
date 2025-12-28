@@ -1,0 +1,91 @@
+# =============================================================================
+# SHATTERED Configuration
+# =============================================================================
+#
+# This file controls which shards are enabled and Frame configuration.
+# Copy to config/shattered.yaml and customize as needed.
+#
+# Note: All installed shards are loaded by default via Python entry points.
+# This file allows you to disable specific shards if needed.
+# =============================================================================
+
+# Frame version compatibility
+frame_version: "0.1.0"
+
+# -----------------------------------------------------------------------------
+# Shard Configuration
+# Set to false to disable a shard (all are enabled by default when installed)
+# -----------------------------------------------------------------------------
+shards:
+  # System (always enabled)
+  dashboard: true
+  settings: true
+  projects: true
+
+  # Data Pipeline
+  ingest: true
+  ocr: true
+  parse: true
+  documents: true
+  entities: true
+  embed: true
+
+  # Search
+  search: true
+
+  # Analysis
+  ach: true
+  claims: true
+  provenance: true
+  credibility: true
+  contradictions: true
+  patterns: true
+  anomalies: true
+  summary: true
+
+  # Visualization
+  graph: true
+  timeline: true
+
+  # Export
+  export: true
+  letters: true
+  templates: true
+  reports: true
+  packets: true
+
+# -----------------------------------------------------------------------------
+# Frame Configuration
+# -----------------------------------------------------------------------------
+frame:
+  # Logging level: DEBUG, INFO, WARNING, ERROR
+  log_level: INFO
+
+  # LLM configuration (can also use environment variables)
+  llm:
+    # Provider: lm_studio, openai, openrouter, anthropic
+    provider: openai_compatible
+    # Timeout for LLM requests (seconds)
+    timeout: 120
+
+  # Worker pool configuration
+  workers:
+    # Pools to disable (useful for resource-constrained systems)
+    # disabled_pools:
+    #   - gpu-paddle
+    #   - gpu-qwen
+    #   - gpu-whisper
+    #   - gpu-embed
+
+# -----------------------------------------------------------------------------
+# Bundle Presets (for reference)
+# -----------------------------------------------------------------------------
+# minimal: dashboard only
+# standard: dashboard, ingest, parse, search, documents
+# analysis: standard + ach, contradictions, timeline, graph
+# full: all shards (default)
+#
+# Domain bundles:
+# journalist: ingest, parse, search, entities, timeline, contradictions, graph, export
+# legal: ingest, parse, search, timeline, letters, packets, export
+# research: ingest, parse, search, ach, claims, summary, export

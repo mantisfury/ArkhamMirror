@@ -1,0 +1,103 @@
+# =============================================================================
+# Docker Build Ignore
+# =============================================================================
+
+# Git
+.git
+.gitignore
+.gitattributes
+
+# IDE
+.idea
+.vscode
+*.swp
+*.swo
+*~
+
+# Python
+__pycache__
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments
+venv/
+ENV/
+env/
+.venv/
+
+# Node.js (shell build artifacts are copied, not source node_modules)
+packages/arkham-shard-shell/node_modules/
+
+# Documentation
+docs/
+*.md
+!README.md
+
+# Test files
+tests/
+**/tests/
+**/*_test.py
+**/test_*.py
+
+# Config examples (actual config is mounted)
+.env
+.env.*
+!.env.example
+
+# Docker
+Dockerfile*
+docker-compose*.yml
+!docker-compose.yml
+.docker/
+
+# CI/CD
+.github/
+.gitlab-ci.yml
+.travis.yml
+Jenkinsfile
+
+# Temporary files
+*.log
+*.tmp
+*.temp
+.DS_Store
+Thumbs.db
+
+# Data directories (mounted as volumes, not copied)
+DataSilo/
+data/
+uploads/
+exports/
+
+# Claude/AI
+.claude/
+CLAUDE.md
+
+# Build artifacts we don't need in container
+*.tar
+*.tar.gz
+*.zip

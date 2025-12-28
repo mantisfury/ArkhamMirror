@@ -337,27 +337,44 @@ class ArkhamShard(ABC):
         """
         Auto-load manifest from shard.yaml if present.
 
-        Looks for shard.yaml in the parent directory of the shard module.
+        Looks for shard.yaml in multiple locations:
+        1. Parent directory of the shard module (development)
+        2. Inside the package directory (if included in package)
+        3. /app/manifests/{name}.yaml (Docker container)
         """
         import logging
         from pathlib import Path
 
         logger = logging.getLogger(__name__)
 
+        # Collect possible paths
+        possible_paths = []
+
         # Find shard.yaml relative to the subclass's module
         try:
             import sys
             module = sys.modules.get(self.__class__.__module__)
             if module and hasattr(module, "__file__") and module.__file__:
-                shard_dir = Path(module.__file__).parent.parent
-                yaml_path = shard_dir / "shard.yaml"
+                module_dir = Path(module.__file__).parent
+                # Development: shard.yaml in parent of package
+                possible_paths.append(module_dir.parent / "shard.yaml")
+                # In-package: shard.yaml inside package
+                possible_paths.append(module_dir / "shard.yaml")
+        except Exception as e:
+            logger.debug(f"Could not determine module path for {self.name}: {e}")
 
+        # Docker container path - manifest named by shard
+        possible_paths.append(Path(f"/app/manifests/{self.name}.yaml"))
+
+        # Try each path
+        for yaml_path in possible_paths:
+            try:
                 if yaml_path.exists():
                     self.manifest = load_manifest_from_yaml(yaml_path)
                     logger.debug(f"Loaded manifest for {self.name} from {yaml_path}")
                     return
-        except Exception as e:
-            logger.warning(f"Failed to auto-load manifest for {self.name}: {e}")
+            except Exception as e:
+                logger.debug(f"Failed to load manifest from {yaml_path}: {e}")
 
         # Fallback to minimal manifest from class attributes
         self.manifest = ShardManifest(
