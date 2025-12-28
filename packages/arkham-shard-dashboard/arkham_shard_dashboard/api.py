@@ -28,6 +28,24 @@ class StopWorkerRequest(BaseModel):
     worker_id: str
 
 
+class StopAllWorkersRequest(BaseModel):
+    pool: Optional[str] = None
+
+
+class ClearQueueRequest(BaseModel):
+    pool: str
+    status: Optional[str] = None  # None = pending only
+
+
+class RetryFailedRequest(BaseModel):
+    pool: str
+    job_ids: Optional[List[str]] = None  # None = retry all failed
+
+
+class CancelJobRequest(BaseModel):
+    job_id: str
+
+
 class ResetDatabaseRequest(BaseModel):
     confirm: bool = False
 
@@ -94,6 +112,21 @@ async def get_database_info() -> Dict[str, Any]:
     return await shard.get_database_info()
 
 
+@router.get("/database/stats")
+async def get_database_stats() -> Dict[str, Any]:
+    """Get detailed database statistics."""
+    shard = get_dashboard_shard()
+    return await shard.get_database_stats()
+
+
+@router.get("/database/tables/{schema}")
+async def get_table_info(schema: str) -> Dict[str, Any]:
+    """Get table information for a schema."""
+    shard = get_dashboard_shard()
+    tables = await shard.get_table_info(schema)
+    return {"schema": schema, "tables": tables}
+
+
 @router.post("/database/migrate")
 async def run_migrations() -> Dict[str, Any]:
     """Run database migrations."""
@@ -154,16 +187,96 @@ async def stop_worker(request: StopWorkerRequest) -> Dict[str, Any]:
     return await shard.stop_worker(worker_id=request.worker_id)
 
 
+@router.post("/workers/stop-all")
+async def stop_all_workers(request: StopAllWorkersRequest) -> Dict[str, Any]:
+    """Stop all workers, optionally filtered by pool."""
+    shard = get_dashboard_shard()
+    return await shard.stop_all_workers(pool=request.pool)
+
+
+@router.get("/pools")
+async def get_pools() -> Dict[str, Any]:
+    """Get information about all worker pools."""
+    shard = get_dashboard_shard()
+    pools = await shard.get_pool_info()
+    return {"pools": pools}
+
+
+@router.get("/jobs")
+async def get_jobs(
+    pool: Optional[str] = Query(default=None),
+    status: Optional[str] = Query(default=None),
+    limit: int = Query(default=100, le=500),
+) -> Dict[str, Any]:
+    """Get jobs with optional filtering."""
+    shard = get_dashboard_shard()
+    jobs = await shard.get_jobs(pool=pool, status=status, limit=limit)
+    return {"jobs": jobs, "count": len(jobs)}
+
+
+@router.post("/queues/clear")
+async def clear_queue(request: ClearQueueRequest) -> Dict[str, Any]:
+    """Clear jobs from a queue."""
+    shard = get_dashboard_shard()
+    return await shard.clear_queue(pool=request.pool, status=request.status)
+
+
+@router.post("/jobs/retry")
+async def retry_failed_jobs(request: RetryFailedRequest) -> Dict[str, Any]:
+    """Retry failed jobs."""
+    shard = get_dashboard_shard()
+    return await shard.retry_failed_jobs(pool=request.pool, job_ids=request.job_ids)
+
+
+@router.post("/jobs/cancel")
+async def cancel_job(request: CancelJobRequest) -> Dict[str, Any]:
+    """Cancel a job."""
+    shard = get_dashboard_shard()
+    return await shard.cancel_job(job_id=request.job_id)
+
+
 # === Events ===
 
 @router.get("/events")
 async def get_events(
     limit: int = Query(default=50, le=500),
+    offset: int = Query(default=0, ge=0),
+    source: Optional[str] = Query(default=None),
+    event_type: Optional[str] = Query(default=None),
 ) -> Dict[str, Any]:
-    """Get recent events."""
+    """Get recent events with optional filtering."""
     shard = get_dashboard_shard()
-    events = await shard.get_events(limit=limit)
-    return {"events": events}
+    events = await shard.get_events(
+        limit=limit,
+        offset=offset,
+        source=source,
+        event_type=event_type,
+    )
+    total = await shard.get_event_count(source=source, event_type=event_type)
+    return {"events": events, "count": len(events), "total": total}
+
+
+@router.get("/events/types")
+async def get_event_types() -> Dict[str, Any]:
+    """Get list of unique event types."""
+    shard = get_dashboard_shard()
+    types = await shard.get_event_types()
+    return {"types": types}
+
+
+@router.get("/events/sources")
+async def get_event_sources() -> Dict[str, Any]:
+    """Get list of unique event sources."""
+    shard = get_dashboard_shard()
+    sources = await shard.get_event_sources()
+    return {"sources": sources}
+
+
+@router.post("/events/clear")
+async def clear_events() -> Dict[str, Any]:
+    """Clear event history."""
+    shard = get_dashboard_shard()
+    return await shard.clear_events()
 
 
 @router.get("/errors")
@@ -173,4 +286,4 @@ async def get_errors(
     """Get recent error events."""
     shard = get_dashboard_shard()
     errors = await shard.get_errors(limit=limit)
-    return {"errors": errors}
+    return {"errors": errors, "count": len(errors)}

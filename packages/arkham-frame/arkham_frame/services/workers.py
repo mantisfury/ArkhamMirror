@@ -70,6 +70,18 @@ WORKER_POOLS = {
 }
 
 
+@dataclass
+class WorkerInfo:
+    """Information about a running worker."""
+    id: str
+    pool: str
+    status: str = "idle"  # idle, processing, stopping
+    started_at: datetime = field(default_factory=datetime.utcnow)
+    current_job_id: Optional[str] = None
+    jobs_completed: int = 0
+    jobs_failed: int = 0
+
+
 class WorkerService:
     """
     Redis queue and worker management service.
@@ -85,6 +97,8 @@ class WorkerService:
         self._jobs: Dict[str, Job] = {}  # In-memory job tracking
         self._handlers: Dict[str, Callable] = {}  # Pool -> handler function
         self._event_bus = None
+        self._workers: Dict[str, WorkerInfo] = {}  # Active workers
+        self._target_counts: Dict[str, int] = {}  # Target worker counts per pool
 
     def set_event_bus(self, event_bus) -> None:
         """Set event bus for job notifications."""
@@ -348,10 +362,45 @@ class WorkerService:
 
     async def get_workers(self) -> List[Dict[str, Any]]:
         """Get active workers."""
-        # TODO: Implement actual worker tracking
-        return []
+        return [
+            {
+                "id": w.id,
+                "pool": w.pool,
+                "status": w.status,
+                "started_at": w.started_at.isoformat(),
+                "current_job_id": w.current_job_id,
+                "jobs_completed": w.jobs_completed,
+                "jobs_failed": w.jobs_failed,
+                "uptime_seconds": (datetime.utcnow() - w.started_at).total_seconds(),
+            }
+            for w in self._workers.values()
+        ]
 
-    async def scale(self, pool: str, count: int) -> bool:
+    async def get_workers_by_pool(self, pool: str) -> List[Dict[str, Any]]:
+        """Get workers for a specific pool."""
+        return [
+            {
+                "id": w.id,
+                "pool": w.pool,
+                "status": w.status,
+                "started_at": w.started_at.isoformat(),
+                "current_job_id": w.current_job_id,
+                "jobs_completed": w.jobs_completed,
+                "jobs_failed": w.jobs_failed,
+            }
+            for w in self._workers.values()
+            if w.pool == pool
+        ]
+
+    def get_worker_count(self, pool: str) -> int:
+        """Get number of active workers for a pool."""
+        return sum(1 for w in self._workers.values() if w.pool == pool)
+
+    def get_target_count(self, pool: str) -> int:
+        """Get target worker count for a pool."""
+        return self._target_counts.get(pool, 0)
+
+    async def scale(self, pool: str, count: int) -> Dict[str, Any]:
         """Scale workers for a pool."""
         if pool not in WORKER_POOLS:
             raise WorkerError(f"Unknown pool: {pool}")
@@ -360,22 +409,114 @@ class WorkerService:
         if count > max_workers:
             logger.warning(f"Requested {count} workers for {pool}, max is {max_workers}")
             count = max_workers
+        if count < 0:
+            count = 0
 
-        logger.info(f"Scaling {pool} to {count} workers")
-        return True
+        old_count = self._target_counts.get(pool, 0)
+        self._target_counts[pool] = count
+
+        # Start or stop workers to match target
+        current_count = self.get_worker_count(pool)
+
+        if count > current_count:
+            # Start more workers
+            for _ in range(count - current_count):
+                await self.start_worker(pool)
+        elif count < current_count:
+            # Stop excess workers
+            pool_workers = [w for w in self._workers.values() if w.pool == pool]
+            for worker in pool_workers[count:]:
+                await self.stop_worker(worker.id)
+
+        logger.info(f"Scaled {pool} from {old_count} to {count} workers")
+
+        # Emit event
+        if self._event_bus:
+            await self._event_bus.emit(
+                "worker.pool.scaled",
+                {"pool": pool, "old_count": old_count, "new_count": count},
+                source="worker-service",
+            )
+
+        return {
+            "success": True,
+            "pool": pool,
+            "previous_count": old_count,
+            "target_count": count,
+            "current_count": self.get_worker_count(pool),
+        }
 
     async def start_worker(self, pool: str) -> Dict[str, Any]:
         """Start a worker for a pool."""
         if pool not in WORKER_POOLS:
             raise WorkerError(f"Unknown pool: {pool}")
 
-        logger.info(f"Starting worker for {pool}")
-        return {"success": True, "pool": pool}
+        # Check max workers
+        current_count = self.get_worker_count(pool)
+        max_workers = WORKER_POOLS[pool]["max_workers"]
+        if current_count >= max_workers:
+            return {
+                "success": False,
+                "error": f"Pool {pool} already at max workers ({max_workers})",
+            }
+
+        # Create worker
+        worker_id = f"{pool}-{uuid.uuid4().hex[:8]}"
+        worker = WorkerInfo(id=worker_id, pool=pool)
+        self._workers[worker_id] = worker
+
+        logger.info(f"Started worker {worker_id} for pool {pool}")
+
+        # Emit event
+        if self._event_bus:
+            await self._event_bus.emit(
+                "worker.started",
+                {"worker_id": worker_id, "pool": pool},
+                source="worker-service",
+            )
+
+        return {"success": True, "worker_id": worker_id, "pool": pool}
 
     async def stop_worker(self, worker_id: str) -> Dict[str, Any]:
         """Stop a worker."""
-        logger.info(f"Stopping worker {worker_id}")
-        return {"success": True}
+        if worker_id not in self._workers:
+            return {"success": False, "error": f"Worker {worker_id} not found"}
+
+        worker = self._workers[worker_id]
+        pool = worker.pool
+
+        # Mark as stopping (in real impl, would gracefully finish current job)
+        worker.status = "stopping"
+
+        # Remove worker
+        del self._workers[worker_id]
+
+        logger.info(f"Stopped worker {worker_id}")
+
+        # Emit event
+        if self._event_bus:
+            await self._event_bus.emit(
+                "worker.stopped",
+                {"worker_id": worker_id, "pool": pool},
+                source="worker-service",
+            )
+
+        return {"success": True, "worker_id": worker_id}
+
+    async def stop_all_workers(self, pool: Optional[str] = None) -> Dict[str, Any]:
+        """Stop all workers, optionally filtered by pool."""
+        stopped = []
+        workers_to_stop = list(self._workers.values())
+
+        if pool:
+            workers_to_stop = [w for w in workers_to_stop if w.pool == pool]
+
+        for worker in workers_to_stop:
+            result = await self.stop_worker(worker.id)
+            if result["success"]:
+                stopped.append(worker.id)
+
+        return {"success": True, "stopped": stopped, "count": len(stopped)}
 
     def register_handler(self, pool: str, handler: Callable) -> None:
         """Register a job handler for a pool."""
@@ -510,3 +651,214 @@ class WorkerService:
         job_id = str(uuid.uuid4())
         await self.enqueue(pool, job_id, payload, priority)
         return await self.wait_for_result(job_id, timeout)
+
+    # --- Queue Management ---
+
+    async def get_jobs(
+        self,
+        pool: Optional[str] = None,
+        status: Optional[str] = None,
+        limit: int = 100,
+    ) -> List[Dict[str, Any]]:
+        """
+        Get jobs with optional filtering.
+
+        Args:
+            pool: Filter by pool name
+            status: Filter by status (pending, active, completed, failed)
+            limit: Maximum number of jobs to return
+
+        Returns:
+            List of job dicts
+        """
+        jobs = []
+
+        for job in self._jobs.values():
+            if pool and job.pool != pool:
+                continue
+            if status and job.status != status:
+                continue
+
+            jobs.append({
+                "id": job.id,
+                "pool": job.pool,
+                "status": job.status,
+                "priority": job.priority,
+                "created_at": job.created_at.isoformat(),
+                "started_at": job.started_at.isoformat() if job.started_at else None,
+                "completed_at": job.completed_at.isoformat() if job.completed_at else None,
+                "error": job.error,
+                "payload": job.payload,
+                "result": job.result,
+            })
+
+            if len(jobs) >= limit:
+                break
+
+        return jobs
+
+    async def clear_queue(
+        self,
+        pool: str,
+        status: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Clear jobs from a queue.
+
+        Args:
+            pool: Pool name to clear
+            status: Only clear jobs with this status (None = clear pending only)
+
+        Returns:
+            Result with count of cleared jobs
+        """
+        if pool not in WORKER_POOLS:
+            raise WorkerError(f"Unknown pool: {pool}")
+
+        # Default to clearing pending jobs only
+        if status is None:
+            status = "pending"
+
+        cleared = 0
+
+        # Clear from Redis
+        if self._available and self._redis and status == "pending":
+            queue_key = f"arkham:queue:{pool}"
+            cleared = self._redis.zcard(queue_key)
+            self._redis.delete(queue_key)
+
+        # Clear from in-memory tracking
+        jobs_to_remove = [
+            job_id for job_id, job in self._jobs.items()
+            if job.pool == pool and job.status == status
+        ]
+
+        for job_id in jobs_to_remove:
+            del self._jobs[job_id]
+            if self._available and self._redis:
+                self._redis.delete(f"arkham:job:{job_id}")
+
+        cleared = max(cleared, len(jobs_to_remove))
+
+        logger.info(f"Cleared {cleared} {status} jobs from {pool}")
+
+        # Emit event
+        if self._event_bus:
+            await self._event_bus.emit(
+                "worker.queue.cleared",
+                {"pool": pool, "status": status, "count": cleared},
+                source="worker-service",
+            )
+
+        return {"success": True, "pool": pool, "status": status, "cleared": cleared}
+
+    async def retry_failed_jobs(
+        self,
+        pool: str,
+        job_ids: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Retry failed jobs by re-enqueueing them.
+
+        Args:
+            pool: Pool name
+            job_ids: Specific job IDs to retry (None = retry all failed)
+
+        Returns:
+            Result with count of retried jobs
+        """
+        if pool not in WORKER_POOLS:
+            raise WorkerError(f"Unknown pool: {pool}")
+
+        retried = []
+
+        # Find failed jobs
+        failed_jobs = [
+            job for job in self._jobs.values()
+            if job.pool == pool and job.status == "failed"
+        ]
+
+        if job_ids:
+            failed_jobs = [j for j in failed_jobs if j.id in job_ids]
+
+        for job in failed_jobs:
+            # Create new job with same payload
+            new_job_id = f"{job.id}-retry-{uuid.uuid4().hex[:4]}"
+            await self.enqueue(pool, new_job_id, job.payload, job.priority)
+            retried.append({"original_id": job.id, "new_id": new_job_id})
+
+            # Remove old failed job from tracking
+            del self._jobs[job.id]
+
+        logger.info(f"Retried {len(retried)} failed jobs in {pool}")
+
+        # Emit event
+        if self._event_bus:
+            await self._event_bus.emit(
+                "worker.jobs.retried",
+                {"pool": pool, "count": len(retried), "jobs": retried},
+                source="worker-service",
+            )
+
+        return {"success": True, "pool": pool, "retried": retried, "count": len(retried)}
+
+    async def cancel_job(self, job_id: str) -> Dict[str, Any]:
+        """
+        Cancel a pending or active job.
+
+        Args:
+            job_id: Job ID to cancel
+
+        Returns:
+            Result indicating success/failure
+        """
+        job = self._jobs.get(job_id)
+
+        if not job:
+            return {"success": False, "error": f"Job {job_id} not found"}
+
+        if job.status not in ("pending", "active"):
+            return {"success": False, "error": f"Job {job_id} is {job.status}, cannot cancel"}
+
+        old_status = job.status
+        job.status = "cancelled"
+        job.completed_at = datetime.utcnow()
+
+        # Remove from Redis queue if pending
+        if self._available and self._redis and old_status == "pending":
+            queue_key = f"arkham:queue:{job.pool}"
+            self._redis.zrem(queue_key, job_id)
+
+        # Update Redis job status
+        if self._available and self._redis:
+            job_key = f"arkham:job:{job_id}"
+            self._redis.hset(job_key, mapping={
+                "status": "cancelled",
+                "completed_at": job.completed_at.isoformat(),
+            })
+
+        logger.info(f"Cancelled job {job_id}")
+
+        # Emit event
+        if self._event_bus:
+            await self._event_bus.emit(
+                "worker.job.cancelled",
+                {"job_id": job_id, "pool": job.pool},
+                source="worker-service",
+            )
+
+        return {"success": True, "job_id": job_id}
+
+    def get_pool_info(self) -> List[Dict[str, Any]]:
+        """Get information about all worker pools."""
+        return [
+            {
+                "name": name,
+                "type": config["type"],
+                "max_workers": config["max_workers"],
+                "vram_mb": config.get("vram_mb"),
+                "current_workers": self.get_worker_count(name),
+                "target_workers": self.get_target_count(name),
+            }
+            for name, config in WORKER_POOLS.items()
+        ]

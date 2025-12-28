@@ -110,10 +110,55 @@ class EventBus:
     def get_events(
         self,
         source: Optional[str] = None,
+        event_type: Optional[str] = None,
         limit: int = 100,
+        offset: int = 0,
     ) -> List[Event]:
-        """Get recent events."""
+        """Get recent events with optional filtering."""
         events = self._event_history
+
         if source:
             events = [e for e in events if e.source == source]
-        return events[:limit]
+
+        if event_type:
+            # Support wildcards in event_type filter
+            if "*" in event_type:
+                events = [e for e in events if fnmatch.fnmatch(e.event_type, event_type)]
+            else:
+                events = [e for e in events if e.event_type == event_type]
+
+        return events[offset:offset + limit]
+
+    def get_event_types(self) -> List[str]:
+        """Get list of unique event types in history."""
+        return sorted(set(e.event_type for e in self._event_history))
+
+    def get_event_sources(self) -> List[str]:
+        """Get list of unique event sources in history."""
+        return sorted(set(e.source for e in self._event_history))
+
+    def get_event_count(
+        self,
+        source: Optional[str] = None,
+        event_type: Optional[str] = None,
+    ) -> int:
+        """Get count of events matching filters."""
+        events = self._event_history
+
+        if source:
+            events = [e for e in events if e.source == source]
+
+        if event_type:
+            if "*" in event_type:
+                events = [e for e in events if fnmatch.fnmatch(e.event_type, event_type)]
+            else:
+                events = [e for e in events if e.event_type == event_type]
+
+        return len(events)
+
+    def clear_history(self) -> int:
+        """Clear event history. Returns count of cleared events."""
+        count = len(self._event_history)
+        self._event_history.clear()
+        logger.info(f"Cleared {count} events from history")
+        return count

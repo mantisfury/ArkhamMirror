@@ -204,10 +204,15 @@ Shards communicate via the EventBus, never by direct import:
 
 ```python
 # Publishing (in shard)
-await self.frame.events.publish("ach.matrix.created", {"matrix_id": id})
+await self.frame.events.emit("ach.matrix.created", {"matrix_id": id}, source="ach-shard")
 
 # Subscribing (in initialize)
-await self.frame.events.subscribe("document.processed", self.handle_document)
+self.frame.events.subscribe("document.processed", self.handle_document)
+
+# Querying events
+events = self.frame.events.get_events(source="ach-shard", limit=100)
+types = self.frame.events.get_event_types()
+sources = self.frame.events.get_event_sources()
 ```
 
 ## Navigation Categories
@@ -219,3 +224,39 @@ Shards declare their navigation category in `shard.yaml`:
 - **Analysis**: ACH, contradictions, anomalies
 - **Visualize**: Graph, timeline, visual tools
 - **Export**: Export and reporting tools
+
+## Dashboard Shard
+
+The Dashboard shard provides system monitoring and administration:
+
+### Tabs
+- **Health**: Service status overview (database, vectors, LLM, workers, events)
+- **LLM**: LLM endpoint configuration and connection testing
+- **Database**: Schema/table statistics, VACUUM ANALYZE, database reset
+- **Workers**: Worker pool management, scaling, job queue controls
+- **Events**: Event log with filtering by type/source, payload inspection
+
+### Database Statistics API
+```python
+# Get database stats (sizes, row counts per schema)
+stats = await frame.db.get_stats()
+
+# Get table info for a schema
+tables = await frame.db.get_table_info("arkham_ach")
+
+# Run VACUUM ANALYZE
+result = await frame.db.vacuum_analyze()
+```
+
+### Worker Management API
+```python
+# Scale workers for a pool
+await frame.workers.scale("cpu-parse", count=4)
+
+# Get pool info
+pools = frame.workers.get_pool_info()
+
+# Clear queue, retry failed jobs
+await frame.workers.clear_queue("cpu-parse", status="pending")
+await frame.workers.retry_failed_jobs("cpu-parse")
+```

@@ -163,29 +163,48 @@ class DashboardShard(ArkhamShard):
         if not self.frame.db:
             return {"available": False}
 
+        connected = await self.frame.db.is_connected()
+        schemas = await self.frame.db.list_schemas() if connected else []
+
         return {
-            "available": True,
-            "url": self.frame.config.database_url[:30] + "...",
-            "schemas": [],  # Would query for schemas
+            "available": connected,
+            "url": self.frame.config.database_url.split("@")[-1] if connected else None,
+            "schemas": schemas,
         }
+
+    async def get_database_stats(self) -> Dict[str, Any]:
+        """Get detailed database statistics."""
+        if not self.frame.db:
+            return {"connected": False}
+        return await self.frame.db.get_stats()
+
+    async def get_table_info(self, schema: str) -> List[Dict[str, Any]]:
+        """Get table information for a schema."""
+        if not self.frame.db:
+            return []
+        return await self.frame.db.get_table_info(schema)
 
     async def run_migrations(self) -> Dict[str, Any]:
         """Run database migrations."""
-        # In a real implementation, this would run Alembic migrations
-        return {"success": True, "message": "Migrations would run here"}
+        # TODO: Integrate with Alembic when available
+        return {"success": True, "message": "Migrations are managed by individual shards on startup"}
 
     async def reset_database(self, confirm: bool = False) -> Dict[str, Any]:
         """Reset database (dangerous!)."""
         if not confirm:
             return {"success": False, "error": "Confirmation required"}
 
-        # In a real implementation, this would drop and recreate tables
-        return {"success": True, "message": "Database reset would happen here"}
+        if not self.frame.db:
+            return {"success": False, "error": "Database not available"}
+
+        return await self.frame.db.reset_database()
 
     async def vacuum_database(self) -> Dict[str, Any]:
         """Run VACUUM ANALYZE on database."""
-        # In a real implementation, this would run VACUUM
-        return {"success": True, "message": "VACUUM would run here"}
+        if not self.frame.db:
+            return {"success": False, "error": "Database not available"}
+
+        return await self.frame.db.vacuum_analyze()
 
     # === Worker Controls ===
 
@@ -206,8 +225,7 @@ class DashboardShard(ArkhamShard):
         if not self.frame.workers:
             return {"success": False, "error": "Worker service not available"}
 
-        success = await self.frame.workers.scale(queue, count)
-        return {"success": success, "queue": queue, "target_count": count}
+        return await self.frame.workers.scale(queue, count)
 
     async def start_worker(self, queue: str) -> Dict[str, Any]:
         """Start a worker for a queue."""
@@ -221,29 +239,116 @@ class DashboardShard(ArkhamShard):
             return {"success": False, "error": "Worker service not available"}
         return await self.frame.workers.stop_worker(worker_id)
 
+    async def stop_all_workers(self, pool: Optional[str] = None) -> Dict[str, Any]:
+        """Stop all workers, optionally filtered by pool."""
+        if not self.frame.workers:
+            return {"success": False, "error": "Worker service not available"}
+        return await self.frame.workers.stop_all_workers(pool)
+
+    async def get_pool_info(self) -> List[Dict[str, Any]]:
+        """Get information about all worker pools."""
+        if not self.frame.workers:
+            return []
+        return self.frame.workers.get_pool_info()
+
+    async def get_jobs(
+        self,
+        pool: Optional[str] = None,
+        status: Optional[str] = None,
+        limit: int = 100,
+    ) -> List[Dict[str, Any]]:
+        """Get jobs with optional filtering."""
+        if not self.frame.workers:
+            return []
+        return await self.frame.workers.get_jobs(pool=pool, status=status, limit=limit)
+
+    async def clear_queue(self, pool: str, status: Optional[str] = None) -> Dict[str, Any]:
+        """Clear jobs from a queue."""
+        if not self.frame.workers:
+            return {"success": False, "error": "Worker service not available"}
+        return await self.frame.workers.clear_queue(pool, status)
+
+    async def retry_failed_jobs(
+        self,
+        pool: str,
+        job_ids: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        """Retry failed jobs."""
+        if not self.frame.workers:
+            return {"success": False, "error": "Worker service not available"}
+        return await self.frame.workers.retry_failed_jobs(pool, job_ids)
+
+    async def cancel_job(self, job_id: str) -> Dict[str, Any]:
+        """Cancel a job."""
+        if not self.frame.workers:
+            return {"success": False, "error": "Worker service not available"}
+        return await self.frame.workers.cancel_job(job_id)
+
     # === Events ===
 
-    async def get_events(self, limit: int = 50) -> List[Dict[str, Any]]:
-        """Get recent events."""
+    async def get_events(
+        self,
+        limit: int = 50,
+        offset: int = 0,
+        source: Optional[str] = None,
+        event_type: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """Get recent events with optional filtering."""
         if not self.frame.events:
             return []
 
-        events = self.frame.events.get_events(limit=limit)
+        events = self.frame.events.get_events(
+            limit=limit,
+            offset=offset,
+            source=source,
+            event_type=event_type,
+        )
         return [
             {
                 "event_type": e.event_type,
                 "payload": e.payload,
                 "source": e.source,
                 "timestamp": e.timestamp.isoformat(),
+                "sequence": e.sequence,
             }
             for e in events
         ]
+
+    async def get_event_count(
+        self,
+        source: Optional[str] = None,
+        event_type: Optional[str] = None,
+    ) -> int:
+        """Get count of events matching filters."""
+        if not self.frame.events:
+            return 0
+        return self.frame.events.get_event_count(source=source, event_type=event_type)
+
+    async def get_event_types(self) -> List[str]:
+        """Get list of unique event types."""
+        if not self.frame.events:
+            return []
+        return self.frame.events.get_event_types()
+
+    async def get_event_sources(self) -> List[str]:
+        """Get list of unique event sources."""
+        if not self.frame.events:
+            return []
+        return self.frame.events.get_event_sources()
+
+    async def clear_events(self) -> Dict[str, Any]:
+        """Clear event history."""
+        if not self.frame.events:
+            return {"success": False, "error": "Event service not available"}
+        count = self.frame.events.clear_history()
+        return {"success": True, "cleared": count}
 
     async def get_errors(self, limit: int = 50) -> List[Dict[str, Any]]:
         """Get recent error events."""
         if not self.frame.events:
             return []
 
+        # Use wildcard pattern to match error events
         events = self.frame.events.get_events(limit=limit * 2)
         errors = [
             {
@@ -251,6 +356,7 @@ class DashboardShard(ArkhamShard):
                 "payload": e.payload,
                 "source": e.source,
                 "timestamp": e.timestamp.isoformat(),
+                "sequence": e.sequence,
             }
             for e in events
             if "error" in e.event_type.lower() or "fail" in e.event_type.lower()
