@@ -35,6 +35,8 @@ services:
       - LLM_ENDPOINT=${LLM_ENDPOINT:-}
       - LM_STUDIO_URL=${LM_STUDIO_URL:-}
       - LLM_API_KEY=${LLM_API_KEY:-}
+      # VLM endpoint for OCR shard (optional)
+      - VLM_ENDPOINT=${VLM_ENDPOINT:-}
       # Serve the React shell from FastAPI
       - ARKHAM_SERVE_SHELL=true
     volumes:

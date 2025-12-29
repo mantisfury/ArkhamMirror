@@ -55,6 +55,7 @@ class DashboardShard(ArkhamShard):
     async def get_service_health(self) -> Dict[str, Any]:
         """Get health status of all services."""
         health = {
+            "is_docker": self.frame.config.is_docker,
             "database": {"available": False, "info": None},
             "vectors": {"available": False, "info": None},
             "llm": {"available": False, "info": None},
@@ -99,6 +100,9 @@ class DashboardShard(ArkhamShard):
             "available": self.frame.llm.is_available() if self.frame.llm else False,
             "api_key_configured": False,
             "api_key_source": None,
+            "is_docker": self.frame.config.is_docker,
+            "default_lm_studio_endpoint": self.frame.config.get_local_llm_default(),
+            "default_ollama_endpoint": self.frame.config.get_local_ollama_default(),
         }
 
         # Add API key status (never expose the actual key)
@@ -128,8 +132,8 @@ class DashboardShard(ArkhamShard):
 
     async def reset_llm_config(self) -> Dict[str, Any]:
         """Reset LLM configuration to defaults."""
-        # Default values
-        default_endpoint = "http://localhost:1234/v1"
+        # Use environment-aware default endpoint
+        default_endpoint = self.frame.config.get_local_llm_default()
         default_model = "local-model"
 
         self.frame.config.set("llm_endpoint", default_endpoint)

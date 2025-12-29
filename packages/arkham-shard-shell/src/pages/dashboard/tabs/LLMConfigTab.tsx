@@ -2,7 +2,7 @@
  * LLMConfigTab - LLM configuration management with provider presets
  */
 
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 import { Icon } from '../../../components/common/Icon';
 import { useToast } from '../../../context/ToastContext';
 import { useConfirm } from '../../../context/ConfirmContext';
@@ -122,16 +122,38 @@ function getResponseText(response: TestResult['response']): string {
   return response.text || JSON.stringify(response);
 }
 
-// Detect current provider from endpoint
-function detectProvider(endpoint: string): LLMProvider | null {
-  if (!endpoint) return null;
-  return LLM_PROVIDERS.find(p => p.id !== 'custom' && endpoint.includes(new URL(p.endpoint).host)) || null;
-}
-
 export function LLMConfigTab() {
   const { toast } = useToast();
   const confirm = useConfirm();
   const { config, loading, error, updateConfig, testConnection, resetConfig } = useLLMConfig();
+
+  // Build providers with Docker-aware endpoints from backend config
+  const providers = useMemo(() => {
+    return LLM_PROVIDERS.map(p => {
+      if (p.id === 'lm-studio' && config?.default_lm_studio_endpoint) {
+        return { ...p, endpoint: config.default_lm_studio_endpoint };
+      }
+      if (p.id === 'ollama' && config?.default_ollama_endpoint) {
+        return { ...p, endpoint: config.default_ollama_endpoint };
+      }
+      return p;
+    });
+  }, [config?.default_lm_studio_endpoint, config?.default_ollama_endpoint]);
+
+  // Detect current provider from endpoint (handles both localhost and host.docker.internal)
+  const detectProvider = (endpoint: string): LLMProvider | null => {
+    if (!endpoint) return null;
+    const normalizedEndpoint = endpoint.replace('host.docker.internal', 'localhost');
+    return providers.find(p => {
+      if (p.id === 'custom' || !p.endpoint) return false;
+      const normalizedProviderEndpoint = p.endpoint.replace('host.docker.internal', 'localhost');
+      try {
+        return normalizedEndpoint.includes(new URL(normalizedProviderEndpoint).host);
+      } catch {
+        return false;
+      }
+    }) || null;
+  };
 
   // Provider selection state
   const [selectedProviderId, setSelectedProviderId] = useState<string>('');
@@ -144,11 +166,11 @@ export function LLMConfigTab() {
   const [updating, setUpdating] = useState(false);
   const [resetting, setResetting] = useState(false);
 
-  const selectedProvider = LLM_PROVIDERS.find(p => p.id === selectedProviderId);
+  const selectedProvider = providers.find(p => p.id === selectedProviderId);
   const currentProvider = config?.endpoint ? detectProvider(config.endpoint) : null;
 
   const handleProviderSelect = (providerId: string) => {
-    const provider = LLM_PROVIDERS.find(p => p.id === providerId);
+    const provider = providers.find(p => p.id === providerId);
     setSelectedProviderId(providerId);
     if (provider) {
       setSelectedModel(provider.defaultModel);
@@ -214,9 +236,10 @@ export function LLMConfigTab() {
   };
 
   const handleReset = async () => {
+    const defaultEndpoint = config?.default_lm_studio_endpoint || 'localhost:1234/v1';
     const confirmed = await confirm({
       title: 'Reset LLM Configuration',
-      message: 'This will reset to the default LM Studio configuration (localhost:1234/v1). Continue?',
+      message: `This will reset to the default LM Studio configuration (${defaultEndpoint}). Continue?`,
       confirmLabel: 'Reset to Defaults',
       cancelLabel: 'Cancel',
       variant: 'default',
@@ -258,6 +281,14 @@ export function LLMConfigTab() {
 
   return (
     <div className="llm-config-tab">
+      {/* Docker Mode Indicator */}
+      {config?.is_docker && (
+        <div className="docker-mode-banner">
+          <Icon name="Box" size={16} />
+          <span>Running in Docker - local endpoints use <code>host.docker.internal</code></span>
+        </div>
+      )}
+
       {/* Current Configuration */}
       <section className="config-section">
         <h3>
@@ -372,7 +403,7 @@ export function LLMConfigTab() {
         </h3>
 
         <div className="provider-grid">
-          {LLM_PROVIDERS.map((provider) => (
+          {providers.map((provider) => (
             <button
               key={provider.id}
               className={`provider-card ${selectedProviderId === provider.id ? 'selected' : ''} ${currentProvider?.id === provider.id ? 'current' : ''}`}
@@ -456,11 +487,14 @@ export function LLMConfigTab() {
                   <input
                     type="text"
                     className="form-input"
-                    placeholder="http://localhost:8080/v1"
+                    placeholder={config?.is_docker ? "http://host.docker.internal:8080/v1" : "http://localhost:8080/v1"}
                     value={customEndpoint}
                     onChange={(e) => setCustomEndpoint(e.target.value)}
                   />
-                  <span className="form-hint">OpenAI-compatible API endpoint</span>
+                  <span className="form-hint">
+                    OpenAI-compatible API endpoint
+                    {config?.is_docker && " (use host.docker.internal for host services)"}
+                  </span>
                 </div>
                 <div className="form-group">
                   <label className="form-label">Model Name</label>

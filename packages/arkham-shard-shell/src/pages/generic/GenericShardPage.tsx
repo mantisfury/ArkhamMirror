@@ -63,7 +63,7 @@ export function GenericShardPage() {
             API available at: <code>{currentShard.api_prefix}</code>
           </p>
           <a
-            href={`http://localhost:8105/docs#/${currentShard.name}`}
+            href={`/docs#/${currentShard.name}`}
             target="_blank"
             rel="noopener noreferrer"
             className="btn btn-secondary"

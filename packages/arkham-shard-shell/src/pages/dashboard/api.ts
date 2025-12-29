@@ -26,6 +26,9 @@ export interface LLMConfig {
   available: boolean;
   api_key_configured: boolean;
   api_key_source: string | null;
+  is_docker: boolean;
+  default_lm_studio_endpoint: string;
+  default_ollama_endpoint: string;
 }
 
 export interface DatabaseInfo {
