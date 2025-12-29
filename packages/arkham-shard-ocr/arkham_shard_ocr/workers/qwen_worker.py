@@ -83,6 +83,21 @@ class QwenWorker(BaseWorker):
         super().__init__(*args, **kwargs)
         self._client: Optional[httpx.AsyncClient] = None
 
+    def _resolve_path(self, file_path: str) -> str:
+        """
+        Resolve file path using DATA_SILO_PATH for Docker/portable deployments.
+
+        Args:
+            file_path: Path from payload (may be relative or absolute)
+
+        Returns:
+            Resolved absolute path as string
+        """
+        if not os.path.isabs(file_path):
+            data_silo = os.environ.get("DATA_SILO_PATH", ".")
+            return os.path.join(data_silo, file_path)
+        return file_path
+
     async def _get_client(self) -> httpx.AsyncClient:
         """Get or create HTTP client."""
         if self._client is None:
@@ -189,23 +204,25 @@ class QwenWorker(BaseWorker):
         image_base64 = payload.get("image_base64") or payload.get("base64")
 
         if image_path:
-            if not os.path.exists(image_path):
-                raise FileNotFoundError(f"Image not found: {image_path}")
+            # Resolve relative path using DATA_SILO_PATH
+            resolved_path = self._resolve_path(image_path)
+            if not os.path.exists(resolved_path):
+                raise FileNotFoundError(f"Image not found: {resolved_path}")
 
-            logger.info(f"Job {job_id}: VLM OCR on file {image_path}")
-            with open(image_path, "rb") as f:
+            logger.info(f"Job {job_id}: VLM OCR on file {resolved_path}")
+            with open(resolved_path, "rb") as f:
                 image_data = f.read()
             image_b64 = base64.b64encode(image_data).decode("utf-8")
-            source = image_path
+            source = resolved_path
 
             # Detect image type
-            if image_path.lower().endswith(".png"):
+            if resolved_path.lower().endswith(".png"):
                 mime_type = "image/png"
-            elif image_path.lower().endswith((".jpg", ".jpeg")):
+            elif resolved_path.lower().endswith((".jpg", ".jpeg")):
                 mime_type = "image/jpeg"
-            elif image_path.lower().endswith(".gif"):
+            elif resolved_path.lower().endswith(".gif"):
                 mime_type = "image/gif"
-            elif image_path.lower().endswith(".webp"):
+            elif resolved_path.lower().endswith(".webp"):
                 mime_type = "image/webp"
             else:
                 mime_type = "image/png"  # Default

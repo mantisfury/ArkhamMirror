@@ -63,8 +63,8 @@ export function OCRResultView({ result, fileName }: OCRResultViewProps) {
     );
   }
 
-  const wordCount = result.text.trim() ? result.text.trim().split(/\s+/).length : 0;
-  const charCount = result.text.length;
+  const wordCount = result.word_count ?? (result.text.trim() ? result.text.trim().split(/\s+/).length : 0);
+  const charCount = result.char_count ?? result.text.length;
 
   return (
     <div className="ocr-result-view">
@@ -86,6 +86,25 @@ export function OCRResultView({ result, fileName }: OCRResultViewProps) {
             <span className="info-label">Pages:</span>
             <span className="info-value">{result.pages_processed}</span>
           </div>
+          {result.confidence !== undefined && (
+            <div className="info-item">
+              <Icon name="Target" size={16} />
+              <span className="info-label">Confidence:</span>
+              <span className="info-value">{(result.confidence * 100).toFixed(1)}%</span>
+            </div>
+          )}
+          {result.from_cache && (
+            <span className="status-badge cached">
+              <Icon name="Database" size={12} />
+              Cached
+            </span>
+          )}
+          {result.escalated && (
+            <span className="status-badge escalated">
+              <Icon name="ArrowUp" size={12} />
+              Escalated to Qwen
+            </span>
+          )}
         </div>
 
         {/* Actions */}

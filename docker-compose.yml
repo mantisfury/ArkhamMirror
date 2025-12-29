@@ -37,6 +37,11 @@ services:
       - LLM_API_KEY=${LLM_API_KEY:-}
       # VLM endpoint for OCR shard (optional)
       - VLM_ENDPOINT=${VLM_ENDPOINT:-}
+      # Embedding model (optional - enables semantic search)
+      # Recommended: BAAI/bge-m3 (1024 dims, ~2.2GB, high quality)
+      # Lightweight: all-MiniLM-L6-v2 (384 dims, ~80MB, fast)
+      # WARNING: Once set, changing models requires rebuilding vector collections
+      - EMBED_MODEL=${EMBED_MODEL:-}
       # Serve the React shell from FastAPI
       - ARKHAM_SERVE_SHELL=true
     volumes:
@@ -77,9 +82,9 @@ services:
       retries: 10
     networks:
       - shattered-net
-    # Uncomment to expose PostgreSQL externally (for debugging)
-    # ports:
-    #   - "5432:5432"
+    # Expose for local development (Python running on host)
+    ports:
+      - "5432:5432"
 
   # ---------------------------------------------------------------------------
   # Qdrant Vector Database
@@ -98,9 +103,9 @@ services:
       retries: 10
     networks:
       - shattered-net
-    # Uncomment to expose Qdrant externally (for debugging)
-    # ports:
-    #   - "6333:6333"
+    # Expose for local development (Python running on host)
+    ports:
+      - "6333:6333"
 
   # ---------------------------------------------------------------------------
   # Redis (Job Queue)
@@ -119,9 +124,9 @@ services:
       retries: 10
     networks:
       - shattered-net
-    # Uncomment to expose Redis externally (for debugging)
-    # ports:
-    #   - "6379:6379"
+    # Expose for local development (Python running on host)
+    ports:
+      - "6379:6379"
 
 # -----------------------------------------------------------------------------
 # Volumes (Persistent Data)

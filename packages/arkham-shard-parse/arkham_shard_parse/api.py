@@ -21,6 +21,7 @@ _coref_resolver = None
 _chunker = None
 _worker_service = None
 _event_bus = None
+_parse_shard = None  # Reference to the shard itself for direct calls
 
 
 def init_api(
@@ -33,10 +34,11 @@ def init_api(
     chunker,
     worker_service,
     event_bus,
+    parse_shard=None,
 ):
     """Initialize API with shard dependencies."""
     global _ner_extractor, _date_extractor, _location_extractor, _relation_extractor
-    global _entity_linker, _coref_resolver, _chunker, _worker_service, _event_bus
+    global _entity_linker, _coref_resolver, _chunker, _worker_service, _event_bus, _parse_shard
 
     _ner_extractor = ner_extractor
     _date_extractor = date_extractor
@@ -47,6 +49,7 @@ def init_api(
     _chunker = chunker
     _worker_service = worker_service
     _event_bus = event_bus
+    _parse_shard = parse_shard
 
 
 # --- Request/Response Models ---
@@ -215,6 +218,32 @@ async def parse_document(doc_id: str):
     )
 
 
+@router.post("/document/{doc_id}/sync")
+async def parse_document_sync(doc_id: str, save_chunks: bool = True):
+    """
+    Parse a document synchronously and return results.
+
+    This calls parse_document directly without going through the worker queue.
+    Useful for testing, debugging, and re-parsing existing documents.
+
+    Args:
+        doc_id: Document ID to parse
+        save_chunks: Whether to save chunks to database (default: True)
+
+    Returns:
+        Full parse result with entities, dates, chunks, and timing info
+    """
+    if not _parse_shard:
+        raise HTTPException(status_code=503, detail="Parse shard not initialized")
+
+    try:
+        result = await _parse_shard.parse_document(doc_id, save_chunks=save_chunks)
+        return result
+    except Exception as e:
+        logger.error(f"Sync parse failed for {doc_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/entities/{doc_id}")
 async def get_entities(doc_id: str):
     """
@@ -222,9 +251,8 @@ async def get_entities(doc_id: str):
 
     Returns entities that were previously extracted and stored.
     """
-    # In production: query database for entities
-    # SELECT * FROM entities WHERE document_id = doc_id
-
+    # TODO: Entities are extracted but not stored to a dedicated table yet
+    # For now, return empty. Future: store entities in arkham_frame.entities table
     return {
         "document_id": doc_id,
         "entities": [],
@@ -237,16 +265,37 @@ async def get_chunks(doc_id: str):
     """
     Get text chunks for a document.
 
-    Returns chunks that were previously created.
+    Returns chunks that were previously created and stored.
     """
-    # In production: query database for chunks
-    # SELECT * FROM chunks WHERE document_id = doc_id
+    if not _parse_shard or not _parse_shard._frame:
+        raise HTTPException(status_code=503, detail="Parse shard not initialized")
 
-    return {
-        "document_id": doc_id,
-        "chunks": [],
-        "total": 0,
-    }
+    doc_service = _parse_shard._frame.get_service("documents")
+    if not doc_service:
+        raise HTTPException(status_code=503, detail="Document service not available")
+
+    try:
+        chunks = await doc_service.get_document_chunks(doc_id)
+        return {
+            "document_id": doc_id,
+            "chunks": [
+                {
+                    "id": c.id,
+                    "chunk_index": c.chunk_index,
+                    "text": c.text,
+                    "page_number": c.page_number,
+                    "start_char": c.start_char,
+                    "end_char": c.end_char,
+                    "token_count": c.token_count,
+                    "vector_id": c.vector_id,
+                }
+                for c in chunks
+            ],
+            "total": len(chunks),
+        }
+    except Exception as e:
+        logger.error(f"Failed to get chunks for {doc_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.post("/chunk", response_model=ChunkTextResponse)
@@ -335,13 +384,51 @@ async def get_parse_stats():
     """
     Get parsing statistics.
 
-    Returns counts of entities, chunks, etc.
+    Returns counts of entities, chunks, and documents with chunks.
     """
-    # In production: query database for stats
+    if not _parse_shard or not _parse_shard._frame:
+        return {
+            "total_entities": 0,
+            "total_chunks": 0,
+            "total_documents_parsed": 0,
+            "entity_types": {},
+        }
 
-    return {
-        "total_entities": 0,
-        "total_chunks": 0,
-        "total_documents_parsed": 0,
-        "entity_types": {},
-    }
+    db = _parse_shard._frame.get_service("database")
+    if not db or not db._engine:
+        return {
+            "total_entities": 0,
+            "total_chunks": 0,
+            "total_documents_parsed": 0,
+            "entity_types": {},
+        }
+
+    try:
+        from sqlalchemy import text
+
+        with db._engine.connect() as conn:
+            # Get total chunks
+            result = conn.execute(text("SELECT COUNT(*) FROM arkham_frame.chunks"))
+            total_chunks = result.scalar() or 0
+
+            # Get documents with chunks (parsed documents)
+            result = conn.execute(text(
+                "SELECT COUNT(DISTINCT document_id) FROM arkham_frame.chunks"
+            ))
+            total_documents_parsed = result.scalar() or 0
+
+        return {
+            "total_entities": 0,  # TODO: Implement entity storage
+            "total_chunks": total_chunks,
+            "total_documents_parsed": total_documents_parsed,
+            "entity_types": {},
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to get parse stats: {e}")
+        return {
+            "total_entities": 0,
+            "total_chunks": 0,
+            "total_documents_parsed": 0,
+            "entity_types": {},
+        }

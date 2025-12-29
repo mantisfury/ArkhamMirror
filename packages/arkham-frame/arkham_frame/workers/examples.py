@@ -121,7 +121,7 @@ async def test_worker_infrastructure():
     import json
     import uuid
 
-    redis_url = os.environ.get("REDIS_URL", "redis://localhost:6380")
+    redis_url = os.environ.get("REDIS_URL", "redis://localhost:6379")
 
     print("Testing Worker Infrastructure")
     print("=" * 50)

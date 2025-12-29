@@ -51,16 +51,37 @@ class IngestShard(ArkhamShard):
         storage_path = data_silo / "documents"
         temp_path = data_silo / "temp" / "ingest"
 
-        # Create intake manager
+        # Get OCR mode from config (auto, fast, quality)
+        ocr_mode = self._config.get("ingest_ocr_mode", "auto")
+
+        # Get validation settings from config
+        max_file_size_mb = self._config.get("ingest_max_file_size_mb", 100)
+        min_file_size = self._config.get("ingest_min_file_size_bytes", 100)
+        enable_validation = self._config.get("ingest_enable_validation", True)
+
+        # Get optimization toggles from config
+        enable_deduplication = self._config.get("ingest_enable_deduplication", True)
+        enable_downscale = self._config.get("ingest_enable_downscale", True)
+        skip_blank_pages = self._config.get("ingest_skip_blank_pages", True)
+
+        # Create intake manager with data_silo_path for portable relative paths
         self.intake_manager = IntakeManager(
             storage_path=storage_path,
             temp_path=temp_path,
+            ocr_mode=ocr_mode,
+            min_file_size=min_file_size,
+            max_file_size_mb=max_file_size_mb,
+            enable_validation=enable_validation,
+            enable_deduplication=enable_deduplication,
+            enable_downscale=enable_downscale,
+            skip_blank_pages=skip_blank_pages,
+            data_silo_path=data_silo,  # For Docker/portable path resolution
         )
 
-        # Create job dispatcher
+        # Create job dispatcher with intake_manager for path resolution
         worker_service = frame.get_service("workers")
         if worker_service:
-            self.job_dispatcher = JobDispatcher(worker_service)
+            self.job_dispatcher = JobDispatcher(worker_service, self.intake_manager)
         else:
             logger.warning("Worker service not available, dispatching disabled")
 
@@ -70,6 +91,7 @@ class IngestShard(ArkhamShard):
             intake_manager=self.intake_manager,
             job_dispatcher=self.job_dispatcher,
             event_bus=event_bus,
+            config=self._config,
         )
 
         # Subscribe to worker events
@@ -119,7 +141,9 @@ class IngestShard(ArkhamShard):
 
     async def _on_job_completed(self, event: dict) -> None:
         """Handle worker job completion."""
-        job_id = event.get("job_id")
+        # EventBus wraps events: {"event_type": ..., "payload": {...}, "source": ...}
+        payload = event.get("payload", event)  # Support both wrapped and unwrapped
+        job_id = payload.get("job_id")
         if not job_id:
             return
 
@@ -127,29 +151,101 @@ class IngestShard(ArkhamShard):
         if not job:
             return  # Not our job
 
-        result = event.get("result", {})
+        result = payload.get("result", {})
 
         # Advance to next worker or complete
         advanced = await self.job_dispatcher.advance(job, result)
 
         if not advanced:
-            # Job complete
+            # Job complete - register document in Frame's document service
             logger.info(f"Job {job_id} completed successfully")
+
+            # Register the document with the Frame's document service
+            # Returns the document ID for the event
+            document_id = await self._register_document(job, result)
+
             event_bus = self._frame.get_service("events")
             if event_bus:
+                # Include document_id in result for downstream shards (parse, embed)
+                result_with_doc = {**result, "document_id": document_id}
                 await event_bus.emit(
                     "ingest.job.completed",
                     {
                         "job_id": job_id,
                         "filename": job.file_info.original_name,
-                        "result": result,
+                        "result": result_with_doc,
                     },
                     source="ingest-shard",
                 )
 
+    async def _register_document(self, job, result: dict) -> str | None:
+        """
+        Register completed document with Frame's document service.
+
+        Creates a document record in arkham_frame.documents so it can be
+        browsed and searched by the documents shard.
+
+        Returns:
+            Document ID if successfully registered, None otherwise.
+        """
+        doc_service = self._frame.get_service("documents")
+        if not doc_service:
+            logger.warning("Document service not available, skipping registration")
+            return None
+
+        try:
+            # Read file content for storage
+            file_path = job.file_info.path
+            with open(file_path, "rb") as f:
+                content = f.read()
+
+            # Create document in Frame's document service
+            doc = await doc_service.create_document(
+                filename=job.file_info.original_name,
+                content=content,
+                project_id=None,  # Could be extracted from job metadata
+                metadata={
+                    "ingest_job_id": job.id,
+                    "category": job.file_info.category.value,
+                    "mime_type": job.file_info.mime_type,
+                    "checksum": job.file_info.checksum,
+                    "storage_path": str(file_path),
+                    "quality_score": (
+                        {
+                            "classification": job.quality_score.classification.value,
+                            "issues": job.quality_score.issues,
+                        }
+                        if job.quality_score
+                        else None
+                    ),
+                },
+            )
+
+            # Update status to processed
+            await doc_service.update_document(doc.id, status="processed")
+
+            # If we have extracted text from the result, add it as a page
+            text = result.get("text", "")
+            if text:
+                page_count = result.get("pages", 1)
+                await doc_service.add_page(
+                    doc_id=doc.id,
+                    page_number=1,
+                    text=text,
+                )
+
+            logger.info(f"Registered document {doc.id} from job {job.id}")
+            return doc.id
+
+        except Exception as e:
+            logger.error(f"Failed to register document for job {job.id}: {e}", exc_info=True)
+            return None
+
     async def _on_job_failed(self, event: dict) -> None:
         """Handle worker job failure."""
-        job_id = event.get("job_id")
+        # EventBus wraps events: {"event_type": ..., "payload": {...}, "source": ...}
+        payload = event.get("payload", event)  # Support both wrapped and unwrapped
+        job_id = payload.get("job_id")
         if not job_id:
             return
 
@@ -157,7 +253,7 @@ class IngestShard(ArkhamShard):
         if not job:
             return  # Not our job
 
-        error = event.get("error", "Unknown error")
+        error = payload.get("error", "Unknown error")
         logger.warning(f"Job {job_id} failed: {error}")
 
         # Update job status

@@ -12,6 +12,15 @@ import type {
 
 const API_PREFIX = '/api/ocr';
 
+// Document info for selection
+export interface DocumentInfo {
+  id: string;
+  name: string;
+  file_type: string;
+  page_count: number;
+  created_at: string;
+}
+
 // Generic fetch wrapper with error handling
 async function fetchAPI<T>(endpoint: string, options?: RequestInit): Promise<T> {
   const response = await fetch(`${API_PREFIX}${endpoint}`, {
@@ -94,4 +103,34 @@ export async function ocrUpload(
   }
 
   return response.json();
+}
+
+// ============================================
+// Document Operations
+// ============================================
+
+export async function getDocumentsForOCR(): Promise<DocumentInfo[]> {
+  // Fetch documents that can be OCR'd (images, scanned PDFs)
+  const response = await fetch('/api/documents/items?limit=100');
+
+  if (!response.ok) {
+    throw new Error(`Failed to fetch documents: ${response.statusText}`);
+  }
+
+  const data = await response.json();
+  // Filter to image-based documents (by file_type or mime pattern)
+  const ocrableTypes = ['image', 'pdf', 'image/png', 'image/jpeg', 'image/jpg', 'image/webp', 'application/pdf'];
+
+  return (data.items || [])
+    .filter((doc: any) => {
+      const fileType = (doc.file_type || '').toLowerCase();
+      return ocrableTypes.some(t => fileType.includes(t)) || fileType.startsWith('image/');
+    })
+    .map((doc: any) => ({
+      id: doc.id,
+      name: doc.title || doc.filename || 'Untitled',
+      file_type: doc.file_type,
+      page_count: doc.page_count || 1,
+      created_at: doc.created_at,
+    }));
 }

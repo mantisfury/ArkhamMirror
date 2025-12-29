@@ -64,7 +64,7 @@ class WorkerRunner:
             worker_classes: Map of pool name -> worker class
         """
         self.redis_url = redis_url or os.environ.get(
-            "REDIS_URL", "redis://localhost:6380"
+            "REDIS_URL", "redis://localhost:6379"
         )
         self._worker_classes: Dict[str, Type[BaseWorker]] = worker_classes or {}
         self._processes: Dict[str, WorkerProcess] = {}

@@ -81,12 +81,14 @@ class ImageQualityClassifier:
                     skew_angle = self._estimate_skew(arr)
                     has_noise = self._detect_noise(arr)
                     layout_complexity = self._assess_layout(arr)
+                    is_blank = self._detect_blank(arr)
                 else:
                     # Simplified for large images
                     contrast_ratio = 0.6
                     skew_angle = 0.0
                     has_noise = False
                     layout_complexity = "simple"
+                    is_blank = False
 
                 elapsed_ms = (time.perf_counter() - start) * 1000
 
@@ -98,6 +100,7 @@ class ImageQualityClassifier:
                     compression_ratio=compression_ratio,
                     has_noise=has_noise,
                     layout_complexity=layout_complexity,
+                    is_blank=is_blank,
                     analysis_ms=elapsed_ms,
                 )
 
@@ -224,10 +227,56 @@ class ImageQualityClassifier:
         except Exception:
             return "simple"
 
+    def _detect_blank(self, arr) -> bool:
+        """
+        Detect if page is blank or near-blank.
+
+        Uses variance and content analysis to determine if the page
+        has meaningful content worth OCR-ing.
+
+        Args:
+            arr: Grayscale numpy array
+
+        Returns:
+            True if page appears blank
+        """
+        if self._np is None:
+            return False
+
+        try:
+            # Calculate image variance (blank pages have very low variance)
+            variance = self._np.var(arr)
+            if variance < 100:  # Very uniform image
+                return True
+
+            # Calculate percentage of "edge" pixels (content usually has edges)
+            mean_val = self._np.mean(arr)
+            edge_pixels = self._np.sum(self._np.abs(arr.astype(float) - mean_val) > 30)
+            edge_ratio = edge_pixels / arr.size
+
+            # Less than 1% of pixels are "interesting"
+            if edge_ratio < 0.01:
+                return True
+
+            # Check for mostly-white (or mostly-black) pages
+            white_ratio = self._np.sum(arr > 240) / arr.size
+            black_ratio = self._np.sum(arr < 15) / arr.size
+
+            # If > 99% white or > 99% black, it's blank
+            if white_ratio > 0.99 or black_ratio > 0.99:
+                return True
+
+            return False
+
+        except Exception:
+            return False
+
     def get_ocr_route(
         self,
         quality: ImageQualityScore,
-        ocr_mode: str = "auto"
+        ocr_mode: str = "auto",
+        enable_downscale: bool = True,
+        skip_blank_pages: bool = True,
     ) -> list[str]:
         """
         Determine OCR worker route based on quality.
@@ -235,30 +284,58 @@ class ImageQualityClassifier:
         Args:
             quality: Quality assessment result
             ocr_mode: auto | paddle_only | qwen_only
+            enable_downscale: If True, prepend downscale step for high-DPI images
+            skip_blank_pages: If True, return empty route for blank pages
 
         Returns:
-            List of worker pool names in order
+            List of worker pool names in order.
+            High-DPI images get "cpu-image:downscale" prepended for memory savings.
+            Blank pages return empty list (skip OCR entirely) if skip_blank_pages=True.
         """
+        # Skip OCR for blank pages - no content to extract
+        if skip_blank_pages and quality.is_blank:
+            logger.debug("Skipping OCR for blank page")
+            return []
+
+        route = []
+
+        # High-DPI images get downscaled first (memory optimization)
+        # The cpu-image worker checks for :downscale suffix
+        if enable_downscale and quality.needs_downscale:
+            route.append("cpu-image:downscale")
+
         # User overrides
         if ocr_mode == "qwen_only":
-            return ["cpu-image", "gpu-qwen"]
+            route.append("cpu-image")
+            route.append("gpu-qwen")
+            return route
+
         if ocr_mode == "paddle_only":
-            if quality.classification == ImageQuality.CLEAN:
-                return ["gpu-paddle"]
-            return ["cpu-image", "gpu-paddle"]
+            if quality.classification == ImageQuality.CLEAN and not quality.needs_downscale:
+                route.append("gpu-paddle")
+            else:
+                if quality.classification != ImageQuality.CLEAN:
+                    route.append("cpu-image")
+                route.append("gpu-paddle")
+            return route
 
         # Auto routing based on classification
         classification = quality.classification
 
         if classification == ImageQuality.CLEAN:
-            return ["gpu-paddle"]
+            route.append("gpu-paddle")
 
         elif classification == ImageQuality.FIXABLE:
-            return ["cpu-image", "gpu-paddle"]
+            route.append("cpu-image")
+            route.append("gpu-paddle")
 
         else:  # MESSY
+            route.append("cpu-image")
             # Complex layouts go to Qwen
             if quality.layout_complexity in ("mixed", "complex"):
-                return ["cpu-image", "gpu-qwen"]
-            # Try paddle first, will escalate on low confidence
-            return ["cpu-image", "gpu-paddle"]
+                route.append("gpu-qwen")
+            else:
+                # Try paddle first, will escalate on low confidence
+                route.append("gpu-paddle")
+
+        return route

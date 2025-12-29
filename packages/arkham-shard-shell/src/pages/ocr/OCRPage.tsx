@@ -4,23 +4,44 @@
  * Provides OCR processing with engine selection and status monitoring.
  */
 
-import { useState, useRef } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { Icon } from '../../components/common/Icon';
 import { useToast } from '../../context/ToastContext';
 import { useFetch } from '../../hooks/useFetch';
-import { ocrUpload } from './api';
+import { ocrUpload, ocrDocument, getDocumentsForOCR, type DocumentInfo } from './api';
 import { OCRResultView } from './OCRResultView';
 import type { OCRHealthResponse, OCREngine, OCRResponse } from './types';
 import { ENGINE_LABELS, ENGINE_DESCRIPTIONS } from './types';
+import './OCRPage.css';
+
+type OCRMode = 'upload' | 'document';
 
 export function OCRPage() {
   const { toast } = useToast();
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  const [mode, setMode] = useState<OCRMode>('upload');
   const [selectedEngine, setSelectedEngine] = useState<OCREngine>('paddle');
+  const [selectedLanguage, setSelectedLanguage] = useState<string>('en');
   const [isProcessing, setIsProcessing] = useState(false);
   const [result, setResult] = useState<OCRResponse | null>(null);
   const [uploadedFileName, setUploadedFileName] = useState<string>('');
+
+  // Document selection
+  const [documents, setDocuments] = useState<DocumentInfo[]>([]);
+  const [selectedDocId, setSelectedDocId] = useState<string>('');
+  const [loadingDocs, setLoadingDocs] = useState(false);
+
+  // Load documents when switching to document mode
+  useEffect(() => {
+    if (mode === 'document' && documents.length === 0) {
+      setLoadingDocs(true);
+      getDocumentsForOCR()
+        .then(setDocuments)
+        .catch((err) => toast.error(`Failed to load documents: ${err.message}`))
+        .finally(() => setLoadingDocs(false));
+    }
+  }, [mode]);
 
   // Fetch OCR health status
   const { data: health, loading: healthLoading } = useFetch<OCRHealthResponse>('/api/ocr/health');
@@ -48,7 +69,7 @@ export function OCRPage() {
     setResult(null);
 
     try {
-      const ocrResult = await ocrUpload(file, selectedEngine, 'en');
+      const ocrResult = await ocrUpload(file, selectedEngine, selectedLanguage);
       setResult(ocrResult);
 
       if (ocrResult.success) {
@@ -71,6 +92,44 @@ export function OCRPage() {
       if (fileInputRef.current) {
         fileInputRef.current.value = '';
       }
+    }
+  };
+
+  const handleDocumentOCR = async () => {
+    if (!selectedDocId) {
+      toast.warning('Please select a document');
+      return;
+    }
+
+    const selectedDoc = documents.find(d => d.id === selectedDocId);
+    setIsProcessing(true);
+    setUploadedFileName(selectedDoc?.name || 'Document');
+    setResult(null);
+
+    try {
+      const ocrResult = await ocrDocument({
+        document_id: selectedDocId,
+        engine: selectedEngine,
+        language: selectedLanguage,
+      });
+      setResult(ocrResult);
+
+      if (ocrResult.success) {
+        toast.success(`OCR completed: ${ocrResult.pages_processed} pages processed`);
+      } else {
+        toast.error(ocrResult.error || 'OCR processing failed');
+      }
+    } catch (error) {
+      toast.error(`OCR failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      setResult({
+        success: false,
+        text: '',
+        pages_processed: 0,
+        engine: selectedEngine,
+        error: error instanceof Error ? error.message : 'Unknown error',
+      });
+    } finally {
+      setIsProcessing(false);
     }
   };
 
@@ -157,62 +216,155 @@ export function OCRPage() {
         )}
       </section>
 
-      {/* Upload Section */}
+      {/* OCR Section */}
       <section className="upload-section">
         <h2>
-          <Icon name="Upload" size={20} />
-          Upload & Process
+          <Icon name="ScanText" size={20} />
+          Process
         </h2>
 
+        {/* Mode Tabs */}
+        <div className="mode-tabs">
+          <button
+            className={`mode-tab ${mode === 'upload' ? 'active' : ''}`}
+            onClick={() => setMode('upload')}
+            disabled={isProcessing}
+          >
+            <Icon name="Upload" size={16} />
+            Upload Image
+          </button>
+          <button
+            className={`mode-tab ${mode === 'document' ? 'active' : ''}`}
+            onClick={() => setMode('document')}
+            disabled={isProcessing}
+          >
+            <Icon name="FileText" size={16} />
+            Existing Document
+          </button>
+        </div>
+
         <div className="upload-container">
-          {/* Engine Selection */}
-          <div className="engine-selector">
-            <label htmlFor="engine-select">Select OCR Engine:</label>
-            <select
-              id="engine-select"
-              value={selectedEngine}
-              onChange={(e) => setSelectedEngine(e.target.value as OCREngine)}
-              disabled={isProcessing}
-            >
-              <option value="paddle" disabled={!engineAvailable('paddle')}>
-                {ENGINE_LABELS.paddle} {!engineAvailable('paddle') && '(Unavailable)'}
-              </option>
-              <option value="qwen" disabled={!engineAvailable('qwen')}>
-                {ENGINE_LABELS.qwen} {!engineAvailable('qwen') && '(Unavailable)'}
-              </option>
-            </select>
+          {/* Common Controls: Engine & Language */}
+          <div className="ocr-controls">
+            <div className="control-group">
+              <label htmlFor="engine-select">OCR Engine:</label>
+              <select
+                id="engine-select"
+                value={selectedEngine}
+                onChange={(e) => setSelectedEngine(e.target.value as OCREngine)}
+                disabled={isProcessing}
+              >
+                <option value="paddle" disabled={!engineAvailable('paddle')}>
+                  {ENGINE_LABELS.paddle} {!engineAvailable('paddle') && '(Unavailable)'}
+                </option>
+                <option value="qwen" disabled={!engineAvailable('qwen')}>
+                  {ENGINE_LABELS.qwen} {!engineAvailable('qwen') && '(Unavailable)'}
+                </option>
+              </select>
+            </div>
+
+            <div className="control-group">
+              <label htmlFor="language-select">Language:</label>
+              <select
+                id="language-select"
+                value={selectedLanguage}
+                onChange={(e) => setSelectedLanguage(e.target.value)}
+                disabled={isProcessing}
+              >
+                <option value="en">English</option>
+                <option value="es">Spanish</option>
+                <option value="fr">French</option>
+                <option value="de">German</option>
+                <option value="zh">Chinese</option>
+                <option value="ja">Japanese</option>
+                <option value="ko">Korean</option>
+              </select>
+            </div>
           </div>
 
-          {/* Upload Button */}
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept="image/*"
-            onChange={handleFileSelect}
-            style={{ display: 'none' }}
-          />
+          {/* Upload Mode */}
+          {mode === 'upload' && (
+            <>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="image/*"
+                onChange={handleFileSelect}
+                style={{ display: 'none' }}
+              />
 
-          <button
-            className="upload-button"
-            onClick={handleUploadClick}
-            disabled={isProcessing || !engineAvailable(selectedEngine)}
-          >
-            {isProcessing ? (
-              <>
-                <Icon name="Loader2" size={20} className="spinning" />
-                Processing...
-              </>
-            ) : (
-              <>
-                <Icon name="Upload" size={20} />
-                Upload Image
-              </>
-            )}
-          </button>
+              <button
+                className="upload-button"
+                onClick={handleUploadClick}
+                disabled={isProcessing || !engineAvailable(selectedEngine)}
+              >
+                {isProcessing ? (
+                  <>
+                    <Icon name="Loader2" size={20} className="spinning" />
+                    Processing...
+                  </>
+                ) : (
+                  <>
+                    <Icon name="Upload" size={20} />
+                    Upload Image
+                  </>
+                )}
+              </button>
 
-          <p className="upload-hint">
-            Supported formats: PNG, JPEG, WebP, BMP (max 10MB)
-          </p>
+              <p className="upload-hint">
+                Supported: PNG, JPEG, WebP, BMP (max 10MB). For PDFs, use the Ingest tab first, then select from "Existing Document".
+              </p>
+            </>
+          )}
+
+          {/* Document Mode */}
+          {mode === 'document' && (
+            <>
+              <div className="document-selector">
+                <label htmlFor="document-select">Select Document:</label>
+                {loadingDocs ? (
+                  <div className="loading-inline">
+                    <Icon name="Loader2" size={16} className="spinning" />
+                    Loading documents...
+                  </div>
+                ) : documents.length === 0 ? (
+                  <p className="no-documents">No OCR-able documents found. Upload images or PDFs first.</p>
+                ) : (
+                  <select
+                    id="document-select"
+                    value={selectedDocId}
+                    onChange={(e) => setSelectedDocId(e.target.value)}
+                    disabled={isProcessing}
+                  >
+                    <option value="">-- Select a document --</option>
+                    {documents.map((doc) => (
+                      <option key={doc.id} value={doc.id}>
+                        {doc.name} ({doc.file_type}, {doc.page_count} page{doc.page_count !== 1 ? 's' : ''})
+                      </option>
+                    ))}
+                  </select>
+                )}
+              </div>
+
+              <button
+                className="upload-button"
+                onClick={handleDocumentOCR}
+                disabled={isProcessing || !selectedDocId || !engineAvailable(selectedEngine)}
+              >
+                {isProcessing ? (
+                  <>
+                    <Icon name="Loader2" size={20} className="spinning" />
+                    Processing...
+                  </>
+                ) : (
+                  <>
+                    <Icon name="ScanText" size={20} />
+                    Run OCR
+                  </>
+                )}
+              </button>
+            </>
+          )}
         </div>
       </section>
 

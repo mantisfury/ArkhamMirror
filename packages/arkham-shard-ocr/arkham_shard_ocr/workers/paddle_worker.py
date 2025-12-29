@@ -47,6 +47,21 @@ class PaddleWorker(BaseWorker):
     _ocr_engine = None
     _lang = None
 
+    def _resolve_path(self, file_path: str) -> str:
+        """
+        Resolve file path using DATA_SILO_PATH for Docker/portable deployments.
+
+        Args:
+            file_path: Path from payload (may be relative or absolute)
+
+        Returns:
+            Resolved absolute path as string
+        """
+        if not os.path.isabs(file_path):
+            data_silo = os.environ.get("DATA_SILO_PATH", ".")
+            return os.path.join(data_silo, file_path)
+        return file_path
+
     @classmethod
     def _get_engine(cls, lang: str = "en", use_angle_cls: bool = True):
         """
@@ -71,10 +86,11 @@ class PaddleWorker(BaseWorker):
                 )
 
             logger.info(f"Initializing PaddleOCR (lang={lang}, angle_cls={use_angle_cls})")
+            # Suppress PaddleOCR's verbose logging via environment
+            os.environ["FLAGS_log_level"] = "3"  # Suppress paddle logging
             cls._ocr_engine = PaddleOCR(
                 use_angle_cls=use_angle_cls,
                 lang=lang,
-                show_log=False,  # Suppress PaddleOCR's verbose logging
             )
             cls._lang = lang
             logger.info("PaddleOCR initialized")
@@ -160,12 +176,14 @@ class PaddleWorker(BaseWorker):
         image_base64 = payload.get("image_base64") or payload.get("base64")
 
         if image_path:
-            if not os.path.exists(image_path):
-                raise FileNotFoundError(f"Image not found: {image_path}")
+            # Resolve relative path using DATA_SILO_PATH
+            resolved_path = self._resolve_path(image_path)
+            if not os.path.exists(resolved_path):
+                raise FileNotFoundError(f"Image not found: {resolved_path}")
 
-            logger.info(f"Job {job_id}: OCR on file {image_path}")
-            img = Image.open(image_path)
-            source = image_path
+            logger.info(f"Job {job_id}: OCR on file {resolved_path}")
+            img = Image.open(resolved_path)
+            source = resolved_path
 
         elif image_base64:
             logger.info(f"Job {job_id}: OCR on base64 image (index {index})")
@@ -179,8 +197,8 @@ class PaddleWorker(BaseWorker):
         # Convert to numpy array for PaddleOCR
         img_np = np.array(img)
 
-        # Run OCR
-        result = ocr_engine.ocr(img_np, det=True, rec=not det_only)
+        # Run OCR (new PaddleOCR API doesn't use det/rec params)
+        result = ocr_engine.ocr(img_np)
 
         # Parse results
         text_lines = []
@@ -232,11 +250,19 @@ class PaddleWorker(BaseWorker):
 
             full_text = "\n".join(text_lines)
 
+        # Calculate average confidence
+        avg_confidence = 0.0
+        if lines:
+            confidences = [line["confidence"] for line in lines if line.get("confidence", 0) > 0]
+            if confidences:
+                avg_confidence = sum(confidences) / len(confidences)
+
         return {
             "text": full_text,
             "lines": lines,
             "line_count": len(lines),
             "char_count": len(full_text),
+            "confidence": round(avg_confidence, 3),  # Average confidence for escalation
             "source": source,
             "lang": self._lang,
             "det_only": det_only,

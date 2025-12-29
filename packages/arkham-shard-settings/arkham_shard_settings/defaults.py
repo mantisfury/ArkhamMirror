@@ -447,6 +447,29 @@ DEFAULT_SETTINGS: list[Setting] = [
         description="Display additional debugging information in the UI",
         order=10,
     ),
+
+    # --- Embedding Model ---
+    Setting(
+        key="advanced.embedding_model",
+        value="BAAI/bge-m3",
+        default_value="BAAI/bge-m3",
+        category=SettingCategory.ADVANCED,
+        data_type=SettingType.SELECT,
+        label="Embedding Model",
+        description=(
+            "Model for semantic text embeddings (vector search). "
+            "WARNING: Changing models after storing vectors requires rebuilding vector collections!"
+        ),
+        options=[
+            {"value": "BAAI/bge-m3", "label": "BGE-M3 (1024-dim, multilingual) - Default"},
+            {"value": "BAAI/bge-large-en-v1.5", "label": "BGE-Large-EN (1024-dim, English)"},
+            {"value": "BAAI/bge-base-en-v1.5", "label": "BGE-Base-EN (768-dim)"},
+            {"value": "sentence-transformers/all-MiniLM-L6-v2", "label": "MiniLM-L6 (384-dim, fast, lightweight)"},
+            {"value": "sentence-transformers/all-mpnet-base-v2", "label": "MPNet-Base (768-dim, balanced)"},
+        ],
+        requires_restart=True,
+        order=11,
+    ),
 ]
 
 

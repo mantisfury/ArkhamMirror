@@ -2,13 +2,18 @@
 WorkerService - Redis queue and worker management.
 
 Implements the worker pool architecture from WORKER_ARCHITECTURE.md.
+Includes integrated process spawning for workers.
 """
 
-from typing import List, Dict, Any, Optional, Callable
+from typing import List, Dict, Any, Optional, Callable, Type
 from dataclasses import dataclass, field
 from datetime import datetime
 import json
 import logging
+import multiprocessing
+import os
+from pathlib import Path
+import time
 import uuid
 
 logger = logging.getLogger(__name__)
@@ -82,6 +87,23 @@ class WorkerInfo:
     jobs_failed: int = 0
 
 
+@dataclass
+class WorkerProcess:
+    """Tracks a worker subprocess."""
+    worker_id: str
+    pool: str
+    process: multiprocessing.Process
+    started_at: datetime = field(default_factory=datetime.utcnow)
+
+    @property
+    def is_alive(self) -> bool:
+        return self.process.is_alive() if self.process else False
+
+    @property
+    def pid(self) -> Optional[int]:
+        return self.process.pid if self.process else None
+
+
 class WorkerService:
     """
     Redis queue and worker management service.
@@ -97,15 +119,19 @@ class WorkerService:
         self._jobs: Dict[str, Job] = {}  # In-memory job tracking
         self._handlers: Dict[str, Callable] = {}  # Pool -> handler function
         self._event_bus = None
-        self._workers: Dict[str, WorkerInfo] = {}  # Active workers
+        self._workers: Dict[str, WorkerInfo] = {}  # Active workers (metadata)
+        self._processes: Dict[str, WorkerProcess] = {}  # Actual worker processes
         self._target_counts: Dict[str, int] = {}  # Target worker counts per pool
+        self._registered_workers: Dict[str, Type] = {}  # Pool -> worker class
+        self._pubsub_task = None  # Background task for Redis pubsub
+        self._pubsub_running = False
 
     def set_event_bus(self, event_bus) -> None:
         """Set event bus for job notifications."""
         self._event_bus = event_bus
 
     async def initialize(self) -> None:
-        """Initialize Redis connection."""
+        """Initialize Redis connection and start pubsub listener."""
         try:
             import redis
 
@@ -113,16 +139,154 @@ class WorkerService:
             self._redis.ping()
             self._available = True
             logger.info(f"Redis connected: {self.config.redis_url}")
+
+            # Start pubsub listener to receive worker events
+            await self._start_pubsub_listener()
         except Exception as e:
             logger.warning(f"Redis connection failed: {e}")
             self._available = False
 
+    async def _start_pubsub_listener(self) -> None:
+        """Start background task to listen for Redis pubsub events from workers."""
+        import asyncio
+
+        self._pubsub_running = True
+        self._pubsub_task = asyncio.create_task(self._pubsub_loop())
+        logger.info("Started Redis pubsub listener for worker events")
+
+    async def _pubsub_loop(self) -> None:
+        """Background loop that listens for worker events on Redis pubsub."""
+        import asyncio
+        import redis.asyncio as aioredis
+
+        try:
+            # Create async Redis connection for pubsub
+            async_redis = aioredis.from_url(self.config.redis_url)
+            pubsub = async_redis.pubsub()
+            await pubsub.subscribe("arkham:events")
+
+            while self._pubsub_running:
+                try:
+                    message = await asyncio.wait_for(
+                        pubsub.get_message(ignore_subscribe_messages=True),
+                        timeout=1.0
+                    )
+                    if message and message["type"] == "message":
+                        await self._handle_pubsub_message(message["data"])
+                except asyncio.TimeoutError:
+                    continue
+                except Exception as e:
+                    logger.warning(f"Pubsub message error: {e}")
+                    await asyncio.sleep(1.0)
+
+        except Exception as e:
+            logger.error(f"Pubsub loop error: {e}")
+        finally:
+            try:
+                await pubsub.unsubscribe("arkham:events")
+                await async_redis.close()
+            except:
+                pass
+
+    async def _handle_pubsub_message(self, data: bytes) -> None:
+        """Handle a message from Redis pubsub."""
+        try:
+            if isinstance(data, bytes):
+                data = data.decode()
+            event_data = json.loads(data)
+
+            event_type = event_data.pop("event", None)
+            if not event_type:
+                return
+
+            # Update internal job tracking
+            job_id = event_data.get("job_id")
+            if job_id and job_id in self._jobs:
+                job = self._jobs[job_id]
+                if event_type == "worker.job.completed":
+                    job.status = "completed"
+                    job.completed_at = datetime.utcnow()
+                    job.result = event_data.get("result")
+                elif event_type == "worker.job.failed":
+                    job.status = "failed"
+                    job.completed_at = datetime.utcnow()
+                    job.error = event_data.get("error")
+
+            # Bridge to Frame's EventBus
+            if self._event_bus:
+                await self._event_bus.emit(event_type, event_data, source="worker-service")
+                logger.debug(f"Bridged event {event_type} to EventBus")
+
+        except Exception as e:
+            logger.warning(f"Failed to handle pubsub message: {e}")
+
     async def shutdown(self) -> None:
-        """Close Redis connection."""
+        """Gracefully shutdown all workers and close Redis connection."""
+        # Stop pubsub listener
+        self._pubsub_running = False
+        if self._pubsub_task:
+            self._pubsub_task.cancel()
+            try:
+                await self._pubsub_task
+            except:
+                pass
+            self._pubsub_task = None
+
+        # Stop all running workers gracefully
+        if self._processes:
+            logger.info(f"Shutting down {len(self._processes)} worker(s)...")
+            await self._shutdown_all_workers(timeout=30.0)
+
         if self._redis:
             self._redis.close()
         self._available = False
-        logger.info("Redis connection closed")
+        logger.info("WorkerService shutdown complete")
+
+    async def _shutdown_all_workers(self, timeout: float = 30.0) -> None:
+        """Gracefully shutdown all workers, waiting for current jobs to complete."""
+        if not self._processes:
+            return
+
+        # Send terminate signal to all workers (they will finish current job)
+        for worker_id, worker_proc in list(self._processes.items()):
+            if worker_proc.is_alive:
+                try:
+                    worker_proc.process.terminate()
+                    logger.info(f"Sent shutdown signal to worker {worker_id}")
+                except (ProcessLookupError, OSError):
+                    pass
+
+        # Wait for all workers to finish (with timeout)
+        start = time.time()
+        while self._processes and (time.time() - start) < timeout:
+            # Check which workers are still alive
+            still_alive = []
+            for worker_id, worker_proc in list(self._processes.items()):
+                if worker_proc.is_alive:
+                    still_alive.append(worker_id)
+                else:
+                    del self._processes[worker_id]
+                    if worker_id in self._workers:
+                        del self._workers[worker_id]
+                    logger.info(f"Worker {worker_id} stopped gracefully")
+
+            if not still_alive:
+                break
+
+            # Wait a bit before checking again
+            time.sleep(0.5)
+
+        # Force kill any remaining workers
+        for worker_id, worker_proc in list(self._processes.items()):
+            if worker_proc.is_alive:
+                logger.warning(f"Force killing worker {worker_id} (timeout exceeded)")
+                try:
+                    worker_proc.process.kill()
+                except (ProcessLookupError, OSError):
+                    pass
+            del self._processes[worker_id]
+            if worker_id in self._workers:
+                del self._workers[worker_id]
 
     def is_available(self) -> bool:
         """Check if Redis is available."""
@@ -180,7 +344,26 @@ class WorkerService:
         else:
             logger.warning(f"Redis unavailable, job {job_id} tracked in memory only")
 
+        # Auto-scale: ensure at least one worker is running for this pool
+        await self._ensure_worker_for_pool(pool)
+
         return job
+
+    async def _ensure_worker_for_pool(self, pool: str) -> None:
+        """Ensure at least one worker is running for the given pool."""
+        # Count running workers for this pool
+        running = sum(
+            1 for wp in self._processes.values()
+            if wp.pool == pool and wp.is_alive
+        )
+
+        if running == 0:
+            # No workers running, spawn one
+            logger.info(f"Auto-scaling: spawning worker for pool {pool}")
+            try:
+                await self.scale(pool, 1)
+            except Exception as e:
+                logger.warning(f"Failed to auto-scale pool {pool}: {e}")
 
     async def dequeue(self, pool: str) -> Optional[Job]:
         """
@@ -361,20 +544,41 @@ class WorkerService:
     # --- Worker Management ---
 
     async def get_workers(self) -> List[Dict[str, Any]]:
-        """Get active workers."""
-        return [
-            {
-                "id": w.id,
-                "pool": w.pool,
-                "status": w.status,
-                "started_at": w.started_at.isoformat(),
-                "current_job_id": w.current_job_id,
-                "jobs_completed": w.jobs_completed,
-                "jobs_failed": w.jobs_failed,
-                "uptime_seconds": (datetime.utcnow() - w.started_at).total_seconds(),
-            }
-            for w in self._workers.values()
-        ]
+        """Get active workers with process info."""
+        self._cleanup_dead_processes()
+        workers = []
+
+        for worker_id in set(self._workers.keys()) | set(self._processes.keys()):
+            worker_info = self._workers.get(worker_id)
+            worker_proc = self._processes.get(worker_id)
+
+            if worker_proc and worker_proc.is_alive:
+                workers.append({
+                    "id": worker_id,
+                    "pool": worker_proc.pool,
+                    "status": worker_info.status if worker_info else "running",
+                    "started_at": worker_proc.started_at.isoformat(),
+                    "current_job_id": worker_info.current_job_id if worker_info else None,
+                    "jobs_completed": worker_info.jobs_completed if worker_info else 0,
+                    "jobs_failed": worker_info.jobs_failed if worker_info else 0,
+                    "uptime_seconds": (datetime.utcnow() - worker_proc.started_at).total_seconds(),
+                    "pid": worker_proc.pid,
+                })
+            elif worker_info:
+                # Metadata exists but no process (shouldn't happen normally)
+                workers.append({
+                    "id": worker_id,
+                    "pool": worker_info.pool,
+                    "status": worker_info.status,
+                    "started_at": worker_info.started_at.isoformat(),
+                    "current_job_id": worker_info.current_job_id,
+                    "jobs_completed": worker_info.jobs_completed,
+                    "jobs_failed": worker_info.jobs_failed,
+                    "uptime_seconds": (datetime.utcnow() - worker_info.started_at).total_seconds(),
+                    "pid": None,
+                })
+
+        return workers
 
     async def get_workers_by_pool(self, pool: str) -> List[Dict[str, Any]]:
         """Get workers for a specific pool."""
@@ -394,11 +598,111 @@ class WorkerService:
 
     def get_worker_count(self, pool: str) -> int:
         """Get number of active workers for a pool."""
-        return sum(1 for w in self._workers.values() if w.pool == pool)
+        # Count actual running processes
+        self._cleanup_dead_processes()
+        return sum(1 for p in self._processes.values() if p.pool == pool and p.is_alive)
 
     def get_target_count(self, pool: str) -> int:
         """Get target worker count for a pool."""
         return self._target_counts.get(pool, 0)
+
+    def _cleanup_dead_processes(self) -> int:
+        """Remove dead processes from tracking."""
+        dead = [
+            wid for wid, wp in self._processes.items()
+            if not wp.is_alive
+        ]
+        for worker_id in dead:
+            del self._processes[worker_id]
+            if worker_id in self._workers:
+                del self._workers[worker_id]
+        return len(dead)
+
+    def _get_worker_class(self, pool: str) -> Optional[Type]:
+        """Get the worker class for a pool, checking both registered and built-in workers."""
+        # First check shard-registered workers
+        if pool in self._registered_workers:
+            return self._registered_workers[pool]
+
+        # Fall back to built-in workers from cli.py
+        try:
+            from arkham_frame.workers.cli import get_worker_class
+            return get_worker_class(pool)
+        except ImportError:
+            return None
+
+    def _spawn_worker_process(self, pool: str, worker_id: str) -> Optional[WorkerProcess]:
+        """Spawn a worker subprocess."""
+        worker_class = self._get_worker_class(pool)
+        if not worker_class:
+            logger.error(f"No worker class registered for pool {pool}")
+            return None
+
+        # Get Redis URL from config (defaults handled by ConfigService)
+        redis_url = self.config.redis_url or 'redis://localhost:6379'
+
+        # Set DATA_SILO_PATH for workers to resolve relative file paths
+        # This enables portability across Docker/host environments
+        data_silo_path = self.config.get("data_silo_path", "./DataSilo")
+        os.environ["DATA_SILO_PATH"] = str(Path(data_silo_path).resolve())
+
+        # Import the run_worker function
+        from arkham_frame.workers.base import run_worker
+
+        # Create subprocess (non-daemon so workers can finish their current job on shutdown)
+        # Environment variables are inherited by the child process
+        process = multiprocessing.Process(
+            target=run_worker,
+            args=(worker_class, redis_url, worker_id),
+            name=f"worker-{worker_id}",
+            daemon=False,
+        )
+
+        process.start()
+
+        worker_proc = WorkerProcess(
+            worker_id=worker_id,
+            pool=pool,
+            process=process,
+        )
+
+        self._processes[worker_id] = worker_proc
+        logger.info(f"Spawned worker {worker_id} (PID {process.pid}) for pool {pool}")
+
+        return worker_proc
+
+    def _kill_worker_process(self, worker_id: str, timeout: float = 5.0) -> bool:
+        """Kill a worker process."""
+        if worker_id not in self._processes:
+            return False
+
+        worker_proc = self._processes[worker_id]
+
+        if not worker_proc.is_alive:
+            del self._processes[worker_id]
+            return True
+
+        # Try graceful shutdown - use terminate() for cross-platform compatibility
+        try:
+            worker_proc.process.terminate()
+        except (ProcessLookupError, OSError):
+            del self._processes[worker_id]
+            return True
+
+        # Wait for process to exit
+        start = time.time()
+        while worker_proc.is_alive and (time.time() - start) < timeout:
+            time.sleep(0.1)
+
+        # Force kill if still alive
+        if worker_proc.is_alive:
+            try:
+                worker_proc.process.kill()
+            except (ProcessLookupError, OSError):
+                pass
+
+        del self._processes[worker_id]
+        return True
 
     async def scale(self, pool: str, count: int) -> Dict[str, Any]:
         """Scale workers for a pool."""
@@ -447,9 +751,17 @@ class WorkerService:
         }
 
     async def start_worker(self, pool: str) -> Dict[str, Any]:
-        """Start a worker for a pool."""
+        """Start a worker for a pool by spawning a subprocess."""
         if pool not in WORKER_POOLS:
-            raise WorkerError(f"Unknown pool: {pool}")
+            return {"success": False, "error": f"Unknown pool: {pool}"}
+
+        # Check if worker class is available
+        worker_class = self._get_worker_class(pool)
+        if not worker_class:
+            return {
+                "success": False,
+                "error": f"No worker implementation for pool {pool}. Worker class not registered.",
+            }
 
         # Check max workers
         current_count = self.get_worker_count(pool)
@@ -460,41 +772,58 @@ class WorkerService:
                 "error": f"Pool {pool} already at max workers ({max_workers})",
             }
 
-        # Create worker
+        # Generate worker ID and spawn process
         worker_id = f"{pool}-{uuid.uuid4().hex[:8]}"
+        worker_proc = self._spawn_worker_process(pool, worker_id)
+
+        if not worker_proc:
+            return {
+                "success": False,
+                "error": f"Failed to spawn worker for pool {pool}",
+            }
+
+        # Create metadata entry
         worker = WorkerInfo(id=worker_id, pool=pool)
         self._workers[worker_id] = worker
 
-        logger.info(f"Started worker {worker_id} for pool {pool}")
+        logger.info(f"Started worker {worker_id} (PID {worker_proc.pid}) for pool {pool}")
 
         # Emit event
         if self._event_bus:
             await self._event_bus.emit(
                 "worker.started",
-                {"worker_id": worker_id, "pool": pool},
+                {"worker_id": worker_id, "pool": pool, "pid": worker_proc.pid},
                 source="worker-service",
             )
 
-        return {"success": True, "worker_id": worker_id, "pool": pool}
+        return {"success": True, "worker_id": worker_id, "pool": pool, "pid": worker_proc.pid}
 
     async def stop_worker(self, worker_id: str) -> Dict[str, Any]:
-        """Stop a worker."""
-        if worker_id not in self._workers:
+        """Stop a worker by killing its process."""
+        # Check both workers and processes
+        if worker_id not in self._workers and worker_id not in self._processes:
             return {"success": False, "error": f"Worker {worker_id} not found"}
 
-        worker = self._workers[worker_id]
-        pool = worker.pool
+        pool = None
+        if worker_id in self._workers:
+            worker = self._workers[worker_id]
+            pool = worker.pool
+            worker.status = "stopping"
 
-        # Mark as stopping (in real impl, would gracefully finish current job)
-        worker.status = "stopping"
+        # Kill the actual process if it exists
+        if worker_id in self._processes:
+            if not pool:
+                pool = self._processes[worker_id].pool
+            self._kill_worker_process(worker_id)
 
-        # Remove worker
-        del self._workers[worker_id]
+        # Remove metadata
+        if worker_id in self._workers:
+            del self._workers[worker_id]
 
         logger.info(f"Stopped worker {worker_id}")
 
         # Emit event
-        if self._event_bus:
+        if self._event_bus and pool:
             await self._event_bus.emit(
                 "worker.stopped",
                 {"worker_id": worker_id, "pool": pool},
@@ -506,15 +835,24 @@ class WorkerService:
     async def stop_all_workers(self, pool: Optional[str] = None) -> Dict[str, Any]:
         """Stop all workers, optionally filtered by pool."""
         stopped = []
-        workers_to_stop = list(self._workers.values())
 
-        if pool:
-            workers_to_stop = [w for w in workers_to_stop if w.pool == pool]
+        # Get all worker IDs from both workers and processes
+        worker_ids = set(self._workers.keys()) | set(self._processes.keys())
 
-        for worker in workers_to_stop:
-            result = await self.stop_worker(worker.id)
+        for worker_id in worker_ids:
+            # Check if we should filter by pool
+            worker_pool = None
+            if worker_id in self._workers:
+                worker_pool = self._workers[worker_id].pool
+            elif worker_id in self._processes:
+                worker_pool = self._processes[worker_id].pool
+
+            if pool and worker_pool != pool:
+                continue
+
+            result = await self.stop_worker(worker_id)
             if result["success"]:
-                stopped.append(worker.id)
+                stopped.append(worker_id)
 
         return {"success": True, "stopped": stopped, "count": len(stopped)}
 
@@ -524,8 +862,6 @@ class WorkerService:
         logger.info(f"Registered handler for pool {pool}")
 
     # --- Worker Registration (for shards) ---
-
-    _registered_workers: Dict[str, type] = {}
 
     def register_worker(self, worker_class: type) -> None:
         """

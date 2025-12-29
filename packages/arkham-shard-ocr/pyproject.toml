@@ -11,6 +11,7 @@ dependencies = [
     "paddlepaddle>=2.5.0",  # CPU version, GPU users install paddlepaddle-gpu
     "pillow>=10.0.0",
     "httpx>=0.24.0",
+    "pdf2image>=1.16.0",  # For converting PDFs to images for OCR
 ]
 
 [project.optional-dependencies]

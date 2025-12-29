@@ -2,6 +2,7 @@
 
 import hashlib
 import logging
+import os
 import shutil
 import uuid
 from datetime import datetime
@@ -24,18 +25,45 @@ from .models import (
 logger = logging.getLogger(__name__)
 
 
+class ValidationError(Exception):
+    """Raised when file validation fails."""
+    pass
+
+
 class IntakeManager:
     """
     Manages file intake, classification, and job creation.
     """
 
+    # Validation defaults
+    DEFAULT_MIN_SIZE_BYTES = 100  # Files smaller than this are likely corrupt
+    DEFAULT_MAX_SIZE_MB = 100  # 100MB default limit
+
     def __init__(
         self,
         storage_path: Path,
         temp_path: Path | None = None,
+        ocr_mode: str = "auto",
+        min_file_size: int | None = None,
+        max_file_size_mb: int | None = None,
+        enable_validation: bool = True,
+        enable_deduplication: bool = True,
+        enable_downscale: bool = True,
+        skip_blank_pages: bool = True,
+        data_silo_path: Path | None = None,
     ):
         self.storage_path = Path(storage_path)
         self.temp_path = Path(temp_path) if temp_path else self.storage_path / "temp"
+        # Store base path for creating portable relative paths
+        # This allows workers in different environments (Docker vs host) to resolve paths
+        self.data_silo_path = Path(data_silo_path).resolve() if data_silo_path else self.storage_path.parent.resolve()
+        self.ocr_mode = ocr_mode
+        self.enable_validation = enable_validation
+        self.enable_deduplication = enable_deduplication
+        self.enable_downscale = enable_downscale
+        self.skip_blank_pages = skip_blank_pages
+        self.min_file_size = min_file_size if min_file_size is not None else self.DEFAULT_MIN_SIZE_BYTES
+        self.max_file_size = (max_file_size_mb if max_file_size_mb is not None else self.DEFAULT_MAX_SIZE_MB) * 1024 * 1024
 
         # Ensure directories exist
         self.storage_path.mkdir(parents=True, exist_ok=True)
@@ -49,11 +77,28 @@ class IntakeManager:
         self._jobs: dict[str, IngestJob] = {}
         self._batches: dict[str, IngestBatch] = {}
 
+        # Deduplication: checksum -> job_id
+        self._checksums: dict[str, str] = {}
+
+    def get_relative_path(self, absolute_path: Path) -> str:
+        """
+        Convert an absolute path to a path relative to data_silo_path.
+
+        This ensures portability across different environments (Docker, host, etc.)
+        """
+        try:
+            return str(absolute_path.resolve().relative_to(self.data_silo_path))
+        except ValueError:
+            # Path is not under data_silo_path, return as-is
+            logger.warning(f"Path {absolute_path} is not under {self.data_silo_path}")
+            return str(absolute_path)
+
     async def receive_file(
         self,
         file: BinaryIO,
         filename: str,
         priority: JobPriority = JobPriority.USER,
+        ocr_mode: str | None = None,
     ) -> IngestJob:
         """
         Receive an uploaded file and create an ingest job.
@@ -62,10 +107,14 @@ class IntakeManager:
             file: File-like object with the content
             filename: Original filename
             priority: Job priority level
+            ocr_mode: OCR routing mode override (auto, paddle_only, qwen_only).
+                      If None, uses the instance default.
 
         Returns:
             Created IngestJob
         """
+        # Use request-level ocr_mode if provided, otherwise fall back to instance default
+        effective_ocr_mode = ocr_mode if ocr_mode else self.ocr_mode
         # Generate unique ID
         job_id = str(uuid.uuid4())
 
@@ -81,6 +130,30 @@ class IntakeManager:
                 checksum.update(chunk)
 
         file_hash = checksum.hexdigest()
+
+        # Deduplication check: if we've seen this file before, return existing job
+        if self.enable_deduplication:
+            existing_job_id = self._checksums.get(file_hash)
+            if existing_job_id:
+                existing_job = self._jobs.get(existing_job_id)
+                if existing_job:
+                    # Clean up temp file and return existing job
+                    temp_file.unlink(missing_ok=True)
+                    logger.info(
+                        f"Duplicate detected: {filename} matches existing job {existing_job_id}"
+                    )
+                    return existing_job
+
+        # Get extension for validation
+        extension = Path(filename).suffix.lower()
+
+        # Early validation: reject corrupt/invalid files before processing
+        try:
+            self._validate_file(temp_file, extension)
+        except ValidationError as e:
+            temp_file.unlink(missing_ok=True)
+            logger.warning(f"Validation failed for {filename}: {e}")
+            raise
 
         # Classify file
         file_info = self.file_classifier.classify(temp_file)
@@ -103,7 +176,9 @@ class IntakeManager:
             # Update route based on quality
             job.worker_route = self.image_classifier.get_ocr_route(
                 job.quality_score,
-                ocr_mode="auto",  # TODO: Get from config
+                ocr_mode=effective_ocr_mode,
+                enable_downscale=self.enable_downscale,
+                skip_blank_pages=self.skip_blank_pages,
             )
 
         # Move to permanent storage
@@ -112,8 +187,9 @@ class IntakeManager:
         shutil.move(temp_file, permanent_path)
         job.file_info.path = permanent_path
 
-        # Track job
+        # Track job and checksum for deduplication
         self._jobs[job_id] = job
+        self._checksums[file_hash] = job_id
 
         logger.info(
             f"Received file: {filename} -> job {job_id} "
@@ -126,6 +202,7 @@ class IntakeManager:
         self,
         files: list[tuple[BinaryIO, str]],
         priority: JobPriority = JobPriority.BATCH,
+        ocr_mode: str | None = None,
     ) -> IngestBatch:
         """
         Receive multiple files as a batch.
@@ -133,6 +210,7 @@ class IntakeManager:
         Args:
             files: List of (file, filename) tuples
             priority: Priority for all jobs in batch
+            ocr_mode: OCR routing mode override for all files in batch
 
         Returns:
             Created IngestBatch
@@ -146,7 +224,7 @@ class IntakeManager:
 
         for file, filename in files:
             try:
-                job = await self.receive_file(file, filename, priority)
+                job = await self.receive_file(file, filename, priority, ocr_mode=ocr_mode)
                 batch.jobs.append(job)
             except Exception as e:
                 logger.error(f"Failed to receive {filename}: {e}")
@@ -160,6 +238,7 @@ class IntakeManager:
         path: Path,
         priority: JobPriority = JobPriority.BATCH,
         recursive: bool = True,
+        ocr_mode: str | None = None,
     ) -> IngestBatch:
         """
         Ingest files from a local path.
@@ -168,6 +247,7 @@ class IntakeManager:
             path: File or directory path
             priority: Job priority
             recursive: If directory, recurse into subdirectories
+            ocr_mode: OCR routing mode override
 
         Returns:
             Created IngestBatch
@@ -177,7 +257,7 @@ class IntakeManager:
         if path.is_file():
             # Single file
             with open(path, "rb") as f:
-                job = await self.receive_file(f, path.name, priority)
+                job = await self.receive_file(f, path.name, priority, ocr_mode=ocr_mode)
             batch = IngestBatch(
                 id=str(uuid.uuid4()),
                 jobs=[job],
@@ -195,7 +275,7 @@ class IntakeManager:
                 if file_path.is_file():
                     files.append((open(file_path, "rb"), file_path.name))
 
-            batch = await self.receive_batch(files, priority)
+            batch = await self.receive_batch(files, priority, ocr_mode=ocr_mode)
 
             # Close file handles
             for f, _ in files:
@@ -280,18 +360,68 @@ class IntakeManager:
             safe = name[:200-len(ext)-1] + "." + ext if ext else name[:200]
         return safe or "unnamed"
 
+    def _validate_file(self, path: Path, extension: str) -> None:
+        """
+        Validate file before processing.
+
+        Raises:
+            ValidationError: If file fails validation
+        """
+        if not self.enable_validation:
+            return
+
+        size = path.stat().st_size
+
+        # Size checks
+        if size < self.min_file_size:
+            raise ValidationError(
+                f"File too small ({size} bytes). Minimum is {self.min_file_size} bytes."
+            )
+        if size > self.max_file_size:
+            max_mb = self.max_file_size / (1024 * 1024)
+            raise ValidationError(
+                f"File too large ({size / (1024*1024):.1f}MB). Maximum is {max_mb:.0f}MB."
+            )
+
+        # Format-specific validation
+        ext = extension.lower()
+
+        # Validate images can be opened
+        if ext in (".png", ".jpg", ".jpeg", ".tiff", ".tif", ".bmp", ".webp"):
+            try:
+                from PIL import Image
+                with Image.open(path) as img:
+                    img.verify()  # Verify it's a valid image
+            except Exception as e:
+                raise ValidationError(f"Invalid image file: {e}")
+
+        # Validate PDFs can be read
+        elif ext == ".pdf":
+            try:
+                from pypdf import PdfReader
+                reader = PdfReader(path)
+                page_count = len(reader.pages)
+                if page_count == 0:
+                    raise ValidationError("PDF has no pages")
+            except ValidationError:
+                raise
+            except Exception as e:
+                raise ValidationError(f"Invalid PDF file: {e}")
+
 
 class JobDispatcher:
     """
     Dispatches jobs to worker pools.
     """
 
-    def __init__(self, worker_service):
+    def __init__(self, worker_service, intake_manager: IntakeManager | None = None):
         """
         Args:
             worker_service: Frame's WorkerService instance
+            intake_manager: IntakeManager for path resolution (optional for backwards compat)
         """
         self.worker_service = worker_service
+        self.intake_manager = intake_manager
         self._active_jobs: dict[str, str] = {}  # job_id -> worker_pool
 
     async def dispatch(self, job: IngestJob) -> bool:
@@ -302,39 +432,68 @@ class JobDispatcher:
             True if dispatched successfully
         """
         if not job.worker_route:
-            logger.error(f"Job {job.id} has no worker route")
-            return False
+            # Empty route means no processing needed (e.g., blank page detected)
+            # Mark as completed immediately - no workers to dispatch to
+            logger.info(f"Job {job.id} has empty route - completing without processing")
+            job.status = JobStatus.COMPLETED
+            job.completed_at = datetime.utcnow()
+            job.result = {
+                "skipped": True,
+                "reason": "blank_page" if (job.quality_score and job.quality_score.is_blank) else "empty_route",
+            }
+            return True
 
-        # Get first worker pool
-        pool = job.worker_route[0]
-        job.current_worker = pool
+        # Get first worker pool (may include operation suffix like "cpu-image:downscale")
+        pool_spec = job.worker_route[0]
+        job.current_worker = pool_spec
         job.status = JobStatus.QUEUED
 
+        # Parse pool:operation format (e.g., "cpu-image:downscale" -> pool="cpu-image", operation="downscale")
+        if ":" in pool_spec:
+            pool, operation = pool_spec.split(":", 1)
+        else:
+            pool = pool_spec
+            operation = None
+
         try:
+            # Build payload with portable relative path
+            # Workers use DATA_SILO_PATH env var to resolve the full path
+            if self.intake_manager:
+                file_path = self.intake_manager.get_relative_path(job.file_info.path)
+            else:
+                # Fallback to absolute path (less portable but backwards compatible)
+                file_path = str(job.file_info.path.resolve())
+
+            payload = {
+                "file_path": file_path,
+                "file_info": {
+                    "name": job.file_info.original_name,
+                    "mime_type": job.file_info.mime_type,
+                    "category": job.file_info.category.value,
+                    "size": job.file_info.size_bytes,
+                },
+                "quality_score": (
+                    {
+                        "classification": job.quality_score.classification.value,
+                        "issues": job.quality_score.issues,
+                        "analysis_ms": job.quality_score.analysis_ms,
+                    }
+                    if job.quality_score
+                    else None
+                ),
+                "route": job.worker_route,
+                "route_index": 0,
+            }
+
+            # Add operation if specified in pool name
+            if operation:
+                payload["operation"] = operation
+
             # Enqueue to worker service
             await self.worker_service.enqueue(
                 pool=pool,
                 job_id=job.id,
-                payload={
-                    "file_path": str(job.file_info.path),
-                    "file_info": {
-                        "name": job.file_info.original_name,
-                        "mime_type": job.file_info.mime_type,
-                        "category": job.file_info.category.value,
-                        "size": job.file_info.size_bytes,
-                    },
-                    "quality_score": (
-                        {
-                            "classification": job.quality_score.classification.value,
-                            "issues": job.quality_score.issues,
-                            "analysis_ms": job.quality_score.analysis_ms,
-                        }
-                        if job.quality_score
-                        else None
-                    ),
-                    "route": job.worker_route,
-                    "route_index": 0,
-                },
+                payload=payload,
                 priority=job.priority.value,
             )
 
@@ -373,22 +532,36 @@ class JobDispatcher:
             del self._active_jobs[job.id]
             return False
 
-        # Dispatch to next worker
-        next_pool = job.worker_route[next_idx]
-        job.current_worker = next_pool
+        # Dispatch to next worker (may include operation suffix like "cpu-image:downscale")
+        pool_spec = job.worker_route[next_idx]
+        job.current_worker = pool_spec
+
+        # Parse pool:operation format
+        if ":" in pool_spec:
+            pool, operation = pool_spec.split(":", 1)
+        else:
+            pool = pool_spec
+            operation = None
+
+        # Build payload with accumulated results
+        payload = {
+            **result,  # Pass along accumulated results
+            "route": job.worker_route,
+            "route_index": next_idx,
+        }
+
+        # Add operation if specified in pool name
+        if operation:
+            payload["operation"] = operation
 
         await self.worker_service.enqueue(
-            pool=next_pool,
+            pool=pool,
             job_id=job.id,
-            payload={
-                **result,  # Pass along accumulated results
-                "route": job.worker_route,
-                "route_index": next_idx,
-            },
+            payload=payload,
             priority=job.priority.value,
         )
 
-        self._active_jobs[job.id] = next_pool
+        self._active_jobs[job.id] = pool
         return True
 
     async def retry(self, job: IngestJob) -> bool:

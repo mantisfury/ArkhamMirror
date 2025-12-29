@@ -94,7 +94,7 @@ class WorkerRegistry:
 
         if not self.redis_url:
             import os
-            self.redis_url = os.environ.get("REDIS_URL", "redis://localhost:6380")
+            self.redis_url = os.environ.get("REDIS_URL", "redis://localhost:6379")
 
         try:
             import redis.asyncio as aioredis

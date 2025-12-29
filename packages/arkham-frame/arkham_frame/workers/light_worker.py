@@ -54,7 +54,7 @@ class LightWorker(BaseWorker):
 
         Args:
             job_id: Job identifier
-            payload: Job data with 'task' and 'text' fields
+            payload: Job data with 'task' and 'text' fields, OR 'file_path' for ingest jobs
 
         Returns:
             Result dict based on task type
@@ -62,8 +62,25 @@ class LightWorker(BaseWorker):
         task = payload.get("task", "process")
         text = payload.get("text", "")
 
+        # If no text provided but we have a file_path (from ingest), read the file
+        if not text and "file_path" in payload:
+            file_path = payload["file_path"]
+            # Resolve relative path using DATA_SILO_PATH (for Docker/portable deployments)
+            import os
+            from pathlib import Path
+            if not os.path.isabs(file_path):
+                data_silo = os.environ.get("DATA_SILO_PATH", ".")
+                file_path = str(Path(data_silo) / file_path)
+            try:
+                with open(file_path, "r", encoding="utf-8", errors="replace") as f:
+                    text = f.read()
+                logger.info(f"Read {len(text)} chars from {file_path}")
+            except Exception as e:
+                logger.error(f"Failed to read file {file_path}: {e}")
+                return {"error": f"Failed to read file: {e}"}
+
         if not text:
-            return {"error": "No text provided"}
+            return {"error": "No text provided and no file_path specified"}
 
         if task == "normalize":
             return self._normalize(text)
@@ -78,6 +95,7 @@ class LightWorker(BaseWorker):
             quality = self._assess_quality(normalized["text"])
 
             return {
+                "text": normalized["text"],  # Include processed text for downstream use
                 "normalized_text": normalized["text"],
                 "normalization_changes": normalized["changes"],
                 "language": language["language"],

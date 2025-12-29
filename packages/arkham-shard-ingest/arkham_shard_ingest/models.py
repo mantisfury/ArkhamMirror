@@ -76,9 +76,26 @@ class ImageQualityScore:
     compression_ratio: float
     has_noise: bool
     layout_complexity: str  # simple | table | mixed | complex
+    is_blank: bool = False  # True if page appears blank/near-blank
 
     # Analysis time
     analysis_ms: float = 0.0
+
+    # DPI thresholds for downscaling
+    DOWNSCALE_THRESHOLD_DPI: int = 200
+    TARGET_DPI: int = 150
+
+    @property
+    def needs_downscale(self) -> bool:
+        """Check if image should be downscaled for OCR (memory optimization)."""
+        return self.dpi > self.DOWNSCALE_THRESHOLD_DPI
+
+    @property
+    def downscale_factor(self) -> float:
+        """Calculate downscale factor to reach target DPI."""
+        if not self.needs_downscale:
+            return 1.0
+        return self.TARGET_DPI / self.dpi
 
     @property
     def classification(self) -> ImageQuality:

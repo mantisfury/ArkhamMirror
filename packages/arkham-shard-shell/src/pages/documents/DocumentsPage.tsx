@@ -9,6 +9,7 @@ import { Icon } from '../../components/common/Icon';
 import { useToast } from '../../context/ToastContext';
 import { useFetch } from '../../hooks/useFetch';
 import { usePaginatedFetch } from '../../hooks';
+import { DocumentViewer } from './DocumentViewer';
 import './DocumentsPage.css';
 
 // Types
@@ -135,212 +136,233 @@ export function DocumentsPage() {
   const hasFilters = searchQuery || statusFilter;
 
   return (
-    <div className="documents-page">
-      <header className="page-header">
-        <div className="page-title">
-          <Icon name="FileText" size={28} />
-          <div>
-            <h1>Documents</h1>
-            <p className="page-description">Browse and manage documents</p>
+    <div className={`documents-page ${selectedDoc ? 'with-viewer' : ''}`}>
+      <div className="documents-list-panel">
+        <header className="page-header">
+          <div className="page-title">
+            <Icon name="FileText" size={28} />
+            <div>
+              <h1>Documents</h1>
+              <p className="page-description">Browse and manage documents</p>
+            </div>
           </div>
-        </div>
 
-        {stats && (
-          <div className="stats-bar">
-            <div className="stat-item">
-              <Icon name="FileText" size={16} />
-              <span>{stats.total_documents} total</span>
-            </div>
-            <div className="stat-item">
-              <Icon name="CheckCircle2" size={16} />
-              <span>{stats.processed_documents} processed</span>
-            </div>
-            <div className="stat-item">
-              <Icon name="Loader2" size={16} />
-              <span>{stats.processing_documents} processing</span>
-            </div>
-            {stats.failed_documents > 0 && (
-              <div className="stat-item error">
-                <Icon name="XCircle" size={16} />
-                <span>{stats.failed_documents} failed</span>
+          {stats && (
+            <div className="stats-bar">
+              <div className="stat-item">
+                <Icon name="FileText" size={16} />
+                <span>{stats.total_documents} total</span>
               </div>
-            )}
-          </div>
-        )}
-      </header>
-
-      <div className="documents-controls">
-        <form className="search-bar" onSubmit={handleSearch}>
-          <Icon name="Search" size={16} />
-          <input
-            type="text"
-            placeholder="Search documents..."
-            value={searchQuery}
-            onChange={e => setSearchQuery(e.target.value)}
-          />
-          {searchQuery && (
-            <button
-              type="button"
-              className="clear-search"
-              onClick={() => setSearchQuery('')}
-              title="Clear search"
-            >
-              <Icon name="X" size={14} />
-            </button>
+              <div className="stat-item">
+                <Icon name="CheckCircle2" size={16} />
+                <span>{stats.processed_documents} processed</span>
+              </div>
+              <div className="stat-item">
+                <Icon name="Loader2" size={16} />
+                <span>{stats.processing_documents} processing</span>
+              </div>
+              {stats.failed_documents > 0 && (
+                <div className="stat-item error">
+                  <Icon name="XCircle" size={16} />
+                  <span>{stats.failed_documents} failed</span>
+                </div>
+              )}
+            </div>
           )}
-        </form>
+        </header>
 
-        <div className="filters">
-          <select
-            value={statusFilter}
-            onChange={e => setStatusFilter(e.target.value)}
-            className="filter-select"
-          >
-            <option value="">All statuses</option>
-            <option value="uploaded">Uploaded</option>
-            <option value="processing">Processing</option>
-            <option value="processed">Processed</option>
-            <option value="failed">Failed</option>
-            <option value="archived">Archived</option>
-          </select>
-
-          {hasFilters && (
-            <button className="btn btn-secondary" onClick={handleClearFilters}>
-              <Icon name="X" size={14} />
-              Clear filters
-            </button>
-          )}
-        </div>
-
-        <div className="view-toggle">
-          <button
-            className={`view-btn ${viewMode === 'list' ? 'active' : ''}`}
-            onClick={() => setViewMode('list')}
-            title="List view"
-          >
-            <Icon name="List" size={16} />
-          </button>
-          <button
-            className={`view-btn ${viewMode === 'grid' ? 'active' : ''}`}
-            onClick={() => setViewMode('grid')}
-            title="Grid view"
-          >
-            <Icon name="Grid3x3" size={16} />
-          </button>
-        </div>
-      </div>
-
-      <main className="documents-content">
-        {loading ? (
-          <div className="documents-loading">
-            <Icon name="Loader2" size={32} className="spin" />
-            <span>Loading documents...</span>
-          </div>
-        ) : error ? (
-          <div className="documents-error">
-            <Icon name="AlertCircle" size={32} />
-            <span>Failed to load documents</span>
-            <button className="btn btn-secondary" onClick={() => refetch()}>
-              Retry
-            </button>
-          </div>
-        ) : documents.length > 0 ? (
-          <div className={`documents-${viewMode}`}>
-            {documents.map(doc => (
-              <div
-                key={doc.id}
-                className={`document-item ${selectedDoc === doc.id ? 'selected' : ''}`}
-                onClick={() => handleSelectDocument(doc.id)}
+        <div className="documents-controls">
+          <form className="search-bar" onSubmit={handleSearch}>
+            <Icon name="Search" size={16} />
+            <input
+              type="text"
+              placeholder="Search documents..."
+              value={searchQuery}
+              onChange={e => setSearchQuery(e.target.value)}
+            />
+            {searchQuery && (
+              <button
+                type="button"
+                className="clear-search"
+                onClick={() => setSearchQuery('')}
+                title="Clear search"
               >
-                <div className="document-header">
-                  <div className="document-icon">
-                    <Icon name="FileText" size={20} />
-                  </div>
-                  <div className="document-info">
-                    <h3 className="document-title">{doc.title}</h3>
-                    <p className="document-filename">{doc.filename}</p>
-                  </div>
-                  <div
-                    className="document-status"
-                    style={{ color: STATUS_COLORS[doc.status] }}
-                  >
-                    <Icon name={STATUS_ICONS[doc.status] || 'Circle'} size={14} />
-                    <span>{doc.status}</span>
-                  </div>
-                </div>
+                <Icon name="X" size={14} />
+              </button>
+            )}
+          </form>
 
-                <div className="document-meta">
-                  <div className="meta-item">
-                    <Icon name="FileType" size={12} />
-                    <span>{doc.file_type || 'Unknown'}</span>
-                  </div>
-                  <div className="meta-item">
-                    <Icon name="HardDrive" size={12} />
-                    <span>{formatFileSize(doc.file_size)}</span>
-                  </div>
-                  {doc.page_count > 0 && (
-                    <div className="meta-item">
-                      <Icon name="FileText" size={12} />
-                      <span>{doc.page_count} pages</span>
-                    </div>
-                  )}
-                  {doc.chunk_count > 0 && (
-                    <div className="meta-item">
-                      <Icon name="Package" size={12} />
-                      <span>{doc.chunk_count} chunks</span>
-                    </div>
-                  )}
-                </div>
+          <div className="filters">
+            <select
+              value={statusFilter}
+              onChange={e => setStatusFilter(e.target.value)}
+              className="filter-select"
+            >
+              <option value="">All statuses</option>
+              <option value="uploaded">Uploaded</option>
+              <option value="processing">Processing</option>
+              <option value="processed">Processed</option>
+              <option value="failed">Failed</option>
+              <option value="archived">Archived</option>
+            </select>
 
-                <div className="document-footer">
-                  <div className="document-date">
-                    <Icon name="Clock" size={12} />
-                    <span>{formatDate(doc.created_at)}</span>
-                  </div>
-                  <div className="document-actions">
-                    <button
-                      className="action-btn"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        handleDeleteDocument(doc.id, doc.title);
-                      }}
-                      title="Delete document"
-                    >
-                      <Icon name="Trash2" size={14} />
-                    </button>
-                  </div>
-                </div>
-
-                {doc.tags.length > 0 && (
-                  <div className="document-tags">
-                    {doc.tags.map((tag, idx) => (
-                      <span key={idx} className="tag">
-                        {tag}
-                      </span>
-                    ))}
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
-        ) : (
-          <div className="documents-empty">
-            <Icon name="FileText" size={48} />
-            <span>No documents found</span>
             {hasFilters && (
               <button className="btn btn-secondary" onClick={handleClearFilters}>
+                <Icon name="X" size={14} />
                 Clear filters
               </button>
             )}
           </div>
-        )}
-      </main>
 
-      {total > 0 && (
-        <div className="pagination">
-          <span>
-            Showing {documents.length} of {total} documents
-          </span>
+          <div className="view-toggle">
+            <button
+              className={`view-btn ${viewMode === 'list' ? 'active' : ''}`}
+              onClick={() => setViewMode('list')}
+              title="List view"
+            >
+              <Icon name="List" size={16} />
+            </button>
+            <button
+              className={`view-btn ${viewMode === 'grid' ? 'active' : ''}`}
+              onClick={() => setViewMode('grid')}
+              title="Grid view"
+            >
+              <Icon name="Grid3x3" size={16} />
+            </button>
+          </div>
+        </div>
+
+        <main className="documents-content">
+          {loading ? (
+            <div className="documents-loading">
+              <Icon name="Loader2" size={32} className="spin" />
+              <span>Loading documents...</span>
+            </div>
+          ) : error ? (
+            <div className="documents-error">
+              <Icon name="AlertCircle" size={32} />
+              <span>Failed to load documents</span>
+              <button className="btn btn-secondary" onClick={() => refetch()}>
+                Retry
+              </button>
+            </div>
+          ) : documents.length > 0 ? (
+            <div className={`documents-${viewMode}`}>
+              {documents.map(doc => (
+                <div
+                  key={doc.id}
+                  className={`document-item ${selectedDoc === doc.id ? 'selected' : ''}`}
+                  onClick={() => handleSelectDocument(doc.id)}
+                >
+                  <div className="document-header">
+                    <div className="document-icon">
+                      <Icon name="FileText" size={20} />
+                    </div>
+                    <div className="document-info">
+                      <h3 className="document-title">{doc.title}</h3>
+                      <p className="document-filename">{doc.filename}</p>
+                    </div>
+                    <div
+                      className="document-status"
+                      style={{ color: STATUS_COLORS[doc.status] }}
+                    >
+                      <Icon name={STATUS_ICONS[doc.status] || 'Circle'} size={14} />
+                      <span>{doc.status}</span>
+                    </div>
+                  </div>
+
+                  <div className="document-meta">
+                    <div className="meta-item">
+                      <Icon name="FileType" size={12} />
+                      <span>{doc.file_type || 'Unknown'}</span>
+                    </div>
+                    <div className="meta-item">
+                      <Icon name="HardDrive" size={12} />
+                      <span>{formatFileSize(doc.file_size)}</span>
+                    </div>
+                    {doc.page_count > 0 && (
+                      <div className="meta-item">
+                        <Icon name="FileText" size={12} />
+                        <span>{doc.page_count} pages</span>
+                      </div>
+                    )}
+                    {doc.chunk_count > 0 && (
+                      <div className="meta-item">
+                        <Icon name="Package" size={12} />
+                        <span>{doc.chunk_count} chunks</span>
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="document-footer">
+                    <div className="document-date">
+                      <Icon name="Clock" size={12} />
+                      <span>{formatDate(doc.created_at)}</span>
+                    </div>
+                    <div className="document-actions">
+                      <button
+                        className="action-btn view-btn-inline"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setSelectedDoc(doc.id);
+                        }}
+                        title="View document"
+                      >
+                        <Icon name="Eye" size={14} />
+                      </button>
+                      <button
+                        className="action-btn"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleDeleteDocument(doc.id, doc.title);
+                        }}
+                        title="Delete document"
+                      >
+                        <Icon name="Trash2" size={14} />
+                      </button>
+                    </div>
+                  </div>
+
+                  {doc.tags.length > 0 && (
+                    <div className="document-tags">
+                      {doc.tags.map((tag, idx) => (
+                        <span key={idx} className="tag">
+                          {tag}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="documents-empty">
+              <Icon name="FileText" size={48} />
+              <span>No documents found</span>
+              {hasFilters && (
+                <button className="btn btn-secondary" onClick={handleClearFilters}>
+                  Clear filters
+                </button>
+              )}
+            </div>
+          )}
+        </main>
+
+        {total > 0 && (
+          <div className="pagination">
+            <span>
+              Showing {documents.length} of {total} documents
+            </span>
+          </div>
+        )}
+      </div>
+
+      {selectedDoc && (
+        <div className="documents-viewer-panel">
+          <DocumentViewer
+            documentId={selectedDoc}
+            onClose={() => setSelectedDoc(null)}
+          />
         </div>
       )}
     </div>

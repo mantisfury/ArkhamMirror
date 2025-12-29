@@ -104,6 +104,7 @@ class ParseShard(ArkhamShard):
             chunker=self.chunker,
             worker_service=worker_service,
             event_bus=event_bus,
+            parse_shard=self,
         )
 
         # Register workers with Frame
@@ -167,20 +168,31 @@ class ParseShard(ArkhamShard):
 
         logger.info(f"Auto-parsing document {doc_id} after ingestion")
 
-        # Dispatch parsing job to cpu-ner worker
-        worker_service = self._frame.get_service("workers")
-        if worker_service:
-            parse_job_id = str(uuid.uuid4())
-            await worker_service.enqueue(
-                pool="cpu-ner",
-                job_id=parse_job_id,
-                payload={
-                    "document_id": doc_id,
-                    "source_job_id": job_id,
-                    "job_type": "parse_document",
-                },
-                priority=2,
+        try:
+            # Parse document directly (extracts entities, creates and saves chunks)
+            parse_result = await self.parse_document(doc_id, save_chunks=True)
+
+            logger.info(
+                f"Document {doc_id} parsed: {parse_result.get('total_entities', 0)} entities, "
+                f"{parse_result.get('chunks_saved', 0)} chunks saved"
             )
+
+            # Emit completion event
+            event_bus = self._frame.get_service("events")
+            if event_bus:
+                await event_bus.emit(
+                    "parse.document.completed",
+                    {
+                        "document_id": doc_id,
+                        "entities": parse_result.get("total_entities", 0),
+                        "chunks": parse_result.get("total_chunks", 0),
+                        "chunks_saved": parse_result.get("chunks_saved", 0),
+                    },
+                    source="parse-shard",
+                )
+
+        except Exception as e:
+            logger.error(f"Failed to parse document {doc_id}: {e}")
 
     async def _on_worker_completed(self, event: dict) -> None:
         """Handle worker job completion."""
@@ -255,23 +267,127 @@ class ParseShard(ArkhamShard):
             "processing_time_ms": processing_time,
         }
 
-    async def parse_document(self, document_id: str) -> dict:
+    async def parse_document(self, document_id: str, save_chunks: bool = True) -> dict:
         """
         Parse a full document.
 
         Args:
             document_id: Document to parse
+            save_chunks: Whether to persist chunks to database
 
         Returns:
             Parse result dict
         """
+        from time import time
+
+        start_time = time()
+
         # Get document text from document service
         doc_service = self._frame.get_service("documents")
         if not doc_service:
             raise RuntimeError("Document service not available")
 
-        # In production: fetch document text
-        # doc_text = await doc_service.get_text(document_id)
+        # Get all pages for the document
+        pages = await doc_service.get_document_pages(document_id)
 
-        # For now, return mock
-        return await self.parse_text("Mock document text", document_id)
+        if not pages:
+            logger.warning(f"No pages found for document {document_id}")
+            return {
+                "document_id": document_id,
+                "entities": [],
+                "chunks": [],
+                "total_entities": 0,
+                "total_chunks": 0,
+                "processing_time_ms": 0,
+            }
+
+        # Combine all page text
+        all_entities = []
+        all_chunks = []
+        all_dates = []
+        all_relationships = []
+
+        for page in pages:
+            if not page.text:
+                continue
+
+            # Extract entities from this page
+            entities = self.ner_extractor.extract(page.text, document_id)
+            all_entities.extend(entities)
+
+            # Extract dates
+            dates = self.date_extractor.extract(page.text, document_id)
+            all_dates.extend(dates)
+
+            # Extract relationships
+            relationships = self.relation_extractor.extract(page.text, entities, document_id)
+            all_relationships.extend(relationships)
+
+            # Chunk this page's text
+            chunks = self.chunker.chunk_text(page.text, document_id, page.page_number)
+            all_chunks.extend(chunks)
+
+        # Save chunks to database if requested
+        chunks_saved = 0
+        if save_chunks and all_chunks:
+            chunks_saved = await self._save_chunks(document_id, all_chunks, doc_service)
+
+        processing_time = (time() - start_time) * 1000
+
+        logger.info(
+            f"Parsed document {document_id}: {len(all_entities)} entities, "
+            f"{len(all_chunks)} chunks ({chunks_saved} saved)"
+        )
+
+        return {
+            "document_id": document_id,
+            "entities": [e.__dict__ for e in all_entities],
+            "dates": [d.__dict__ for d in all_dates],
+            "relationships": [r.__dict__ for r in all_relationships],
+            "chunks": [c.__dict__ for c in all_chunks],
+            "total_entities": len(all_entities),
+            "total_chunks": len(all_chunks),
+            "chunks_saved": chunks_saved,
+            "pages_processed": len(pages),
+            "processing_time_ms": processing_time,
+        }
+
+    async def _save_chunks(self, document_id: str, chunks: list, doc_service) -> int:
+        """
+        Save chunks to the database.
+
+        Args:
+            document_id: Document ID
+            chunks: List of TextChunk objects
+            doc_service: Document service instance
+
+        Returns:
+            Number of chunks saved
+        """
+        saved_count = 0
+
+        for chunk in chunks:
+            try:
+                await doc_service.add_chunk(
+                    doc_id=document_id,
+                    chunk_index=chunk.chunk_index,
+                    text=chunk.text,
+                    start_char=chunk.char_start,
+                    end_char=chunk.char_end,
+                    page_number=chunk.page_number,
+                    token_count=chunk.token_count,
+                    metadata={
+                        "chunk_method": chunk.chunk_method,
+                        "original_id": chunk.id,
+                    },
+                )
+                saved_count += 1
+            except Exception as e:
+                logger.error(f"Failed to save chunk {chunk.chunk_index}: {e}")
+
+        # Update document's chunk_count
+        if saved_count > 0:
+            await doc_service.update_chunk_count(document_id)
+
+        logger.debug(f"Saved {saved_count}/{len(chunks)} chunks for document {document_id}")
+        return saved_count

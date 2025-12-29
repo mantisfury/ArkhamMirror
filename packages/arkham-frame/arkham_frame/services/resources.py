@@ -303,7 +303,7 @@ class ResourceService:
         """Quick check if Redis is available."""
         try:
             import redis.asyncio as redis
-            url = self.config.redis_url if self.config else "redis://localhost:6380"
+            url = self.config.redis_url if self.config else "redis://localhost:6379"
             client = redis.from_url(url, socket_connect_timeout=1)
             await asyncio.wait_for(client.ping(), timeout=2)
             await client.close()
@@ -315,7 +315,7 @@ class ResourceService:
         """Quick check if PostgreSQL is available."""
         try:
             import asyncpg
-            url = self.config.database_url if self.config else "postgresql://localhost:5435/anomdb"
+            url = self.config.database_url if self.config else "postgresql://localhost:5432/anomdb"
             # Parse URL for asyncpg
             conn = await asyncio.wait_for(
                 asyncpg.connect(url, timeout=2),
@@ -330,7 +330,7 @@ class ResourceService:
         """Quick check if Qdrant is available."""
         try:
             import httpx
-            url = self.config.qdrant_url if self.config else "http://localhost:6343"
+            url = self.config.qdrant_url if self.config else "http://localhost:6333"
             async with httpx.AsyncClient(timeout=2) as client:
                 resp = await client.get(f"{url}/collections")
                 return resp.status_code == 200

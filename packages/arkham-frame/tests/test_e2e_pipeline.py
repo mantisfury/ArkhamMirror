@@ -20,7 +20,7 @@ import tempfile
 import time
 from pathlib import Path
 
-REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6380")
+REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379")
 
 
 async def get_redis():

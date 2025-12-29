@@ -29,11 +29,14 @@ class DocumentError(Exception):
 class DocumentStatus(str, Enum):
     """Document processing status."""
     PENDING = "pending"
+    UPLOADED = "uploaded"  # Initial upload state
     PROCESSING = "processing"
+    PROCESSED = "processed"  # Ingest complete
     PARSED = "parsed"
     EMBEDDED = "embedded"
     COMPLETED = "completed"
     FAILED = "failed"
+    ARCHIVED = "archived"
 
 
 @dataclass
@@ -165,12 +168,29 @@ class DocumentService:
                         mime_type VARCHAR(100),
                         file_size BIGINT DEFAULT 0,
                         page_count INTEGER DEFAULT 0,
+                        chunk_count INTEGER DEFAULT 0,
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                         processed_at TIMESTAMP,
                         metadata JSONB DEFAULT '{{}}',
                         error TEXT
                     )
+                """))
+
+                # Add chunk_count if missing (migration for existing tables)
+                conn.execute(text(f"""
+                    DO $$
+                    BEGIN
+                        IF NOT EXISTS (
+                            SELECT 1 FROM information_schema.columns
+                            WHERE table_schema = '{self.SCHEMA}'
+                            AND table_name = 'documents'
+                            AND column_name = 'chunk_count'
+                        ) THEN
+                            ALTER TABLE {self.SCHEMA}.documents ADD COLUMN chunk_count INTEGER DEFAULT 0;
+                        END IF;
+                    END
+                    $$;
                 """))
 
                 # Chunks table
@@ -267,6 +287,8 @@ class DocumentService:
         mime_type, _ = mimetypes.guess_type(filename)
 
         from sqlalchemy import text
+        import json
+        from psycopg2.extras import Json
 
         try:
             with self.db._engine.connect() as conn:
@@ -289,7 +311,7 @@ class DocumentService:
                         "page_count": 0,
                         "created_at": now,
                         "updated_at": now,
-                        "metadata": metadata or {},
+                        "metadata": Json(metadata or {}),  # Wrap dict for JSONB
                     },
                 )
                 conn.commit()
@@ -662,6 +684,7 @@ class DocumentService:
         word_count = len(text.split()) if text else 0
 
         from sqlalchemy import text as sql_text
+        from psycopg2.extras import Json
 
         try:
             with self.db._engine.connect() as conn:
@@ -680,7 +703,7 @@ class DocumentService:
                         "width": width,
                         "height": height,
                         "word_count": word_count,
-                        "metadata": metadata or {},
+                        "metadata": Json(metadata or {}),  # Wrap dict for JSONB
                     },
                 )
 
@@ -749,6 +772,7 @@ class DocumentService:
         chunk_id = str(uuid.uuid4())
 
         from sqlalchemy import text as sql_text
+        from psycopg2.extras import Json
 
         try:
             with self.db._engine.connect() as conn:
@@ -770,10 +794,11 @@ class DocumentService:
                         "end_char": end_char,
                         "token_count": token_count,
                         "vector_id": vector_id,
-                        "metadata": metadata or {},
+                        "metadata": Json(metadata or {}),  # Wrap dict for JSONB
                     },
                 )
                 conn.commit()
+
 
             return Chunk(
                 id=chunk_id,
@@ -791,6 +816,51 @@ class DocumentService:
         except Exception as e:
             logger.error(f"Failed to add chunk to document {doc_id}: {e}")
             raise DocumentError(f"Chunk creation failed: {e}")
+
+    async def update_chunk_count(self, doc_id: str) -> int:
+        """
+        Update document's chunk_count based on actual chunks in database.
+
+        Args:
+            doc_id: Document ID
+
+        Returns:
+            Updated chunk count
+        """
+        if not self.db or not self.db._engine:
+            return 0
+
+        from sqlalchemy import text as sql_text
+
+        try:
+            with self.db._engine.connect() as conn:
+                # Get actual count
+                result = conn.execute(
+                    sql_text(f"""
+                        SELECT COUNT(*) FROM {self.SCHEMA}.chunks
+                        WHERE document_id = :doc_id
+                    """),
+                    {"doc_id": doc_id},
+                )
+                count = result.scalar() or 0
+
+                # Update document
+                conn.execute(
+                    sql_text(f"""
+                        UPDATE {self.SCHEMA}.documents
+                        SET chunk_count = :count, updated_at = CURRENT_TIMESTAMP
+                        WHERE id = :doc_id
+                    """),
+                    {"doc_id": doc_id, "count": count},
+                )
+                conn.commit()
+
+                logger.debug(f"Updated chunk_count to {count} for document {doc_id}")
+                return count
+
+        except Exception as e:
+            logger.error(f"Failed to update chunk count for {doc_id}: {e}")
+            return 0
 
     # =========================================================================
     # Search

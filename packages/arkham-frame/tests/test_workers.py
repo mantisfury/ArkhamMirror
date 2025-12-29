@@ -2,7 +2,7 @@
 Integration tests for worker infrastructure.
 
 Requirements:
-    - Redis running at localhost:6380 (or REDIS_URL env var)
+    - Redis running at localhost:6379 (or REDIS_URL env var)
 
 Run with:
     cd packages/arkham-frame
@@ -18,7 +18,7 @@ import time
 from datetime import datetime
 
 # Test configuration
-REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6380")
+REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379")
 TEST_TIMEOUT = 30  # Max seconds for any test
 
 

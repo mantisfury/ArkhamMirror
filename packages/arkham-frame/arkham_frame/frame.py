@@ -141,10 +141,13 @@ class ArkhamFrame:
         try:
             from arkham_frame.services.workers import WorkerService
             self.workers = WorkerService(config=self.config)
+            self.workers.set_event_bus(self.events)  # Connect EventBus for job notifications
             await self.workers.initialize()
             logger.info("WorkerService initialized")
         except Exception as e:
+            import traceback
             logger.warning(f"WorkerService failed to initialize: {e}")
+            logger.warning(f"Traceback: {traceback.format_exc()}")
 
         # Initialize document/entity/project services
         try:
@@ -215,6 +218,7 @@ class ArkhamFrame:
             "db": self.db,
             "chunks": self.chunks,
             "vectors": self.vectors,
+            "embeddings": self.vectors,  # Alias for vectors (provides embedding methods)
             "llm": self.llm,
             "events": self.events,
             "workers": self.workers,

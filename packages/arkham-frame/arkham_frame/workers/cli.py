@@ -75,47 +75,44 @@ def get_worker_class(pool: str):
     Get the worker class for a pool.
 
     Returns None if no worker is implemented yet.
+    Uses lazy imports to handle missing implementations gracefully.
     """
-    from .examples import EchoWorker, SlowWorker
-    from .extract_worker import ExtractWorker
-    from .ner_worker import NERWorker
-    from .embed_worker import EmbedWorker
-    from .light_worker import LightWorker
-    from .paddle_worker import PaddleWorker
-    from .qwen_worker import QwenWorker
-    from .file_worker import FileWorker
-    from .image_worker import ImageWorker
-    from .enrich_worker import EnrichWorker
-    from .db_worker import DBWorker
-    from .archive_worker import ArchiveWorker
-    from .whisper_worker import WhisperWorker
-    from .analysis_worker import AnalysisWorker
-
-    # Worker implementations
-    worker_map = {
+    # Map pool names to (module, class_name) tuples
+    worker_registry = {
         # IO workers
-        "io-file": FileWorker,
-        "io-db": DBWorker,
+        "io-file": ("file_worker", "FileWorker"),
+        "io-db": ("db_worker", "DBWorker"),
         # CPU workers
-        "cpu-light": LightWorker,
-        "cpu-heavy": SlowWorker,  # Example worker for testing
-        "cpu-extract": ExtractWorker,
-        "cpu-ner": NERWorker,
-        "cpu-image": ImageWorker,
-        "cpu-archive": ArchiveWorker,
+        "cpu-light": ("light_worker", "LightWorker"),
+        "cpu-heavy": ("examples", "SlowWorker"),
+        "cpu-extract": ("extract_worker", "ExtractWorker"),
+        "cpu-ner": ("ner_worker", "NERWorker"),
+        "cpu-image": ("image_worker", "ImageWorker"),
+        "cpu-archive": ("archive_worker", "ArchiveWorker"),
         # GPU workers - OCR
-        "gpu-paddle": PaddleWorker,
-        "gpu-qwen": QwenWorker,
+        "gpu-paddle": ("paddle_worker", "PaddleWorker"),
+        "gpu-qwen": ("qwen_worker", "QwenWorker"),
         # GPU workers - audio
-        "gpu-whisper": WhisperWorker,
+        "gpu-whisper": ("whisper_worker", "WhisperWorker"),
         # GPU workers - embeddings
-        "gpu-embed": EmbedWorker,
+        "gpu-embed": ("embed_worker", "EmbedWorker"),
         # LLM workers
-        "llm-enrich": EnrichWorker,
-        "llm-analysis": AnalysisWorker,
+        "llm-enrich": ("enrich_worker", "EnrichWorker"),
+        "llm-analysis": ("analysis_worker", "AnalysisWorker"),
     }
 
-    return worker_map.get(pool)
+    if pool not in worker_registry:
+        return None
+
+    module_name, class_name = worker_registry[pool]
+
+    try:
+        import importlib
+        module = importlib.import_module(f".{module_name}", package="arkham_frame.workers")
+        return getattr(module, class_name, None)
+    except (ImportError, ModuleNotFoundError) as e:
+        logger.debug(f"Worker module for {pool} not available: {e}")
+        return None
 
 
 def list_pools():
@@ -226,7 +223,7 @@ Examples:
     )
     parser.add_argument(
         "--redis-url",
-        default=os.environ.get("REDIS_URL", "redis://localhost:6380"),
+        default=os.environ.get("REDIS_URL", "redis://localhost:6379"),
         help="Redis connection URL",
     )
     parser.add_argument(

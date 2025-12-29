@@ -56,6 +56,21 @@ class ArchiveWorker(BaseWorker):
         super().__init__(*args, **kwargs)
         self._check_dependencies()
 
+    def _resolve_path(self, file_path: str) -> Path:
+        """
+        Resolve file path using DATA_SILO_PATH for Docker/portable deployments.
+
+        Args:
+            file_path: Path from payload (may be relative or absolute)
+
+        Returns:
+            Resolved absolute Path
+        """
+        if not os.path.isabs(file_path):
+            data_silo = os.environ.get("DATA_SILO_PATH", ".")
+            return Path(data_silo) / file_path
+        return Path(file_path)
+
     def _check_dependencies(self):
         """Check which archive libraries are available."""
         self._has_py7zr = False
@@ -325,8 +340,9 @@ class ArchiveWorker(BaseWorker):
         if not output_dir:
             raise ValueError("Missing required parameter: output_dir")
 
-        archive_path = Path(archive_path)
-        output_dir = Path(output_dir)
+        # Resolve relative paths using DATA_SILO_PATH
+        archive_path = self._resolve_path(archive_path)
+        output_dir = self._resolve_path(output_dir)
 
         if not archive_path.exists():
             raise FileNotFoundError(f"Archive not found: {archive_path}")
@@ -524,8 +540,9 @@ class ArchiveWorker(BaseWorker):
         if not output_path:
             raise ValueError("Missing required parameter: output_path")
 
-        archive_path = Path(archive_path)
-        output_path = Path(output_path)
+        # Resolve relative paths using DATA_SILO_PATH
+        archive_path = self._resolve_path(archive_path)
+        output_path = self._resolve_path(output_path)
 
         if not archive_path.exists():
             raise FileNotFoundError(f"Archive not found: {archive_path}")
@@ -631,7 +648,8 @@ class ArchiveWorker(BaseWorker):
         if not archive_path:
             raise ValueError("Missing required parameter: archive_path")
 
-        archive_path = Path(archive_path)
+        # Resolve relative path using DATA_SILO_PATH
+        archive_path = self._resolve_path(archive_path)
 
         if not archive_path.exists():
             raise FileNotFoundError(f"Archive not found: {archive_path}")
@@ -749,7 +767,8 @@ class ArchiveWorker(BaseWorker):
         if not archive_path:
             raise ValueError("Missing required parameter: archive_path")
 
-        archive_path = Path(archive_path)
+        # Resolve relative path using DATA_SILO_PATH
+        archive_path = self._resolve_path(archive_path)
 
         if not archive_path.exists():
             raise FileNotFoundError(f"Archive not found: {archive_path}")
@@ -860,8 +879,9 @@ class ArchiveWorker(BaseWorker):
         if not files:
             raise ValueError("Missing required parameter: files (must be non-empty list)")
 
-        output_path = Path(output_path)
-        file_paths = [Path(f) for f in files]
+        # Resolve relative paths using DATA_SILO_PATH
+        output_path = self._resolve_path(output_path)
+        file_paths = [self._resolve_path(f) for f in files]
 
         # Validate all files exist
         for fp in file_paths:
@@ -961,7 +981,8 @@ class ArchiveWorker(BaseWorker):
         if not archive_path:
             raise ValueError("Missing required parameter: archive_path")
 
-        archive_path = Path(archive_path)
+        # Resolve relative path using DATA_SILO_PATH
+        archive_path = self._resolve_path(archive_path)
 
         if not archive_path.exists():
             raise FileNotFoundError(f"Archive not found: {archive_path}")

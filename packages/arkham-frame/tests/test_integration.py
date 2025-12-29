@@ -29,7 +29,7 @@ import tempfile
 from pathlib import Path
 
 # Test configuration
-REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6380")
+REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379")
 
 
 async def get_redis():
@@ -41,7 +41,7 @@ async def get_redis():
         return client
     except Exception as e:
         print(f"Redis connection failed: {e}")
-        print("Make sure Redis is running on port 6380")
+        print("Make sure Redis is running on port 6379")
         return None
 
 

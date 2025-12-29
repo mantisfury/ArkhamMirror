@@ -51,6 +51,19 @@ export interface OCRResponse {
   pages_processed: number;
   engine: OCREngine;
   error?: string;
+  confidence?: number;
+  lines?: TextLine[];
+  from_cache?: boolean;
+  escalated?: boolean;
+  char_count?: number;
+  word_count?: number;
+}
+
+// Text line with bounding box
+export interface TextLine {
+  text: string;
+  box?: number[][];
+  confidence?: number;
 }
 
 export interface OCRHealthResponse {

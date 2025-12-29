@@ -169,30 +169,37 @@ async def list_documents(
 
     Supports filtering by status, file type, and project.
     """
-    shard = get_shard(request)
+    try:
+        shard = get_shard(request)
 
-    offset = (page - 1) * page_size
+        offset = (page - 1) * page_size
 
-    documents = await shard.list_documents(
-        search=q,
-        status=status,
-        file_type=file_type,
-        project_id=project_id,
-        limit=page_size,
-        offset=offset,
-        sort=sort,
-        order=order,
-    )
+        documents = await shard.list_documents(
+            search=q,
+            status=status,
+            file_type=file_type,
+            project_id=project_id,
+            limit=page_size,
+            offset=offset,
+            sort=sort,
+            order=order,
+        )
 
-    # Get total count for pagination
-    total = await shard.get_document_count(status=status)
+        # Get total count for pagination
+        total = await shard.get_document_count(status=status)
 
-    return DocumentListResponse(
-        items=[document_to_response(doc) for doc in documents],
-        total=total,
-        page=page,
-        page_size=page_size,
-    )
+        response = DocumentListResponse(
+            items=[document_to_response(doc) for doc in documents],
+            total=total,
+            page=page,
+            page_size=page_size,
+        )
+        logger.info(f"list_documents returning {len(documents)} documents, total={total}")
+        return response
+    except Exception as e:
+        logger.error(f"list_documents failed: {e}", exc_info=True)
+        # Return empty response on error instead of crashing
+        return DocumentListResponse(items=[], total=0, page=page, page_size=page_size)
 
 
 @router.get("/items/{document_id}", response_model=DocumentMetadata)
@@ -264,6 +271,7 @@ async def delete_document(document_id: str, request: Request):
 @router.get("/{document_id}/content", response_model=DocumentContent)
 async def get_document_content(
     document_id: str,
+    request: Request,
     page: Optional[int] = Query(None, description="Page number for multi-page docs"),
 ):
     """
@@ -272,27 +280,55 @@ async def get_document_content(
     For multi-page documents, specify page number.
     Publishes documents.view.opened event.
     """
-    # TODO: Implement content retrieval
-    # - Get document from storage
-    # - Extract content (OCR text or parsed text)
-    # - Return page content if multi-page
-    # - Publish documents.view.opened event
-    logger.info(f"Getting document content: {document_id}, page={page}")
+    shard = get_shard(request)
 
-    raise HTTPException(status_code=404, detail="Document not found")
+    # Check document exists
+    document = await shard.get_document(document_id)
+    if not document:
+        raise HTTPException(status_code=404, detail=f"Document not found: {document_id}")
+
+    # Get content
+    content_data = await shard.get_document_content(document_id, page_number=page)
+    if not content_data:
+        raise HTTPException(status_code=404, detail="Document content not available")
+
+    # Record view
+    await shard.mark_document_viewed(document_id, view_mode="content", page_number=page)
+
+    return DocumentContent(
+        document_id=document_id,
+        content=content_data["content"],
+        page_number=content_data.get("page_number"),
+        total_pages=content_data.get("total_pages", 1),
+    )
 
 
 @router.get("/{document_id}/pages/{page_number}", response_model=DocumentContent)
-async def get_document_page(document_id: str, page_number: int):
+async def get_document_page(document_id: str, page_number: int, request: Request):
     """
     Get specific page of a multi-page document.
     """
-    # TODO: Implement page retrieval
-    # - Validate page number exists
-    # - Return page content
-    logger.info(f"Getting document page: {document_id}, page={page_number}")
+    shard = get_shard(request)
 
-    raise HTTPException(status_code=404, detail="Page not found")
+    # Check document exists
+    document = await shard.get_document(document_id)
+    if not document:
+        raise HTTPException(status_code=404, detail=f"Document not found: {document_id}")
+
+    # Get page content
+    content_data = await shard.get_document_content(document_id, page_number=page_number)
+    if not content_data:
+        raise HTTPException(status_code=404, detail=f"Page {page_number} not found")
+
+    # Record view
+    await shard.mark_document_viewed(document_id, view_mode="content", page_number=page_number)
+
+    return DocumentContent(
+        document_id=document_id,
+        content=content_data["content"],
+        page_number=content_data.get("page_number"),
+        total_pages=content_data.get("total_pages", 1),
+    )
 
 
 # --- Related Data Endpoints ---
@@ -301,6 +337,7 @@ async def get_document_page(document_id: str, page_number: int):
 @router.get("/{document_id}/chunks", response_model=ChunkListResponse)
 async def get_document_chunks(
     document_id: str,
+    request: Request,
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=200),
 ):
@@ -309,23 +346,45 @@ async def get_document_chunks(
 
     Returns chunks generated during document processing.
     """
-    # TODO: Implement chunk retrieval
-    # - Query chunks from database
-    # - Apply pagination
-    # - Return chunks with metadata
-    logger.info(f"Getting document chunks: {document_id}")
+    shard = get_shard(request)
+
+    # Check document exists
+    document = await shard.get_document(document_id)
+    if not document:
+        raise HTTPException(status_code=404, detail=f"Document not found: {document_id}")
+
+    # Get chunks
+    chunks_data = await shard.get_document_chunks(document_id, page=page, page_size=page_size)
+
+    # Record view
+    await shard.mark_document_viewed(document_id, view_mode="chunks")
+
+    # Convert to response models
+    items = [
+        DocumentChunk(
+            id=chunk["id"],
+            document_id=chunk["document_id"],
+            chunk_index=chunk["chunk_index"],
+            content=chunk["content"],
+            page_number=chunk.get("page_number"),
+            token_count=chunk.get("token_count", 0),
+            embedding_id=chunk.get("embedding_id"),
+        )
+        for chunk in chunks_data["items"]
+    ]
 
     return ChunkListResponse(
-        items=[],
-        total=0,
-        page=page,
-        page_size=page_size,
+        items=items,
+        total=chunks_data["total"],
+        page=chunks_data["page"],
+        page_size=chunks_data["page_size"],
     )
 
 
 @router.get("/{document_id}/entities", response_model=EntityListResponse)
 async def get_document_entities(
     document_id: str,
+    request: Request,
     entity_type: Optional[str] = Query(None, description="Filter by entity type"),
 ):
     """
@@ -333,30 +392,51 @@ async def get_document_entities(
 
     Optionally filter by entity type (PERSON, ORG, GPE, etc.).
     """
-    # TODO: Implement entity retrieval
-    # - Query entities from database or EntityService
-    # - Filter by type if specified
-    # - Return entities with context
-    logger.info(f"Getting document entities: {document_id}, type={entity_type}")
+    shard = get_shard(request)
+
+    # Check document exists
+    document = await shard.get_document(document_id)
+    if not document:
+        raise HTTPException(status_code=404, detail=f"Document not found: {document_id}")
+
+    # Get entities
+    entities_data = await shard.get_document_entities(document_id, entity_type=entity_type)
+
+    # Record view
+    await shard.mark_document_viewed(document_id, view_mode="entities")
+
+    # Convert to response models
+    items = [
+        DocumentEntity(
+            id=entity["id"],
+            document_id=entity["document_id"],
+            entity_type=entity["entity_type"],
+            text=entity["text"],
+            confidence=entity.get("confidence", 0.0),
+            occurrences=entity.get("occurrences", 1),
+            context=entity.get("context", []),
+        )
+        for entity in entities_data["items"]
+    ]
 
     return EntityListResponse(
-        items=[],
-        total=0,
+        items=items,
+        total=entities_data["total"],
     )
 
 
 @router.get("/{document_id}/metadata", response_model=DocumentMetadata)
-async def get_full_metadata(document_id: str):
+async def get_full_metadata(document_id: str, request: Request):
     """
     Get full document metadata including all custom fields.
     """
-    # TODO: Implement full metadata retrieval
-    # - Get base metadata
-    # - Get custom metadata
-    # - Combine and return
-    logger.info(f"Getting full metadata: {document_id}")
+    shard = get_shard(request)
 
-    raise HTTPException(status_code=404, detail="Document not found")
+    document = await shard.get_document(document_id)
+    if not document:
+        raise HTTPException(status_code=404, detail=f"Document not found: {document_id}")
+
+    return document_to_response(document)
 
 
 # --- Statistics Endpoints ---
@@ -384,64 +464,132 @@ async def get_document_stats(request: Request):
 
     Returns counts, totals, and aggregate data.
     """
-    shard = get_shard(request)
-    stats = await shard.get_document_stats()
+    try:
+        shard = get_shard(request)
+        stats = await shard.get_document_stats()
 
-    return DocumentStats(
-        total_documents=stats["total_documents"],
-        processed_documents=stats["processed_documents"],
-        processing_documents=stats["processing_documents"],
-        failed_documents=stats["failed_documents"],
-        total_size_bytes=stats["total_size_bytes"],
-        total_pages=stats["total_pages"],
-        total_chunks=stats["total_chunks"],
-    )
+        response = DocumentStats(
+            total_documents=stats["total_documents"],
+            processed_documents=stats["processed_documents"],
+            processing_documents=stats["processing_documents"],
+            failed_documents=stats["failed_documents"],
+            total_size_bytes=stats["total_size_bytes"],
+            total_pages=stats["total_pages"],
+            total_chunks=stats["total_chunks"],
+        )
+        logger.info(f"get_document_stats returning {stats}")
+        return response
+    except Exception as e:
+        logger.error(f"get_document_stats failed: {e}", exc_info=True)
+        # Return zero stats on error
+        return DocumentStats(
+            total_documents=0,
+            processed_documents=0,
+            processing_documents=0,
+            failed_documents=0,
+            total_size_bytes=0,
+            total_pages=0,
+            total_chunks=0,
+        )
+
+
+@router.get("/recently-viewed")
+async def get_recently_viewed(
+    request: Request,
+    user_id: Optional[str] = Query(None, description="Filter by user ID"),
+    limit: int = Query(10, ge=1, le=50, description="Maximum results"),
+):
+    """
+    Get recently viewed documents.
+
+    Returns document IDs in order of most recent view.
+    """
+    shard = get_shard(request)
+
+    document_ids = await shard.get_recently_viewed(user_id=user_id, limit=limit)
+
+    # Fetch full document details for each
+    documents = []
+    for doc_id in document_ids:
+        doc = await shard.get_document(doc_id)
+        if doc:
+            documents.append(document_to_response(doc))
+
+    return {
+        "items": documents,
+        "total": len(documents),
+    }
 
 
 # --- Batch Operations ---
 
 
+class BatchTagUpdateRequest(BaseModel):
+    """Request for batch tag update."""
+    document_ids: List[str]
+    add_tags: Optional[List[str]] = None
+    remove_tags: Optional[List[str]] = None
+
+
 @router.post("/batch/update-tags")
 async def batch_update_tags(
-    document_ids: List[str],
-    add_tags: Optional[List[str]] = None,
-    remove_tags: Optional[List[str]] = None,
+    body: BatchTagUpdateRequest,
+    request: Request,
 ):
     """
     Update tags for multiple documents.
 
     Can add and/or remove tags in bulk.
     """
-    # TODO: Implement batch tag update
-    # - Validate all document IDs
-    # - Update tags for each document
-    # - Publish events for each update
-    logger.info(f"Batch updating tags for {len(document_ids)} documents")
+    shard = get_shard(request)
+
+    if not body.document_ids:
+        raise HTTPException(status_code=400, detail="No document IDs provided")
+
+    if not body.add_tags and not body.remove_tags:
+        raise HTTPException(status_code=400, detail="No tags to add or remove")
+
+    result = await shard.batch_update_tags(
+        document_ids=body.document_ids,
+        add_tags=body.add_tags,
+        remove_tags=body.remove_tags,
+    )
 
     return {
-        "success": True,
-        "processed": 0,
-        "failed": 0,
-        "message": f"Tags updated for {len(document_ids)} documents",
+        "success": result["failed"] == 0,
+        "processed": result["processed"],
+        "failed": result["failed"],
+        "message": f"Tags updated for {result['processed']} documents, {result['failed']} failed",
+        "details": result.get("details", []),
     }
 
 
+class BatchDeleteRequest(BaseModel):
+    """Request for batch delete."""
+    document_ids: List[str]
+
+
 @router.post("/batch/delete")
-async def batch_delete_documents(document_ids: List[str]):
+async def batch_delete_documents(
+    body: BatchDeleteRequest,
+    request: Request,
+):
     """
     Delete multiple documents.
 
     Removes documents and all associated data.
     """
-    # TODO: Implement batch deletion
-    # - Validate all document IDs
-    # - Delete each document
-    # - Track success/failure
-    logger.info(f"Batch deleting {len(document_ids)} documents")
+    shard = get_shard(request)
+
+    if not body.document_ids:
+        raise HTTPException(status_code=400, detail="No document IDs provided")
+
+    result = await shard.batch_delete_documents(body.document_ids)
 
     return {
-        "success": True,
-        "processed": 0,
-        "failed": 0,
-        "message": f"{len(document_ids)} documents deleted",
+        "success": result["failed"] == 0,
+        "processed": result["processed"],
+        "failed": result["failed"],
+        "message": f"{result['processed']} documents deleted, {result['failed']} failed",
+        "details": result.get("details", []),
     }

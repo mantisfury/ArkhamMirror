@@ -56,6 +56,21 @@ class FileWorker(BaseWorker):
         except ImportError:
             logger.warning("aiofiles not available, using synchronous I/O in executor")
 
+    def _resolve_path(self, file_path: str) -> Path:
+        """
+        Resolve file path using DATA_SILO_PATH for Docker/portable deployments.
+
+        Args:
+            file_path: Path from payload (may be relative or absolute)
+
+        Returns:
+            Resolved absolute Path
+        """
+        if not os.path.isabs(file_path):
+            data_silo = os.environ.get("DATA_SILO_PATH", ".")
+            return Path(data_silo) / file_path
+        return Path(file_path)
+
     async def process_job(self, job_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         """
         Process a file I/O task.
@@ -117,7 +132,8 @@ class FileWorker(BaseWorker):
         if not path:
             return {"error": "No path specified", "success": False}
 
-        path_obj = Path(path)
+        # Resolve relative path using DATA_SILO_PATH
+        path_obj = self._resolve_path(path)
 
         if not path_obj.exists():
             return {"error": f"Path not found: {path}", "success": False}
@@ -185,7 +201,8 @@ class FileWorker(BaseWorker):
         if not path:
             return {"error": "No path specified", "success": False}
 
-        path_obj = Path(path)
+        # Resolve relative path using DATA_SILO_PATH
+        path_obj = self._resolve_path(path)
 
         try:
             # Create parent directories if requested
@@ -246,8 +263,9 @@ class FileWorker(BaseWorker):
         if not src or not dst:
             return {"error": "Both src and dst required", "success": False}
 
-        src_obj = Path(src)
-        dst_obj = Path(dst)
+        # Resolve relative paths using DATA_SILO_PATH
+        src_obj = self._resolve_path(src)
+        dst_obj = self._resolve_path(dst)
 
         if not src_obj.exists():
             return {"error": f"Source not found: {src}", "success": False}
@@ -258,9 +276,9 @@ class FileWorker(BaseWorker):
         try:
             def sync_copy():
                 if src_obj.is_file():
-                    shutil.copy2(src, dst)
+                    shutil.copy2(str(src_obj), str(dst_obj))
                 else:
-                    shutil.copytree(src, dst, dirs_exist_ok=overwrite)
+                    shutil.copytree(str(src_obj), str(dst_obj), dirs_exist_ok=overwrite)
 
             await asyncio.to_thread(sync_copy)
 
@@ -299,8 +317,9 @@ class FileWorker(BaseWorker):
         if not src or not dst:
             return {"error": "Both src and dst required", "success": False}
 
-        src_obj = Path(src)
-        dst_obj = Path(dst)
+        # Resolve relative paths using DATA_SILO_PATH
+        src_obj = self._resolve_path(src)
+        dst_obj = self._resolve_path(dst)
 
         if not src_obj.exists():
             return {"error": f"Source not found: {src}", "success": False}
@@ -314,8 +333,8 @@ class FileWorker(BaseWorker):
                     if dst_obj.is_file():
                         dst_obj.unlink()
                     else:
-                        shutil.rmtree(dst)
-                shutil.move(src, dst)
+                        shutil.rmtree(str(dst_obj))
+                shutil.move(str(src_obj), str(dst_obj))
 
             await asyncio.to_thread(sync_move)
 
@@ -351,7 +370,8 @@ class FileWorker(BaseWorker):
         if not path:
             return {"error": "No path specified", "success": False}
 
-        path_obj = Path(path)
+        # Resolve relative path using DATA_SILO_PATH
+        path_obj = self._resolve_path(path)
 
         if not path_obj.exists():
             return {"error": f"Path not found: {path}", "success": False}
@@ -362,7 +382,7 @@ class FileWorker(BaseWorker):
                     path_obj.unlink()
                 else:
                     if recursive:
-                        shutil.rmtree(path)
+                        shutil.rmtree(str(path_obj))
                     else:
                         path_obj.rmdir()  # Will fail if not empty
 
@@ -399,12 +419,13 @@ class FileWorker(BaseWorker):
         if not path:
             return {"error": "No path specified", "success": False}
 
-        path_obj = Path(path)
+        # Resolve relative path using DATA_SILO_PATH
+        path_obj = self._resolve_path(path)
 
         try:
             def sync_exists():
                 return {
-                    "path": str(path),
+                    "path": str(path_obj),
                     "exists": path_obj.exists(),
                     "is_file": path_obj.is_file() if path_obj.exists() else False,
                     "is_dir": path_obj.is_dir() if path_obj.exists() else False,
@@ -443,7 +464,8 @@ class FileWorker(BaseWorker):
         if not path:
             return {"error": "No path specified", "success": False}
 
-        path_obj = Path(path)
+        # Resolve relative path using DATA_SILO_PATH
+        path_obj = self._resolve_path(path)
 
         if not path_obj.exists():
             return {"error": f"Path not found: {path}", "success": False}
@@ -467,7 +489,7 @@ class FileWorker(BaseWorker):
             files = await asyncio.to_thread(sync_list)
 
             return {
-                "path": str(path),
+                "path": str(path_obj),
                 "files": files,
                 "count": len(files),
                 "success": True,
@@ -502,7 +524,8 @@ class FileWorker(BaseWorker):
         if not path:
             return {"error": "No path specified", "success": False}
 
-        path_obj = Path(path)
+        # Resolve relative path using DATA_SILO_PATH
+        path_obj = self._resolve_path(path)
 
         if not path_obj.exists():
             return {"error": f"Path not found: {path}", "success": False}
@@ -511,7 +534,7 @@ class FileWorker(BaseWorker):
             def sync_stat():
                 stat = path_obj.stat()
                 return {
-                    "path": str(path),
+                    "path": str(path_obj),
                     "size": stat.st_size,
                     "created": datetime.fromtimestamp(stat.st_ctime).isoformat(),
                     "modified": datetime.fromtimestamp(stat.st_mtime).isoformat(),

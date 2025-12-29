@@ -72,6 +72,21 @@ class ExtractWorker(BaseWorker):
                 "Install pypdf, python-docx, and/or openpyxl"
             )
 
+    def _resolve_path(self, file_path: str) -> Path:
+        """
+        Resolve file path using DATA_SILO_PATH for Docker/portable deployments.
+
+        Args:
+            file_path: Path from payload (may be relative or absolute)
+
+        Returns:
+            Resolved absolute Path
+        """
+        if not os.path.isabs(file_path):
+            data_silo = os.environ.get("DATA_SILO_PATH", ".")
+            return Path(data_silo) / file_path
+        return Path(file_path)
+
     async def process_job(self, job_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         """
         Extract text from a document.
@@ -100,6 +115,9 @@ class ExtractWorker(BaseWorker):
 
         if not file_path:
             raise ValueError("Missing required parameter: file_path")
+
+        # Resolve relative path using DATA_SILO_PATH
+        file_path = str(self._resolve_path(file_path))
 
         # Auto-detect file_type from extension if not provided
         if not file_type:

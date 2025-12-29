@@ -87,6 +87,26 @@ export interface PendingJobsResponse {
   jobs: PendingJob[];
 }
 
+export interface IngestSettings {
+  // Ingest settings
+  ingest_ocr_mode: OcrMode;
+  ingest_max_file_size_mb: number;
+  ingest_min_file_size_bytes: number;
+  ingest_enable_validation: boolean;
+  ingest_enable_deduplication: boolean;
+  ingest_enable_downscale: boolean;
+  ingest_skip_blank_pages: boolean;
+
+  // OCR settings
+  ocr_parallel_pages: number;
+  ocr_confidence_threshold: number;
+  ocr_enable_escalation: boolean;
+  ocr_enable_cache: boolean;
+  ocr_cache_ttl_days: number;
+}
+
+export type IngestSettingsUpdate = Partial<IngestSettings>;
+
 // --- API Functions ---
 
 async function fetchAPI<T>(endpoint: string, options?: RequestInit): Promise<T> {
@@ -102,13 +122,17 @@ async function fetchAPI<T>(endpoint: string, options?: RequestInit): Promise<T> 
   return response.json();
 }
 
+export type OcrMode = 'auto' | 'paddle_only' | 'qwen_only';
+
 export async function uploadFile(
   file: File,
-  priority: 'user' | 'batch' = 'user'
+  priority: 'user' | 'batch' = 'user',
+  ocrMode: OcrMode = 'auto'
 ): Promise<UploadResponse> {
   const formData = new FormData();
   formData.append('file', file);
   formData.append('priority', priority);
+  formData.append('ocr_mode', ocrMode);
 
   return fetchAPI<UploadResponse>('/upload', {
     method: 'POST',
@@ -118,11 +142,13 @@ export async function uploadFile(
 
 export async function uploadBatch(
   files: File[],
-  priority: 'user' | 'batch' = 'batch'
+  priority: 'user' | 'batch' = 'batch',
+  ocrMode: OcrMode = 'auto'
 ): Promise<BatchUploadResponse> {
   const formData = new FormData();
   files.forEach(file => formData.append('files', file));
   formData.append('priority', priority);
+  formData.append('ocr_mode', ocrMode);
 
   return fetchAPI<BatchUploadResponse>('/upload/batch', {
     method: 'POST',
@@ -152,6 +178,20 @@ export async function getPendingJobs(limit: number = 50): Promise<PendingJobsRes
   return fetchAPI<PendingJobsResponse>(`/pending?limit=${limit}`);
 }
 
+export async function getIngestSettings(): Promise<IngestSettings> {
+  return fetchAPI<IngestSettings>('/settings');
+}
+
+export async function updateIngestSettings(
+  settings: IngestSettingsUpdate
+): Promise<IngestSettings> {
+  return fetchAPI<IngestSettings>('/settings', {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(settings),
+  });
+}
+
 // --- Hooks ---
 
 /**
@@ -161,20 +201,23 @@ export function useUpload() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<Error | null>(null);
 
-  const upload = useCallback(async (file: File, priority: 'user' | 'batch' = 'user') => {
-    setLoading(true);
-    setError(null);
-    try {
-      const result = await uploadFile(file, priority);
-      return result;
-    } catch (err) {
-      const error = err instanceof Error ? err : new Error('Upload failed');
-      setError(error);
-      throw error;
-    } finally {
-      setLoading(false);
-    }
-  }, []);
+  const upload = useCallback(
+    async (file: File, priority: 'user' | 'batch' = 'user', ocrMode: OcrMode = 'auto') => {
+      setLoading(true);
+      setError(null);
+      try {
+        const result = await uploadFile(file, priority, ocrMode);
+        return result;
+      } catch (err) {
+        const error = err instanceof Error ? err : new Error('Upload failed');
+        setError(error);
+        throw error;
+      } finally {
+        setLoading(false);
+      }
+    },
+    []
+  );
 
   return { upload, loading, error };
 }
@@ -187,11 +230,11 @@ export function useUploadBatch() {
   const [error, setError] = useState<Error | null>(null);
 
   const uploadBatchFiles = useCallback(
-    async (files: File[], priority: 'user' | 'batch' = 'batch') => {
+    async (files: File[], priority: 'user' | 'batch' = 'batch', ocrMode: OcrMode = 'auto') => {
       setLoading(true);
       setError(null);
       try {
-        const result = await uploadBatch(files, priority);
+        const result = await uploadBatch(files, priority, ocrMode);
         return result;
       } catch (err) {
         const error = err instanceof Error ? err : new Error('Batch upload failed');
@@ -260,4 +303,36 @@ export function useRetryJob() {
   }, []);
 
   return { retry, loading, error };
+}
+
+/**
+ * Hook for fetching ingest settings
+ */
+export function useIngestSettings() {
+  return useFetch<IngestSettings>(`${API_PREFIX}/settings`);
+}
+
+/**
+ * Hook for updating ingest settings
+ */
+export function useUpdateIngestSettings() {
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<Error | null>(null);
+
+  const update = useCallback(async (settings: IngestSettingsUpdate) => {
+    setLoading(true);
+    setError(null);
+    try {
+      const result = await updateIngestSettings(settings);
+      return result;
+    } catch (err) {
+      const error = err instanceof Error ? err : new Error('Update failed');
+      setError(error);
+      throw error;
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  return { update, loading, error };
 }

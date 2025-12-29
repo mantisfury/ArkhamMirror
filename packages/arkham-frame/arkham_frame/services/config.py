@@ -52,11 +52,11 @@ class ConfigService:
         """Load configuration from environment variables."""
         self._config["database_url"] = os.environ.get(
             "DATABASE_URL",
-            "postgresql://anom:anompass@localhost:5435/anomdb"
+            "postgresql://arkham:arkhampass@localhost:5432/arkhamdb"
         )
         self._config["redis_url"] = os.environ.get(
             "REDIS_URL",
-            "redis://localhost:6380"
+            "redis://localhost:6379"
         )
         self._config["qdrant_url"] = os.environ.get(
             "QDRANT_URL",

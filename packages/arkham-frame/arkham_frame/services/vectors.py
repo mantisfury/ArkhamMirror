@@ -174,11 +174,22 @@ class VectorService:
             logger.warning(f"Qdrant connection failed: {e}")
             self._available = False
 
-        # Initialize embedding model if configured
+        # Initialize embedding model
+        # Priority: EMBED_MODEL env var > settings database > default (BAAI/bge-m3)
+        # WARNING: Changing models after storing vectors requires rebuilding collections
         try:
-            embedding_model = self.config.get("vectors.embedding_model", "")
-            if embedding_model:
-                await self._load_embedding_model(embedding_model)
+            import os
+            embedding_model = os.environ.get("EMBED_MODEL", "")
+
+            # If not set via env, try to read from settings database
+            if not embedding_model:
+                embedding_model = await self._get_embedding_model_from_settings()
+
+            # Default to BAAI/bge-m3 (1024 dims, multilingual, high quality)
+            if not embedding_model:
+                embedding_model = "BAAI/bge-m3"
+
+            await self._load_embedding_model(embedding_model)
         except Exception as e:
             logger.warning(f"Embedding model failed to load: {e}")
             self._embedding_available = False
@@ -186,6 +197,49 @@ class VectorService:
         # Ensure standard collections exist
         if self._available:
             await self._ensure_standard_collections()
+
+    async def _get_embedding_model_from_settings(self) -> str:
+        """
+        Try to read embedding model from settings database.
+
+        This is called before shards are loaded, so we query directly.
+        Returns empty string if not found or database unavailable.
+        """
+        try:
+            # Import here to avoid circular dependency
+            from sqlalchemy import text
+
+            # Get database URL from config
+            db_url = self.config.database_url
+            if not db_url:
+                return ""
+
+            # Use asyncpg directly for a quick query
+            import asyncpg
+            # Parse the URL for asyncpg
+            # postgresql://user:pass@host:port/db -> asyncpg format
+            conn_str = db_url.replace("postgresql://", "")
+
+            conn = await asyncpg.connect(db_url)
+            try:
+                row = await conn.fetchrow(
+                    "SELECT value FROM arkham_settings WHERE key = $1",
+                    "advanced.embedding_model"
+                )
+                if row and row["value"]:
+                    # Value is stored as JSONB, so it might be a string in quotes
+                    value = row["value"]
+                    if isinstance(value, str):
+                        return value.strip('"')
+                    return str(value) if value else ""
+                return ""
+            finally:
+                await conn.close()
+
+        except Exception as e:
+            # Database might not be ready or settings table doesn't exist yet
+            logger.debug(f"Could not read embedding model from settings: {e}")
+            return ""
 
     async def _load_embedding_model(self, model_name: str) -> None:
         """Load a local embedding model."""
@@ -205,7 +259,7 @@ class VectorService:
             self._embedding_available = False
 
     async def _ensure_standard_collections(self) -> None:
-        """Ensure standard collections exist."""
+        """Ensure standard collections exist with correct dimensions."""
         standard = [
             (self.COLLECTION_DOCUMENTS, self._default_dimension),
             (self.COLLECTION_CHUNKS, self._default_dimension),
@@ -214,15 +268,39 @@ class VectorService:
 
         for collection_name, dimension in standard:
             try:
-                if not await self.collection_exists(collection_name):
+                if await self.collection_exists(collection_name):
+                    # Check if existing collection has matching dimension
+                    info = await self.get_collection(collection_name)
+                    if info.vector_size != dimension:
+                        # Dimension mismatch - need to recreate
+                        # Only recreate if empty to avoid data loss
+                        if info.points_count == 0:
+                            logger.warning(
+                                f"Collection {collection_name} has wrong dimension "
+                                f"({info.vector_size} vs {dimension}), recreating..."
+                            )
+                            await self.delete_collection(collection_name)
+                            await self.create_collection(
+                                name=collection_name,
+                                vector_size=dimension,
+                                distance=DistanceMetric.COSINE,
+                            )
+                            logger.info(f"Recreated collection: {collection_name} (dim={dimension})")
+                        else:
+                            logger.warning(
+                                f"Collection {collection_name} has wrong dimension "
+                                f"({info.vector_size} vs {dimension}) but contains {info.points_count} vectors. "
+                                f"Delete manually or use matching embedding model."
+                            )
+                else:
                     await self.create_collection(
                         name=collection_name,
                         vector_size=dimension,
                         distance=DistanceMetric.COSINE,
                     )
-                    logger.info(f"Created standard collection: {collection_name}")
+                    logger.info(f"Created standard collection: {collection_name} (dim={dimension})")
             except Exception as e:
-                logger.warning(f"Failed to create collection {collection_name}: {e}")
+                logger.warning(f"Failed to ensure collection {collection_name}: {e}")
 
     async def shutdown(self) -> None:
         """Close Qdrant connection."""
@@ -789,10 +867,27 @@ class VectorService:
 
     async def get_stats(self) -> Dict[str, Any]:
         """Get vector service statistics."""
+        # Get embedding model name if available
+        embedding_model_name = None
+        if self._embedding_model is not None:
+            try:
+                # sentence-transformers stores model name in different places depending on version
+                embedding_model_name = getattr(
+                    self._embedding_model,
+                    "model_card_data",
+                    {}
+                ).get("model_name", None)
+                if not embedding_model_name:
+                    # Fallback: try to get from the model's path
+                    embedding_model_name = str(getattr(self._embedding_model, "_model_card_vars", {}).get("model_name", "unknown"))
+            except Exception:
+                embedding_model_name = "loaded"
+
         stats = {
             "available": self._available,
             "embedding_available": self._embedding_available,
             "embedding_dimension": self._default_dimension if self._embedding_available else None,
+            "embedding_model": embedding_model_name,
             "collections": [],
         }
 

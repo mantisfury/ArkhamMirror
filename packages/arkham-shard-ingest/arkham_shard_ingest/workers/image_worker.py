@@ -27,6 +27,7 @@ class ImageWorker(BaseWorker):
     Supported operations:
     - preprocess: Full OCR preprocessing pipeline
     - resize: Resize images with aspect ratio preservation
+    - downscale: Reduce high-DPI images to target DPI (memory optimization)
     - deskew: Correct rotation/skew in scanned documents
     - denoise: Remove noise from images
     - enhance_contrast: Improve text visibility
@@ -54,6 +55,22 @@ class ImageWorker(BaseWorker):
     name = "ImageWorker"
     job_timeout = 120.0  # Image processing can be slow for large images
 
+    def _resolve_path(self, file_path: str) -> str:
+        """
+        Resolve file path using DATA_SILO_PATH for Docker/portable deployments.
+
+        Args:
+            file_path: Path from payload (may be relative or absolute)
+
+        Returns:
+            Resolved absolute path as string
+        """
+        from pathlib import Path
+        if not os.path.isabs(file_path):
+            data_silo = os.environ.get("DATA_SILO_PATH", ".")
+            return str(Path(data_silo) / file_path)
+        return file_path
+
     async def process_job(self, job_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         """
         Process an image preprocessing job.
@@ -71,6 +88,7 @@ class ImageWorker(BaseWorker):
         valid_operations = [
             "preprocess",
             "resize",
+            "downscale",
             "deskew",
             "denoise",
             "enhance_contrast",
@@ -92,6 +110,8 @@ class ImageWorker(BaseWorker):
             result = await self._preprocess(img, payload, job_id)
         elif operation == "resize":
             result = await self._resize(img, payload)
+        elif operation == "downscale":
+            result = await self._downscale(img, payload)
         elif operation == "deskew":
             result = await self._deskew(img, payload)
         elif operation == "denoise":
@@ -135,9 +155,11 @@ class ImageWorker(BaseWorker):
             image_base64 = payload.get("image_base64")
 
             if image_path:
-                if not os.path.exists(image_path):
-                    raise FileNotFoundError(f"Image not found: {image_path}")
-                return Image.open(image_path)
+                # Resolve relative path using DATA_SILO_PATH
+                resolved_path = self._resolve_path(image_path)
+                if not os.path.exists(resolved_path):
+                    raise FileNotFoundError(f"Image not found: {resolved_path}")
+                return Image.open(resolved_path)
 
             elif image_base64:
                 img_data = base64.b64decode(image_base64)
@@ -296,6 +318,79 @@ class ImageWorker(BaseWorker):
             "image_base64": img_base64,
             "original_size": list(original_size),
             "new_size": list(new_size),
+        }
+
+    async def _downscale(self, img, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Downscale high-DPI image to target DPI for memory optimization.
+
+        This operation reduces image resolution while maintaining quality
+        sufficient for OCR. Research shows 150 DPI is adequate for most OCR.
+
+        Args:
+            img: PIL Image
+            payload: Job payload with target_dpi (default 150), threshold_dpi (default 200)
+
+        Returns:
+            Result dict with downscaled image and metadata
+        """
+        def _process():
+            from PIL import Image
+
+            target_dpi = payload.get("target_dpi", 150)
+            threshold_dpi = payload.get("threshold_dpi", 200)
+
+            original_size = img.size
+
+            # Get current DPI
+            current_dpi = img.info.get("dpi")
+            if current_dpi:
+                current_dpi = int(current_dpi[0]) if isinstance(current_dpi, tuple) else int(current_dpi)
+            else:
+                # Try EXIF
+                exif = img.getexif() if hasattr(img, "getexif") else None
+                if exif and 282 in exif:
+                    current_dpi = int(exif[282])
+                else:
+                    # Estimate based on size (assume standard document)
+                    # A4 is 8.27 x 11.69 inches
+                    current_dpi = max(72, int(img.width / 8.27))
+
+            # Check if downscaling needed
+            if current_dpi <= threshold_dpi:
+                # No downscaling needed, return as-is
+                return img, current_dpi, current_dpi, original_size, original_size, False
+
+            # Calculate scale factor
+            scale_factor = target_dpi / current_dpi
+            new_width = int(img.width * scale_factor)
+            new_height = int(img.height * scale_factor)
+
+            # Resize with high-quality resampling
+            resized = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
+
+            # Update DPI metadata
+            resized.info["dpi"] = (target_dpi, target_dpi)
+
+            return resized, current_dpi, target_dpi, original_size, (new_width, new_height), True
+
+        result_img, original_dpi, new_dpi, original_size, new_size, was_downscaled = await asyncio.to_thread(_process)
+        img_base64 = await self._image_to_base64(result_img)
+
+        memory_reduction = 0.0
+        if was_downscaled:
+            original_pixels = original_size[0] * original_size[1]
+            new_pixels = new_size[0] * new_size[1]
+            memory_reduction = round((1 - new_pixels / original_pixels) * 100, 1)
+
+        return {
+            "image_base64": img_base64,
+            "original_dpi": original_dpi,
+            "new_dpi": new_dpi,
+            "original_size": list(original_size),
+            "new_size": list(new_size),
+            "was_downscaled": was_downscaled,
+            "memory_reduction_percent": memory_reduction,
         }
 
     async def _deskew(self, img, payload: Dict[str, Any]) -> Dict[str, Any]:

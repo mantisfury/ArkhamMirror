@@ -96,7 +96,7 @@ class BaseWorker(ABC):
         """
         self.worker_id = worker_id or f"{self.pool}-{uuid.uuid4().hex[:8]}"
         self.redis_url = redis_url or os.environ.get(
-            "REDIS_URL", "redis://localhost:6380"
+            "REDIS_URL", "redis://localhost:6379"
         )
 
         self._redis = None
