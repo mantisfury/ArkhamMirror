@@ -231,8 +231,8 @@ class ReportsShard(ArkhamShard):
             return None
 
         row = await self._db.fetch_one(
-            "SELECT * FROM arkham_reports WHERE id = ?",
-            [report_id],
+            "SELECT * FROM arkham_reports WHERE id = :report_id",
+            {"report_id": report_id},
         )
         return self._row_to_report(row) if row else None
 
@@ -247,24 +247,25 @@ class ReportsShard(ArkhamShard):
             return []
 
         query = "SELECT * FROM arkham_reports WHERE 1=1"
-        params = []
+        params: Dict[str, Any] = {}
 
         if filter:
             if filter.status:
-                query += " AND status = ?"
-                params.append(filter.status.value)
+                query += " AND status = :status"
+                params["status"] = filter.status.value
             if filter.report_type:
-                query += " AND report_type = ?"
-                params.append(filter.report_type.value)
+                query += " AND report_type = :report_type"
+                params["report_type"] = filter.report_type.value
             if filter.output_format:
-                query += " AND output_format = ?"
-                params.append(filter.output_format.value)
+                query += " AND output_format = :output_format"
+                params["output_format"] = filter.output_format.value
             if filter.search_text:
-                query += " AND title LIKE ?"
-                params.append(f"%{filter.search_text}%")
+                query += " AND title LIKE :search_text"
+                params["search_text"] = f"%{filter.search_text}%"
 
-        query += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
-        params.extend([limit, offset])
+        query += " ORDER BY created_at DESC LIMIT :limit OFFSET :offset"
+        params["limit"] = limit
+        params["offset"] = offset
 
         rows = await self._db.fetch_all(query, params)
         return [self._row_to_report(row) for row in rows]
@@ -288,8 +289,8 @@ class ReportsShard(ArkhamShard):
 
         # Delete from database
         await self._db.execute(
-            "DELETE FROM arkham_reports WHERE id = ?",
-            [report_id],
+            "DELETE FROM arkham_reports WHERE id = :id",
+            {"id": report_id},
         )
 
         return True
@@ -301,8 +302,8 @@ class ReportsShard(ArkhamShard):
 
         if status:
             result = await self._db.fetch_one(
-                "SELECT COUNT(*) as count FROM arkham_reports WHERE status = ?",
-                [status],
+                "SELECT COUNT(*) as count FROM arkham_reports WHERE status = :status",
+                {"status": status},
             )
         else:
             result = await self._db.fetch_one(
@@ -360,8 +361,8 @@ class ReportsShard(ArkhamShard):
             return None
 
         row = await self._db.fetch_one(
-            "SELECT * FROM arkham_report_templates WHERE id = ?",
-            [template_id],
+            "SELECT * FROM arkham_report_templates WHERE id = :template_id",
+            {"template_id": template_id},
         )
         return self._row_to_template(row) if row else None
 
@@ -376,14 +377,15 @@ class ReportsShard(ArkhamShard):
             return []
 
         query = "SELECT * FROM arkham_report_templates WHERE 1=1"
-        params = []
+        params: Dict[str, Any] = {}
 
         if report_type:
-            query += " AND report_type = ?"
-            params.append(report_type.value)
+            query += " AND report_type = :report_type"
+            params["report_type"] = report_type.value
 
-        query += " ORDER BY name LIMIT ? OFFSET ?"
-        params.extend([limit, offset])
+        query += " ORDER BY name LIMIT :limit OFFSET :offset"
+        params["limit"] = limit
+        params["offset"] = offset
 
         rows = await self._db.fetch_all(query, params)
         return [self._row_to_template(row) for row in rows]
@@ -455,8 +457,8 @@ class ReportsShard(ArkhamShard):
             return False
 
         await self._db.execute(
-            "DELETE FROM arkham_report_schedules WHERE id = ?",
-            [schedule_id],
+            "DELETE FROM arkham_report_schedules WHERE id = :id",
+            {"id": schedule_id},
         )
         return True
 
@@ -630,37 +632,39 @@ class ReportsShard(ArkhamShard):
             return
 
         import json
-        data = (
-            report.id,
-            report.report_type.value,
-            report.title,
-            report.status.value,
-            report.created_at.isoformat(),
-            report.completed_at.isoformat() if report.completed_at else None,
-            json.dumps(report.parameters),
-            report.output_format.value,
-            report.file_path,
-            report.file_size,
-            report.error,
-            json.dumps(report.metadata),
-        )
+        params = {
+            "id": report.id,
+            "report_type": report.report_type.value,
+            "title": report.title,
+            "status": report.status.value,
+            "created_at": report.created_at.isoformat(),
+            "completed_at": report.completed_at.isoformat() if report.completed_at else None,
+            "parameters": json.dumps(report.parameters),
+            "output_format": report.output_format.value,
+            "file_path": report.file_path,
+            "file_size": report.file_size,
+            "error": report.error,
+            "metadata": json.dumps(report.metadata),
+        }
 
         if update:
             await self._db.execute("""
                 UPDATE arkham_reports SET
-                    report_type=?, title=?, status=?, created_at=?,
-                    completed_at=?, parameters=?, output_format=?,
-                    file_path=?, file_size=?, error=?, metadata=?
-                WHERE id=?
-            """, data[1:] + (report.id,))
+                    report_type=:report_type, title=:title, status=:status, created_at=:created_at,
+                    completed_at=:completed_at, parameters=:parameters, output_format=:output_format,
+                    file_path=:file_path, file_size=:file_size, error=:error, metadata=:metadata
+                WHERE id=:id
+            """, params)
         else:
             await self._db.execute("""
                 INSERT INTO arkham_reports (
                     id, report_type, title, status, created_at,
                     completed_at, parameters, output_format,
                     file_path, file_size, error, metadata
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, data)
+                ) VALUES (:id, :report_type, :title, :status, :created_at,
+                    :completed_at, :parameters, :output_format,
+                    :file_path, :file_size, :error, :metadata)
+            """, params)
 
     async def _save_template(self, template: ReportTemplate, update: bool = False) -> None:
         """Save a template to the database."""
@@ -668,35 +672,37 @@ class ReportsShard(ArkhamShard):
             return
 
         import json
-        data = (
-            template.id,
-            template.name,
-            template.report_type.value,
-            template.description,
-            json.dumps(template.parameters_schema),
-            template.default_format.value,
-            template.template_content,
-            template.created_at.isoformat(),
-            template.updated_at.isoformat(),
-            json.dumps(template.metadata),
-        )
+        params = {
+            "id": template.id,
+            "name": template.name,
+            "report_type": template.report_type.value,
+            "description": template.description,
+            "parameters_schema": json.dumps(template.parameters_schema),
+            "default_format": template.default_format.value,
+            "template_content": template.template_content,
+            "created_at": template.created_at.isoformat(),
+            "updated_at": template.updated_at.isoformat(),
+            "metadata": json.dumps(template.metadata),
+        }
 
         if update:
             await self._db.execute("""
                 UPDATE arkham_report_templates SET
-                    name=?, report_type=?, description=?,
-                    parameters_schema=?, default_format=?, template_content=?,
-                    created_at=?, updated_at=?, metadata=?
-                WHERE id=?
-            """, data[1:] + (template.id,))
+                    name=:name, report_type=:report_type, description=:description,
+                    parameters_schema=:parameters_schema, default_format=:default_format, template_content=:template_content,
+                    created_at=:created_at, updated_at=:updated_at, metadata=:metadata
+                WHERE id=:id
+            """, params)
         else:
             await self._db.execute("""
                 INSERT INTO arkham_report_templates (
                     id, name, report_type, description,
                     parameters_schema, default_format, template_content,
                     created_at, updated_at, metadata
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, data)
+                ) VALUES (:id, :name, :report_type, :description,
+                    :parameters_schema, :default_format, :template_content,
+                    :created_at, :updated_at, :metadata)
+            """, params)
 
     async def _save_schedule(self, schedule: ReportSchedule, update: bool = False) -> None:
         """Save a schedule to the database."""
@@ -704,36 +710,38 @@ class ReportsShard(ArkhamShard):
             return
 
         import json
-        data = (
-            schedule.id,
-            schedule.template_id,
-            schedule.cron_expression,
-            1 if schedule.enabled else 0,
-            schedule.last_run.isoformat() if schedule.last_run else None,
-            schedule.next_run.isoformat() if schedule.next_run else None,
-            json.dumps(schedule.parameters),
-            schedule.output_format.value,
-            schedule.retention_days,
-            json.dumps(schedule.email_recipients),
-            json.dumps(schedule.metadata),
-        )
+        params = {
+            "id": schedule.id,
+            "template_id": schedule.template_id,
+            "cron_expression": schedule.cron_expression,
+            "enabled": 1 if schedule.enabled else 0,
+            "last_run": schedule.last_run.isoformat() if schedule.last_run else None,
+            "next_run": schedule.next_run.isoformat() if schedule.next_run else None,
+            "parameters": json.dumps(schedule.parameters),
+            "output_format": schedule.output_format.value,
+            "retention_days": schedule.retention_days,
+            "email_recipients": json.dumps(schedule.email_recipients),
+            "metadata": json.dumps(schedule.metadata),
+        }
 
         if update:
             await self._db.execute("""
                 UPDATE arkham_report_schedules SET
-                    template_id=?, cron_expression=?, enabled=?,
-                    last_run=?, next_run=?, parameters=?,
-                    output_format=?, retention_days=?, email_recipients=?, metadata=?
-                WHERE id=?
-            """, data[1:] + (schedule.id,))
+                    template_id=:template_id, cron_expression=:cron_expression, enabled=:enabled,
+                    last_run=:last_run, next_run=:next_run, parameters=:parameters,
+                    output_format=:output_format, retention_days=:retention_days, email_recipients=:email_recipients, metadata=:metadata
+                WHERE id=:id
+            """, params)
         else:
             await self._db.execute("""
                 INSERT INTO arkham_report_schedules (
                     id, template_id, cron_expression, enabled,
                     last_run, next_run, parameters,
                     output_format, retention_days, email_recipients, metadata
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, data)
+                ) VALUES (:id, :template_id, :cron_expression, :enabled,
+                    :last_run, :next_run, :parameters,
+                    :output_format, :retention_days, :email_recipients, :metadata)
+            """, params)
 
     def _row_to_report(self, row: Dict[str, Any]) -> Report:
         """Convert database row to Report object."""

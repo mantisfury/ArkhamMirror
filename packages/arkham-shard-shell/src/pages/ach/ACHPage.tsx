@@ -49,6 +49,7 @@ import {
   ConsistencyChecksSection,
   SensitivitySection,
   MilestonesSection,
+  LinkedDocumentsSection,
 } from './components';
 
 // ============================================
@@ -1158,6 +1159,13 @@ function MatrixDetailView({ matrixId }: { matrixId: string }) {
           </details>
         </div>
       )}
+
+      {/* Linked Documents Section */}
+      <LinkedDocumentsSection
+        matrixId={matrixId}
+        linkedDocumentIds={matrix.linked_document_ids || []}
+        onDocumentsChanged={fetchMatrix}
+      />
 
       {/* Dialogs */}
       {showAddHypothesis && (

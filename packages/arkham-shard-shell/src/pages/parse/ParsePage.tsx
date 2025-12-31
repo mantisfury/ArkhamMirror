@@ -10,13 +10,15 @@
  */
 
 import { useState, useCallback } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { Icon } from '../../components/common/Icon';
 import { useToast } from '../../context/ToastContext';
-import { useParseText, useParseStats } from './api';
+import { useParseText, useParseStats, useChunkingConfig, updateChunkingConfig, ChunkingConfig } from './api';
 import type { EntityMention, DateMention, EntityType } from './types';
 
 export function ParsePage() {
   const { toast } = useToast();
+  const navigate = useNavigate();
   const [text, setText] = useState('');
   const [results, setResults] = useState<{
     entities: EntityMention[];
@@ -24,8 +26,13 @@ export function ParsePage() {
     processing_time_ms: number;
   } | null>(null);
 
+  // Chunking settings state
+  const [showChunkingSettings, setShowChunkingSettings] = useState(false);
+  const [savingChunking, setSavingChunking] = useState(false);
+
   const { parse, loading } = useParseText();
   const { data: stats, loading: loadingStats } = useParseStats();
+  const { data: chunkingConfig, refetch: refetchChunking } = useChunkingConfig();
 
   const handleExtractEntities = useCallback(async () => {
     if (!text.trim()) {
@@ -60,6 +67,19 @@ export function ParsePage() {
     setText('');
     setResults(null);
   }, []);
+
+  const handleChunkingChange = useCallback(async (field: keyof ChunkingConfig, value: number | string) => {
+    setSavingChunking(true);
+    try {
+      await updateChunkingConfig({ [field]: value });
+      toast.success('Chunking settings updated');
+      refetchChunking();
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Failed to update settings');
+    } finally {
+      setSavingChunking(false);
+    }
+  }, [toast, refetchChunking]);
 
   // Get entity icon and color by type
   const getEntityTypeConfig = (type: EntityType) => {
@@ -117,25 +137,127 @@ export function ParsePage() {
             <p className="page-description">Extract entities, dates, and locations from text</p>
           </div>
         </div>
+        <button
+          className="button-secondary"
+          onClick={() => setShowChunkingSettings(!showChunkingSettings)}
+          title="Chunking Settings"
+        >
+          <Icon name="Settings" size={18} />
+          Chunking Settings
+        </button>
       </header>
+
+
+
+      {/* Chunking Settings Panel */}
+      {showChunkingSettings && chunkingConfig && (
+        <section className="chunking-settings-section">
+          <div className="settings-header">
+            <h2>
+              <Icon name="Settings" size={20} />
+              Chunking Configuration
+            </h2>
+            <button
+              className="button-icon"
+              onClick={() => setShowChunkingSettings(false)}
+              title="Close settings"
+            >
+              <Icon name="X" size={18} />
+            </button>
+          </div>
+          <p className="settings-description">
+            Configure how documents are split into chunks for processing and embedding.
+          </p>
+          <div className="settings-grid">
+            <div className="setting-item">
+              <label htmlFor="chunk-size">Chunk Size (tokens)</label>
+              <input
+                id="chunk-size"
+                type="number"
+                value={chunkingConfig.chunk_size}
+                onChange={(e) => handleChunkingChange('chunk_size', parseInt(e.target.value) || 500)}
+                min={100}
+                max={2000}
+                step={50}
+                disabled={savingChunking}
+              />
+              <span className="setting-hint">Target size of each chunk (100-2000)</span>
+            </div>
+            <div className="setting-item">
+              <label htmlFor="chunk-overlap">Chunk Overlap (tokens)</label>
+              <input
+                id="chunk-overlap"
+                type="number"
+                value={chunkingConfig.chunk_overlap}
+                onChange={(e) => handleChunkingChange('chunk_overlap', parseInt(e.target.value) || 50)}
+                min={0}
+                max={500}
+                step={10}
+                disabled={savingChunking}
+              />
+              <span className="setting-hint">Overlap between adjacent chunks (0-500)</span>
+            </div>
+            <div className="setting-item">
+              <label htmlFor="chunk-method">Chunking Method</label>
+              <select
+                id="chunk-method"
+                value={chunkingConfig.chunk_method}
+                onChange={(e) => handleChunkingChange('chunk_method', e.target.value)}
+                disabled={savingChunking}
+              >
+                {chunkingConfig.available_methods.map((method) => (
+                  <option key={method} value={method}>
+                    {method.charAt(0).toUpperCase() + method.slice(1)}
+                  </option>
+                ))}
+              </select>
+              <span className="setting-hint">
+                {chunkingConfig.chunk_method === 'fixed' && 'Split at fixed token intervals'}
+                {chunkingConfig.chunk_method === 'sentence' && 'Split at sentence boundaries'}
+                {chunkingConfig.chunk_method === 'semantic' && 'Split at semantic boundaries using NLP'}
+              </span>
+            </div>
+          </div>
+          {savingChunking && (
+            <div className="saving-indicator">
+              <Icon name="Loader" size={16} className="spinner" />
+              Saving...
+            </div>
+          )}
+        </section>
+      )}
 
       {/* Statistics Cards */}
       <section className="stats-grid">
-        <div className="stat-card">
+        <div 
+          className="stat-card clickable" 
+          onClick={() => navigate('/entities')}
+          title="View all entities"
+        >
           <Icon name="Tag" size={24} className="stat-icon" style={{ color: '#6366f1' }} />
           <div className="stat-content">
             <div className="stat-value">{loadingStats ? '...' : stats?.total_entities ?? 0}</div>
             <div className="stat-label">Total Entities</div>
           </div>
+          <Icon name="ChevronRight" size={16} className="stat-arrow" />
         </div>
-        <div className="stat-card">
+        <div 
+          className="stat-card clickable" 
+          onClick={() => navigate('/parse/chunks')}
+          title="View all text chunks"
+        >
           <Icon name="FileText" size={24} className="stat-icon" style={{ color: '#3b82f6' }} />
           <div className="stat-content">
             <div className="stat-value">{loadingStats ? '...' : stats?.total_chunks ?? 0}</div>
             <div className="stat-label">Text Chunks</div>
           </div>
+          <Icon name="ChevronRight" size={16} className="stat-arrow" />
         </div>
-        <div className="stat-card">
+        <div 
+          className="stat-card clickable" 
+          onClick={() => navigate('/documents')}
+          title="View all documents"
+        >
           <Icon name="File" size={24} className="stat-icon" style={{ color: '#22c55e' }} />
           <div className="stat-content">
             <div className="stat-value">
@@ -143,6 +265,7 @@ export function ParsePage() {
             </div>
             <div className="stat-label">Documents Parsed</div>
           </div>
+          <Icon name="ChevronRight" size={16} className="stat-arrow" />
         </div>
       </section>
 
@@ -307,6 +430,107 @@ export function ParsePage() {
           font-size: 0.875rem;
         }
 
+
+        /* Chunking Settings Section */
+        .chunking-settings-section {
+          background: #1f2937;
+          border: 1px solid #374151;
+          border-radius: 0.5rem;
+          padding: 1.5rem;
+          margin-bottom: 2rem;
+        }
+
+        .settings-header {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          margin-bottom: 0.5rem;
+        }
+
+        .settings-header h2 {
+          margin: 0;
+          font-size: 1.125rem;
+          font-weight: 600;
+          color: #f9fafb;
+          display: flex;
+          align-items: center;
+          gap: 0.5rem;
+        }
+
+        .settings-description {
+          margin: 0 0 1.25rem 0;
+          color: #9ca3af;
+          font-size: 0.875rem;
+        }
+
+        .settings-grid {
+          display: grid;
+          grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+          gap: 1.5rem;
+        }
+
+        .setting-item {
+          display: flex;
+          flex-direction: column;
+          gap: 0.5rem;
+        }
+
+        .setting-item label {
+          font-size: 0.875rem;
+          font-weight: 500;
+          color: #f9fafb;
+        }
+
+        .setting-item input,
+        .setting-item select {
+          padding: 0.5rem 0.75rem;
+          background: #111827;
+          border: 1px solid #374151;
+          border-radius: 0.375rem;
+          color: #f9fafb;
+          font-size: 0.875rem;
+        }
+
+        .setting-item input:focus,
+        .setting-item select:focus {
+          outline: none;
+          border-color: #6366f1;
+        }
+
+        .setting-item input:disabled,
+        .setting-item select:disabled {
+          opacity: 0.5;
+          cursor: not-allowed;
+        }
+
+        .setting-hint {
+          font-size: 0.75rem;
+          color: #6b7280;
+        }
+
+        .saving-indicator {
+          display: flex;
+          align-items: center;
+          gap: 0.5rem;
+          margin-top: 1rem;
+          font-size: 0.875rem;
+          color: #9ca3af;
+        }
+
+        .button-icon {
+          background: transparent;
+          border: none;
+          padding: 0.375rem;
+          cursor: pointer;
+          color: #9ca3af;
+          border-radius: 0.25rem;
+        }
+
+        .button-icon:hover {
+          color: #f9fafb;
+          background: #374151;
+        }
+
         .stats-grid {
           display: grid;
           grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
@@ -322,6 +546,26 @@ export function ParsePage() {
           display: flex;
           gap: 1rem;
           align-items: center;
+        }
+
+        .stat-card.clickable {
+          cursor: pointer;
+          transition: all 0.15s;
+        }
+
+        .stat-card.clickable:hover {
+          border-color: #6366f1;
+          background: #1e293b;
+        }
+
+        .stat-arrow {
+          color: #6b7280;
+          transition: all 0.15s;
+        }
+
+        .stat-card.clickable:hover .stat-arrow {
+          color: #6366f1;
+          transform: translateX(2px);
         }
 
         .stat-icon {

@@ -268,8 +268,8 @@ class ClaimsShard(ArkhamShard):
             return None
 
         row = await self._db.fetch_one(
-            "SELECT * FROM arkham_claims WHERE id = ?",
-            [claim_id],
+            "SELECT * FROM arkham_claims WHERE id = :claim_id",
+            {"claim_id": claim_id},
         )
         return self._row_to_claim(row) if row else None
 
@@ -284,38 +284,39 @@ class ClaimsShard(ArkhamShard):
             return []
 
         query = "SELECT * FROM arkham_claims WHERE 1=1"
-        params = []
+        params: Dict[str, Any] = {}
 
         if filter:
             if filter.status:
-                query += " AND status = ?"
-                params.append(filter.status.value)
+                query += " AND status = :status"
+                params["status"] = filter.status.value
             if filter.claim_type:
-                query += " AND claim_type = ?"
-                params.append(filter.claim_type.value)
+                query += " AND claim_type = :claim_type"
+                params["claim_type"] = filter.claim_type.value
             if filter.document_id:
-                query += " AND source_document_id = ?"
-                params.append(filter.document_id)
+                query += " AND source_document_id = :document_id"
+                params["document_id"] = filter.document_id
             if filter.min_confidence is not None:
-                query += " AND confidence >= ?"
-                params.append(filter.min_confidence)
+                query += " AND confidence >= :min_confidence"
+                params["min_confidence"] = filter.min_confidence
             if filter.max_confidence is not None:
-                query += " AND confidence <= ?"
-                params.append(filter.max_confidence)
+                query += " AND confidence <= :max_confidence"
+                params["max_confidence"] = filter.max_confidence
             if filter.extracted_by:
-                query += " AND extracted_by = ?"
-                params.append(filter.extracted_by.value)
+                query += " AND extracted_by = :extracted_by"
+                params["extracted_by"] = filter.extracted_by.value
             if filter.has_evidence is not None:
                 if filter.has_evidence:
                     query += " AND evidence_count > 0"
                 else:
                     query += " AND evidence_count = 0"
             if filter.search_text:
-                query += " AND text LIKE ?"
-                params.append(f"%{filter.search_text}%")
+                query += " AND text LIKE :search_text"
+                params["search_text"] = f"%{filter.search_text}%"
 
-        query += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
-        params.extend([limit, offset])
+        query += " ORDER BY created_at DESC LIMIT :limit OFFSET :offset"
+        params["limit"] = limit
+        params["offset"] = offset
 
         rows = await self._db.fetch_all(query, params)
         return [self._row_to_claim(row) for row in rows]
@@ -409,8 +410,8 @@ class ClaimsShard(ArkhamShard):
             return []
 
         rows = await self._db.fetch_all(
-            "SELECT * FROM arkham_claim_evidence WHERE claim_id = ? ORDER BY added_at DESC",
-            [claim_id],
+            "SELECT * FROM arkham_claim_evidence WHERE claim_id = :claim_id ORDER BY added_at DESC",
+            {"claim_id": claim_id},
         )
         return [self._row_to_evidence(row) for row in rows]
 
@@ -678,8 +679,8 @@ Return claims as JSON array."""
 
         if status:
             result = await self._db.fetch_one(
-                "SELECT COUNT(*) as count FROM arkham_claims WHERE status = ?",
-                [status],
+                "SELECT COUNT(*) as count FROM arkham_claims WHERE status = :status",
+                {"status": status},
             )
         else:
             result = await self._db.fetch_one(
@@ -696,38 +697,38 @@ Return claims as JSON array."""
             return
 
         import json
-        data = (
-            claim.id,
-            claim.text,
-            claim.claim_type.value,
-            claim.status.value,
-            claim.confidence,
-            claim.source_document_id,
-            claim.source_start_char,
-            claim.source_end_char,
-            claim.source_context,
-            claim.extracted_by.value,
-            claim.extraction_model,
-            json.dumps(claim.entity_ids),
-            claim.evidence_count,
-            claim.supporting_count,
-            claim.refuting_count,
-            claim.created_at.isoformat(),
-            claim.updated_at.isoformat(),
-            claim.verified_at.isoformat() if claim.verified_at else None,
-            json.dumps(claim.metadata),
-        )
+        params = {
+            "id": claim.id,
+            "text": claim.text,
+            "claim_type": claim.claim_type.value,
+            "status": claim.status.value,
+            "confidence": claim.confidence,
+            "source_document_id": claim.source_document_id,
+            "source_start_char": claim.source_start_char,
+            "source_end_char": claim.source_end_char,
+            "source_context": claim.source_context,
+            "extracted_by": claim.extracted_by.value,
+            "extraction_model": claim.extraction_model,
+            "entity_ids": json.dumps(claim.entity_ids),
+            "evidence_count": claim.evidence_count,
+            "supporting_count": claim.supporting_count,
+            "refuting_count": claim.refuting_count,
+            "created_at": claim.created_at.isoformat(),
+            "updated_at": claim.updated_at.isoformat(),
+            "verified_at": claim.verified_at.isoformat() if claim.verified_at else None,
+            "metadata": json.dumps(claim.metadata),
+        }
 
         if update:
             await self._db.execute("""
                 UPDATE arkham_claims SET
-                    text=?, claim_type=?, status=?, confidence=?,
-                    source_document_id=?, source_start_char=?, source_end_char=?,
-                    source_context=?, extracted_by=?, extraction_model=?,
-                    entity_ids=?, evidence_count=?, supporting_count=?, refuting_count=?,
-                    created_at=?, updated_at=?, verified_at=?, metadata=?
-                WHERE id=?
-            """, data[1:] + (claim.id,))
+                    text=:text, claim_type=:claim_type, status=:status, confidence=:confidence,
+                    source_document_id=:source_document_id, source_start_char=:source_start_char, source_end_char=:source_end_char,
+                    source_context=:source_context, extracted_by=:extracted_by, extraction_model=:extraction_model,
+                    entity_ids=:entity_ids, evidence_count=:evidence_count, supporting_count=:supporting_count, refuting_count=:refuting_count,
+                    created_at=:created_at, updated_at=:updated_at, verified_at=:verified_at, metadata=:metadata
+                WHERE id=:id
+            """, params)
         else:
             await self._db.execute("""
                 INSERT INTO arkham_claims (
@@ -736,8 +737,12 @@ Return claims as JSON array."""
                     source_context, extracted_by, extraction_model,
                     entity_ids, evidence_count, supporting_count, refuting_count,
                     created_at, updated_at, verified_at, metadata
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, data)
+                ) VALUES (:id, :text, :claim_type, :status, :confidence,
+                    :source_document_id, :source_start_char, :source_end_char,
+                    :source_context, :extracted_by, :extraction_model,
+                    :entity_ids, :evidence_count, :supporting_count, :refuting_count,
+                    :created_at, :updated_at, :verified_at, :metadata)
+            """, params)
 
     async def _save_evidence(self, evidence: Evidence, update: bool = False) -> None:
         """Save evidence to the database."""
@@ -745,37 +750,39 @@ Return claims as JSON array."""
             return
 
         import json
-        data = (
-            evidence.id,
-            evidence.claim_id,
-            evidence.evidence_type.value,
-            evidence.reference_id,
-            evidence.reference_title,
-            evidence.relationship.value,
-            evidence.strength.value,
-            evidence.excerpt,
-            evidence.notes,
-            evidence.added_by,
-            evidence.added_at.isoformat(),
-            json.dumps(evidence.metadata),
-        )
+        params = {
+            "id": evidence.id,
+            "claim_id": evidence.claim_id,
+            "evidence_type": evidence.evidence_type.value,
+            "reference_id": evidence.reference_id,
+            "reference_title": evidence.reference_title,
+            "relationship": evidence.relationship.value,
+            "strength": evidence.strength.value,
+            "excerpt": evidence.excerpt,
+            "notes": evidence.notes,
+            "added_by": evidence.added_by,
+            "added_at": evidence.added_at.isoformat(),
+            "metadata": json.dumps(evidence.metadata),
+        }
 
         if update:
             await self._db.execute("""
                 UPDATE arkham_claim_evidence SET
-                    claim_id=?, evidence_type=?, reference_id=?, reference_title=?,
-                    relationship=?, strength=?, excerpt=?, notes=?,
-                    added_by=?, added_at=?, metadata=?
-                WHERE id=?
-            """, data[1:] + (evidence.id,))
+                    claim_id=:claim_id, evidence_type=:evidence_type, reference_id=:reference_id, reference_title=:reference_title,
+                    relationship=:relationship, strength=:strength, excerpt=:excerpt, notes=:notes,
+                    added_by=:added_by, added_at=:added_at, metadata=:metadata
+                WHERE id=:id
+            """, params)
         else:
             await self._db.execute("""
                 INSERT INTO arkham_claim_evidence (
                     id, claim_id, evidence_type, reference_id, reference_title,
                     relationship, strength, excerpt, notes,
                     added_by, added_at, metadata
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, data)
+                ) VALUES (:id, :claim_id, :evidence_type, :reference_id, :reference_title,
+                    :relationship, :strength, :excerpt, :notes,
+                    :added_by, :added_at, :metadata)
+            """, params)
 
     async def _update_claim_evidence_counts(self, claim_id: str) -> None:
         """Update evidence counts on a claim."""
@@ -783,32 +790,32 @@ Return claims as JSON array."""
             return
 
         total = await self._db.fetch_one(
-            "SELECT COUNT(*) as count FROM arkham_claim_evidence WHERE claim_id = ?",
-            [claim_id],
+            "SELECT COUNT(*) as count FROM arkham_claim_evidence WHERE claim_id = :claim_id",
+            {"claim_id": claim_id},
         )
         supporting = await self._db.fetch_one(
-            "SELECT COUNT(*) as count FROM arkham_claim_evidence WHERE claim_id = ? AND relationship = 'supports'",
-            [claim_id],
+            "SELECT COUNT(*) as count FROM arkham_claim_evidence WHERE claim_id = :claim_id AND relationship = 'supports'",
+            {"claim_id": claim_id},
         )
         refuting = await self._db.fetch_one(
-            "SELECT COUNT(*) as count FROM arkham_claim_evidence WHERE claim_id = ? AND relationship = 'refutes'",
-            [claim_id],
+            "SELECT COUNT(*) as count FROM arkham_claim_evidence WHERE claim_id = :claim_id AND relationship = 'refutes'",
+            {"claim_id": claim_id},
         )
 
         await self._db.execute("""
             UPDATE arkham_claims SET
-                evidence_count = ?,
-                supporting_count = ?,
-                refuting_count = ?,
-                updated_at = ?
-            WHERE id = ?
-        """, [
-            total["count"] if total else 0,
-            supporting["count"] if supporting else 0,
-            refuting["count"] if refuting else 0,
-            datetime.utcnow().isoformat(),
-            claim_id,
-        ])
+                evidence_count = :evidence_count,
+                supporting_count = :supporting_count,
+                refuting_count = :refuting_count,
+                updated_at = :updated_at
+            WHERE id = :id
+        """, {
+            "evidence_count": total["count"] if total else 0,
+            "supporting_count": supporting["count"] if supporting else 0,
+            "refuting_count": refuting["count"] if refuting else 0,
+            "updated_at": datetime.utcnow().isoformat(),
+            "id": claim_id,
+        })
 
     async def _link_claims_to_entity(self, entity_id: str, entity_name: str) -> None:
         """Link claims mentioning an entity to that entity."""
@@ -817,8 +824,8 @@ Return claims as JSON array."""
 
         # Find claims mentioning this entity name
         claims = await self._db.fetch_all(
-            "SELECT id, entity_ids FROM arkham_claims WHERE text LIKE ?",
-            [f"%{entity_name}%"],
+            "SELECT id, entity_ids FROM arkham_claims WHERE text LIKE :pattern",
+            {"pattern": f"%{entity_name}%"},
         )
 
         import json
@@ -827,8 +834,8 @@ Return claims as JSON array."""
             if entity_id not in entity_ids:
                 entity_ids.append(entity_id)
                 await self._db.execute(
-                    "UPDATE arkham_claims SET entity_ids = ? WHERE id = ?",
-                    [json.dumps(entity_ids), row["id"]],
+                    "UPDATE arkham_claims SET entity_ids = :entity_ids WHERE id = :id",
+                    {"entity_ids": json.dumps(entity_ids), "id": row["id"]},
                 )
 
     def _row_to_claim(self, row: Dict[str, Any]) -> Claim:

@@ -233,8 +233,8 @@ class PacketsShard(ArkhamShard):
             return None
 
         row = await self._db.fetch_one(
-            "SELECT * FROM arkham_packets WHERE id = ?",
-            [packet_id],
+            "SELECT * FROM arkham_packets WHERE id = :packet_id",
+            {"packet_id": packet_id},
         )
         return self._row_to_packet(row) if row else None
 
@@ -249,32 +249,33 @@ class PacketsShard(ArkhamShard):
             return []
 
         query = "SELECT * FROM arkham_packets WHERE 1=1"
-        params = []
+        params: Dict[str, Any] = {}
 
         if filter:
             if filter.status:
-                query += " AND status = ?"
-                params.append(filter.status.value)
+                query += " AND status = :status"
+                params["status"] = filter.status.value
             if filter.visibility:
-                query += " AND visibility = ?"
-                params.append(filter.visibility.value)
+                query += " AND visibility = :visibility"
+                params["visibility"] = filter.visibility.value
             if filter.created_by:
-                query += " AND created_by = ?"
-                params.append(filter.created_by)
+                query += " AND created_by = :created_by"
+                params["created_by"] = filter.created_by
             if filter.search_text:
-                query += " AND (name LIKE ? OR description LIKE ?)"
-                params.extend([f"%{filter.search_text}%", f"%{filter.search_text}%"])
+                query += " AND (name LIKE :search_text OR description LIKE :search_text)"
+                params["search_text"] = f"%{filter.search_text}%"
             if filter.has_contents is not None:
                 if filter.has_contents:
                     query += " AND contents_count > 0"
                 else:
                     query += " AND contents_count = 0"
             if filter.min_version is not None:
-                query += " AND version >= ?"
-                params.append(filter.min_version)
+                query += " AND version >= :min_version"
+                params["min_version"] = filter.min_version
 
-        query += " ORDER BY updated_at DESC LIMIT ? OFFSET ?"
-        params.extend([limit, offset])
+        query += " ORDER BY updated_at DESC LIMIT :limit OFFSET :offset"
+        params["limit"] = limit
+        params["offset"] = offset
 
         rows = await self._db.fetch_all(query, params)
         return [self._row_to_packet(row) for row in rows]
@@ -411,8 +412,8 @@ class PacketsShard(ArkhamShard):
             return False
 
         await self._db.execute(
-            "DELETE FROM arkham_packet_contents WHERE id = ? AND packet_id = ?",
-            [content_entry_id, packet_id],
+            "DELETE FROM arkham_packet_contents WHERE id = :id AND packet_id = :packet_id",
+            {"id": content_entry_id, "packet_id": packet_id},
         )
 
         await self._update_packet_counts(packet_id)
@@ -433,8 +434,8 @@ class PacketsShard(ArkhamShard):
             return []
 
         rows = await self._db.fetch_all(
-            "SELECT * FROM arkham_packet_contents WHERE packet_id = ? ORDER BY order_num, added_at",
-            [packet_id],
+            "SELECT * FROM arkham_packet_contents WHERE packet_id = :packet_id ORDER BY order_num, added_at",
+            {"packet_id": packet_id},
         )
         return [self._row_to_content(row) for row in rows]
 
@@ -491,8 +492,8 @@ class PacketsShard(ArkhamShard):
             return []
 
         rows = await self._db.fetch_all(
-            "SELECT * FROM arkham_packet_shares WHERE packet_id = ? ORDER BY shared_at DESC",
-            [packet_id],
+            "SELECT * FROM arkham_packet_shares WHERE packet_id = :packet_id ORDER BY shared_at DESC",
+            {"packet_id": packet_id},
         )
         return [self._row_to_share(row) for row in rows]
 
@@ -502,8 +503,8 @@ class PacketsShard(ArkhamShard):
             return False
 
         await self._db.execute(
-            "DELETE FROM arkham_packet_shares WHERE id = ?",
-            [share_id],
+            "DELETE FROM arkham_packet_shares WHERE id = :id",
+            {"id": share_id},
         )
         return True
 
@@ -582,8 +583,8 @@ class PacketsShard(ArkhamShard):
             return []
 
         rows = await self._db.fetch_all(
-            "SELECT * FROM arkham_packet_versions WHERE packet_id = ? ORDER BY version_number DESC",
-            [packet_id],
+            "SELECT * FROM arkham_packet_versions WHERE packet_id = :packet_id ORDER BY version_number DESC",
+            {"packet_id": packet_id},
         )
         return [self._row_to_version(row) for row in rows]
 
@@ -657,8 +658,8 @@ class PacketsShard(ArkhamShard):
 
         if status:
             result = await self._db.fetch_one(
-                "SELECT COUNT(*) as count FROM arkham_packets WHERE status = ?",
-                [status],
+                "SELECT COUNT(*) as count FROM arkham_packets WHERE status = :status",
+                {"status": status},
             )
         else:
             result = await self._db.fetch_one(
@@ -675,38 +676,40 @@ class PacketsShard(ArkhamShard):
             return
 
         import json
-        data = (
-            packet.id,
-            packet.name,
-            packet.description,
-            packet.status.value,
-            packet.visibility.value,
-            packet.created_by,
-            packet.created_at.isoformat(),
-            packet.updated_at.isoformat(),
-            packet.version,
-            packet.contents_count,
-            packet.size_bytes,
-            packet.checksum,
-            json.dumps(packet.metadata),
-        )
+        params = {
+            "id": packet.id,
+            "name": packet.name,
+            "description": packet.description,
+            "status": packet.status.value,
+            "visibility": packet.visibility.value,
+            "created_by": packet.created_by,
+            "created_at": packet.created_at.isoformat(),
+            "updated_at": packet.updated_at.isoformat(),
+            "version": packet.version,
+            "contents_count": packet.contents_count,
+            "size_bytes": packet.size_bytes,
+            "checksum": packet.checksum,
+            "metadata": json.dumps(packet.metadata),
+        }
 
         if update:
             await self._db.execute("""
                 UPDATE arkham_packets SET
-                    name=?, description=?, status=?, visibility=?,
-                    created_by=?, created_at=?, updated_at=?,
-                    version=?, contents_count=?, size_bytes=?, checksum=?, metadata=?
-                WHERE id=?
-            """, data[1:] + (packet.id,))
+                    name=:name, description=:description, status=:status, visibility=:visibility,
+                    created_by=:created_by, created_at=:created_at, updated_at=:updated_at,
+                    version=:version, contents_count=:contents_count, size_bytes=:size_bytes, checksum=:checksum, metadata=:metadata
+                WHERE id=:id
+            """, params)
         else:
             await self._db.execute("""
                 INSERT INTO arkham_packets (
                     id, name, description, status, visibility,
                     created_by, created_at, updated_at,
                     version, contents_count, size_bytes, checksum, metadata
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, data)
+                ) VALUES (:id, :name, :description, :status, :visibility,
+                    :created_by, :created_at, :updated_at,
+                    :version, :contents_count, :size_bytes, :checksum, :metadata)
+            """, params)
 
     async def _save_content(self, content: PacketContent) -> None:
         """Save packet content to the database."""
@@ -717,17 +720,18 @@ class PacketsShard(ArkhamShard):
             INSERT INTO arkham_packet_contents (
                 id, packet_id, content_type, content_id, content_title,
                 added_at, added_by, order_num
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            content.id,
-            content.packet_id,
-            content.content_type.value,
-            content.content_id,
-            content.content_title,
-            content.added_at.isoformat(),
-            content.added_by,
-            content.order,
-        ))
+            ) VALUES (:id, :packet_id, :content_type, :content_id, :content_title,
+                :added_at, :added_by, :order_num)
+        """, {
+            "id": content.id,
+            "packet_id": content.packet_id,
+            "content_type": content.content_type.value,
+            "content_id": content.content_id,
+            "content_title": content.content_title,
+            "added_at": content.added_at.isoformat(),
+            "added_by": content.added_by,
+            "order_num": content.order,
+        })
 
     async def _save_share(self, share: PacketShare) -> None:
         """Save packet share to the database."""
@@ -738,16 +742,17 @@ class PacketsShard(ArkhamShard):
             INSERT INTO arkham_packet_shares (
                 id, packet_id, shared_with, permissions,
                 shared_at, expires_at, access_token
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
-        """, (
-            share.id,
-            share.packet_id,
-            share.shared_with,
-            share.permissions.value,
-            share.shared_at.isoformat(),
-            share.expires_at.isoformat() if share.expires_at else None,
-            share.access_token,
-        ))
+            ) VALUES (:id, :packet_id, :shared_with, :permissions,
+                :shared_at, :expires_at, :access_token)
+        """, {
+            "id": share.id,
+            "packet_id": share.packet_id,
+            "shared_with": share.shared_with,
+            "permissions": share.permissions.value,
+            "shared_at": share.shared_at.isoformat(),
+            "expires_at": share.expires_at.isoformat() if share.expires_at else None,
+            "access_token": share.access_token,
+        })
 
     async def _save_version(self, version: PacketVersion) -> None:
         """Save packet version to the database."""
@@ -758,15 +763,16 @@ class PacketsShard(ArkhamShard):
             INSERT INTO arkham_packet_versions (
                 id, packet_id, version_number, created_at,
                 changes_summary, snapshot_path
-            ) VALUES (?, ?, ?, ?, ?, ?)
-        """, (
-            version.id,
-            version.packet_id,
-            version.version_number,
-            version.created_at.isoformat(),
-            version.changes_summary,
-            version.snapshot_path,
-        ))
+            ) VALUES (:id, :packet_id, :version_number, :created_at,
+                :changes_summary, :snapshot_path)
+        """, {
+            "id": version.id,
+            "packet_id": version.packet_id,
+            "version_number": version.version_number,
+            "created_at": version.created_at.isoformat(),
+            "changes_summary": version.changes_summary,
+            "snapshot_path": version.snapshot_path,
+        })
 
     async def _update_packet_counts(self, packet_id: str) -> None:
         """Update content counts on a packet."""
@@ -774,17 +780,17 @@ class PacketsShard(ArkhamShard):
             return
 
         count_row = await self._db.fetch_one(
-            "SELECT COUNT(*) as count FROM arkham_packet_contents WHERE packet_id = ?",
-            [packet_id],
+            "SELECT COUNT(*) as count FROM arkham_packet_contents WHERE packet_id = :packet_id",
+            {"packet_id": packet_id},
         )
         count = count_row["count"] if count_row else 0
 
         await self._db.execute("""
             UPDATE arkham_packets SET
-                contents_count = ?,
-                updated_at = ?
-            WHERE id = ?
-        """, [count, datetime.utcnow().isoformat(), packet_id])
+                contents_count = :contents_count,
+                updated_at = :updated_at
+            WHERE id = :id
+        """, {"contents_count": count, "updated_at": datetime.utcnow().isoformat(), "id": packet_id})
 
     async def _create_version_snapshot(
         self,

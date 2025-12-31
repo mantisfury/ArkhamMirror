@@ -281,8 +281,8 @@ class PatternsShard(ArkhamShard):
             return None
 
         row = await self._db.fetch_one(
-            "SELECT * FROM arkham_patterns WHERE id = ?",
-            [pattern_id],
+            "SELECT * FROM arkham_patterns WHERE id = :pattern_id",
+            {"pattern_id": pattern_id},
         )
         return self._row_to_pattern(row) if row else None
 
@@ -299,36 +299,36 @@ class PatternsShard(ArkhamShard):
             return []
 
         query = "SELECT * FROM arkham_patterns WHERE 1=1"
-        params = []
+        params: Dict[str, Any] = {}
 
         if filter:
             if filter.pattern_type:
-                query += " AND pattern_type = ?"
-                params.append(filter.pattern_type.value)
+                query += " AND pattern_type = :pattern_type"
+                params["pattern_type"] = filter.pattern_type.value
             if filter.status:
-                query += " AND status = ?"
-                params.append(filter.status.value)
+                query += " AND status = :status"
+                params["status"] = filter.status.value
             if filter.min_confidence is not None:
-                query += " AND confidence >= ?"
-                params.append(filter.min_confidence)
+                query += " AND confidence >= :min_confidence"
+                params["min_confidence"] = filter.min_confidence
             if filter.max_confidence is not None:
-                query += " AND confidence <= ?"
-                params.append(filter.max_confidence)
+                query += " AND confidence <= :max_confidence"
+                params["max_confidence"] = filter.max_confidence
             if filter.min_matches is not None:
-                query += " AND match_count >= ?"
-                params.append(filter.min_matches)
+                query += " AND match_count >= :min_matches"
+                params["min_matches"] = filter.min_matches
             if filter.detection_method:
-                query += " AND detection_method = ?"
-                params.append(filter.detection_method.value)
+                query += " AND detection_method = :detection_method"
+                params["detection_method"] = filter.detection_method.value
             if filter.search_text:
-                query += " AND (name LIKE ? OR description LIKE ?)"
-                params.extend([f"%{filter.search_text}%", f"%{filter.search_text}%"])
+                query += " AND (name LIKE :search_text OR description LIKE :search_text)"
+                params["search_text"] = f"%{filter.search_text}%"
             if filter.created_after:
-                query += " AND created_at >= ?"
-                params.append(filter.created_after.isoformat())
+                query += " AND created_at >= :created_after"
+                params["created_after"] = filter.created_after.isoformat()
             if filter.created_before:
-                query += " AND created_at <= ?"
-                params.append(filter.created_before.isoformat())
+                query += " AND created_at <= :created_before"
+                params["created_before"] = filter.created_before.isoformat()
 
         # Validate sort column
         valid_sorts = ["created_at", "updated_at", "name", "confidence", "match_count"]
@@ -336,8 +336,9 @@ class PatternsShard(ArkhamShard):
             sort = "created_at"
         order_dir = "DESC" if order.lower() == "desc" else "ASC"
 
-        query += f" ORDER BY {sort} {order_dir} LIMIT ? OFFSET ?"
-        params.extend([limit, offset])
+        query += f" ORDER BY {sort} {order_dir} LIMIT :limit OFFSET :offset"
+        params["limit"] = limit
+        params["offset"] = offset
 
         rows = await self._db.fetch_all(query, params)
         return [self._row_to_pattern(row) for row in rows]
@@ -393,14 +394,14 @@ class PatternsShard(ArkhamShard):
 
         # Delete matches first
         await self._db.execute(
-            "DELETE FROM arkham_pattern_matches WHERE pattern_id = ?",
-            [pattern_id],
+            "DELETE FROM arkham_pattern_matches WHERE pattern_id = :pattern_id",
+            {"pattern_id": pattern_id},
         )
 
         # Delete pattern
         await self._db.execute(
-            "DELETE FROM arkham_patterns WHERE id = ?",
-            [pattern_id],
+            "DELETE FROM arkham_patterns WHERE id = :id",
+            {"id": pattern_id},
         )
 
         return True
@@ -496,10 +497,10 @@ class PatternsShard(ArkhamShard):
 
         rows = await self._db.fetch_all(
             """SELECT * FROM arkham_pattern_matches
-               WHERE pattern_id = ?
+               WHERE pattern_id = :pattern_id
                ORDER BY matched_at DESC
-               LIMIT ? OFFSET ?""",
-            [pattern_id, limit, offset],
+               LIMIT :limit OFFSET :offset""",
+            {"pattern_id": pattern_id, "limit": limit, "offset": offset},
         )
         return [self._row_to_match(row) for row in rows]
 
@@ -509,8 +510,8 @@ class PatternsShard(ArkhamShard):
             return False
 
         await self._db.execute(
-            "DELETE FROM arkham_pattern_matches WHERE id = ? AND pattern_id = ?",
-            [match_id, pattern_id],
+            "DELETE FROM arkham_pattern_matches WHERE id = :id AND pattern_id = :pattern_id",
+            {"id": match_id, "pattern_id": pattern_id},
         )
         await self._update_pattern_counts(pattern_id)
         return True
@@ -707,8 +708,8 @@ class PatternsShard(ArkhamShard):
 
         if status:
             result = await self._db.fetch_one(
-                "SELECT COUNT(*) as count FROM arkham_patterns WHERE status = ?",
-                [status],
+                "SELECT COUNT(*) as count FROM arkham_patterns WHERE status = :status",
+                {"status": status},
             )
         else:
             result = await self._db.fetch_one(
@@ -723,8 +724,8 @@ class PatternsShard(ArkhamShard):
             return 0
 
         result = await self._db.fetch_one(
-            "SELECT COUNT(*) as count FROM arkham_pattern_matches WHERE pattern_id = ?",
-            [pattern_id],
+            "SELECT COUNT(*) as count FROM arkham_pattern_matches WHERE pattern_id = :pattern_id",
+            {"pattern_id": pattern_id},
         )
         return result["count"] if result else 0
 
@@ -738,37 +739,37 @@ class PatternsShard(ArkhamShard):
         criteria_json = pattern.criteria.model_dump_json() if pattern.criteria else "{}"
         metadata_json = json.dumps(pattern.metadata)
 
-        data = (
-            pattern.id,
-            pattern.name,
-            pattern.description,
-            pattern.pattern_type.value if isinstance(pattern.pattern_type, PatternType) else pattern.pattern_type,
-            pattern.status.value if isinstance(pattern.status, PatternStatus) else pattern.status,
-            pattern.confidence,
-            pattern.match_count,
-            pattern.document_count,
-            pattern.entity_count,
-            pattern.first_detected.isoformat() if pattern.first_detected else None,
-            pattern.last_matched.isoformat() if pattern.last_matched else None,
-            pattern.detection_method.value if isinstance(pattern.detection_method, DetectionMethod) else pattern.detection_method,
-            pattern.detection_model,
-            criteria_json,
-            pattern.created_at.isoformat(),
-            pattern.updated_at.isoformat(),
-            pattern.created_by,
-            metadata_json,
-        )
+        params = {
+            "id": pattern.id,
+            "name": pattern.name,
+            "description": pattern.description,
+            "pattern_type": pattern.pattern_type.value if isinstance(pattern.pattern_type, PatternType) else pattern.pattern_type,
+            "status": pattern.status.value if isinstance(pattern.status, PatternStatus) else pattern.status,
+            "confidence": pattern.confidence,
+            "match_count": pattern.match_count,
+            "document_count": pattern.document_count,
+            "entity_count": pattern.entity_count,
+            "first_detected": pattern.first_detected.isoformat() if pattern.first_detected else None,
+            "last_matched": pattern.last_matched.isoformat() if pattern.last_matched else None,
+            "detection_method": pattern.detection_method.value if isinstance(pattern.detection_method, DetectionMethod) else pattern.detection_method,
+            "detection_model": pattern.detection_model,
+            "criteria": criteria_json,
+            "created_at": pattern.created_at.isoformat(),
+            "updated_at": pattern.updated_at.isoformat(),
+            "created_by": pattern.created_by,
+            "metadata": metadata_json,
+        }
 
         if update:
             await self._db.execute("""
                 UPDATE arkham_patterns SET
-                    name=?, description=?, pattern_type=?, status=?, confidence=?,
-                    match_count=?, document_count=?, entity_count=?,
-                    first_detected=?, last_matched=?,
-                    detection_method=?, detection_model=?, criteria=?,
-                    created_at=?, updated_at=?, created_by=?, metadata=?
-                WHERE id=?
-            """, data[1:] + (pattern.id,))
+                    name=:name, description=:description, pattern_type=:pattern_type, status=:status, confidence=:confidence,
+                    match_count=:match_count, document_count=:document_count, entity_count=:entity_count,
+                    first_detected=:first_detected, last_matched=:last_matched,
+                    detection_method=:detection_method, detection_model=:detection_model, criteria=:criteria,
+                    created_at=:created_at, updated_at=:updated_at, created_by=:created_by, metadata=:metadata
+                WHERE id=:id
+            """, params)
         else:
             await self._db.execute("""
                 INSERT INTO arkham_patterns (
@@ -777,37 +778,43 @@ class PatternsShard(ArkhamShard):
                     first_detected, last_matched,
                     detection_method, detection_model, criteria,
                     created_at, updated_at, created_by, metadata
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, data)
+                ) VALUES (:id, :name, :description, :pattern_type, :status, :confidence,
+                    :match_count, :document_count, :entity_count,
+                    :first_detected, :last_matched,
+                    :detection_method, :detection_model, :criteria,
+                    :created_at, :updated_at, :created_by, :metadata)
+            """, params)
 
     async def _save_match(self, match: PatternMatch) -> None:
         """Save a match to the database."""
         if not self._db:
             return
 
-        data = (
-            match.id,
-            match.pattern_id,
-            match.source_type.value if isinstance(match.source_type, SourceType) else match.source_type,
-            match.source_id,
-            match.source_title,
-            match.match_score,
-            match.excerpt,
-            match.context,
-            match.start_char,
-            match.end_char,
-            match.matched_at.isoformat(),
-            match.matched_by,
-            json.dumps(match.metadata),
-        )
+        params = {
+            "id": match.id,
+            "pattern_id": match.pattern_id,
+            "source_type": match.source_type.value if isinstance(match.source_type, SourceType) else match.source_type,
+            "source_id": match.source_id,
+            "source_title": match.source_title,
+            "match_score": match.match_score,
+            "excerpt": match.excerpt,
+            "context": match.context,
+            "start_char": match.start_char,
+            "end_char": match.end_char,
+            "matched_at": match.matched_at.isoformat(),
+            "matched_by": match.matched_by,
+            "metadata": json.dumps(match.metadata),
+        }
 
         await self._db.execute("""
             INSERT INTO arkham_pattern_matches (
                 id, pattern_id, source_type, source_id, source_title,
                 match_score, excerpt, context, start_char, end_char,
                 matched_at, matched_by, metadata
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, data)
+            ) VALUES (:id, :pattern_id, :source_type, :source_id, :source_title,
+                :match_score, :excerpt, :context, :start_char, :end_char,
+                :matched_at, :matched_by, :metadata)
+        """, params)
 
     async def _update_pattern_counts(self, pattern_id: str) -> None:
         """Update match counts on a pattern."""
@@ -815,40 +822,40 @@ class PatternsShard(ArkhamShard):
             return
 
         total = await self._db.fetch_one(
-            "SELECT COUNT(*) as count FROM arkham_pattern_matches WHERE pattern_id = ?",
-            [pattern_id],
+            "SELECT COUNT(*) as count FROM arkham_pattern_matches WHERE pattern_id = :pattern_id",
+            {"pattern_id": pattern_id},
         )
 
         doc_count = await self._db.fetch_one(
             """SELECT COUNT(DISTINCT source_id) as count
                FROM arkham_pattern_matches
-               WHERE pattern_id = ? AND source_type = 'document'""",
-            [pattern_id],
+               WHERE pattern_id = :pattern_id AND source_type = 'document'""",
+            {"pattern_id": pattern_id},
         )
 
         entity_count = await self._db.fetch_one(
             """SELECT COUNT(DISTINCT source_id) as count
                FROM arkham_pattern_matches
-               WHERE pattern_id = ? AND source_type = 'entity'""",
-            [pattern_id],
+               WHERE pattern_id = :pattern_id AND source_type = 'entity'""",
+            {"pattern_id": pattern_id},
         )
 
         await self._db.execute("""
             UPDATE arkham_patterns SET
-                match_count = ?,
-                document_count = ?,
-                entity_count = ?,
-                last_matched = ?,
-                updated_at = ?
-            WHERE id = ?
-        """, [
-            total["count"] if total else 0,
-            doc_count["count"] if doc_count else 0,
-            entity_count["count"] if entity_count else 0,
-            datetime.utcnow().isoformat(),
-            datetime.utcnow().isoformat(),
-            pattern_id,
-        ])
+                match_count = :match_count,
+                document_count = :document_count,
+                entity_count = :entity_count,
+                last_matched = :last_matched,
+                updated_at = :updated_at
+            WHERE id = :id
+        """, {
+            "match_count": total["count"] if total else 0,
+            "document_count": doc_count["count"] if doc_count else 0,
+            "entity_count": entity_count["count"] if entity_count else 0,
+            "last_matched": datetime.utcnow().isoformat(),
+            "updated_at": datetime.utcnow().isoformat(),
+            "id": pattern_id,
+        })
 
     async def _check_source_against_patterns(self, source_type: SourceType, source_id: str) -> None:
         """Check a source against all active patterns."""
