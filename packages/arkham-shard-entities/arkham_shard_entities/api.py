@@ -143,7 +143,7 @@ def entity_to_response(entity) -> EntityResponse:
         canonical_id=entity.canonical_id,
         aliases=entity.aliases,
         metadata=entity.metadata,
-        mention_count=0,  # Will be populated from database if needed
+        mention_count=getattr(entity, 'mention_count', 0),
         created_at=entity.created_at.isoformat() if entity.created_at else "",
         updated_at=entity.updated_at.isoformat() if entity.updated_at else "",
     )
@@ -236,31 +236,56 @@ async def get_entity(entity_id: str, request: Request):
 
 
 @router.put("/items/{entity_id}", response_model=EntityResponse)
-async def update_entity(entity_id: str, request: UpdateEntityRequest):
+async def update_entity(entity_id: str, update_request: UpdateEntityRequest, request: Request):
     """
     Update an entity.
 
     Args:
         entity_id: Entity UUID
-        request: Update data
+        update_request: Update data
 
     Returns:
         Updated entity
     """
-    # Stub implementation
-    logger.debug(f"Updating entity: {entity_id}")
+    if not _entity_service:
+        raise HTTPException(status_code=503, detail="Entity service not available")
 
-    # Stub: Would update entity in database
-    # Would publish event: entities.entity.edited
-    if _event_bus:
-        # await _event_bus.emit(
-        #     "entities.entity.edited",
-        #     {"entity_id": entity_id, "changes": request.dict(exclude_unset=True)},
-        #     source="entities",
-        # )
-        pass
+    try:
+        # Build updates dict from request
+        updates = {}
+        if update_request.name is not None:
+            updates["text"] = update_request.name
+        if update_request.entity_type is not None:
+            updates["entity_type"] = update_request.entity_type
+        if update_request.metadata is not None:
+            updates["metadata"] = update_request.metadata
 
-    raise HTTPException(status_code=404, detail="Entity not found")
+        # Update via EntityService
+        updated = await _entity_service.update_entity(entity_id, updates)
+
+        # Publish event
+        if _event_bus:
+            await _event_bus.emit(
+                "entities.entity.edited",
+                {"entity_id": entity_id, "changes": updates},
+                source="entities-shard",
+            )
+
+        return EntityResponse(
+            id=updated.id,
+            name=updated.text,
+            entity_type=updated.entity_type.value if hasattr(updated.entity_type, 'value') else str(updated.entity_type),
+            canonical_id=updated.canonical_id,
+            aliases=[],
+            metadata=updated.metadata or {},
+            mention_count=0,
+            created_at=updated.created_at.isoformat() if updated.created_at else "",
+            updated_at=updated.created_at.isoformat() if updated.created_at else "",
+        )
+
+    except Exception as e:
+        logger.error(f"Failed to update entity {entity_id}: {e}")
+        raise HTTPException(status_code=404, detail=f"Entity not found: {entity_id}")
 
 
 @router.delete("/items/{entity_id}")
@@ -274,13 +299,29 @@ async def delete_entity(entity_id: str):
     Returns:
         Deletion confirmation
     """
-    # Stub implementation
-    logger.debug(f"Deleting entity: {entity_id}")
+    if not _entity_service:
+        raise HTTPException(status_code=503, detail="Entity service not available")
 
-    # Stub: Would delete entity from database
-    # Would cascade delete mentions and relationships
+    try:
+        deleted = await _entity_service.delete_entity(entity_id)
+        if not deleted:
+            raise HTTPException(status_code=404, detail=f"Entity not found: {entity_id}")
 
-    return {"deleted": True, "entity_id": entity_id}
+        # Publish event
+        if _event_bus:
+            await _event_bus.emit(
+                "entities.entity.deleted",
+                {"entity_id": entity_id},
+                source="entities-shard",
+            )
+
+        return {"deleted": True, "entity_id": entity_id}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to delete entity {entity_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/count")
@@ -311,38 +352,173 @@ async def get_count(
 
 @router.get("/duplicates", response_model=list[MergeCandidateResponse])
 async def get_duplicates(
+    request: Request,
     entity_type: Annotated[str | None, Query(description="Entity type filter")] = None,
     threshold: Annotated[float, Query(description="Similarity threshold")] = 0.8,
+    limit: Annotated[int, Query(description="Max candidates to return")] = 50,
 ):
     """
     Get potential duplicate entities for merging.
 
+    Uses fuzzy string matching to find entities with similar names.
+
     Args:
         entity_type: Filter by entity type
         threshold: Similarity threshold (0.0-1.0)
+        limit: Maximum candidates to return
 
     Returns:
         List of merge candidate pairs
     """
-    # Stub implementation
-    logger.debug(f"Finding duplicates: type={entity_type}, threshold={threshold}")
+    shard = get_shard(request)
 
-    # Stub: Would find similar entities
-    # - Use string similarity (Levenshtein, fuzzy matching)
-    # - Use vector similarity if vectors service available
-    # - Check for common mentions/documents
-    # - Return candidates above threshold
+    try:
+        # Get all entities (we'll compare them)
+        entities = await shard.list_entities(
+            entity_type=entity_type,
+            limit=500,  # Reasonable limit for comparison
+            show_merged=False,
+        )
 
-    return []
+        if len(entities) < 2:
+            return []
+
+        # Find duplicates using fuzzy string matching
+        candidates = []
+        seen_pairs = set()
+
+        for i, entity_a in enumerate(entities):
+            for entity_b in entities[i + 1:]:
+                # Skip if different types (unless no type filter)
+                if entity_a.entity_type != entity_b.entity_type:
+                    continue
+
+                # Skip if already seen this pair
+                pair_key = tuple(sorted([entity_a.id, entity_b.id]))
+                if pair_key in seen_pairs:
+                    continue
+                seen_pairs.add(pair_key)
+
+                # Calculate similarity
+                similarity = _calculate_similarity(entity_a.name, entity_b.name)
+
+                if similarity >= threshold:
+                    candidates.append(MergeCandidateResponse(
+                        entity_a={
+                            "id": entity_a.id,
+                            "name": entity_a.name,
+                            "entity_type": entity_a.entity_type.value if hasattr(entity_a.entity_type, 'value') else str(entity_a.entity_type),
+                        },
+                        entity_b={
+                            "id": entity_b.id,
+                            "name": entity_b.name,
+                            "entity_type": entity_b.entity_type.value if hasattr(entity_b.entity_type, 'value') else str(entity_b.entity_type),
+                        },
+                        similarity_score=similarity,
+                        reason=_get_similarity_reason(entity_a.name, entity_b.name, similarity),
+                        common_mentions=0,
+                        common_documents=0,
+                    ))
+
+                    if len(candidates) >= limit:
+                        break
+
+            if len(candidates) >= limit:
+                break
+
+        # Sort by similarity score descending
+        candidates.sort(key=lambda x: x.similarity_score, reverse=True)
+
+        return candidates[:limit]
+
+    except Exception as e:
+        logger.error(f"Failed to find duplicates: {e}")
+        return []
+
+
+def _calculate_similarity(str1: str, str2: str) -> float:
+    """
+    Calculate similarity between two strings using multiple methods.
+
+    Returns a score between 0.0 and 1.0.
+    """
+    if not str1 or not str2:
+        return 0.0
+
+    # Normalize strings
+    s1 = str1.lower().strip()
+    s2 = str2.lower().strip()
+
+    # Exact match
+    if s1 == s2:
+        return 1.0
+
+    # Check if one contains the other
+    if s1 in s2 or s2 in s1:
+        shorter = min(len(s1), len(s2))
+        longer = max(len(s1), len(s2))
+        return shorter / longer * 0.95  # High score but not perfect
+
+    # Levenshtein distance-based similarity
+    distance = _levenshtein_distance(s1, s2)
+    max_len = max(len(s1), len(s2))
+    if max_len == 0:
+        return 1.0
+
+    return 1.0 - (distance / max_len)
+
+
+def _levenshtein_distance(s1: str, s2: str) -> int:
+    """Calculate Levenshtein (edit) distance between two strings."""
+    if len(s1) < len(s2):
+        return _levenshtein_distance(s2, s1)
+
+    if len(s2) == 0:
+        return len(s1)
+
+    previous_row = range(len(s2) + 1)
+
+    for i, c1 in enumerate(s1):
+        current_row = [i + 1]
+        for j, c2 in enumerate(s2):
+            insertions = previous_row[j + 1] + 1
+            deletions = current_row[j] + 1
+            substitutions = previous_row[j] + (c1 != c2)
+            current_row.append(min(insertions, deletions, substitutions))
+        previous_row = current_row
+
+    return previous_row[-1]
+
+
+def _get_similarity_reason(name1: str, name2: str, score: float) -> str:
+    """Generate a human-readable reason for the similarity."""
+    s1 = name1.lower().strip()
+    s2 = name2.lower().strip()
+
+    if s1 == s2:
+        return "Exact match (case-insensitive)"
+    elif s1 in s2:
+        return f"'{name1}' is contained in '{name2}'"
+    elif s2 in s1:
+        return f"'{name2}' is contained in '{name1}'"
+    elif score >= 0.9:
+        return "Very similar names (possible typo)"
+    elif score >= 0.8:
+        return "Similar names (likely same entity)"
+    else:
+        return "Moderately similar names"
 
 
 @router.get("/merge-suggestions", response_model=list[MergeCandidateResponse])
 async def get_merge_suggestions(
+    request: Request,
     entity_id: Annotated[str | None, Query(description="Get suggestions for specific entity")] = None,
     limit: Annotated[int, Query(description="Max suggestions to return")] = 10,
 ):
     """
-    Get AI-suggested entity merges (requires vectors service).
+    Get AI-suggested entity merges using vector similarity.
+
+    If vectors service is not available, falls back to fuzzy string matching.
 
     Args:
         entity_id: Optional specific entity to find matches for
@@ -351,22 +527,143 @@ async def get_merge_suggestions(
     Returns:
         List of suggested merges
     """
+    shard = get_shard(request)
+
+    try:
+        # If specific entity requested, find similar entities to it
+        if entity_id:
+            target_entity = await shard.get_entity(entity_id)
+            if not target_entity:
+                raise HTTPException(status_code=404, detail=f"Entity not found: {entity_id}")
+
+            # Get entities of same type
+            entities = await shard.list_entities(
+                entity_type=target_entity.entity_type.value if hasattr(target_entity.entity_type, 'value') else str(target_entity.entity_type),
+                limit=200,
+                show_merged=False,
+            )
+
+            # Find similar entities
+            candidates = []
+            for entity in entities:
+                if entity.id == entity_id:
+                    continue
+
+                # Use vector similarity if available
+                if _vectors_service:
+                    try:
+                        similarity = await _get_vector_similarity(
+                            target_entity.name, entity.name
+                        )
+                    except Exception:
+                        similarity = _calculate_similarity(target_entity.name, entity.name)
+                else:
+                    similarity = _calculate_similarity(target_entity.name, entity.name)
+
+                if similarity >= 0.7:  # Lower threshold for suggestions
+                    candidates.append(MergeCandidateResponse(
+                        entity_a={
+                            "id": target_entity.id,
+                            "name": target_entity.name,
+                            "entity_type": target_entity.entity_type.value if hasattr(target_entity.entity_type, 'value') else str(target_entity.entity_type),
+                        },
+                        entity_b={
+                            "id": entity.id,
+                            "name": entity.name,
+                            "entity_type": entity.entity_type.value if hasattr(entity.entity_type, 'value') else str(entity.entity_type),
+                        },
+                        similarity_score=similarity,
+                        reason="Vector similarity" if _vectors_service else "Name similarity",
+                        common_mentions=0,
+                        common_documents=0,
+                    ))
+
+            candidates.sort(key=lambda x: x.similarity_score, reverse=True)
+            return candidates[:limit]
+
+        # No specific entity - return general duplicate suggestions
+        # Fall back to duplicates endpoint logic with lower threshold
+        entities = await shard.list_entities(limit=300, show_merged=False)
+
+        if len(entities) < 2:
+            return []
+
+        candidates = []
+        seen_pairs = set()
+
+        for i, entity_a in enumerate(entities):
+            for entity_b in entities[i + 1:]:
+                if entity_a.entity_type != entity_b.entity_type:
+                    continue
+
+                pair_key = tuple(sorted([entity_a.id, entity_b.id]))
+                if pair_key in seen_pairs:
+                    continue
+                seen_pairs.add(pair_key)
+
+                similarity = _calculate_similarity(entity_a.name, entity_b.name)
+
+                if similarity >= 0.75:
+                    candidates.append(MergeCandidateResponse(
+                        entity_a={
+                            "id": entity_a.id,
+                            "name": entity_a.name,
+                            "entity_type": entity_a.entity_type.value if hasattr(entity_a.entity_type, 'value') else str(entity_a.entity_type),
+                        },
+                        entity_b={
+                            "id": entity_b.id,
+                            "name": entity_b.name,
+                            "entity_type": entity_b.entity_type.value if hasattr(entity_b.entity_type, 'value') else str(entity_b.entity_type),
+                        },
+                        similarity_score=similarity,
+                        reason=_get_similarity_reason(entity_a.name, entity_b.name, similarity),
+                        common_mentions=0,
+                        common_documents=0,
+                    ))
+
+                    if len(candidates) >= limit * 2:
+                        break
+
+            if len(candidates) >= limit * 2:
+                break
+
+        candidates.sort(key=lambda x: x.similarity_score, reverse=True)
+        return candidates[:limit]
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get merge suggestions: {e}")
+        return []
+
+
+async def _get_vector_similarity(text1: str, text2: str) -> float:
+    """Get similarity between two texts using vector embeddings."""
     if not _vectors_service:
-        raise HTTPException(
-            status_code=503,
-            detail="Vector service not available - merge suggestions disabled",
-        )
+        return _calculate_similarity(text1, text2)
 
-    # Stub implementation
-    logger.debug(f"Getting merge suggestions: entity_id={entity_id}, limit={limit}")
+    try:
+        # Embed both texts
+        embeddings = await _vectors_service.embed_texts([text1, text2])
+        if len(embeddings) != 2:
+            return _calculate_similarity(text1, text2)
 
-    # Stub: Would use vector similarity to find candidates
-    # - Embed entity names and context
-    # - Find nearest neighbors in vector space
-    # - Filter by entity type
-    # - Return top matches
+        # Calculate cosine similarity
+        import math
+        vec1, vec2 = embeddings[0], embeddings[1]
 
-    return []
+        dot_product = sum(a * b for a, b in zip(vec1, vec2))
+        norm1 = math.sqrt(sum(a * a for a in vec1))
+        norm2 = math.sqrt(sum(b * b for b in vec2))
+
+        if norm1 == 0 or norm2 == 0:
+            return 0.0
+
+        return dot_product / (norm1 * norm2)
+
+    except Exception as e:
+        logger.warning(f"Vector similarity failed, falling back to string similarity: {e}")
+        return _calculate_similarity(text1, text2)
 
 
 @router.post("/merge")
@@ -403,15 +700,16 @@ async def merge_entities(merge_request: MergeEntitiesRequest, request: Request):
 
 @router.get("/relationships", response_model=list[RelationshipResponse])
 async def list_relationships(
+    request: Request,
     page: int = 1,
-    page_size: int = 20,
+    page_size: int = 50,
     entity_id: Annotated[str | None, Query(description="Filter by entity")] = None,
     relationship_type: Annotated[
         str | None, Query(description="Filter by relationship type")
     ] = None,
 ):
     """
-    List entity relationships.
+    List entity relationships from shard's arkham_entity_relationships table.
 
     Args:
         page: Page number
@@ -422,55 +720,134 @@ async def list_relationships(
     Returns:
         List of relationships
     """
-    # Stub implementation
-    logger.debug(
-        f"Listing relationships: entity={entity_id}, type={relationship_type}"
-    )
+    shard = get_shard(request)
 
-    # Stub: Would query relationships table
-    # - Filter by source_id OR target_id if entity_id provided
-    # - Filter by relationship_type if provided
-    # - Paginate results
+    try:
+        if entity_id:
+            # Get relationships for a specific entity
+            relationships = await shard.get_entity_relationships(
+                entity_id,
+                direction="both",
+                relationship_type=relationship_type,
+            )
+        else:
+            # Get all relationships with pagination
+            relationships = await shard.list_relationships(
+                offset=(page - 1) * page_size,
+                limit=page_size,
+                relationship_type=relationship_type,
+            )
 
-    return []
+        return [
+            RelationshipResponse(
+                id=rel["id"],
+                source_id=rel["source_id"],
+                target_id=rel["target_id"],
+                relationship_type=rel["relationship_type"],
+                confidence=rel.get("confidence", 1.0),
+                metadata=rel.get("metadata", {}),
+                created_at=rel["created_at"].isoformat() if rel.get("created_at") else "",
+            )
+            for rel in relationships
+        ]
+
+    except Exception as e:
+        logger.error(f"Failed to list relationships: {e}")
+        return []
+
+
+@router.get("/relationships/types")
+async def get_relationship_types():
+    """Get available relationship types."""
+    return {
+        "types": [
+            {"value": "WORKS_FOR", "label": "Works For", "description": "Employment relationship"},
+            {"value": "LOCATED_IN", "label": "Located In", "description": "Geographic location"},
+            {"value": "MEMBER_OF", "label": "Member Of", "description": "Membership in organization"},
+            {"value": "OWNS", "label": "Owns", "description": "Ownership relationship"},
+            {"value": "RELATED_TO", "label": "Related To", "description": "General relationship"},
+            {"value": "MENTIONED_WITH", "label": "Mentioned With", "description": "Co-occurrence in documents"},
+            {"value": "PARENT_OF", "label": "Parent Of", "description": "Hierarchical parent"},
+            {"value": "CHILD_OF", "label": "Child Of", "description": "Hierarchical child"},
+            {"value": "SAME_AS", "label": "Same As", "description": "Identity relationship"},
+            {"value": "PART_OF", "label": "Part Of", "description": "Component relationship"},
+            {"value": "OTHER", "label": "Other", "description": "Other relationship type"},
+        ]
+    }
+
+
+@router.get("/relationships/stats")
+async def get_relationship_stats():
+    """Get relationship statistics."""
+    if not _entity_service:
+        return {"total": 0, "by_type": {}}
+
+    try:
+        stats = await _entity_service.get_relationship_stats()
+        return stats
+    except Exception as e:
+        logger.error(f"Failed to get relationship stats: {e}")
+        return {"total": 0, "by_type": {}}
 
 
 @router.post("/relationships", response_model=RelationshipResponse)
-async def create_relationship(request: CreateRelationshipRequest):
+async def create_relationship(rel_request: CreateRelationshipRequest):
     """
     Create a relationship between two entities.
 
     Args:
-        request: Relationship data
+        rel_request: Relationship data
 
     Returns:
         Created relationship
     """
-    # Stub implementation
-    logger.debug(
-        f"Creating relationship: {request.source_id} -{request.relationship_type}-> {request.target_id}"
-    )
+    if not _entity_service:
+        raise HTTPException(status_code=503, detail="Entity service not available")
 
-    # Stub: Would create relationship in database
-    # - Validate source and target entities exist
-    # - Create relationship record
-    # - Return created relationship
+    try:
+        from arkham_frame.services.entities import RelationshipType
 
-    # Would publish event: entities.relationship.created
-    if _event_bus:
-        # await _event_bus.emit(
-        #     "entities.relationship.created",
-        #     {
-        #         "relationship_id": "new-id",
-        #         "source_id": request.source_id,
-        #         "target_id": request.target_id,
-        #         "relationship_type": request.relationship_type,
-        #     },
-        #     source="entities",
-        # )
-        pass
+        # Convert relationship type string to enum
+        try:
+            rel_type = RelationshipType(rel_request.relationship_type)
+        except ValueError:
+            rel_type = RelationshipType.OTHER
 
-    raise HTTPException(status_code=404, detail="Entity not found")
+        # Create relationship via EntityService
+        relationship = await _entity_service.create_relationship(
+            source_id=rel_request.source_id,
+            target_id=rel_request.target_id,
+            relationship_type=rel_type,
+            confidence=rel_request.confidence,
+            metadata=rel_request.metadata,
+        )
+
+        # Publish event
+        if _event_bus:
+            await _event_bus.emit(
+                "entities.relationship.created",
+                {
+                    "relationship_id": relationship.id,
+                    "source_id": relationship.source_id,
+                    "target_id": relationship.target_id,
+                    "relationship_type": relationship.relationship_type.value,
+                },
+                source="entities-shard",
+            )
+
+        return RelationshipResponse(
+            id=relationship.id,
+            source_id=relationship.source_id,
+            target_id=relationship.target_id,
+            relationship_type=relationship.relationship_type.value if hasattr(relationship.relationship_type, 'value') else str(relationship.relationship_type),
+            confidence=relationship.confidence,
+            metadata=relationship.metadata or {},
+            created_at=relationship.created_at.isoformat() if relationship.created_at else "",
+        )
+
+    except Exception as e:
+        logger.error(f"Failed to create relationship: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.delete("/relationships/{relationship_id}")
@@ -484,27 +861,35 @@ async def delete_relationship(relationship_id: str):
     Returns:
         Deletion confirmation
     """
-    # Stub implementation
-    logger.debug(f"Deleting relationship: {relationship_id}")
+    if not _entity_service:
+        raise HTTPException(status_code=503, detail="Entity service not available")
 
-    # Stub: Would delete relationship from database
+    try:
+        deleted = await _entity_service.delete_relationship(relationship_id)
+        if not deleted:
+            raise HTTPException(status_code=404, detail=f"Relationship not found: {relationship_id}")
 
-    # Would publish event: entities.relationship.deleted
-    if _event_bus:
-        # await _event_bus.emit(
-        #     "entities.relationship.deleted",
-        #     {"relationship_id": relationship_id},
-        #     source="entities",
-        # )
-        pass
+        # Publish event
+        if _event_bus:
+            await _event_bus.emit(
+                "entities.relationship.deleted",
+                {"relationship_id": relationship_id},
+                source="entities-shard",
+            )
 
-    return {"deleted": True, "relationship_id": relationship_id}
+        return {"deleted": True, "relationship_id": relationship_id}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to delete relationship {relationship_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/{entity_id}/relationships", response_model=list[RelationshipResponse])
-async def get_entity_relationships(entity_id: str):
+async def get_entity_relationships(entity_id: str, request: Request):
     """
-    Get all relationships for a specific entity.
+    Get all relationships for a specific entity from shard's table.
 
     Args:
         entity_id: Entity UUID
@@ -512,12 +897,30 @@ async def get_entity_relationships(entity_id: str):
     Returns:
         List of relationships where entity is source or target
     """
-    # Stub implementation
-    logger.debug(f"Getting relationships for entity: {entity_id}")
+    shard = get_shard(request)
 
-    # Stub: Would query relationships where source_id OR target_id = entity_id
+    try:
+        relationships = await shard.get_entity_relationships(
+            entity_id,
+            direction="both",
+        )
 
-    return []
+        return [
+            RelationshipResponse(
+                id=rel["id"],
+                source_id=rel["source_id"],
+                target_id=rel["target_id"],
+                relationship_type=rel["relationship_type"],
+                confidence=rel.get("confidence", 1.0),
+                metadata=rel.get("metadata", {}),
+                created_at=rel["created_at"].isoformat() if rel.get("created_at") else "",
+            )
+            for rel in relationships
+        ]
+
+    except Exception as e:
+        logger.error(f"Failed to get relationships for entity {entity_id}: {e}")
+        return []
 
 
 # --- Mention Endpoints ---
@@ -546,7 +949,7 @@ async def get_entity_mentions(
 
     # Publish event
     if _event_bus:
-        await _event_bus.publish("entities.entity.viewed", {"entity_id": entity_id})
+        await _event_bus.emit("entities.entity.viewed", {"entity_id": entity_id}, source="entities-shard")
 
     # Convert to response models
     mentions = []

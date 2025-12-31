@@ -7,6 +7,40 @@
   overflow: hidden;
 }
 
+/* Tabs */
+.entities-tabs {
+  display: flex;
+  gap: 0.25rem;
+  padding: 0 1rem;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.tab-btn {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.75rem 1rem;
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--text-secondary);
+  font-size: 0.875rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s;
+  margin-bottom: -1px;
+}
+
+.tab-btn:hover {
+  color: var(--text-primary);
+  background: var(--bg-hover);
+}
+
+.tab-btn.active {
+  color: var(--primary);
+  border-bottom-color: var(--primary);
+}
+
 .entities-layout {
   display: flex;
   flex-direction: column;
@@ -14,6 +48,10 @@
   overflow: hidden;
   padding: 1rem;
   gap: 1rem;
+}
+
+.entities-layout.merge-layout {
+  padding: 1rem;
 }
 
 /* Filters */
@@ -366,4 +404,10 @@
   font-size: 0.875rem;
   color: var(--text-primary);
   font-style: italic;
+}
+
+/* Stats Badge */
+.entity-count-badge {
+  color: var(--primary);
+  font-weight: 500;
 }

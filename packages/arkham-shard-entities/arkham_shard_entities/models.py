@@ -49,6 +49,9 @@ class Entity:
     # Additional metadata
     metadata: dict[str, Any] = field(default_factory=dict)
 
+    # Mention count - how many times this entity appears across documents
+    mention_count: int = 0
+
     # Timestamps
     created_at: datetime = field(default_factory=datetime.utcnow)
     updated_at: datetime = field(default_factory=datetime.utcnow)
@@ -100,6 +103,9 @@ class EntityRelationship:
 
     # Additional metadata
     metadata: dict[str, Any] = field(default_factory=dict)
+
+    # Mention count - how many times this entity appears across documents
+    mention_count: int = 0
 
     # Timestamps
     created_at: datetime = field(default_factory=datetime.utcnow)
