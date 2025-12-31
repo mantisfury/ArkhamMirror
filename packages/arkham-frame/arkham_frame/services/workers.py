@@ -437,7 +437,7 @@ class WorkerService:
 
         # Emit event
         if self._event_bus:
-            await self._event_bus.publish(
+            await self._event_bus.emit(
                 "worker.job.completed",
                 {"job_id": job_id, "result": result},
                 source="worker-service",
@@ -465,7 +465,7 @@ class WorkerService:
 
         # Emit event
         if self._event_bus:
-            await self._event_bus.publish(
+            await self._event_bus.emit(
                 "worker.job.failed",
                 {"job_id": job_id, "error": error},
                 source="worker-service",

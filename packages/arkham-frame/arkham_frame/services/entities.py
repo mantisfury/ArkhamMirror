@@ -1130,6 +1130,110 @@ class EntityService:
 
         return relationships
 
+    async def list_all_relationships(
+        self,
+        offset: int = 0,
+        limit: int = 50,
+        relationship_type: Optional[RelationshipType] = None,
+    ) -> List[EntityRelationship]:
+        """List all relationships with pagination."""
+        relationships = []
+
+        if self.db and self.db._connected:
+            try:
+                from sqlalchemy import text
+                import json
+
+                query = """
+                    SELECT id, source_id, target_id, relationship_type,
+                           confidence, document_id, metadata, created_at
+                    FROM arkham_frame.entity_relationships
+                    WHERE 1=1
+                """
+                params = {"offset": offset, "limit": limit}
+
+                if relationship_type:
+                    query += " AND relationship_type = :rel_type"
+                    params["rel_type"] = relationship_type.value if isinstance(relationship_type, RelationshipType) else relationship_type
+
+                query += " ORDER BY created_at DESC OFFSET :offset LIMIT :limit"
+
+                with self.db._engine.connect() as conn:
+                    result = conn.execute(text(query), params)
+
+                    for row in result:
+                        metadata = row[6]
+                        if isinstance(metadata, str):
+                            metadata = json.loads(metadata)
+
+                        relationships.append(EntityRelationship(
+                            id=row[0],
+                            source_id=row[1],
+                            target_id=row[2],
+                            relationship_type=RelationshipType(row[3]) if row[3] in [r.value for r in RelationshipType] else RelationshipType.OTHER,
+                            confidence=row[4],
+                            document_id=row[5],
+                            metadata=metadata or {},
+                            created_at=row[7],
+                        ))
+            except Exception as e:
+                logger.error(f"Failed to list all relationships: {e}")
+
+        return relationships
+
+    async def count_relationships(
+        self,
+        relationship_type: Optional[RelationshipType] = None,
+    ) -> int:
+        """Count relationships with optional type filter."""
+        if self.db and self.db._connected:
+            try:
+                from sqlalchemy import text
+
+                query = "SELECT COUNT(*) FROM arkham_frame.entity_relationships WHERE 1=1"
+                params = {}
+
+                if relationship_type:
+                    query += " AND relationship_type = :rel_type"
+                    params["rel_type"] = relationship_type.value if isinstance(relationship_type, RelationshipType) else relationship_type
+
+                with self.db._engine.connect() as conn:
+                    result = conn.execute(text(query), params)
+                    return result.scalar() or 0
+            except Exception as e:
+                logger.error(f"Failed to count relationships: {e}")
+        return 0
+
+    async def get_relationship_stats(self) -> Dict[str, Any]:
+        """Get relationship statistics."""
+        stats = {
+            "total": 0,
+            "by_type": {},
+        }
+
+        if self.db and self.db._connected:
+            try:
+                from sqlalchemy import text
+
+                with self.db._engine.connect() as conn:
+                    # Total relationships
+                    result = conn.execute(text("SELECT COUNT(*) FROM arkham_frame.entity_relationships"))
+                    stats["total"] = result.scalar() or 0
+
+                    # Relationships by type
+                    result = conn.execute(text("""
+                        SELECT relationship_type, COUNT(*)
+                        FROM arkham_frame.entity_relationships
+                        GROUP BY relationship_type
+                    """))
+                    for row in result:
+                        stats["by_type"][row[0]] = row[1]
+
+            except Exception as e:
+                logger.error(f"Failed to get relationship stats: {e}")
+
+        return stats
+
     # =========================================================================
     # Co-occurrence Analysis
     # =========================================================================
