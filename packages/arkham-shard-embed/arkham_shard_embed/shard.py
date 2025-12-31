@@ -102,10 +102,9 @@ class EmbedShard(ArkhamShard):
 
         # Subscribe to document events for auto-embedding
         if event_bus:
-            await event_bus.subscribe("documents.ingested", self._on_document_ingested)
-            await event_bus.subscribe("documents.chunks.created", self._on_chunks_created)
-            await event_bus.subscribe("parse.chunks.created", self._on_chunks_created)
-            logger.info("Subscribed to document events")
+            # Subscribe to parse completion - this is when chunks are ready for embedding
+            await event_bus.subscribe("parse.document.completed", self._on_parse_completed)
+            logger.info("Subscribed to parse.document.completed for auto-embedding")
 
         logger.info("Embed Shard initialized")
 
@@ -125,9 +124,7 @@ class EmbedShard(ArkhamShard):
         if self.frame:
             event_bus = self.frame.get_service("events")
             if event_bus:
-                await event_bus.unsubscribe("documents.ingested", self._on_document_ingested)
-                await event_bus.unsubscribe("documents.chunks.created", self._on_chunks_created)
-                await event_bus.unsubscribe("parse.chunks.created", self._on_chunks_created)
+                await event_bus.unsubscribe("parse.document.completed", self._on_parse_completed)
 
         # Clear cache
         if self.embedding_manager:
@@ -143,14 +140,23 @@ class EmbedShard(ArkhamShard):
         """Return FastAPI router for this shard."""
         return router
 
-    async def _on_document_ingested(self, event: dict) -> None:
+    async def _on_parse_completed(self, event: dict) -> None:
         """
-        Handle document ingested event.
+        Handle parse completion event.
 
-        Automatically queues embedding jobs for new documents.
+        Automatically queues embedding jobs when document parsing (chunking) is done.
+        The parse shard emits this event with document_id and chunk counts.
         """
-        doc_id = event.get("doc_id")
-        logger.debug(f"Document ingested: {doc_id}")
+        # EventBus wraps events: {"event_type": ..., "payload": {...}, "source": ...}
+        payload = event.get("payload", event)  # Support both wrapped and unwrapped
+        doc_id = payload.get("document_id")
+        chunks_saved = payload.get("chunks_saved", 0)
+
+        if not doc_id:
+            logger.warning("parse.document.completed event missing document_id")
+            return
+
+        logger.info(f"Parse completed for document {doc_id} with {chunks_saved} chunks - queuing embedding")
 
         # Get worker service to queue embedding job
         worker_service = self.frame.get_service("workers")
@@ -158,33 +164,25 @@ class EmbedShard(ArkhamShard):
             logger.warning("Worker service not available - cannot queue auto-embedding")
             return
 
-        # Queue embedding job
+        # Queue embedding job for the document's chunks
+        import uuid as uuid_mod
         try:
-            job_id = await worker_service.enqueue(
+            job_uuid = str(uuid_mod.uuid4())
+            job = await worker_service.enqueue(
                 pool="gpu-embed",
-                job_type="embed_document",
+                job_id=job_uuid,
                 payload={
+                    "job_type": "embed_document",
                     "doc_id": doc_id,
                     "force": False,
                     "chunk_size": 512,
                     "chunk_overlap": 50,
                 },
             )
+            job_id = job_uuid
             logger.info(f"Queued auto-embedding job {job_id} for document {doc_id}")
         except Exception as e:
             logger.error(f"Failed to queue auto-embedding for {doc_id}: {e}")
-
-    async def _on_chunks_created(self, event: dict) -> None:
-        """
-        Handle document chunks created event.
-
-        Could be used to trigger immediate embedding of new chunks.
-        """
-        doc_id = event.get("doc_id")
-        chunk_count = event.get("chunk_count", 0)
-        logger.debug(f"Chunks created for document {doc_id}: {chunk_count} chunks")
-
-        # TODO: Optionally trigger embedding of specific chunks
 
     # --- Public API for other shards ---
 

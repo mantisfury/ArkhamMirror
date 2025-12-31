@@ -46,7 +46,7 @@ import { ACHPage, ACHListPage, ACHNewPage } from './pages/ach';
 import { IngestPage, IngestQueuePage } from './pages/ingest';
 import { OCRPage } from './pages/ocr';
 import { SearchPage } from './pages/search';
-import { ParsePage } from './pages/parse';
+import { ParsePage, ChunksPage } from './pages/parse';
 import { EmbedPage } from './pages/embed';
 import { ContradictionsPage } from './pages/contradictions';
 import { AnomaliesPage } from './pages/anomalies';
@@ -115,6 +115,7 @@ export function App() {
 
                   {/* Parse shard */}
                   <Route path="/parse" element={<ParsePage />} />
+                  <Route path="/parse/chunks" element={<ChunksPage />} />
 
                   {/* Embed shard */}
                   <Route path="/embed" element={<EmbedPage />} />
@@ -145,8 +146,10 @@ export function App() {
                   <Route path="/documents" element={<DocumentsPage />} />
 
                   {/* Wave 2 shards */}
-                  {/* Entities shard */}
+                  {/* Entities shard with sub-routes */}
                   <Route path="/entities" element={<EntitiesPage />} />
+                  <Route path="/entities/merge" element={<EntitiesPage />} />
+                  <Route path="/entities/relationships" element={<EntitiesPage />} />
 
                   {/* Projects shard */}
                   <Route path="/projects" element={<ProjectsPage />} />

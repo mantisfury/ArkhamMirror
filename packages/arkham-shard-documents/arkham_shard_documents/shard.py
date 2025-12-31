@@ -978,22 +978,20 @@ class DocumentsShard(ArkhamShard):
         if not self._db:
             return {"items": [], "total": 0}
 
-        # Query the entities shard's mentions table to find entities for this document
-        # Note: arkham_entities uses 'name' column, not 'text'
+        # Query Frame's entities table directly - this is where Parse shard saves entities
         query = """
-            SELECT DISTINCT e.id, e.name, e.entity_type, e.canonical_id, m.confidence,
-                   COUNT(m.id) as occurrence_count
-            FROM arkham_entities e
-            JOIN arkham_entity_mentions m ON e.id = m.entity_id
-            WHERE m.document_id = :document_id
+            SELECT text, entity_type, canonical_id, confidence, metadata,
+                   COUNT(*) as occurrence_count
+            FROM arkham_frame.entities
+            WHERE document_id = :document_id
         """
         params: Dict[str, Any] = {"document_id": document_id}
 
         if entity_type:
-            query += " AND e.entity_type = :entity_type"
+            query += " AND entity_type = :entity_type"
             params["entity_type"] = entity_type
 
-        query += " GROUP BY e.id, e.name, e.entity_type, e.canonical_id, m.confidence"
+        query += " GROUP BY text, entity_type, canonical_id, confidence, metadata"
         query += " ORDER BY occurrence_count DESC"
 
         try:
@@ -1001,33 +999,28 @@ class DocumentsShard(ArkhamShard):
 
             entities = []
             for row in rows:
-                # Get mention text snippets for this entity in this document
-                # Note: arkham_entity_mentions uses 'mention_text' column, not 'context'
-                context_rows = await self._db.fetch_all(
-                    """
-                    SELECT mention_text FROM arkham_entity_mentions
-                    WHERE entity_id = :entity_id AND document_id = :document_id
-                    LIMIT 3
-                    """,
-                    {"entity_id": row["id"], "document_id": document_id}
-                )
-                context = [r["mention_text"] for r in context_rows if r["mention_text"]]
+                # Get context snippets from metadata if available
+                metadata = row["metadata"] or {}
+                context = []
+                if metadata.get("sentence"):
+                    context.append(metadata["sentence"])
 
                 entities.append({
-                    "id": row["id"],
+                    "id": f"{document_id}:{row['text']}",  # Composite ID for UI
                     "document_id": document_id,
                     "entity_type": row["entity_type"],
-                    "text": row["name"],  # Map 'name' to 'text' for API response
+                    "text": row["text"],
                     "confidence": row["confidence"] or 0.0,
                     "occurrences": row["occurrence_count"] or 1,
                     "context": context,
+                    "canonical_id": row["canonical_id"],
                 })
 
             return {"items": entities, "total": len(entities)}
 
         except Exception as e:
             logger.warning(f"Could not fetch entities for document {document_id}: {e}")
-            # Tables may not exist yet or be in a different schema
+            # Tables may not exist yet
             return {"items": [], "total": 0}
 
     async def batch_update_tags(
