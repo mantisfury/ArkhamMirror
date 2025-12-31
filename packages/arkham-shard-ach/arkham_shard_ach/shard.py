@@ -9,6 +9,7 @@ from .matrix import MatrixManager
 from .scoring import ACHScorer
 from .evidence import EvidenceAnalyzer
 from .export import MatrixExporter
+from .corpus import CorpusSearchService
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +43,9 @@ class ACHShard(ArkhamShard):
         self._frame = None
         self._event_bus = None
         self._llm_service = None
+        self._vectors_service = None
+        self._documents_service = None
+        self.corpus_service: CorpusSearchService | None = None
 
     async def initialize(self, frame) -> None:
         """
@@ -63,9 +67,22 @@ class ACHShard(ArkhamShard):
         # Get Frame services
         self._event_bus = frame.get_service("events")
         self._llm_service = frame.get_service("llm")
+        self._vectors_service = frame.get_service("vectors")
+        self._documents_service = frame.get_service("documents")
 
         if not self._llm_service:
             logger.warning("LLM service not available - devil's advocate mode disabled")
+
+        # Initialize corpus search service if dependencies available
+        if self._vectors_service and self._llm_service:
+            self.corpus_service = CorpusSearchService(
+                vectors_service=self._vectors_service,
+                documents_service=self._documents_service,
+                llm_service=self._llm_service,
+            )
+            logger.info("Corpus search service initialized")
+        else:
+            logger.warning("Corpus search not available (requires vectors + LLM)")
 
         # Initialize API with our instances
         init_api(
@@ -75,6 +92,7 @@ class ACHShard(ArkhamShard):
             exporter=self.exporter,
             event_bus=self._event_bus,
             llm_service=self._llm_service,
+            corpus_service=self.corpus_service,
         )
 
         # Subscribe to events if needed
@@ -99,6 +117,7 @@ class ACHShard(ArkhamShard):
         self.scorer = None
         self.evidence_analyzer = None
         self.exporter = None
+        self.corpus_service = None
 
         logger.info("ACH Shard shutdown complete")
 

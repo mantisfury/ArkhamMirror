@@ -314,3 +314,36 @@ export async function extractEvidence(data: {
     body: JSON.stringify(data),
   });
 }
+
+// ============================================
+// Linked Documents Operations
+// ============================================
+
+export interface LinkedDocumentsResponse {
+  matrix_id: string;
+  document_ids: string[];
+  count: number;
+}
+
+export async function getLinkedDocuments(matrixId: string): Promise<LinkedDocumentsResponse> {
+  return fetchAPI(`/matrix/${matrixId}/documents`);
+}
+
+export async function linkDocuments(
+  matrixId: string,
+  documentIds: string[]
+): Promise<{ matrix_id: string; linked: string[]; total_linked: number }> {
+  return fetchAPI(`/matrix/${matrixId}/documents`, {
+    method: 'POST',
+    body: JSON.stringify({ document_ids: documentIds }),
+  });
+}
+
+export async function unlinkDocument(
+  matrixId: string,
+  documentId: string
+): Promise<{ matrix_id: string; unlinked: string; total_linked: number }> {
+  return fetchAPI(`/matrix/${matrixId}/documents/${documentId}`, {
+    method: 'DELETE',
+  });
+}

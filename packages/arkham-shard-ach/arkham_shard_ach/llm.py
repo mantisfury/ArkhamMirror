@@ -277,7 +277,7 @@ class ACHLLMIntegration:
             user_prompt=user_prompt,
         )
 
-        return self._parse_hypotheses(response.get("text", ""))
+        return self._parse_hypotheses(getattr(response, "text", ""))
 
     def _parse_hypotheses(self, text: str) -> list[HypothesisSuggestion]:
         """Parse numbered hypotheses from LLM response."""
@@ -351,7 +351,7 @@ class ACHLLMIntegration:
             user_prompt=user_prompt,
         )
 
-        return self._parse_evidence(response.get("text", ""))
+        return self._parse_evidence(getattr(response, "text", ""))
 
     def _parse_evidence(self, text: str) -> list[EvidenceSuggestion]:
         """Parse evidence suggestions from LLM response."""
@@ -472,7 +472,7 @@ Where RATING is: ++, +, N, -, or --"""
             user_prompt=prompt,
         )
 
-        return self._parse_ratings(response.get("text", ""), hypotheses)
+        return self._parse_ratings(getattr(response, "text", ""), hypotheses)
 
     def _parse_ratings(
         self,
@@ -594,7 +594,7 @@ Provide devil's advocate challenges. Return as JSON:
             temperature=0.8,  # Slightly higher for creativity
         )
 
-        return self._parse_challenges(response.get("text", ""), matrix)
+        return self._parse_challenges(getattr(response, "text", ""), matrix)
 
     def _parse_challenges(
         self,
@@ -750,7 +750,7 @@ Provide devil's advocate challenges. Return as JSON:
             max_tokens=3000,
         )
 
-        return self._parse_insights(response.get("text", ""))
+        return self._parse_insights(getattr(response, "text", ""))
 
     def _parse_insights(self, text: str) -> AnalysisInsights:
         """Parse analysis insights from LLM response."""
@@ -813,7 +813,7 @@ Be specific about what would be observable and when."""
             user_prompt=prompt,
         )
 
-        return self._parse_milestones(response.get("text", ""), matrix)
+        return self._parse_milestones(getattr(response, "text", ""), matrix)
 
     def _parse_milestones(
         self,
@@ -940,4 +940,4 @@ Where TYPE is: fact, testimony, document, physical, circumstantial, inference"""
             user_prompt=prompt,
         )
 
-        return self._parse_evidence(response.get("text", ""))
+        return self._parse_evidence(getattr(response, "text", ""))

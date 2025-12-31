@@ -84,6 +84,7 @@ export interface ACHMatrix {
   project_id: string | null;
   tags: string[];
   notes: string;
+  linked_document_ids: string[];
 }
 
 // Matrix list item (summary view)

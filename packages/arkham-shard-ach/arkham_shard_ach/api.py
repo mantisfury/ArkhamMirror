@@ -18,6 +18,7 @@ _exporter = None
 _event_bus = None
 _llm_service = None
 _llm_integration = None
+_corpus_service = None
 
 
 def init_api(
@@ -27,21 +28,26 @@ def init_api(
     exporter,
     event_bus,
     llm_service,
+    corpus_service=None,
 ):
     """Initialize API with shard dependencies."""
-    global _matrix_manager, _scorer, _evidence_analyzer, _exporter, _event_bus, _llm_service, _llm_integration
+    global _matrix_manager, _scorer, _evidence_analyzer, _exporter, _event_bus, _llm_service, _llm_integration, _corpus_service
     _matrix_manager = matrix_manager
     _scorer = scorer
     _evidence_analyzer = evidence_analyzer
     _exporter = exporter
     _event_bus = event_bus
     _llm_service = llm_service
+    _corpus_service = corpus_service
 
     # Initialize LLM integration if service available
     if llm_service:
         from .llm import ACHLLMIntegration
         _llm_integration = ACHLLMIntegration(llm_service)
         logger.info("ACH LLM integration initialized")
+
+    if corpus_service:
+        logger.info("ACH Corpus search service initialized")
 
 
 # --- Request/Response Models ---
@@ -132,6 +138,28 @@ class ExtractEvidenceRequest(BaseModel):
     text: str
     document_id: str | None = None
     max_items: int = 5
+
+
+class CorpusSearchRequest(BaseModel):
+    """Request to search corpus for evidence."""
+    matrix_id: str
+    hypothesis_id: str
+    chunk_limit: int = 30
+    min_similarity: float = 0.5
+    scope: dict | None = None
+
+
+class AcceptCorpusEvidenceRequest(BaseModel):
+    """Request to accept corpus-extracted evidence into matrix."""
+    matrix_id: str
+    evidence: list[dict]
+    auto_rate: bool = False
+
+
+
+class LinkDocumentsRequest(BaseModel):
+    """Request to link documents to a matrix."""
+    document_ids: list[str]
 
 
 # --- Endpoints ---
@@ -248,6 +276,95 @@ async def delete_matrix(matrix_id: str):
         )
 
     return {"status": "deleted", "matrix_id": matrix_id}
+
+
+
+# --- Linked Documents Endpoints ---
+
+
+@router.get("/matrix/{matrix_id}/documents")
+async def get_linked_documents(matrix_id: str):
+    """Get documents linked to a matrix."""
+    if not _matrix_manager:
+        raise HTTPException(status_code=503, detail="ACH service not initialized")
+
+    matrix = _matrix_manager.get_matrix(matrix_id)
+    if not matrix:
+        raise HTTPException(status_code=404, detail=f"Matrix not found: {matrix_id}")
+
+    return {
+        "matrix_id": matrix_id,
+        "document_ids": matrix.linked_document_ids,
+        "count": len(matrix.linked_document_ids),
+    }
+
+
+@router.post("/matrix/{matrix_id}/documents")
+async def link_documents(matrix_id: str, request: LinkDocumentsRequest):
+    """Link documents to a matrix for corpus search scope."""
+    if not _matrix_manager:
+        raise HTTPException(status_code=503, detail="ACH service not initialized")
+
+    matrix = _matrix_manager.get_matrix(matrix_id)
+    if not matrix:
+        raise HTTPException(status_code=404, detail=f"Matrix not found: {matrix_id}")
+
+    # Add new document IDs (avoid duplicates)
+    added = []
+    for doc_id in request.document_ids:
+        if doc_id not in matrix.linked_document_ids:
+            matrix.linked_document_ids.append(doc_id)
+            added.append(doc_id)
+
+    # Emit event
+    if _event_bus and added:
+        await _event_bus.emit(
+            "ach.documents.linked",
+            {
+                "matrix_id": matrix_id,
+                "document_ids": added,
+            },
+            source="ach-shard",
+        )
+
+    return {
+        "matrix_id": matrix_id,
+        "linked": added,
+        "total_linked": len(matrix.linked_document_ids),
+    }
+
+
+@router.delete("/matrix/{matrix_id}/documents/{document_id}")
+async def unlink_document(matrix_id: str, document_id: str):
+    """Unlink a document from a matrix."""
+    if not _matrix_manager:
+        raise HTTPException(status_code=503, detail="ACH service not initialized")
+
+    matrix = _matrix_manager.get_matrix(matrix_id)
+    if not matrix:
+        raise HTTPException(status_code=404, detail=f"Matrix not found: {matrix_id}")
+
+    if document_id not in matrix.linked_document_ids:
+        raise HTTPException(status_code=404, detail=f"Document not linked: {document_id}")
+
+    matrix.linked_document_ids.remove(document_id)
+
+    # Emit event
+    if _event_bus:
+        await _event_bus.emit(
+            "ach.documents.unlinked",
+            {
+                "matrix_id": matrix_id,
+                "document_id": document_id,
+            },
+            source="ach-shard",
+        )
+
+    return {
+        "matrix_id": matrix_id,
+        "unlinked": document_id,
+        "total_linked": len(matrix.linked_document_ids),
+    }
 
 
 @router.get("/matrices")
@@ -1018,3 +1135,215 @@ async def extract_evidence_from_document(request: ExtractEvidenceRequest):
     except Exception as e:
         logger.error(f"Evidence extraction failed: {e}")
         raise HTTPException(status_code=500, detail=f"AI generation failed: {str(e)}")
+
+
+# =============================================================================
+# Corpus Search Endpoints
+# =============================================================================
+
+
+@router.get("/ai/corpus/status")
+async def get_corpus_status():
+    """Check if corpus search is available."""
+    return {
+        "available": _corpus_service is not None and _corpus_service.is_available,
+        "vectors_service": _corpus_service is not None and _corpus_service.vectors is not None,
+        "llm_service": _corpus_service is not None and _corpus_service.llm is not None,
+    }
+
+
+@router.post("/ai/corpus-search")
+async def search_corpus_for_evidence(request: CorpusSearchRequest):
+    """
+    Search document corpus for evidence relevant to a hypothesis.
+
+    Uses vector search to find relevant document chunks, then
+    uses LLM to classify and extract evidence quotes.
+    """
+    if not _corpus_service or not _corpus_service.is_available:
+        raise HTTPException(status_code=503, detail="Corpus search not available")
+
+    if not _matrix_manager:
+        raise HTTPException(status_code=503, detail="ACH service not initialized")
+
+    matrix = _matrix_manager.get_matrix(request.matrix_id)
+    if not matrix:
+        raise HTTPException(status_code=404, detail=f"Matrix not found: {request.matrix_id}")
+
+    hypothesis = matrix.get_hypothesis(request.hypothesis_id)
+    if not hypothesis:
+        raise HTTPException(status_code=404, detail=f"Hypothesis not found: {request.hypothesis_id}")
+
+    from .models import SearchScope, CorpusSearchConfig
+    scope = None
+    if request.scope:
+        scope = SearchScope(
+            project_id=request.scope.get("project_id"),
+            document_ids=request.scope.get("document_ids"),
+        )
+
+    config = CorpusSearchConfig(
+        chunk_limit=request.chunk_limit,
+        min_similarity=request.min_similarity,
+    )
+
+    try:
+        search_text = f"{hypothesis.title} {hypothesis.description}"
+        results = await _corpus_service.search_for_evidence(
+            hypothesis_text=search_text,
+            hypothesis_id=hypothesis.id,
+            scope=scope,
+            config=config,
+        )
+
+        results = await _corpus_service.check_duplicates(matrix, results)
+
+        return {
+            "matrix_id": request.matrix_id,
+            "hypothesis_id": request.hypothesis_id,
+            "hypothesis_title": hypothesis.title,
+            "results": [
+                {
+                    "quote": r.quote,
+                    "source_document_id": r.source_document_id,
+                    "source_document_name": r.source_document_name,
+                    "source_chunk_id": r.source_chunk_id,
+                    "page_number": r.page_number,
+                    "relevance": r.relevance.value,
+                    "explanation": r.explanation,
+                    "similarity_score": r.similarity_score,
+                    "verified": r.verified,
+                    "possible_duplicate": r.possible_duplicate,
+                }
+                for r in results
+            ],
+            "count": len(results),
+        }
+
+    except Exception as e:
+        logger.error(f"Corpus search failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Corpus search failed: {str(e)}")
+
+
+@router.post("/ai/corpus-search-all")
+async def search_corpus_all_hypotheses(
+    matrix_id: str = Query(...),
+    chunk_limit: int = Query(20, description="Chunks per hypothesis"),
+    min_similarity: float = Query(0.5, description="Minimum similarity threshold"),
+):
+    """Search corpus for evidence relevant to all hypotheses in a matrix."""
+    if not _corpus_service or not _corpus_service.is_available:
+        raise HTTPException(status_code=503, detail="Corpus search not available")
+
+    if not _matrix_manager:
+        raise HTTPException(status_code=503, detail="ACH service not initialized")
+
+    matrix = _matrix_manager.get_matrix(matrix_id)
+    if not matrix:
+        raise HTTPException(status_code=404, detail=f"Matrix not found: {matrix_id}")
+
+    if not matrix.hypotheses:
+        raise HTTPException(status_code=400, detail="No hypotheses in matrix")
+
+    from .models import CorpusSearchConfig
+    config = CorpusSearchConfig(chunk_limit=chunk_limit, min_similarity=min_similarity)
+
+    try:
+        results = await _corpus_service.search_all_hypotheses(matrix=matrix, config=config)
+
+        formatted = {}
+        for hyp_id, evidence_list in results.items():
+            hyp = matrix.get_hypothesis(hyp_id)
+            formatted[hyp_id] = {
+                "hypothesis_title": hyp.title if hyp else "Unknown",
+                "results": [
+                    {
+                        "quote": r.quote,
+                        "source_document_id": r.source_document_id,
+                        "source_document_name": r.source_document_name,
+                        "relevance": r.relevance.value,
+                        "explanation": r.explanation,
+                        "similarity_score": r.similarity_score,
+                        "verified": r.verified,
+                    }
+                    for r in evidence_list
+                ],
+                "count": len(evidence_list),
+            }
+
+        return {
+            "matrix_id": matrix_id,
+            "by_hypothesis": formatted,
+            "total_results": sum(len(v) for v in results.values()),
+        }
+
+    except Exception as e:
+        logger.error(f"Corpus search all failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Corpus search failed: {str(e)}")
+
+
+@router.post("/ai/accept-corpus-evidence")
+async def accept_corpus_evidence(request: AcceptCorpusEvidenceRequest):
+    """Accept extracted corpus evidence into the matrix."""
+    if not _matrix_manager:
+        raise HTTPException(status_code=503, detail="ACH service not initialized")
+
+    matrix = _matrix_manager.get_matrix(request.matrix_id)
+    if not matrix:
+        raise HTTPException(status_code=404, detail=f"Matrix not found: {request.matrix_id}")
+
+    added_ids = []
+
+    for item in request.evidence:
+        evidence = _matrix_manager.add_evidence(
+            matrix_id=request.matrix_id,
+            description=item.get("quote", ""),
+            source=item.get("source_document_name", "corpus"),
+            evidence_type="document",
+            credibility=1.0,
+            relevance=1.0,
+            author="corpus-extraction",
+            document_ids=[item.get("source_document_id")] if item.get("source_document_id") else None,
+        )
+
+        if evidence:
+            added_ids.append(evidence.id)
+
+            if request.auto_rate and item.get("hypothesis_id"):
+                from .models import ConsistencyRating
+
+                relevance = item.get("relevance", "neutral")
+                rating_map = {
+                    "supports": ConsistencyRating.CONSISTENT,
+                    "contradicts": ConsistencyRating.INCONSISTENT,
+                    "neutral": ConsistencyRating.NEUTRAL,
+                    "ambiguous": ConsistencyRating.NEUTRAL,
+                }
+                rating = rating_map.get(relevance, ConsistencyRating.NEUTRAL)
+
+                _matrix_manager.set_rating(
+                    matrix_id=request.matrix_id,
+                    evidence_id=evidence.id,
+                    hypothesis_id=item.get("hypothesis_id"),
+                    rating=rating,
+                    reasoning=item.get("explanation", "Auto-rated from corpus extraction"),
+                    confidence=0.8,
+                    author="corpus-extraction",
+                )
+
+    if _event_bus and added_ids:
+        await _event_bus.emit(
+            "ach.corpus.evidence_accepted",
+            {
+                "matrix_id": request.matrix_id,
+                "evidence_ids": added_ids,
+                "count": len(added_ids),
+            },
+            source="ach-shard",
+        )
+
+    return {
+        "matrix_id": request.matrix_id,
+        "added": len(added_ids),
+        "evidence_ids": added_ids,
+    }

@@ -14,6 +14,9 @@ logger = logging.getLogger(__name__)
 class MatrixExporter:
     """Export ACH matrices to different formats."""
 
+    RATING_DISPLAY = {"++": "CC", "+": "C", "N": "N", "-": "I", "--": "II", "N/A": "N/A"}
+    RATING_CSS = {"++": "cc", "+": "c", "N": "n", "-": "i", "--": "ii", "N/A": "na"}
+
     @staticmethod
     def export_json(matrix: ACHMatrix) -> MatrixExport:
         """Export matrix as JSON."""
@@ -73,286 +76,196 @@ class MatrixExporter:
                 for s in sorted(matrix.scores, key=lambda x: x.rank)
             ],
         }
-
         json_str = json.dumps(data, indent=2)
-
-        return MatrixExport(
-            matrix=matrix,
-            format="json",
-            content=json_str,
-        )
+        return MatrixExport(matrix=matrix, format="json", content=json_str)
 
     @staticmethod
     def export_csv(matrix: ACHMatrix) -> MatrixExport:
         """Export matrix as CSV."""
         output = StringIO()
         writer = csv.writer(output)
-
-        # Header row
         header = ["Evidence"]
         sorted_hypotheses = sorted(matrix.hypotheses, key=lambda x: x.column_index)
         for h in sorted_hypotheses:
             header.append(h.title)
         header.extend(["Source", "Type", "Credibility", "Relevance"])
         writer.writerow(header)
-
-        # Evidence rows
         sorted_evidence = sorted(matrix.evidence, key=lambda x: x.row_index)
         for evidence in sorted_evidence:
             row = [evidence.description]
-
-            # Ratings for each hypothesis
             for hypothesis in sorted_hypotheses:
                 rating = matrix.get_rating(evidence.id, hypothesis.id)
                 row.append(rating.rating.value if rating else "N/A")
-
-            # Additional evidence info
-            row.extend([
-                evidence.source,
-                evidence.evidence_type.value,
-                f"{evidence.credibility:.2f}",
-                f"{evidence.relevance:.2f}",
-            ])
-
+            row.extend([evidence.source, evidence.evidence_type.value, f"{evidence.credibility:.2f}", f"{evidence.relevance:.2f}"])
             writer.writerow(row)
-
-        # Add scores section
         writer.writerow([])
         writer.writerow(["Scores"])
         writer.writerow(["Hypothesis", "Rank", "Inconsistencies", "Weighted Score", "Normalized Score"])
-
         sorted_scores = sorted(matrix.scores, key=lambda x: x.rank)
         for score in sorted_scores:
             hypothesis = matrix.get_hypothesis(score.hypothesis_id)
             if hypothesis:
-                writer.writerow([
-                    hypothesis.title,
-                    score.rank,
-                    score.inconsistency_count,
-                    f"{score.weighted_score:.3f}",
-                    f"{score.normalized_score:.1f}",
-                ])
-
+                writer.writerow([hypothesis.title, score.rank, score.inconsistency_count, f"{score.weighted_score:.3f}", f"{score.normalized_score:.1f}"])
         csv_content = output.getvalue()
         output.close()
-
-        return MatrixExport(
-            matrix=matrix,
-            format="csv",
-            content=csv_content,
-        )
+        return MatrixExport(matrix=matrix, format="csv", content=csv_content)
+    @staticmethod
+    def _get_css() -> str:
+        return '''
+@page { size: letter; margin: 0.75in; }
+@media print { body { -webkit-print-color-adjust: exact; } }
+body { font-family: Segoe UI, Tahoma, sans-serif; font-size: 11pt; line-height: 1.4; color: #1a1a1a; max-width: 8.5in; margin: 0 auto; padding: 20px; }
+.header { text-align: center; border-bottom: 3px solid #1e3a5f; padding-bottom: 15px; margin-bottom: 20px; }
+.header h1 { font-size: 22pt; color: #1e3a5f; margin: 0 0 5px 0; }
+.header h2 { font-size: 14pt; color: #444; margin: 0; }
+.focus { background: #f5f7fa; padding: 12px; border-left: 4px solid #1e3a5f; margin-bottom: 20px; font-style: italic; }
+.summary { background: #e8f4e8; padding: 15px; border-radius: 5px; margin-bottom: 20px; }
+.summary .lead-name { font-weight: 600; color: #1e5631; }
+table { width: 100%; border-collapse: collapse; font-size: 9pt; margin-bottom: 15px; }
+th { background: #1e3a5f; color: white; padding: 8px; text-align: center; font-size: 8pt; }
+th:first-child { text-align: left; }
+td { padding: 6px; border: 1px solid #ccc; text-align: center; }
+td:first-child { text-align: left; font-weight: 500; }
+.cc { background: #2e7d32; color: white; font-weight: 600; }
+.c { background: #81c784; }
+.n { background: #fff; color: #666; }
+.i { background: #ffb74d; }
+.ii { background: #e53935; color: white; font-weight: 600; }
+.na { background: #e0e0e0; color: #666; }
+.legend { display: flex; justify-content: center; gap: 15px; font-size: 8pt; margin-bottom: 15px; flex-wrap: wrap; }
+.legend span { padding: 2px 8px; border: 1px solid #999; }
+.scores { margin-top: 20px; }
+.lead-row { background-color: #FFFDE7; }
+.disclosure { background: #e3f2fd; padding: 10px; border-radius: 5px; font-size: 9pt; margin-top: 20px; }
+.footer { margin-top: 30px; padding-top: 10px; border-top: 1px solid #ccc; font-size: 8pt; color: #666; text-align: center; }
+'''
 
     @staticmethod
     def export_html(matrix: ACHMatrix) -> MatrixExport:
-        """Export matrix as HTML table."""
-        html_parts = []
-
-        # Header
-        html_parts.append('<!DOCTYPE html>')
-        html_parts.append('<html>')
-        html_parts.append('<head>')
-        html_parts.append('<meta charset="UTF-8">')
-        html_parts.append(f'<title>ACH Matrix: {matrix.title}</title>')
-        html_parts.append('<style>')
-        html_parts.append('''
-            body { font-family: Arial, sans-serif; margin: 20px; }
-            h1 { color: #333; }
-            .metadata { margin-bottom: 20px; color: #666; }
-            table { border-collapse: collapse; width: 100%; margin-bottom: 30px; }
-            th, td { border: 1px solid #ddd; padding: 12px; text-align: left; }
-            th { background-color: #4CAF50; color: white; font-weight: bold; }
-            tr:nth-child(even) { background-color: #f2f2f2; }
-            .rating-pp { background-color: #4CAF50; color: white; font-weight: bold; }
-            .rating-p { background-color: #8BC34A; }
-            .rating-n { background-color: #FFF; }
-            .rating-m { background-color: #FF9800; }
-            .rating-mm { background-color: #F44336; color: white; font-weight: bold; }
-            .rating-na { background-color: #E0E0E0; }
-            .scores { margin-top: 20px; }
-            .lead { background-color: #FFEB3B; }
-        ''')
-        html_parts.append('</style>')
-        html_parts.append('</head>')
-        html_parts.append('<body>')
-
-        # Title and metadata
-        html_parts.append(f'<h1>{matrix.title}</h1>')
-        html_parts.append('<div class="metadata">')
-        if matrix.description:
-            html_parts.append(f'<p>{matrix.description}</p>')
-        html_parts.append(f'<p>Status: {matrix.status.value}</p>')
-        html_parts.append(f'<p>Created: {matrix.created_at.strftime("%Y-%m-%d %H:%M")}</p>')
-        html_parts.append('</div>')
-
-        # Matrix table
-        html_parts.append('<table>')
-        html_parts.append('<thead>')
-        html_parts.append('<tr>')
-        html_parts.append('<th>Evidence</th>')
-
+        """Export matrix as professional HTML report for PDF generation."""
         sorted_hypotheses = sorted(matrix.hypotheses, key=lambda x: x.column_index)
-        for h in sorted_hypotheses:
-            lead_class = ' class="lead"' if h.is_lead else ''
-            html_parts.append(f'<th{lead_class}>{h.title}</th>')
-
-        html_parts.append('</tr>')
-        html_parts.append('</thead>')
-        html_parts.append('<tbody>')
-
-        # Evidence rows
         sorted_evidence = sorted(matrix.evidence, key=lambda x: x.row_index)
-        for evidence in sorted_evidence:
-            html_parts.append('<tr>')
-            html_parts.append(f'<td>{evidence.description}</td>')
+        sorted_scores = sorted(matrix.scores, key=lambda x: x.rank) if matrix.scores else []
+        
+        lead_hypothesis = lead_score = None
+        for score in sorted_scores:
+            h = matrix.get_hypothesis(score.hypothesis_id)
+            if h and h.is_lead:
+                lead_hypothesis, lead_score = h, score
+                break
+        if not lead_hypothesis and sorted_scores:
+            lead_score = sorted_scores[0]
+            lead_hypothesis = matrix.get_hypothesis(lead_score.hypothesis_id)
 
-            # Ratings
-            for hypothesis in sorted_hypotheses:
-                rating = matrix.get_rating(evidence.id, hypothesis.id)
+        html = ['<!DOCTYPE html>', '<html>', '<head>', '<meta charset="UTF-8">']
+        html.append(f'<title>ACH Analysis Report: {matrix.title}</title>')
+        html.append('<style>' + MatrixExporter._get_css() + '</style>')
+        html.append('</head><body>')
+        
+        html.append('<div class="header">')
+        html.append('<h1>ACH Analysis Report</h1>')
+        html.append(f'<h2>{matrix.title}</h2>')
+        html.append('</div>')
+        
+        focus = matrix.description or "No focus question specified"
+        html.append(f'<div class="focus"><strong>Focus Question:</strong> {focus}</div>')
+        
+        if lead_hypothesis and lead_score:
+            html.append('<div class="summary">')
+            html.append(f'<p>Based on the analysis, <span class="lead-name">{lead_hypothesis.title}</span> ')
+            html.append(f'is the leading hypothesis with {lead_score.inconsistency_count} inconsistencies ')
+            html.append(f'and a normalized score of {lead_score.normalized_score:.1f}.</p>')
+            html.append('</div>')
+        
+        html.append('<div class="legend">')
+        html.append('<span class="cc">CC=Consistent</span>')
+        html.append('<span class="c">C=Somewhat</span>')
+        html.append('<span class="n">N=Neutral</span>')
+        html.append('<span class="i">I=Inconsistent</span>')
+        html.append('<span class="ii">II=Very Inconsistent</span>')
+        html.append('</div>')        
+        html.append(chr(60) + "table" + chr(62))
+        html.append(chr(60) + "thead" + chr(62) + chr(60) + "tr" + chr(62) + chr(60) + "th" + chr(62) + "Evidence" + chr(60) + "/th" + chr(62))
+        for i, h in enumerate(sorted_hypotheses, 1):
+            html.append(f"{chr(60)}th title={chr(34)}{h.title}{chr(34)}{chr(62)}H{i}{chr(60)}/th{chr(62)}")
+        html.append(chr(60) + "/tr" + chr(62) + chr(60) + "/thead" + chr(62) + chr(60) + "tbody" + chr(62))
+        
+        for i, ev in enumerate(sorted_evidence, 1):
+            html.append(f"{chr(60)}tr{chr(62)}{chr(60)}td{chr(62)}E{i}{chr(60)}/td{chr(62)}")
+            for h in sorted_hypotheses:
+                rating = matrix.get_rating(ev.id, h.id)
                 if rating:
-                    rating_value = rating.rating.value
-                    # CSS class based on rating
-                    css_class = {
-                        '++': 'rating-pp',
-                        '+': 'rating-p',
-                        'N': 'rating-n',
-                        '-': 'rating-m',
-                        '--': 'rating-mm',
-                        'N/A': 'rating-na',
-                    }.get(rating_value, 'rating-n')
-                    html_parts.append(f'<td class="{css_class}">{rating_value}</td>')
+                    rv = rating.rating.value
+                    disp = MatrixExporter.RATING_DISPLAY.get(rv, rv)
+                    css = MatrixExporter.RATING_CSS.get(rv, "n")
+                    html.append(f"{chr(60)}td class={chr(34)}{css}{chr(34)}{chr(62)}{disp}{chr(60)}/td{chr(62)}")
                 else:
-                    html_parts.append('<td class="rating-na">N/A</td>')
-
-            html_parts.append('</tr>')
-
-        html_parts.append('</tbody>')
-        html_parts.append('</table>')
-
-        # Scores table
-        if matrix.scores:
-            html_parts.append('<div class="scores">')
-            html_parts.append('<h2>Hypothesis Scores</h2>')
-            html_parts.append('<table>')
-            html_parts.append('<thead>')
-            html_parts.append('<tr>')
-            html_parts.append('<th>Rank</th>')
-            html_parts.append('<th>Hypothesis</th>')
-            html_parts.append('<th>Inconsistencies</th>')
-            html_parts.append('<th>Weighted Score</th>')
-            html_parts.append('<th>Normalized Score</th>')
-            html_parts.append('</tr>')
-            html_parts.append('</thead>')
-            html_parts.append('<tbody>')
-
-            sorted_scores = sorted(matrix.scores, key=lambda x: x.rank)
+                    html.append(chr(60) + "td class=" + chr(34) + "na" + chr(34) + chr(62) + "-" + chr(60) + "/td" + chr(62))
+            html.append(chr(60) + "/tr" + chr(62))
+        html.append(chr(60) + "/tbody" + chr(62) + chr(60) + "/table" + chr(62))        
+        if sorted_scores:
+            html.append(chr(60) + "div class=" + chr(34) + "scores" + chr(34) + chr(62) + chr(60) + "h3" + chr(62) + "Hypothesis Scores" + chr(60) + "/h3" + chr(62))
+            html.append(chr(60) + "table" + chr(62) + chr(60) + "thead" + chr(62) + chr(60) + "tr" + chr(62) + chr(60) + "th" + chr(62) + "Rank" + chr(60) + "/th" + chr(62) + chr(60) + "th" + chr(62) + "Hypothesis" + chr(60) + "/th" + chr(62) + chr(60) + "th" + chr(62) + "Inconsistencies" + chr(60) + "/th" + chr(62) + chr(60) + "th" + chr(62) + "Score" + chr(60) + "/th" + chr(62) + chr(60) + "/tr" + chr(62) + chr(60) + "/thead" + chr(62) + chr(60) + "tbody" + chr(62))
             for score in sorted_scores:
-                hypothesis = matrix.get_hypothesis(score.hypothesis_id)
-                if hypothesis:
-                    lead_class = ' class="lead"' if hypothesis.is_lead else ''
-                    html_parts.append(f'<tr{lead_class}>')
-                    html_parts.append(f'<td>{score.rank}</td>')
-                    html_parts.append(f'<td>{hypothesis.title}</td>')
-                    html_parts.append(f'<td>{score.inconsistency_count}</td>')
-                    html_parts.append(f'<td>{score.weighted_score:.3f}</td>')
-                    html_parts.append(f'<td>{score.normalized_score:.1f}</td>')
-                    html_parts.append('</tr>')
-
-            html_parts.append('</tbody>')
-            html_parts.append('</table>')
-            html_parts.append('</div>')
-
-        # Footer
-        html_parts.append(f'<p style="margin-top: 40px; color: #999; font-size: 0.9em;">')
-        html_parts.append(f'Generated: {datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")} UTC')
-        html_parts.append('</p>')
-        html_parts.append('</body>')
-        html_parts.append('</html>')
-
-        html_content = '\n'.join(html_parts)
-
-        return MatrixExport(
-            matrix=matrix,
-            format="html",
-            content=html_content,
-        )
-
+                hyp = matrix.get_hypothesis(score.hypothesis_id)
+                if hyp:
+                    cls = " class=" + chr(34) + "lead-row" + chr(34) if hyp.is_lead else ""
+                    html.append(f"{chr(60)}tr{cls}{chr(62)}{chr(60)}td{chr(62)}{score.rank}{chr(60)}/td{chr(62)}{chr(60)}td{chr(62)}{hyp.title}{chr(60)}/td{chr(62)}")
+                    html.append(f"{chr(60)}td{chr(62)}{score.inconsistency_count}{chr(60)}/td{chr(62)}{chr(60)}td{chr(62)}{score.normalized_score:.1f}{chr(60)}/td{chr(62)}{chr(60)}/tr{chr(62)}")
+            html.append(chr(60) + "/tbody" + chr(62) + chr(60) + "/table" + chr(62) + chr(60) + "/div" + chr(62))
+        
+        html.append(chr(60) + "div class=" + chr(34) + "disclosure" + chr(34) + chr(62))
+        html.append(chr(60) + "strong" + chr(62) + "AI Disclosure:" + chr(60) + "/strong" + chr(62) + " This analysis may include AI-assisted hypothesis generation and rating suggestions.")
+        html.append(chr(60) + "/div" + chr(62))
+        
+        ts = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+        html.append(f"{chr(60)}div class={chr(34)}footer{chr(34)}{chr(62)}Generated: {ts} | ID: {matrix.id} | ACH - SHATTERED Platform{chr(60)}/div{chr(62)}")
+        html.append(chr(60) + "/body" + chr(62) + chr(60) + "/html" + chr(62))
+        
+        return MatrixExport(matrix=matrix, format="html", content=chr(10).join(html))
     @staticmethod
     def export_markdown(matrix: ACHMatrix) -> MatrixExport:
-        """Export matrix as Markdown."""
-        md_parts = []
-
-        # Title and metadata
-        md_parts.append(f'# {matrix.title}\n')
+        md = []
+        md.append(f"# {matrix.title}")
         if matrix.description:
-            md_parts.append(f'{matrix.description}\n')
-        md_parts.append(f'**Status:** {matrix.status.value}  ')
-        md_parts.append(f'**Created:** {matrix.created_at.strftime("%Y-%m-%d %H:%M")}\n')
-
-        # Matrix table
-        md_parts.append('## Matrix\n')
-
+            md.append(f"{matrix.description}")
+        md.append(f"**Status:** {matrix.status.value}  ")
+        md.append(f"**Created:** {matrix.created_at.strftime("%Y-%m-%d %H:%M")}")
+        md.append("")
+        md.append("## Matrix")
+        md.append("")
         sorted_hypotheses = sorted(matrix.hypotheses, key=lambda x: x.column_index)
         sorted_evidence = sorted(matrix.evidence, key=lambda x: x.row_index)
-
-        # Header
-        header = ['Evidence']
+        header = ["Evidence"]
         for h in sorted_hypotheses:
-            lead_marker = ' (LEAD)' if h.is_lead else ''
-            header.append(f'{h.title}{lead_marker}')
-
-        md_parts.append('| ' + ' | '.join(header) + ' |')
-        md_parts.append('| ' + ' | '.join(['---'] * len(header)) + ' |')
-
-        # Rows
+            lead_marker = " (LEAD)" if h.is_lead else ""
+            header.append(f"{h.title}{lead_marker}")
+        md.append("| " + " | ".join(header) + " |")
+        md.append("| " + " | ".join(["---"] * len(header)) + " |")
         for evidence in sorted_evidence:
             row = [evidence.description]
-
             for hypothesis in sorted_hypotheses:
                 rating = matrix.get_rating(evidence.id, hypothesis.id)
-                row.append(rating.rating.value if rating else 'N/A')
-
-            md_parts.append('| ' + ' | '.join(row) + ' |')
-
-        # Scores
+                row.append(rating.rating.value if rating else "N/A")
+            md.append("| " + " | ".join(row) + " |")
         if matrix.scores:
-            md_parts.append('\n## Hypothesis Scores\n')
-            md_parts.append('| Rank | Hypothesis | Inconsistencies | Weighted Score | Normalized Score |')
-            md_parts.append('| --- | --- | --- | --- | --- |')
-
+            md.append("")
+            md.append("## Hypothesis Scores")
+            md.append("")
+            md.append("| Rank | Hypothesis | Inconsistencies | Weighted Score | Normalized Score |")
+            md.append("| --- | --- | --- | --- | --- |")
             sorted_scores = sorted(matrix.scores, key=lambda x: x.rank)
             for score in sorted_scores:
                 hypothesis = matrix.get_hypothesis(score.hypothesis_id)
                 if hypothesis:
-                    md_parts.append(
-                        f'| {score.rank} | {hypothesis.title} | {score.inconsistency_count} | '
-                        f'{score.weighted_score:.3f} | {score.normalized_score:.1f} |'
-                    )
-
-        # Footer
-        md_parts.append(f'\n---\n*Generated: {datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")} UTC*')
-
-        markdown_content = '\n'.join(md_parts)
-
-        return MatrixExport(
-            matrix=matrix,
-            format="markdown",
-            content=markdown_content,
-        )
+                    md.append(f"| {score.rank} | {hypothesis.title} | {score.inconsistency_count} | {score.weighted_score:.3f} | {score.normalized_score:.1f} |")
+        md.append("")
+        md.append("---")
+        md.append(f"*Generated: {datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")} UTC*")
+        return MatrixExport(matrix=matrix, format="markdown", content=chr(10).join(md))
 
     @staticmethod
     def export(matrix: ACHMatrix, format: str = "json") -> MatrixExport:
-        """
-        Export matrix in specified format.
-
-        Args:
-            matrix: ACHMatrix to export
-            format: Export format (json, csv, html, markdown)
-
-        Returns:
-            MatrixExport object
-        """
-        format_lower = format.lower()
-
         exporters = {
             "json": MatrixExporter.export_json,
             "csv": MatrixExporter.export_csv,
@@ -360,10 +273,8 @@ class MatrixExporter:
             "markdown": MatrixExporter.export_markdown,
             "md": MatrixExporter.export_markdown,
         }
-
-        exporter = exporters.get(format_lower)
+        exporter = exporters.get(format.lower())
         if not exporter:
             logger.warning(f"Unknown export format: {format}, defaulting to JSON")
             exporter = MatrixExporter.export_json
-
         return exporter(matrix)

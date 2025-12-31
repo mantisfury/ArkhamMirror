@@ -3,7 +3,22 @@
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Any
+from typing import Any, Optional
+
+
+class EvidenceRelevance(str, Enum):
+    """How extracted evidence relates to a hypothesis."""
+    SUPPORTS = "supports"
+    CONTRADICTS = "contradicts"
+    NEUTRAL = "neutral"
+    AMBIGUOUS = "ambiguous"
+
+
+class ExtractionMethod(str, Enum):
+    """How evidence was added to the matrix."""
+    MANUAL = "manual"
+    CORPUS = "corpus"
+    AI_SUGGESTED = "ai_suggested"
 
 
 class ConsistencyRating(Enum):
@@ -58,17 +73,11 @@ class Hypothesis:
     matrix_id: str
     title: str
     description: str = ""
-
-    # Position in matrix
     column_index: int = 0
-
-    # Metadata
     created_at: datetime = field(default_factory=datetime.utcnow)
     updated_at: datetime = field(default_factory=datetime.utcnow)
     author: str | None = None
-
-    # For tracking
-    is_lead: bool = False  # Is this the leading hypothesis?
+    is_lead: bool = False
     notes: str = ""
 
 
@@ -78,49 +87,77 @@ class Evidence:
     id: str
     matrix_id: str
     description: str
-
-    # Evidence details
     source: str = ""
     evidence_type: EvidenceType = EvidenceType.FACT
-    credibility: float = 1.0  # 0.0 to 1.0
-    relevance: float = 1.0    # 0.0 to 1.0
-
-    # Position in matrix
+    credibility: float = 1.0
+    relevance: float = 1.0
     row_index: int = 0
-
-    # Metadata
     created_at: datetime = field(default_factory=datetime.utcnow)
     updated_at: datetime = field(default_factory=datetime.utcnow)
     author: str | None = None
-
-    # Linked documents
     document_ids: list[str] = field(default_factory=list)
     notes: str = ""
+    # Corpus extraction fields
+    source_document_id: str | None = None
+    source_chunk_id: str | None = None
+    source_page_number: int | None = None
+    source_quote: str | None = None
+    extraction_method: str = "manual"
+    similarity_score: float | None = None
+
+
+@dataclass
+class ExtractedEvidence:
+    """Evidence extracted from corpus search (before user acceptance)."""
+    quote: str
+    source_document_id: str
+    source_document_name: str
+    source_chunk_id: str
+    page_number: int | None
+    relevance: EvidenceRelevance
+    explanation: str
+    hypothesis_id: str
+    similarity_score: float
+    verified: bool = False
+    possible_duplicate: str | None = None
+
+
+@dataclass
+class SearchScope:
+    """Scope for corpus search."""
+    project_id: str | None = None
+    document_ids: list[str] | None = None
+    date_from: datetime | None = None
+    date_to: datetime | None = None
+    mime_types: list[str] | None = None
+    exclude_documents: list[str] | None = None
+
+
+@dataclass
+class CorpusSearchConfig:
+    """Configuration for corpus search."""
+    chunk_limit: int = 30
+    min_similarity: float = 0.5
+    max_chunks_per_document: int = 5
+    dedupe_threshold: float = 0.9
+    batch_size: int = 10
 
 
 @dataclass
 class Rating:
-    """
-    A single cell in the ACH matrix.
-    Represents how consistent an evidence item is with a hypothesis.
-    """
+    """A single cell in the ACH matrix."""
     matrix_id: str
     evidence_id: str
     hypothesis_id: str
     rating: ConsistencyRating
-
-    # Justification
     reasoning: str = ""
-    confidence: float = 1.0  # 0.0 to 1.0
-
-    # Metadata
+    confidence: float = 1.0
     created_at: datetime = field(default_factory=datetime.utcnow)
     updated_at: datetime = field(default_factory=datetime.utcnow)
     author: str | None = None
 
     @property
     def weighted_score(self) -> float:
-        """Calculate weighted score for this rating."""
         return self.rating.score * self.confidence * self.rating.weight
 
 
@@ -128,19 +165,11 @@ class Rating:
 class HypothesisScore:
     """Calculated score for a hypothesis."""
     hypothesis_id: str
-
-    # Basic scores
-    consistency_score: float = 0.0      # Sum of all ratings
-    inconsistency_count: int = 0        # Count of - and --
-    weighted_score: float = 0.0         # Weighted by evidence credibility
-
-    # Normalized scores (0-100)
+    consistency_score: float = 0.0
+    inconsistency_count: int = 0
+    weighted_score: float = 0.0
     normalized_score: float = 0.0
-
-    # Rankings
-    rank: int = 0  # 1 = best, higher = worse
-
-    # Metadata
+    rank: int = 0
     evidence_count: int = 0
     calculation_timestamp: datetime = field(default_factory=datetime.utcnow)
 
@@ -151,49 +180,39 @@ class ACHMatrix:
     id: str
     title: str
     description: str = ""
-
-    # Status
     status: MatrixStatus = MatrixStatus.DRAFT
-
-    # Collections (stored in memory during use)
     hypotheses: list[Hypothesis] = field(default_factory=list)
     evidence: list[Evidence] = field(default_factory=list)
     ratings: list[Rating] = field(default_factory=list)
     scores: list[HypothesisScore] = field(default_factory=list)
-
-    # Metadata
     created_at: datetime = field(default_factory=datetime.utcnow)
     updated_at: datetime = field(default_factory=datetime.utcnow)
     created_by: str | None = None
-
-    # Analysis context
     project_id: str | None = None
     tags: list[str] = field(default_factory=list)
     notes: str = ""
+    # Manually linked documents for corpus search scope
+    linked_document_ids: list[str] = field(default_factory=list)
 
     def get_hypothesis(self, hypothesis_id: str) -> Hypothesis | None:
-        """Get a hypothesis by ID."""
         for h in self.hypotheses:
             if h.id == hypothesis_id:
                 return h
         return None
 
     def get_evidence(self, evidence_id: str) -> Evidence | None:
-        """Get evidence by ID."""
         for e in self.evidence:
             if e.id == evidence_id:
                 return e
         return None
 
     def get_rating(self, evidence_id: str, hypothesis_id: str) -> Rating | None:
-        """Get rating for specific evidence-hypothesis pair."""
         for r in self.ratings:
             if r.evidence_id == evidence_id and r.hypothesis_id == hypothesis_id:
                 return r
         return None
 
     def get_score(self, hypothesis_id: str) -> HypothesisScore | None:
-        """Get score for a hypothesis."""
         for s in self.scores:
             if s.hypothesis_id == hypothesis_id:
                 return s
@@ -201,10 +220,8 @@ class ACHMatrix:
 
     @property
     def leading_hypothesis(self) -> Hypothesis | None:
-        """Get the hypothesis with the best score."""
         if not self.scores:
             return None
-
         best_score = min(self.scores, key=lambda s: s.rank)
         return self.get_hypothesis(best_score.hypothesis_id)
 
@@ -214,17 +231,11 @@ class DevilsAdvocateChallenge:
     """A devil's advocate challenge to the leading hypothesis."""
     matrix_id: str
     hypothesis_id: str
-
-    # Challenge content
     challenge_text: str
     alternative_interpretation: str
     weaknesses_identified: list[str] = field(default_factory=list)
     evidence_gaps: list[str] = field(default_factory=list)
-
-    # Suggested evidence to seek
     recommended_investigations: list[str] = field(default_factory=list)
-
-    # Metadata
     created_at: datetime = field(default_factory=datetime.utcnow)
     model_used: str | None = None
 
@@ -233,6 +244,6 @@ class DevilsAdvocateChallenge:
 class MatrixExport:
     """Export format for an ACH matrix."""
     matrix: ACHMatrix
-    format: str  # "json", "csv", "html", "markdown"
+    format: str
     content: str | dict[str, Any]
     generated_at: datetime = field(default_factory=datetime.utcnow)

@@ -17,3 +17,4 @@ export {
 export { SensitivitySection } from './sections/SensitivitySection';
 export { MilestonesSection } from './sections/MilestonesSection';
 export { ScoresSection, ConsistencyChecksSection } from './sections/ScoresSection';
+export { LinkedDocumentsSection } from './sections/LinkedDocumentsSection';
