@@ -28,6 +28,7 @@ interface MilestonesSectionProps {
   onAddMilestone: () => void;
   onEditMilestone: (id: string) => void;
   onDeleteMilestone: (id: string) => void;
+  onUpdateMilestoneStatus: (id: string, status: -1 | 0 | 1) => void;
   onExportMarkdown: () => void;
   onExportJSON: () => void;
   onExportPDF: () => void;
@@ -44,19 +45,25 @@ export function MilestonesSection({
   onAddMilestone,
   onEditMilestone,
   onDeleteMilestone,
+  onUpdateMilestoneStatus,
   onExportMarkdown,
   onExportJSON,
   onExportPDF,
 }: MilestonesSectionProps) {
-  const getStatusLabel = (observed: number) => {
+  const getStatusInfo = (observed: number) => {
     switch (observed) {
       case 1:
-        return { label: 'OBSERVED', color: 'success' };
+        return { label: 'OBSERVED', color: 'success', bgColor: '#166534', borderColor: '#22c55e' };
       case -1:
-        return { label: 'CONTRADICTED', color: 'danger' };
+        return { label: 'CONTRADICTED', color: 'danger', bgColor: '#991b1b', borderColor: '#ef4444' };
       default:
-        return { label: 'PENDING', color: 'muted' };
+        return { label: 'PENDING', color: 'muted', bgColor: '#374151', borderColor: '#6b7280' };
     }
+  };
+
+  const getHypothesisLabel = (hypId: string): string => {
+    const hyp = hypotheses.find(h => h.id === hypId);
+    return hyp ? hyp.title : hypId.substring(0, 8);
   };
 
   return (
@@ -114,30 +121,54 @@ export function MilestonesSection({
           </div>
         ) : (
           milestones.map((milestone) => {
-            const status = getStatusLabel(milestone.observed);
+            const status = getStatusInfo(milestone.observed);
             return (
               <div
                 key={milestone.id}
-                className={`milestone-card milestone-${status.color}`}
+                className="milestone-card"
+                style={{ borderLeftColor: status.borderColor }}
               >
                 <div className="milestone-content">
                   <div className="milestone-header">
-                    <span className={`badge badge-${status.color}`}>
-                      {status.label}
-                    </span>
-                    <span className="milestone-description">
-                      {milestone.description}
-                    </span>
-                  </div>
-                  {milestone.expected_by && (
-                    <div className="milestone-date">
-                      <Icon name="Calendar" size={12} />
-                      <span>{milestone.expected_by.split('T')[0]}</span>
+                    <div className="milestone-status-group">
+                      <select
+                        className="status-select"
+                        value={milestone.observed}
+                        onChange={(e) => onUpdateMilestoneStatus(milestone.id, parseInt(e.target.value) as -1 | 0 | 1)}
+                        style={{
+                          backgroundColor: status.bgColor,
+                          borderColor: status.borderColor,
+                        }}
+                      >
+                        <option value={0}>PENDING</option>
+                        <option value={1}>OBSERVED</option>
+                        <option value={-1}>CONTRADICTED</option>
+                      </select>
                     </div>
-                  )}
+                    <div className="milestone-text">
+                      <span className="milestone-description">
+                        {milestone.description}
+                      </span>
+                      {milestone.hypothesis_id && (
+                        <span className="milestone-hypothesis">
+                          <Icon name="Lightbulb" size={12} />
+                          {getHypothesisLabel(milestone.hypothesis_id)}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                  <div className="milestone-meta">
+                    {milestone.expected_by && (
+                      <span className="milestone-date">
+                        <Icon name="Calendar" size={12} />
+                        Expected: {milestone.expected_by.split('T')[0]}
+                      </span>
+                    )}
+                  </div>
                   {milestone.observation_notes && (
                     <p className="milestone-notes">
-                      Notes: {milestone.observation_notes}
+                      <Icon name="MessageSquare" size={12} />
+                      {milestone.observation_notes}
                     </p>
                   )}
                 </div>
@@ -183,6 +214,107 @@ export function MilestonesSection({
           </button>
         </div>
       </div>
+
+      <style>{`
+        .milestone-card {
+          display: flex;
+          justify-content: space-between;
+          align-items: flex-start;
+          padding: 1rem;
+          background: #1f2937;
+          border: 1px solid #374151;
+          border-left: 4px solid #6b7280;
+          border-radius: 0.5rem;
+          margin-bottom: 0.75rem;
+        }
+        .milestone-content {
+          flex: 1;
+          min-width: 0;
+        }
+        .milestone-header {
+          display: flex;
+          align-items: flex-start;
+          gap: 1rem;
+          margin-bottom: 0.5rem;
+        }
+        .milestone-status-group {
+          flex-shrink: 0;
+        }
+        .status-select {
+          padding: 0.375rem 0.75rem;
+          font-size: 0.6875rem;
+          font-weight: 700;
+          text-transform: uppercase;
+          letter-spacing: 0.025em;
+          color: white;
+          border: 1px solid;
+          border-radius: 0.25rem;
+          cursor: pointer;
+          appearance: none;
+          background-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 20 20'%3e%3cpath stroke='%239ca3af' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.5' d='M6 8l4 4 4-4'/%3e%3c/svg%3e");
+          background-position: right 0.25rem center;
+          background-repeat: no-repeat;
+          background-size: 1.25em 1.25em;
+          padding-right: 1.75rem;
+        }
+        .status-select:hover {
+          filter: brightness(1.1);
+        }
+        .status-select:focus {
+          outline: none;
+          box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.5);
+        }
+        .milestone-text {
+          flex: 1;
+          min-width: 0;
+        }
+        .milestone-description {
+          display: block;
+          color: #f9fafb;
+          font-size: 0.9375rem;
+          line-height: 1.5;
+          margin-bottom: 0.25rem;
+        }
+        .milestone-hypothesis {
+          display: inline-flex;
+          align-items: center;
+          gap: 0.25rem;
+          font-size: 0.75rem;
+          color: #6366f1;
+          background: rgba(99, 102, 241, 0.1);
+          padding: 0.125rem 0.5rem;
+          border-radius: 0.25rem;
+        }
+        .milestone-meta {
+          display: flex;
+          gap: 1rem;
+          margin-bottom: 0.5rem;
+        }
+        .milestone-date {
+          display: flex;
+          align-items: center;
+          gap: 0.375rem;
+          font-size: 0.75rem;
+          color: #9ca3af;
+        }
+        .milestone-notes {
+          display: flex;
+          align-items: flex-start;
+          gap: 0.375rem;
+          font-size: 0.8125rem;
+          color: #9ca3af;
+          font-style: italic;
+          margin: 0;
+          padding: 0.5rem;
+          background: rgba(0,0,0,0.2);
+          border-radius: 0.25rem;
+        }
+        .milestone-actions {
+          display: flex;
+          gap: 0.25rem;
+          flex-shrink: 0;
+        }
+      `}</style>
     </div>
   );
 }

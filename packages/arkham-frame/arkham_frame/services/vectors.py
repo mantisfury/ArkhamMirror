@@ -630,9 +630,9 @@ class VectorService:
                     )
                 qdrant_filter = Filter(must=conditions)
 
-            results = self._client.search(
+            response = self._client.query_points(
                 collection_name=collection,
-                query_vector=query_vector,
+                query=query_vector,
                 limit=limit,
                 query_filter=qdrant_filter,
                 score_threshold=score_threshold,
@@ -646,7 +646,7 @@ class VectorService:
                     payload=r.payload or {},
                     vector=r.vector if with_vectors else None,
                 )
-                for r in results
+                for r in response.points
             ]
 
         except Exception as e:

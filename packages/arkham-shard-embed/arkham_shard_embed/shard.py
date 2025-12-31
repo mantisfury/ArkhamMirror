@@ -144,45 +144,137 @@ class EmbedShard(ArkhamShard):
         """
         Handle parse completion event.
 
-        Automatically queues embedding jobs when document parsing (chunking) is done.
+        Automatically embeds document chunks when parsing is complete.
         The parse shard emits this event with document_id and chunk counts.
         """
         # EventBus wraps events: {"event_type": ..., "payload": {...}, "source": ...}
         payload = event.get("payload", event)  # Support both wrapped and unwrapped
         doc_id = payload.get("document_id")
-        chunks_saved = payload.get("chunks_saved", 0)
+        chunks_count = payload.get("chunks_saved", payload.get("chunks", 0))
 
         if not doc_id:
             logger.warning("parse.document.completed event missing document_id")
             return
 
-        logger.info(f"Parse completed for document {doc_id} with {chunks_saved} chunks - queuing embedding")
+        logger.info(f"Parse completed for document {doc_id} with {chunks_count} chunks - starting embedding")
 
-        # Get worker service to queue embedding job
-        worker_service = self.frame.get_service("workers")
-        if not worker_service:
-            logger.warning("Worker service not available - cannot queue auto-embedding")
+        # Check required services
+        if not self.embedding_manager:
+            logger.warning("Embedding manager not available - cannot embed")
             return
 
-        # Queue embedding job for the document's chunks
-        import uuid as uuid_mod
+        vectors_service = self.frame.get_service("vectors")
+        if not vectors_service:
+            logger.warning("Vectors service not available - cannot store embeddings")
+            return
+
+        documents_service = self.frame.documents
+        if not documents_service:
+            logger.warning("Documents service not available - cannot fetch chunks")
+            return
+
         try:
-            job_uuid = str(uuid_mod.uuid4())
-            job = await worker_service.enqueue(
-                pool="gpu-embed",
-                job_id=job_uuid,
-                payload={
-                    "job_type": "embed_document",
-                    "doc_id": doc_id,
-                    "force": False,
-                    "chunk_size": 512,
-                    "chunk_overlap": 50,
-                },
+            # Fetch chunks from database
+            chunks = await documents_service.get_document_chunks(doc_id)
+            if not chunks:
+                logger.warning(f"No chunks found for document {doc_id}")
+                return
+
+            logger.info(f"Found {len(chunks)} chunks to embed for document {doc_id}")
+
+            # Extract text from chunks
+            texts = []
+            chunk_data = []
+            for chunk in chunks:
+                # Handle both Chunk objects and dicts
+                if hasattr(chunk, 'content'):
+                    text = chunk.content
+                    chunk_id = chunk.id
+                    chunk_index = getattr(chunk, 'chunk_index', 0)
+                elif hasattr(chunk, 'text'):
+                    text = chunk.text
+                    chunk_id = chunk.id
+                    chunk_index = getattr(chunk, 'index', 0)
+                elif isinstance(chunk, dict):
+                    text = chunk.get('content') or chunk.get('text', '')
+                    chunk_id = chunk.get('id', chunk.get('chunk_id', ''))
+                    chunk_index = chunk.get('chunk_index', chunk.get('index', 0))
+                else:
+                    logger.warning(f"Unknown chunk format: {type(chunk)}")
+                    continue
+
+                if text and text.strip():
+                    texts.append(text)
+                    chunk_data.append({
+                        'chunk_id': str(chunk_id),
+                        'doc_id': doc_id,
+                        'chunk_index': chunk_index,
+                        'text_length': len(text),
+                    })
+
+            if not texts:
+                logger.warning(f"No valid text found in chunks for document {doc_id}")
+                return
+
+            # Embed all texts in batches
+            logger.info(f"Embedding {len(texts)} chunks for document {doc_id}")
+            embeddings = self.embedding_manager.embed_batch(texts, batch_size=32)
+
+            if len(embeddings) != len(texts):
+                logger.error(f"Embedding count mismatch: {len(embeddings)} vs {len(texts)}")
+                return
+
+            # Store embeddings in vector store
+            import uuid as uuid_mod
+            from arkham_frame.services.vectors import VectorPoint
+
+            points = []
+            for emb, data in zip(embeddings, chunk_data):
+                vector_id = str(uuid_mod.uuid4())
+                point = VectorPoint(
+                    id=vector_id,
+                    vector=emb,
+                    payload={
+                        'doc_id': data['doc_id'],
+                        'chunk_id': data['chunk_id'],
+                        'chunk_index': data['chunk_index'],
+                        'text_length': data['text_length'],
+                    }
+                )
+                points.append(point)
+
+            # Ensure collection exists before upserting
+            model_info = self.embedding_manager.get_model_info()
+            if not await vectors_service.collection_exists("documents"):
+                logger.info(f"Creating documents collection with {model_info.dimensions} dimensions")
+                await vectors_service.create_collection(
+                    name="documents",
+                    vector_size=model_info.dimensions,
+                )
+
+            # Upsert to Qdrant
+            await vectors_service.upsert(
+                collection="documents",
+                points=points,
             )
-            job_id = job_uuid
-            logger.info(f"Queued auto-embedding job {job_id} for document {doc_id}")
+
+            logger.info(f"Stored {len(embeddings)} embeddings for document {doc_id}")
+
+            # Emit completion event
+            event_bus = self.frame.get_service("events")
+            if event_bus:
+                await event_bus.emit(
+                    "embed.document.completed",
+                    {
+                        "document_id": doc_id,
+                        "chunks_embedded": len(embeddings),
+                        "dimensions": self.embedding_manager.get_model_info().dimensions,
+                    },
+                    source="embed-shard",
+                )
+
         except Exception as e:
-            logger.error(f"Failed to queue auto-embedding for {doc_id}: {e}")
+            logger.error(f"Failed to embed document {doc_id}: {e}", exc_info=True)
 
     # --- Public API for other shards ---
 

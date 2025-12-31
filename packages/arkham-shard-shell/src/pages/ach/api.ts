@@ -227,6 +227,7 @@ export async function suggestHypotheses(data: {
 export async function suggestEvidence(data: {
   matrix_id: string;
   focus_question?: string;
+  use_corpus?: boolean;
 }): Promise<{
   matrix_id: string;
   suggestions: { description: string; evidence_type: string; source: string }[];
@@ -345,5 +346,88 @@ export async function unlinkDocument(
 ): Promise<{ matrix_id: string; unlinked: string; total_linked: number }> {
   return fetchAPI(`/matrix/${matrixId}/documents/${documentId}`, {
     method: 'DELETE',
+  });
+}
+
+// ============================================
+// Corpus Search Operations
+// ============================================
+
+export interface CorpusStatusResponse {
+  available: boolean;
+  vectors_service: boolean;
+  llm_service: boolean;
+}
+
+export interface ExtractedEvidence {
+  quote: string;
+  source_document_id: string;
+  source_document_name: string;
+  source_chunk_id: string;
+  page_number: number | null;
+  relevance: 'supports' | 'contradicts' | 'neutral' | 'ambiguous';
+  explanation: string;
+  hypothesis_id: string;
+  similarity_score: number;
+  verified: boolean;
+  possible_duplicate: string | null;
+}
+
+export interface CorpusSearchResponse {
+  matrix_id: string;
+  hypothesis_id: string;
+  evidence: ExtractedEvidence[];
+  count: number;
+  search_params: {
+    chunk_limit: number;
+    min_similarity: number;
+  };
+}
+
+export async function getCorpusStatus(): Promise<CorpusStatusResponse> {
+  return fetchAPI('/ai/corpus/status');
+}
+
+export async function searchCorpus(data: {
+  matrix_id: string;
+  hypothesis_id: string;
+  chunk_limit?: number;
+  min_similarity?: number;
+}): Promise<CorpusSearchResponse> {
+  return fetchAPI('/ai/corpus-search', {
+    method: 'POST',
+    body: JSON.stringify(data),
+  });
+}
+
+export async function searchCorpusAll(
+  matrixId: string,
+  chunkLimit: number = 20,
+  minSimilarity: number = 0.5
+): Promise<{
+  matrix_id: string;
+  by_hypothesis: Record<string, { hypothesis_title: string; results: ExtractedEvidence[]; count: number }>;
+  total_results: number;
+}> {
+  const params = new URLSearchParams({
+    matrix_id: matrixId,
+    chunk_limit: chunkLimit.toString(),
+    min_similarity: minSimilarity.toString(),
+  });
+  return fetchAPI(`/ai/corpus-search-all?${params}`, { method: 'POST' });
+}
+
+export async function acceptCorpusEvidence(data: {
+  matrix_id: string;
+  evidence: ExtractedEvidence[];
+  auto_rate?: boolean;
+}): Promise<{
+  matrix_id: string;
+  added_evidence_ids: string[];
+  count: number;
+}> {
+  return fetchAPI('/ai/accept-corpus-evidence', {
+    method: 'POST',
+    body: JSON.stringify(data),
   });
 }

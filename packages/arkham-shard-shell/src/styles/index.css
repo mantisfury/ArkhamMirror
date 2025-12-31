@@ -1042,7 +1042,13 @@ a:hover {
    ============================================ */
 
 .ach-page {
-  max-width: 1200px;
+  max-width: 1400px;
+}
+
+/* Allow matrix to scroll horizontally when it exceeds container */
+.ach-page .ach-section:has(.ach-matrix-container) {
+  overflow-x: auto;
+  max-width: 100%;
 }
 
 .ach-tabs {
@@ -1108,18 +1114,20 @@ a:hover {
 
 .ach-matrix-container {
   overflow-x: auto;
+  overflow-y: visible;
   padding: var(--arkham-space-md);
   background-color: var(--arkham-bg-secondary);
   border: 1px solid var(--arkham-border);
   border-radius: var(--arkham-radius-md);
+  max-width: 100%;
 }
 
 .ach-matrix {
   display: table;
   border-collapse: collapse;
-  width: 100%;
+  width: max-content;
   min-width: 500px;
-  table-layout: auto;
+  table-layout: fixed;
 }
 
 .ach-matrix thead {
@@ -1152,11 +1160,44 @@ a:hover {
   font-weight: 600;
 }
 
-.hypothesis-header {
-  min-width: 120px;
-  max-width: 200px;
+.ach-matrix .hypothesis-header {
+  min-width: 100px;
+  max-width: 180px;
+  width: 150px;
   word-wrap: break-word;
   white-space: normal;
+  font-size: 0.8125rem;
+}
+
+/* Compact matrix headers - just show H1, H2, E1, E2 with hover tooltips */
+.ach-matrix .hypothesis-header-compact {
+  width: 50px;
+  min-width: 50px;
+  max-width: 50px;
+  text-align: center;
+  font-weight: 600;
+  cursor: help;
+  white-space: nowrap;
+}
+
+.ach-matrix .evidence-header-compact {
+  width: 50px;
+  min-width: 50px;
+  max-width: 50px;
+  text-align: center;
+}
+
+.ach-matrix .evidence-cell-compact {
+  text-align: center !important;
+  width: 50px;
+  min-width: 50px;
+  max-width: 50px;
+  cursor: help;
+  white-space: nowrap;
+}
+
+.ach-matrix .evidence-cell-compact .evidence-label {
+  font-weight: 600;
 }
 
 .evidence-header {
@@ -2675,6 +2716,48 @@ a:hover {
   gap: var(--arkham-space-xs);
 }
 
+/* Corpus Toggle */
+.corpus-toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--arkham-space-xs);
+}
+
+.corpus-toggle-label {
+  display: flex;
+  align-items: center;
+  gap: var(--arkham-space-xs);
+  cursor: pointer;
+  font-size: var(--arkham-font-size-sm);
+  color: var(--arkham-text-secondary);
+}
+
+.corpus-toggle-label input[type="checkbox"] {
+  width: 14px;
+  height: 14px;
+  accent-color: var(--arkham-accent-violet);
+  cursor: pointer;
+}
+
+.corpus-toggle-label input[type="checkbox"]:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.corpus-toggle-label input[type="checkbox"]:disabled + .corpus-toggle-text {
+  opacity: 0.5;
+}
+
+.corpus-toggle-text {
+  user-select: none;
+}
+
+.corpus-toggle-hint {
+  font-size: var(--arkham-font-size-xs);
+  color: var(--arkham-text-muted);
+  font-style: italic;
+}
+
 /* Matrix Section */
 .matrix-container {
   overflow-x: auto;
@@ -3001,6 +3084,12 @@ a:hover {
 }
 
 .ai-suggest-group {
+  display: flex;
+  align-items: center;
+  gap: var(--arkham-space-xs);
+}
+
+.challenge-group {
   display: flex;
   align-items: center;
   gap: var(--arkham-space-xs);

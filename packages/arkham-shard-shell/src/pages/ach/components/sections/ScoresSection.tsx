@@ -9,17 +9,26 @@ import type { HypothesisScore } from '../../types';
 
 interface ScoresSectionProps {
   scores: HypothesisScore[];
+  hypotheses?: { id: string; title: string }[];
   closeRaceWarning?: string;
   onRecalculate: () => void;
 }
 
 export function ScoresSection({
   scores,
+  hypotheses = [],
   closeRaceWarning,
   onRecalculate: _onRecalculate,
 }: ScoresSectionProps) {
   void _onRecalculate;
   const sortedScores = [...scores].sort((a, b) => a.rank - b.rank);
+
+  // Helper to get hypothesis title - prefer from score, fallback to hypotheses list
+  const getHypothesisTitle = (score: HypothesisScore): string => {
+    if (score.hypothesis_title) return score.hypothesis_title;
+    const hyp = hypotheses.find(h => h.id === score.hypothesis_id);
+    return hyp?.title || `Hypothesis ${score.rank}`;
+  };
 
   return (
     <div className="ach-section">
@@ -43,19 +52,25 @@ export function ScoresSection({
             const colorClass =
               pct < 30 ? 'success' : pct < 60 ? 'warning' : 'danger';
 
+            const title = getHypothesisTitle(score);
             return (
               <div key={score.hypothesis_id} className="score-row">
-                <span className={`rank-badge rank-${score.rank}`}>
+                <span
+                  className={`rank-badge rank-${score.rank}`}
+                  title={`#${score.rank}: ${title}`}
+                >
                   #{score.rank}
                 </span>
-                <span className="score-hypothesis">{score.hypothesis_title}</span>
+                <span className="score-hypothesis" title={title}>
+                  {title}
+                </span>
                 <div className="score-bar-container">
                   <div
                     className={`score-bar score-bar-${colorClass}`}
                     style={{ width: `${pct}%` }}
                   />
                 </div>
-                <span className="score-value">
+                <span className="score-value" title={`${score.inconsistency_count} inconsistencies with the evidence`}>
                   {score.inconsistency_count}
                 </span>
                 <span className="score-description truncate">

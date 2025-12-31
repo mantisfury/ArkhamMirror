@@ -197,8 +197,12 @@ export function AIRatingsDialog({
 }: AIRatingsDialogProps) {
   return (
     <div className="dialog-overlay" onClick={onClose}>
-      <div className="dialog dialog-md" onClick={(e) => e.stopPropagation()}>
-        <div className="dialog-header">
+      <div
+        className="dialog dialog-md"
+        onClick={(e) => e.stopPropagation()}
+        style={{ maxHeight: '80vh', display: 'flex', flexDirection: 'column' }}
+      >
+        <div className="dialog-header" style={{ flexShrink: 0 }}>
           <div className="dialog-title-with-icon">
             <Icon name="Sparkles" size={18} className="icon-violet" />
             <h2>AI Rating Suggestions</h2>
@@ -208,11 +212,14 @@ export function AIRatingsDialog({
           </button>
         </div>
 
-        <p className="dialog-description">
+        <p className="dialog-description" style={{ flexShrink: 0, margin: '0 1.5rem 1rem' }}>
           Suggested ratings for: <strong>{evidenceLabel}</strong>
         </p>
 
-        <div className="rating-suggestion-list">
+        <div
+          className="rating-suggestion-list"
+          style={{ flex: 1, overflowY: 'auto', minHeight: 0, padding: '0 1.5rem' }}
+        >
           {suggestions.map((suggestion) => (
             <div key={suggestion.hypothesis_id} className="rating-suggestion-row">
               <span className="badge badge-primary">{suggestion.hypothesis_label}</span>
@@ -234,7 +241,7 @@ export function AIRatingsDialog({
           ))}
         </div>
 
-        <div className="dialog-actions">
+        <div className="dialog-actions" style={{ flexShrink: 0 }}>
           <button className="btn btn-secondary" onClick={onClose}>
             Close
           </button>

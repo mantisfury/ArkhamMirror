@@ -25,7 +25,7 @@ class CorpusSearchService:
     evidence classification and extraction.
     """
 
-    COLLECTION_CHUNKS = "arkham_chunks"
+    COLLECTION_CHUNKS = "documents"
 
     def __init__(self, vectors_service, documents_service, llm_service):
         """
@@ -125,11 +125,19 @@ class CorpusSearchService:
         if scope.project_id:
             filter_dict["project_id"] = scope.project_id
 
+        # Note: Qdrant MatchValue doesn't support 'in' operator directly
+        # For single document, use direct match; for multiple, need MatchAny
         if scope.document_ids:
-            filter_dict["document_id"] = {"in": scope.document_ids}
+            if len(scope.document_ids) == 1:
+                filter_dict["doc_id"] = scope.document_ids[0]
+            else:
+                # Multiple documents - use 'any' match format
+                filter_dict["doc_id"] = {"any": scope.document_ids}
 
         if scope.exclude_documents:
-            filter_dict["document_id"] = {"not_in": scope.exclude_documents}
+            # Exclusions are harder - skip for now if we have includes
+            if "doc_id" not in filter_dict and len(scope.exclude_documents) == 1:
+                filter_dict["doc_id"] = {"not": scope.exclude_documents[0]}
 
         return filter_dict if filter_dict else None
 
@@ -142,25 +150,62 @@ class CorpusSearchService:
 
         for result in search_results:
             try:
-                chunk_id = result.get("id")
-                payload = result.get("payload", {})
-                score = result.get("score", 0.0)
+                # Handle both SearchResult objects and dicts
+                if hasattr(result, 'id'):
+                    chunk_id = result.id
+                    payload = result.payload or {}
+                    score = result.score or 0.0
+                else:
+                    chunk_id = result.get("id")
+                    payload = result.get("payload", {})
+                    score = result.get("score", 0.0)
 
-                # Get chunk text from payload or fetch from documents
-                chunk_text = payload.get("text", "")
-                doc_id = payload.get("document_id")
-                doc_name = payload.get("filename", "Unknown")
-                page_num = payload.get("page_number")
+                # Get doc_id (our stored field name)
+                doc_id = payload.get("doc_id") or payload.get("document_id")
+                stored_chunk_id = payload.get("chunk_id")
+
+                if not doc_id:
+                    logger.warning(f"No doc_id in chunk payload: {payload}")
+                    continue
+
+                # Fetch chunk text from documents service
+                chunk_text = ""
+                doc_name = "Unknown"
+                page_num = None
+
+                if self.documents and stored_chunk_id:
+                    try:
+                        # Try to get chunk content from database
+                        chunks = await self.documents.get_document_chunks(doc_id)
+                        for chunk in chunks:
+                            if hasattr(chunk, 'id') and str(chunk.id) == stored_chunk_id:
+                                chunk_text = getattr(chunk, 'content', '') or getattr(chunk, 'text', '')
+                                page_num = getattr(chunk, 'page_number', None)
+                                break
+                            elif isinstance(chunk, dict) and str(chunk.get('id')) == stored_chunk_id:
+                                chunk_text = chunk.get('content', '') or chunk.get('text', '')
+                                page_num = chunk.get('page_number')
+                                break
+
+                        # Get document name
+                        doc = await self.documents.get_document(doc_id)
+                        if doc:
+                            doc_name = getattr(doc, 'filename', None) or getattr(doc, 'name', 'Unknown')
+                    except Exception as e:
+                        logger.warning(f"Failed to fetch chunk/doc details: {e}")
 
                 if chunk_text:
                     enriched.append({
-                        "chunk_id": chunk_id,
+                        "chunk_id": stored_chunk_id or chunk_id,
                         "text": chunk_text,
                         "document_id": doc_id,
                         "document_name": doc_name,
                         "page_number": page_num,
                         "similarity_score": score,
                     })
+                else:
+                    logger.warning(f"No text found for chunk {stored_chunk_id} in doc {doc_id}")
+
             except Exception as e:
                 logger.warning(f"Failed to enrich chunk: {e}")
                 continue

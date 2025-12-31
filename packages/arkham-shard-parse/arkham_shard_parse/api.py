@@ -251,6 +251,20 @@ async def parse_document_sync(doc_id: str, save_chunks: bool = True):
 
     try:
         result = await _parse_shard.parse_document(doc_id, save_chunks=save_chunks)
+
+        # Emit parse completion event so embed shard can auto-embed
+        if save_chunks and _event_bus:
+            await _event_bus.emit(
+                "parse.document.completed",
+                {
+                    "document_id": doc_id,
+                    "entities": result.get("total_entities", 0),
+                    "chunks": result.get("total_chunks", 0),
+                    "chunks_saved": result.get("chunks_saved", 0),
+                },
+                source="parse-shard",
+            )
+
         return result
     except Exception as e:
         logger.error(f"Sync parse failed for {doc_id}: {e}")

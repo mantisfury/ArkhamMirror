@@ -334,4 +334,5 @@ class MatrixManager:
                 }
                 for s in sorted(matrix.scores, key=lambda x: x.rank)
             ],
+            "linked_document_ids": matrix.linked_document_ids,
         }

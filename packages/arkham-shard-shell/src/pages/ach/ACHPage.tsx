@@ -50,6 +50,8 @@ import {
   SensitivitySection,
   MilestonesSection,
   LinkedDocumentsSection,
+  CorpusSearchSection,
+  MilestoneDialog,
 } from './components';
 
 // ============================================
@@ -366,6 +368,7 @@ function MatrixDetailView({ matrixId }: { matrixId: string }) {
   const [aiLoading, setAiLoading] = useState(false);
   const [showAIHypotheses, setShowAIHypotheses] = useState(false);
   const [showAIEvidence, setShowAIEvidence] = useState(false);
+  const [useCorpus, setUseCorpus] = useState(false);
   const [showAIRatings, setShowAIRatings] = useState(false);
   const [showDevilsAdvocate, setShowDevilsAdvocate] = useState(false);
   const [showAIMilestones, setShowAIMilestones] = useState(false);
@@ -395,6 +398,11 @@ function MatrixDetailView({ matrixId }: { matrixId: string }) {
   const [milestones, setMilestones] = useState<any[]>([]);
   const [selectedMilestoneHypothesis, setSelectedMilestoneHypothesis] = useState('all');
   const milestonesLoadedRef = useRef(false);
+  const [showMilestoneDialog, setShowMilestoneDialog] = useState(false);
+  const [editingMilestone, setEditingMilestone] = useState<any | null>(null);
+
+  // Devil's Advocate hypothesis selection
+  const [selectedChallengeHypothesis, setSelectedChallengeHypothesis] = useState<string>('');
 
   // Fetch matrix data
   const fetchMatrix = useCallback(async () => {
@@ -690,6 +698,7 @@ function MatrixDetailView({ matrixId }: { matrixId: string }) {
       const result = await api.suggestEvidence({
         matrix_id: matrixId,
         focus_question: matrix.description || matrix.title,
+        use_corpus: useCorpus,
       });
       setEvidenceSuggestions(result.suggestions.map(s => ({
         description: s.description,
@@ -766,10 +775,13 @@ function MatrixDetailView({ matrixId }: { matrixId: string }) {
     }
   };
 
-  const handleDevilsAdvocate = async () => {
+  const handleDevilsAdvocate = async (hypothesisId?: string) => {
     setAiLoading(true);
     try {
-      const result = await api.runDevilsAdvocate({ matrix_id: matrixId });
+      const result = await api.runDevilsAdvocate({
+        matrix_id: matrixId,
+        hypothesis_id: hypothesisId || selectedChallengeHypothesis || undefined,
+      });
       setChallenges([{
         hypothesis_id: result.hypothesis_id,
         hypothesis_label: result.hypothesis_title,
@@ -871,16 +883,23 @@ function MatrixDetailView({ matrixId }: { matrixId: string }) {
 
   const handleExportPDF = async () => {
     try {
-      const result = await api.exportMatrix(matrixId, 'html');
-      // Open HTML in new window for printing to PDF
-      const win = window.open('', '_blank');
-      if (win) {
-        win.document.write(result.content as string);
-        win.document.close();
-        toast.info('PDF preview opened - use Print to save as PDF');
+      // Fetch PDF as blob directly from API
+      const response = await fetch(`/api/ach/export/${matrixId}?format=pdf`);
+      if (!response.ok) {
+        throw new Error(`Export failed: ${response.statusText}`);
       }
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `ACH_Report_${matrix?.title?.substring(0, 30) || matrixId}.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      window.URL.revokeObjectURL(url);
+      toast.success('PDF downloaded');
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Failed to export');
+      toast.error(err instanceof Error ? err.message : 'Failed to export PDF');
     }
   };
 
@@ -935,6 +954,8 @@ function MatrixDetailView({ matrixId }: { matrixId: string }) {
           matrix={matrix}
           aiAvailable={aiAvailable}
           aiLoading={aiLoading}
+          selectedChallengeHypothesis={selectedChallengeHypothesis}
+          onChallengeHypothesisSelect={setSelectedChallengeHypothesis}
           onAddHypothesis={() => setShowAddHypothesis(true)}
           onRemoveHypothesis={handleRemoveHypothesis}
           onAISuggest={handleRequestHypothesisSuggestions}
@@ -945,6 +966,9 @@ function MatrixDetailView({ matrixId }: { matrixId: string }) {
           matrix={matrix}
           aiAvailable={aiAvailable}
           aiLoading={aiLoading}
+          hasLinkedDocuments={(matrix.linked_document_ids || []).length > 0}
+          useCorpus={useCorpus}
+          onUseCorpusChange={setUseCorpus}
           onAddEvidence={() => setShowAddEvidence(true)}
           onRemoveEvidence={handleRemoveEvidence}
           onAISuggest={handleRequestEvidenceSuggestions}
@@ -974,6 +998,8 @@ function MatrixDetailView({ matrixId }: { matrixId: string }) {
               matrix={matrix}
               aiAvailable={aiAvailable}
               aiLoading={aiLoading}
+              selectedChallengeHypothesis={selectedChallengeHypothesis}
+              onChallengeHypothesisSelect={setSelectedChallengeHypothesis}
               onAddHypothesis={() => setShowAddHypothesis(true)}
               onRemoveHypothesis={handleRemoveHypothesis}
               onAISuggest={handleRequestHypothesisSuggestions}
@@ -983,6 +1009,9 @@ function MatrixDetailView({ matrixId }: { matrixId: string }) {
               matrix={matrix}
               aiAvailable={aiAvailable}
               aiLoading={aiLoading}
+              hasLinkedDocuments={(matrix.linked_document_ids || []).length > 0}
+              useCorpus={useCorpus}
+              onUseCorpusChange={setUseCorpus}
               onAddEvidence={() => setShowAddEvidence(true)}
               onRemoveEvidence={handleRemoveEvidence}
               onAISuggest={handleRequestEvidenceSuggestions}
@@ -1005,6 +1034,7 @@ function MatrixDetailView({ matrixId }: { matrixId: string }) {
           <div className="step-6-content">
             <ScoresSection
               scores={matrix.scores}
+              hypotheses={matrix.hypotheses}
               onRecalculate={handleRecalculateScores}
             />
             <ConsistencyChecksSection checks={consistencyChecks} />
@@ -1040,38 +1070,14 @@ function MatrixDetailView({ matrixId }: { matrixId: string }) {
             }
           }}
           onAddMilestone={() => {
-            // Simple add milestone with prompt
-            const description = window.prompt('Enter milestone description:');
-            if (description) {
-              const hypId = selectedMilestoneHypothesis !== 'all'
-                ? selectedMilestoneHypothesis
-                : matrix.hypotheses[0]?.id || '';
-              const hypTitle = matrix.hypotheses.find(h => h.id === hypId)?.title || 'General';
-              const newMilestone = {
-                id: `milestone-${Date.now()}`,
-                description,
-                hypothesis_id: hypId,
-                hypothesis_label: hypTitle,
-                expected_by: null,
-                observed: 0 as const,
-                observation_notes: '',
-                created_at: new Date().toISOString(),
-                updated_at: new Date().toISOString(),
-              };
-              setMilestones(prev => [...prev, newMilestone]);
-              toast.success('Milestone added');
-            }
+            setEditingMilestone(null);
+            setShowMilestoneDialog(true);
           }}
           onEditMilestone={(id) => {
             const milestone = milestones.find(m => m.id === id);
             if (milestone) {
-              const newDesc = window.prompt('Edit milestone description:', milestone.description);
-              if (newDesc && newDesc !== milestone.description) {
-                setMilestones(prev => prev.map(m =>
-                  m.id === id ? { ...m, description: newDesc, updated_at: new Date().toISOString() } : m
-                ));
-                toast.success('Milestone updated');
-              }
+              setEditingMilestone(milestone);
+              setShowMilestoneDialog(true);
             }
           }}
           onDeleteMilestone={(id) => {
@@ -1079,6 +1085,13 @@ function MatrixDetailView({ matrixId }: { matrixId: string }) {
               setMilestones(prev => prev.filter(m => m.id !== id));
               toast.success('Milestone deleted');
             }
+          }}
+          onUpdateMilestoneStatus={(id, status) => {
+            setMilestones(prev => prev.map(m =>
+              m.id === id ? { ...m, observed: status, updated_at: new Date().toISOString() } : m
+            ));
+            const statusLabel = status === 1 ? 'OBSERVED' : status === -1 ? 'CONTRADICTED' : 'PENDING';
+            toast.success(`Milestone marked as ${statusLabel}`);
           }}
           onExportMarkdown={handleExportMarkdown}
           onExportJSON={handleExportJSON}
@@ -1115,7 +1128,7 @@ function MatrixDetailView({ matrixId }: { matrixId: string }) {
           {aiAvailable && (
             <button
               className="btn btn-primary"
-              onClick={handleDevilsAdvocate}
+              onClick={() => handleDevilsAdvocate()}
               disabled={aiLoading}
             >
               {aiLoading ? (
@@ -1151,7 +1164,7 @@ function MatrixDetailView({ matrixId }: { matrixId: string }) {
         <div className="quick-views">
           <details className="quick-view-accordion">
             <summary>Quick View: Scores</summary>
-            <ScoresSection scores={matrix.scores} onRecalculate={handleRecalculateScores} />
+            <ScoresSection scores={matrix.scores} hypotheses={matrix.hypotheses} onRecalculate={handleRecalculateScores} />
           </details>
           <details className="quick-view-accordion">
             <summary>Quick View: Consistency Checks</summary>
@@ -1165,6 +1178,12 @@ function MatrixDetailView({ matrixId }: { matrixId: string }) {
         matrixId={matrixId}
         linkedDocumentIds={matrix.linked_document_ids || []}
         onDocumentsChanged={fetchMatrix}
+      />
+
+      {/* Corpus Search Section */}
+      <CorpusSearchSection
+        matrix={matrix}
+        onEvidenceAdded={fetchMatrix}
       />
 
       {/* Dialogs */}
@@ -1298,6 +1317,37 @@ function MatrixDetailView({ matrixId }: { matrixId: string }) {
           onClose={() => setShowAIMilestones(false)}
         />
       )}
+
+      {showMilestoneDialog && (
+        <MilestoneDialog
+          milestone={editingMilestone}
+          hypotheses={matrix.hypotheses.map(h => ({ id: h.id, title: h.title }))}
+          onSave={(milestoneData) => {
+            if (editingMilestone) {
+              // Update existing milestone
+              setMilestones(prev => prev.map(m =>
+                m.id === milestoneData.id
+                  ? { ...milestoneData, updated_at: new Date().toISOString() }
+                  : m
+              ));
+              toast.success('Milestone updated');
+            } else {
+              // Add new milestone
+              setMilestones(prev => [...prev, {
+                ...milestoneData,
+                updated_at: new Date().toISOString(),
+              }]);
+              toast.success('Milestone added');
+            }
+            setShowMilestoneDialog(false);
+            setEditingMilestone(null);
+          }}
+          onClose={() => {
+            setShowMilestoneDialog(false);
+            setEditingMilestone(null);
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -1310,16 +1360,20 @@ interface HypothesesSectionProps {
   matrix: ACHMatrix;
   aiAvailable: boolean;
   aiLoading: boolean;
+  selectedChallengeHypothesis: string;
+  onChallengeHypothesisSelect: (id: string) => void;
   onAddHypothesis: () => void;
   onRemoveHypothesis: (id: string, title: string) => void;
   onAISuggest: () => void;
-  onDevilsAdvocate: () => void;
+  onDevilsAdvocate: (hypothesisId?: string) => void;
 }
 
 function HypothesesSection({
   matrix,
   aiAvailable,
   aiLoading,
+  selectedChallengeHypothesis,
+  onChallengeHypothesisSelect,
   onAddHypothesis,
   onRemoveHypothesis,
   onAISuggest,
@@ -1345,14 +1399,28 @@ function HypothesesSection({
                 AI Suggest
               </button>
               {matrix.hypotheses.length > 0 && (
-                <button
-                  className="btn btn-sm btn-soft btn-orange"
-                  onClick={onDevilsAdvocate}
-                  disabled={aiLoading}
-                >
-                  <Icon name="Swords" size={12} />
-                  Challenge
-                </button>
+                <div className="challenge-group">
+                  <select
+                    className="select-sm"
+                    value={selectedChallengeHypothesis}
+                    onChange={(e) => onChallengeHypothesisSelect(e.target.value)}
+                    disabled={aiLoading}
+                  >
+                    <option value="">Lead Hypothesis</option>
+                    {matrix.hypotheses.map((h, i) => (
+                      <option key={h.id} value={h.id}>H{i + 1}: {h.title.substring(0, 30)}{h.title.length > 30 ? '...' : ''}</option>
+                    ))}
+                  </select>
+                  <button
+                    className="btn btn-sm btn-soft btn-orange"
+                    onClick={() => onDevilsAdvocate(selectedChallengeHypothesis || undefined)}
+                    disabled={aiLoading}
+                    title="Challenge the selected hypothesis with counter-arguments"
+                  >
+                    <Icon name="Swords" size={12} />
+                    Challenge
+                  </button>
+                </div>
               )}
             </>
           )}
@@ -1403,6 +1471,9 @@ interface EvidenceSectionProps {
   matrix: ACHMatrix;
   aiAvailable: boolean;
   aiLoading: boolean;
+  hasLinkedDocuments: boolean;
+  useCorpus: boolean;
+  onUseCorpusChange: (value: boolean) => void;
   onAddEvidence: () => void;
   onRemoveEvidence: (id: string, description: string) => void;
   onAISuggest: () => void;
@@ -1412,6 +1483,9 @@ function EvidenceSection({
   matrix,
   aiAvailable,
   aiLoading,
+  hasLinkedDocuments,
+  useCorpus,
+  onUseCorpusChange,
   onAddEvidence,
   onRemoveEvidence,
   onAISuggest,
@@ -1426,14 +1500,30 @@ function EvidenceSection({
         </div>
         <div className="section-actions">
           {aiAvailable && (
-            <button
-              className="btn btn-sm btn-soft btn-violet"
-              onClick={onAISuggest}
-              disabled={aiLoading}
-            >
-              {aiLoading ? <Icon name="Loader2" size={12} className="spin" /> : <Icon name="Sparkles" size={12} />}
-              AI Suggest
-            </button>
+            <>
+              <div className="corpus-toggle">
+                <label className="corpus-toggle-label" title="When enabled, AI will consider content from linked documents">
+                  <input
+                    type="checkbox"
+                    checked={useCorpus}
+                    onChange={(e) => onUseCorpusChange(e.target.checked)}
+                    disabled={!hasLinkedDocuments}
+                  />
+                  <span className="corpus-toggle-text">Use corpus</span>
+                </label>
+                {!hasLinkedDocuments && (
+                  <span className="corpus-toggle-hint">Link documents first</span>
+                )}
+              </div>
+              <button
+                className="btn btn-sm btn-soft btn-violet"
+                onClick={onAISuggest}
+                disabled={aiLoading}
+              >
+                {aiLoading ? <Icon name="Loader2" size={12} className="spin" /> : <Icon name="Sparkles" size={12} />}
+                AI Suggest
+              </button>
+            </>
           )}
           <button className="btn btn-sm btn-soft" onClick={onAddEvidence}>
             <Icon name="Plus" size={14} />
@@ -1552,10 +1642,10 @@ function MatrixSection({
           <table className="ach-matrix">
             <thead>
               <tr>
-                <th className="evidence-header">Evidence</th>
+                <th className="evidence-header-compact"></th>
                 {matrix.hypotheses.map((h, i) => (
-                  <th key={h.id} className="hypothesis-header" title={h.description}>
-                    H{i + 1}: {h.title}
+                  <th key={h.id} className="hypothesis-header-compact" title={`${h.title}\n\n${h.description || ''}`}>
+                    H{i + 1}
                   </th>
                 ))}
                 <th className="ai-header">
@@ -1571,16 +1661,11 @@ function MatrixSection({
                     key={e.id}
                     className={`evidence-row diagnosticity-${diagnosticity}`}
                   >
-                    <td className="evidence-cell">
-                      <div className="evidence-cell-content">
-                        <span className="evidence-label">E{i + 1}</span>
-                        <span className="evidence-text" title={e.description}>
-                          {e.description.substring(0, 40)}...
-                        </span>
-                        {diagnosticity === 'high' && (
-                          <Icon name="Star" size={12} className="icon-amber" title="High diagnostic value" />
-                        )}
-                      </div>
+                    <td className="evidence-cell-compact" title={`${e.description}\n\nSource: ${e.source || 'N/A'} | Type: ${e.evidence_type} | Credibility: ${e.credibility}`}>
+                      <span className="evidence-label">E{i + 1}</span>
+                      {diagnosticity === 'high' && (
+                        <Icon name="Star" size={10} className="icon-amber" title="High diagnostic value" />
+                      )}
                     </td>
                     {matrix.hypotheses.map((h) => {
                       const rating = getRating(e.id, h.id);

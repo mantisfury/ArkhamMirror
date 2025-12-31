@@ -23,14 +23,16 @@ interface LinkedDocumentsSectionProps {
 interface Document {
   id: string;
   filename: string;
-  mime_type: string;
+  file_type: string;
   file_size: number;
   status: string;
 }
 
 interface DocumentsResponse {
-  documents: Document[];
+  items: Document[];
   total: number;
+  page: number;
+  page_size: number;
 }
 
 export function LinkedDocumentsSection({
@@ -51,11 +53,11 @@ export function LinkedDocumentsSection({
   const fetchAvailableDocuments = useCallback(async () => {
     setLoadingDocs(true);
     try {
-      const response = await fetch('/api/documents/list?status=ready&limit=100');
+      const response = await fetch('/api/documents/items?status=processed&page_size=100');
       if (response.ok) {
         const data: DocumentsResponse = await response.json();
         // Filter out already linked documents
-        const available = data.documents.filter(
+        const available = data.items.filter(
           (doc) => !linkedDocumentIds.includes(doc.id)
         );
         setAvailableDocuments(available);
@@ -218,7 +220,7 @@ export function LinkedDocumentsSection({
                           {doc.filename}
                         </div>
                         <div className="document-meta">
-                          <span>{doc.mime_type}</span>
+                          <span>{doc.file_type}</span>
                           <span>{formatFileSize(doc.file_size)}</span>
                         </div>
                       </div>
@@ -268,6 +270,7 @@ export function LinkedDocumentsSection({
           border: 1px solid #374151;
           border-radius: 0.5rem;
           padding: 1.25rem;
+          margin-top: 1.5rem;
         }
 
         .section-header {

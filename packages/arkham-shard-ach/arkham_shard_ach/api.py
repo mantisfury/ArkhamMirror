@@ -50,6 +50,48 @@ def init_api(
         logger.info("ACH Corpus search service initialized")
 
 
+
+
+async def _get_corpus_context_for_matrix(matrix, limit: int = 10) -> list[dict]:
+    """Get relevant corpus chunks for matrix hypotheses."""
+    if not _corpus_service or not matrix.linked_document_ids:
+        return []
+
+    all_chunks = []
+
+    for hypothesis in matrix.hypotheses[:5]:  # Limit hypotheses
+        search_text = f"{hypothesis.title} {hypothesis.description}"
+        try:
+            results = await _corpus_service.vectors.search_text(
+                collection="arkham_chunks",
+                text=search_text,
+                limit=3,
+                filter={"document_id": {"in": matrix.linked_document_ids}},
+                score_threshold=0.6,
+            )
+            for r in results:
+                all_chunks.append({
+                    "text": r.get("payload", {}).get("text", "")[:500],
+                    "document_name": r.get("payload", {}).get("filename", "Unknown"),
+                    "page_number": r.get("payload", {}).get("page_number"),
+                    "similarity_score": r.get("score", 0),
+                })
+        except Exception as e:
+            logger.warning(f"Corpus context fetch failed: {e}")
+
+    # Dedupe and limit
+    seen = set()
+    unique = []
+    for c in sorted(all_chunks, key=lambda x: x["similarity_score"], reverse=True):
+        key = c["text"][:100]
+        if key not in seen:
+            seen.add(key)
+            unique.append(c)
+            if len(unique) >= limit:
+                break
+
+    return unique
+
 # --- Request/Response Models ---
 
 
@@ -114,6 +156,7 @@ class SuggestEvidenceRequest(BaseModel):
     """Request to suggest evidence."""
     matrix_id: str
     focus_question: str = ""
+    use_corpus: bool = False
 
 
 class SuggestRatingsRequest(BaseModel):
@@ -722,9 +765,11 @@ Be critical but fair. Focus on finding flaws and alternative explanations."""
 @router.get("/export/{matrix_id}")
 async def export_matrix(
     matrix_id: str,
-    format: str = Query("json", description="Export format: json, csv, html, markdown"),
+    format: str = Query("json", description="Export format: json, csv, html, pdf, markdown"),
 ):
     """Export a matrix in the specified format."""
+    from fastapi.responses import Response
+
     if not _matrix_manager or not _exporter:
         raise HTTPException(status_code=503, detail="ACH service not initialized")
 
@@ -734,7 +779,17 @@ async def export_matrix(
 
     export = _exporter.export(matrix, format=format)
 
-    # Determine content type
+    # For PDF, return binary response directly for download
+    if format.lower() == "pdf":
+        safe_title = "".join(c if c.isalnum() or c in " -_" else "_" for c in matrix.title[:30])
+        filename = f"ACH_Report_{safe_title}_{matrix_id[:8]}.pdf"
+        return Response(
+            content=export.content,
+            media_type="application/pdf",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'}
+        )
+
+    # Determine content type for other formats
     content_types = {
         "json": "application/json",
         "csv": "text/csv",
@@ -876,11 +931,25 @@ async def suggest_evidence(request: SuggestEvidenceRequest):
     focus_question = request.focus_question or matrix.title
 
     try:
-        suggestions = await _llm_integration.suggest_evidence(
-            focus_question=focus_question,
-            hypotheses=matrix.hypotheses,
-            existing_evidence=matrix.evidence,
-        )
+        # Get corpus context if requested and available
+        corpus_chunks = None
+        if request.use_corpus and _corpus_service and matrix.linked_document_ids:
+            corpus_chunks = await _get_corpus_context_for_matrix(matrix, limit=10)
+
+        # Use corpus-aware method if we have chunks, otherwise use standard method
+        if corpus_chunks:
+            suggestions = await _llm_integration.suggest_evidence_with_corpus(
+                focus_question=focus_question,
+                hypotheses=matrix.hypotheses,
+                existing_evidence=matrix.evidence,
+                corpus_chunks=corpus_chunks,
+            )
+        else:
+            suggestions = await _llm_integration.suggest_evidence(
+                focus_question=focus_question,
+                hypotheses=matrix.hypotheses,
+                existing_evidence=matrix.evidence,
+            )
 
         return {
             "matrix_id": request.matrix_id,
@@ -893,6 +962,7 @@ async def suggest_evidence(request: SuggestEvidenceRequest):
                 for s in suggestions
             ],
             "count": len(suggestions),
+            "used_corpus": corpus_chunks is not None and len(corpus_chunks) > 0,
         }
 
     except Exception as e:

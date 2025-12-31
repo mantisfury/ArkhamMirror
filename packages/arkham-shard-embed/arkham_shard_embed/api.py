@@ -1,6 +1,7 @@
 """Embed Shard API endpoints."""
 
 import logging
+import uuid
 import time
 from typing import Annotated
 
@@ -217,9 +218,11 @@ async def embed_document(doc_id: str, request: DocumentEmbedRequestBody | None =
         }
 
         # Dispatch to embed worker
-        job_id = await _worker_service.enqueue(
+        job_id = str(uuid.uuid4())
+        payload["job_type"] = "embed_document"
+        await _worker_service.enqueue(
             pool="gpu-embed",
-            job_type="embed_document",
+            job_id=job_id,
             payload=payload,
         )
 

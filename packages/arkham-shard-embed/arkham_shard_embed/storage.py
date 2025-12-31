@@ -203,11 +203,11 @@ class VectorStore:
         """
         try:
             results = await self.vectors_service.search(
-                collection_name=collection_name,
+                collection=collection_name,
                 query_vector=query_vector,
                 limit=limit,
                 score_threshold=score_threshold,
-                query_filter=filters
+                filter=filters
             )
 
             logger.debug(

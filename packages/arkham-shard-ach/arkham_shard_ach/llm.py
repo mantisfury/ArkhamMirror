@@ -353,6 +353,91 @@ class ACHLLMIntegration:
 
         return self._parse_evidence(getattr(response, "text", ""))
 
+    async def suggest_evidence_with_corpus(
+        self,
+        focus_question: str,
+        hypotheses: list[Hypothesis],
+        existing_evidence: list[Evidence] | None = None,
+        corpus_chunks: list[dict] | None = None,
+    ) -> list[EvidenceSuggestion]:
+        """
+        Suggest diagnostic evidence items, optionally using corpus context.
+
+        Args:
+            focus_question: The focus question
+            hypotheses: Current hypotheses
+            existing_evidence: Existing evidence (to avoid duplication)
+            corpus_chunks: Optional list of corpus chunks for context.
+                Each chunk dict has: text, document_name, page_number, similarity_score
+
+        Returns:
+            List of EvidenceSuggestion objects
+        """
+        if not hypotheses:
+            return []
+
+        # Build hypotheses list
+        hyp_list = chr(10).join(
+            f"- H{i+1}: {h.title}"
+            for i, h in enumerate(hypotheses)
+        )
+
+        prompt_parts = [
+            f"Focus Question: {focus_question}",
+            f"{chr(10)}Hypotheses:{chr(10)}{hyp_list}",
+        ]
+
+        # Add corpus context if provided
+        if corpus_chunks:
+            # Limit to max 10 chunks and ~4000 chars total
+            chunks_text = []
+            total_chars = 0
+            max_chars = 4000
+            max_chunks = 10
+
+            for i, chunk in enumerate(corpus_chunks[:max_chunks]):
+                text = chunk.get("text", "")[:500]  # Limit each chunk to 500 chars
+                if total_chars + len(text) > max_chars:
+                    break
+
+                doc_name = chunk.get("document_name", "Unknown")
+                page_num = chunk.get("page_number")
+                page_info = f", p.{page_num}" if page_num else ""
+
+                chunks_text.append(f"[Chunk {i+1}] (Source: {doc_name}{page_info}){chr(10)}{text}")
+                total_chars += len(text)
+
+            if chunks_text:
+                corpus_context = (chr(10) + chr(10)).join(chunks_text)
+                prompt_parts.append(
+                    f"{chr(10)}Relevant excerpts from documents:{chr(10)}{corpus_context}"
+                )
+
+        if existing_evidence:
+            existing = chr(10).join(
+                f"- {e.description}"
+                for e in existing_evidence[:10]  # Limit for context
+            )
+            prompt_parts.append(f"{chr(10)}Existing Evidence (avoid duplicating):{chr(10)}{existing}")
+
+        prompt_parts.append(
+            f"{chr(10)}Based on the hypotheses" +
+            (" and the document excerpts provided" if corpus_chunks else "") +
+            f", suggest 3-5 diagnostic evidence items that would help distinguish "
+            f"between hypotheses. Format each as:{chr(10)}"
+            f"1. Evidence description (TYPE){chr(10)}"
+            "Where TYPE is one of: fact, testimony, document, physical, circumstantial, inference"
+        )
+
+        user_prompt = chr(10).join(prompt_parts)
+
+        response = await self._generate(
+            system_prompt=SYSTEM_PROMPTS["evidence"],
+            user_prompt=user_prompt,
+        )
+
+        return self._parse_evidence(getattr(response, "text", ""))
+
     def _parse_evidence(self, text: str) -> list[EvidenceSuggestion]:
         """Parse evidence suggestions from LLM response."""
         suggestions = []
