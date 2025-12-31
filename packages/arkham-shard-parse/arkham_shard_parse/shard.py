@@ -159,11 +159,14 @@ class ParseShard(ArkhamShard):
 
         Automatically trigger parsing for newly ingested documents.
         """
-        job_id = event.get("job_id")
-        result = event.get("result", {})
+        # EventBus wraps events: {"event_type": ..., "payload": {...}, "source": ...}
+        payload = event.get("payload", event)  # Support both wrapped and unwrapped
+        job_id = payload.get("job_id")
+        result = payload.get("result", {})
         doc_id = result.get("document_id")
 
         if not doc_id:
+            logger.debug(f"No document_id in ingest.job.completed event, skipping parse")
             return
 
         logger.info(f"Auto-parsing document {doc_id} after ingestion")
@@ -196,10 +199,12 @@ class ParseShard(ArkhamShard):
 
     async def _on_worker_completed(self, event: dict) -> None:
         """Handle worker job completion."""
-        job_type = event.get("job_type")
+        # EventBus wraps events: {"event_type": ..., "payload": {...}, "source": ...}
+        payload = event.get("payload", event)  # Support both wrapped and unwrapped
+        job_type = payload.get("job_type")
 
         if job_type == "parse_document":
-            result = event.get("result", {})
+            result = payload.get("result", {})
             doc_id = result.get("document_id")
 
             if doc_id:
@@ -332,10 +337,61 @@ class ParseShard(ArkhamShard):
         if save_chunks and all_chunks:
             chunks_saved = await self._save_chunks(document_id, all_chunks, doc_service)
 
+        # Save entities to database via EntityService
+        entities_saved = 0
+        entity_service = self._frame.get_service("entities")
+        if entity_service and all_entities:
+            entities_saved = await self._save_entities(document_id, all_entities, entity_service)
+
+        # Emit entity extraction event for Entities shard to process
+        event_bus = self._frame.get_service("events")
+        if event_bus and all_entities:
+            entity_data = []
+            for entity in all_entities:
+                entity_type_val = entity.entity_type.value if hasattr(entity.entity_type, 'value') else str(entity.entity_type)
+                entity_data.append({
+                    "text": entity.text,
+                    "entity_type": entity_type_val,
+                    "start_offset": getattr(entity, 'start_char', 0),
+                    "end_offset": getattr(entity, 'end_char', 0),
+                    "confidence": getattr(entity, 'confidence', 0.85),
+                    "sentence": getattr(entity, 'sentence', None),
+                })
+            await event_bus.emit(
+                "parse.entity.extracted",
+                {
+                    "document_id": document_id,
+                    "entities": entity_data,
+                },
+                source="parse-shard",
+            )
+            logger.debug(f"Emitted parse.entity.extracted event with {len(entity_data)} entities")
+
+        # Emit relationship extraction event for Entities shard to process
+        if event_bus and all_relationships:
+            relationship_data = []
+            for rel in all_relationships:
+                relationship_data.append({
+                    "source_entity": rel.source_entity_id,
+                    "target_entity": rel.target_entity_id,
+                    "relation_type": rel.relation_type,
+                    "confidence": rel.confidence,
+                    "evidence_text": rel.evidence_text,
+                })
+            await event_bus.emit(
+                "parse.relationships.extracted",
+                {
+                    "document_id": document_id,
+                    "relationships": relationship_data,
+                },
+                source="parse-shard",
+            )
+            logger.debug(f"Emitted parse.relationships.extracted event with {len(relationship_data)} relationships")
+
         processing_time = (time() - start_time) * 1000
 
         logger.info(
-            f"Parsed document {document_id}: {len(all_entities)} entities, "
+            f"Parsed document {document_id}: {len(all_entities)} entities ({entities_saved} saved), "
             f"{len(all_chunks)} chunks ({chunks_saved} saved)"
         )
 
@@ -348,6 +404,7 @@ class ParseShard(ArkhamShard):
             "total_entities": len(all_entities),
             "total_chunks": len(all_chunks),
             "chunks_saved": chunks_saved,
+            "entities_saved": entities_saved,
             "pages_processed": len(pages),
             "processing_time_ms": processing_time,
         }
@@ -390,4 +447,70 @@ class ParseShard(ArkhamShard):
             await doc_service.update_chunk_count(document_id)
 
         logger.debug(f"Saved {saved_count}/{len(chunks)} chunks for document {document_id}")
+        return saved_count
+
+    async def _save_entities(self, document_id: str, entities: list, entity_service) -> int:
+        """
+        Save extracted entities to the database via EntityService.
+
+        Args:
+            document_id: Document ID
+            entities: List of EntityMention objects from NER extractor
+            entity_service: Entity service instance from Frame
+
+        Returns:
+            Number of entities saved
+        """
+        saved_count = 0
+
+        # Map parse shard EntityType to Frame EntityType
+        from arkham_frame.services.entities import EntityType as FrameEntityType
+
+        type_mapping = {
+            "PERSON": FrameEntityType.PERSON,
+            "ORG": FrameEntityType.ORGANIZATION,
+            "GPE": FrameEntityType.LOCATION,
+            "FAC": FrameEntityType.LOCATION,
+            "DATE": FrameEntityType.DATE,
+            "TIME": FrameEntityType.DATE,
+            "MONEY": FrameEntityType.MONEY,
+            "PERCENT": FrameEntityType.OTHER,
+            "PRODUCT": FrameEntityType.PRODUCT,
+            "EVENT": FrameEntityType.EVENT,
+            "LAW": FrameEntityType.DOCUMENT,
+            "LANGUAGE": FrameEntityType.CONCEPT,
+            "NORP": FrameEntityType.ORGANIZATION,
+            "CARDINAL": FrameEntityType.OTHER,
+            "ORDINAL": FrameEntityType.OTHER,
+            "QUANTITY": FrameEntityType.OTHER,
+            "WORK_OF_ART": FrameEntityType.DOCUMENT,
+            "OTHER": FrameEntityType.OTHER,
+        }
+
+        for entity in entities:
+            try:
+                # Get entity type value (may be enum or string)
+                entity_type_val = entity.entity_type.value if hasattr(entity.entity_type, 'value') else str(entity.entity_type)
+
+                # Map to Frame's EntityType
+                frame_entity_type = type_mapping.get(entity_type_val, FrameEntityType.OTHER)
+
+                await entity_service.create_entity(
+                    text=entity.text,
+                    entity_type=frame_entity_type,
+                    document_id=document_id,
+                    chunk_id=getattr(entity, 'source_chunk_id', None),
+                    start_offset=getattr(entity, 'start_char', 0),
+                    end_offset=getattr(entity, 'end_char', 0),
+                    confidence=getattr(entity, 'confidence', 0.85),
+                    metadata={
+                        "sentence": getattr(entity, 'sentence', None),
+                        "source": "parse-shard",
+                    },
+                )
+                saved_count += 1
+            except Exception as e:
+                logger.error(f"Failed to save entity '{entity.text}': {e}")
+
+        logger.debug(f"Saved {saved_count}/{len(entities)} entities for document {document_id}")
         return saved_count

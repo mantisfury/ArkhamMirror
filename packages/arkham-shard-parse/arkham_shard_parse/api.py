@@ -99,6 +99,19 @@ class ChunkTextResponse(BaseModel):
     total_chars: int
 
 
+class ChunkingConfigResponse(BaseModel):
+    chunk_size: int
+    chunk_overlap: int
+    chunk_method: str
+    available_methods: list[str]
+
+
+class UpdateChunkingConfigRequest(BaseModel):
+    chunk_size: int | None = None
+    chunk_overlap: int | None = None
+    chunk_method: str | None = None
+
+
 class EntityLinkRequest(BaseModel):
     entities: list[dict]
 
@@ -432,3 +445,174 @@ async def get_parse_stats():
             "total_documents_parsed": 0,
             "entity_types": {},
         }
+
+
+# --- List Endpoints for Dashboard ---
+
+
+@router.get("/chunks")
+async def list_all_chunks(
+    limit: int = 50,
+    offset: int = 0,
+    document_id: str | None = None,
+):
+    """
+    List all text chunks with pagination.
+
+    Args:
+        limit: Maximum number of chunks to return (default: 50)
+        offset: Number of chunks to skip (default: 0)
+        document_id: Optional filter by document ID
+    """
+    if not _parse_shard or not _parse_shard._frame:
+        raise HTTPException(status_code=503, detail="Parse shard not initialized")
+
+    db = _parse_shard._frame.get_service("database")
+    doc_service = _parse_shard._frame.get_service("documents")
+    if not db or not db._engine:
+        raise HTTPException(status_code=503, detail="Database not available")
+
+    try:
+        from sqlalchemy import text
+
+        with db._engine.connect() as conn:
+            # Build query
+            if document_id:
+                query = text("""
+                    SELECT c.id, c.document_id, c.chunk_index, c.text, c.page_number,
+                           c.start_char, c.end_char, c.token_count, c.vector_id,
+                           d.filename
+                    FROM arkham_frame.chunks c
+                    LEFT JOIN arkham_frame.documents d ON c.document_id = d.id
+                    WHERE c.document_id = :doc_id
+                    ORDER BY c.chunk_index
+                    LIMIT :limit OFFSET :offset
+                """)
+                result = conn.execute(query, {"doc_id": document_id, "limit": limit, "offset": offset})
+                
+                count_query = text("SELECT COUNT(*) FROM arkham_frame.chunks WHERE document_id = :doc_id")
+                total = conn.execute(count_query, {"doc_id": document_id}).scalar() or 0
+            else:
+                query = text("""
+                    SELECT c.id, c.document_id, c.chunk_index, c.text, c.page_number,
+                           c.start_char, c.end_char, c.token_count, c.vector_id,
+                           d.filename
+                    FROM arkham_frame.chunks c
+                    LEFT JOIN arkham_frame.documents d ON c.document_id = d.id
+                    ORDER BY c.document_id, c.chunk_index
+                    LIMIT :limit OFFSET :offset
+                """)
+                result = conn.execute(query, {"limit": limit, "offset": offset})
+                
+                count_query = text("SELECT COUNT(*) FROM arkham_frame.chunks")
+                total = conn.execute(count_query).scalar() or 0
+
+            chunks = []
+            for row in result:
+                chunks.append({
+                    "id": row.id,
+                    "document_id": row.document_id,
+                    "document_name": row.filename,
+                    "chunk_index": row.chunk_index,
+                    "text": row.text[:500] + "..." if len(row.text) > 500 else row.text,
+                    "full_text": row.text,
+                    "page_number": row.page_number,
+                    "start_char": row.start_char,
+                    "end_char": row.end_char,
+                    "token_count": row.token_count,
+                    "vector_id": row.vector_id,
+                })
+
+        return {
+            "chunks": chunks,
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+            "has_more": offset + len(chunks) < total,
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to list chunks: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# --- Chunking Configuration Endpoints ---
+
+
+@router.get("/config/chunking", response_model=ChunkingConfigResponse)
+async def get_chunking_config():
+    """
+    Get current chunking configuration.
+
+    Returns the current chunk size, overlap, method, and available methods.
+    """
+    if not _chunker:
+        raise HTTPException(status_code=503, detail="Chunker not initialized")
+
+    return ChunkingConfigResponse(
+        chunk_size=_chunker.chunk_size,
+        chunk_overlap=_chunker.overlap,
+        chunk_method=_chunker.method,
+        available_methods=["fixed", "sentence", "semantic"],
+    )
+
+
+@router.put("/config/chunking", response_model=ChunkingConfigResponse)
+async def update_chunking_config(request: UpdateChunkingConfigRequest):
+    """
+    Update chunking configuration.
+
+    Updates the chunker settings used for future document parsing.
+    Changes take effect immediately for new parsing operations.
+
+    Args:
+        chunk_size: Target chunk size in characters (default: 500)
+        chunk_overlap: Overlap between chunks in characters (default: 50)
+        chunk_method: Chunking method - 'fixed', 'sentence', or 'semantic'
+    """
+    if not _chunker:
+        raise HTTPException(status_code=503, detail="Chunker not initialized")
+
+    # Validate method if provided
+    if request.chunk_method and request.chunk_method not in ["fixed", "sentence", "semantic"]:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid chunk_method. Must be one of: fixed, sentence, semantic"
+        )
+
+    # Update settings
+    if request.chunk_size is not None:
+        if request.chunk_size < 50:
+            raise HTTPException(status_code=400, detail="chunk_size must be at least 50")
+        _chunker.chunk_size = request.chunk_size
+
+    if request.chunk_overlap is not None:
+        if request.chunk_overlap < 0:
+            raise HTTPException(status_code=400, detail="chunk_overlap cannot be negative")
+        if request.chunk_overlap >= (_chunker.chunk_size if request.chunk_size is None else request.chunk_size):
+            raise HTTPException(status_code=400, detail="chunk_overlap must be less than chunk_size")
+        _chunker.overlap = request.chunk_overlap
+
+    if request.chunk_method is not None:
+        _chunker.method = request.chunk_method
+
+    logger.info(f"Updated chunking config: size={_chunker.chunk_size}, overlap={_chunker.overlap}, method={_chunker.method}")
+
+    # Emit event for other shards to know config changed
+    if _event_bus:
+        await _event_bus.emit(
+            "parse.config.updated",
+            {
+                "chunk_size": _chunker.chunk_size,
+                "chunk_overlap": _chunker.overlap,
+                "chunk_method": _chunker.method,
+            },
+            source="parse-shard",
+        )
+
+    return ChunkingConfigResponse(
+        chunk_size=_chunker.chunk_size,
+        chunk_overlap=_chunker.overlap,
+        chunk_method=_chunker.method,
+        available_methods=["fixed", "sentence", "semantic"],
+    )

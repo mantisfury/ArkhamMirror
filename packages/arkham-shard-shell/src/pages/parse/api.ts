@@ -79,6 +79,28 @@ export async function getParseStats(): Promise<ParseStatsResponse> {
   return fetchAPI<ParseStatsResponse>('/stats');
 }
 
+// --- Response Types ---
+
+export interface AllChunksResponse {
+  chunks: Array<{
+    id: string;
+    document_id: string;
+    document_name: string;
+    chunk_index: number;
+    text: string;
+    full_text: string;
+    page_number: number | null;
+    start_char: number;
+    end_char: number;
+    token_count: number;
+    vector_id: string | null;
+  }>;
+  total: number;
+  limit: number;
+  offset: number;
+  has_more: boolean;
+}
+
 // --- Hooks ---
 
 /**
@@ -202,4 +224,56 @@ export function useLinkEntities() {
  */
 export function useParseStats() {
   return useFetch<ParseStatsResponse>(`${API_PREFIX}/stats`);
+}
+
+/**
+ * Hook for fetching all chunks with pagination
+ */
+export function useAllChunks(limit: number = 50, offset: number = 0, documentId?: string) {
+  const params = new URLSearchParams({
+    limit: String(limit),
+    offset: String(offset),
+  });
+  if (documentId) {
+    params.append('document_id', documentId);
+  }
+  return useFetch<AllChunksResponse>(`${API_PREFIX}/chunks?${params.toString()}`);
+}
+
+// --- Chunking Configuration ---
+
+export interface ChunkingConfig {
+  chunk_size: number;
+  chunk_overlap: number;
+  chunk_method: 'fixed' | 'sentence' | 'semantic';
+  available_methods: string[];
+}
+
+export async function getChunkingConfig(): Promise<ChunkingConfig> {
+  const response = await fetch(`${API_PREFIX}/config/chunking`);
+  if (!response.ok) {
+    throw new Error('Failed to fetch chunking config');
+  }
+  return response.json();
+}
+
+export async function updateChunkingConfig(config: {
+  chunk_size?: number;
+  chunk_overlap?: number;
+  chunk_method?: string;
+}): Promise<ChunkingConfig> {
+  const response = await fetch(`${API_PREFIX}/config/chunking`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(config),
+  });
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ detail: 'Update failed' }));
+    throw new Error(error.detail || 'Failed to update chunking config');
+  }
+  return response.json();
+}
+
+export function useChunkingConfig() {
+  return useFetch<ChunkingConfig>(`${API_PREFIX}/config/chunking`);
 }

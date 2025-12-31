@@ -18,9 +18,12 @@ class RelationExtractor:
     - "CEO of Tesla"
     """
 
-    def __init__(self):
+    CO_OCCURRENCE_DISTANCE = 150
+
+    def __init__(self, enable_co_occurrence: bool = True):
         """Initialize relation extractor."""
         self.patterns = self._load_patterns()
+        self.enable_co_occurrence = enable_co_occurrence
 
     def _load_patterns(self) -> dict:
         """
@@ -30,27 +33,29 @@ class RelationExtractor:
         """
         return {
             "employment": [
-                "works for",
-                "employed by",
-                "employee of",
-                "CEO of",
-                "founder of",
+                "works for", "worked for", "employed by",
+                "employee of", "CEO of", "founder of",
+                "president of", "director of", "manager of",
             ],
             "ownership": [
-                "owns",
-                "acquired",
-                "purchased",
-                "bought",
+                "owns", "owned by", "acquired",
+                "purchased", "bought", "sold to",
             ],
             "association": [
-                "member of",
-                "part of",
-                "affiliated with",
+                "member of", "part of", "partner of",
+                "affiliated with", "associated with",
             ],
             "location": [
-                "based in",
-                "located in",
-                "headquartered in",
+                "based in", "located in", "headquartered in",
+                "office in", "resides in", "from",
+            ],
+            "transaction": [
+                "paid", "received", "transferred",
+                "sent to", "received from",
+            ],
+            "communication": [
+                "contacted", "called", "emailed",
+                "met with", "spoke with",
             ],
         }
 
@@ -99,31 +104,39 @@ class RelationExtractor:
         entity1: EntityMention,
         entity2: EntityMention,
     ) -> dict | None:
-        """
-        Check if two entities have a relationship.
-
-        Args:
-            text: Full text
-            entity1: First entity
-            entity2: Second entity
-
-        Returns:
-            Dict with relation info, or None
-        """
-        # Get text between entities
+        """Check if two entities have a relationship."""
         start = min(entity1.end_char, entity2.end_char)
         end = max(entity1.start_char, entity2.start_char)
 
-        between_text = text[start:end].lower()
+        if start >= end or start < 0 or end > len(text):
+            distance = abs(entity1.start_char - entity2.start_char)
+            if self.enable_co_occurrence and distance <= self.CO_OCCURRENCE_DISTANCE:
+                return {
+                    "type": "co_occurrence",
+                    "confidence": max(0.3, 0.5 - distance / 500),
+                    "evidence": f"Entities within {distance} chars",
+                }
+            return None
 
-        # Check patterns
+        between_text = text[start:end].lower()
+        distance = end - start
+
+        # Check explicit patterns first
         for rel_type, patterns in self.patterns.items():
             for pattern in patterns:
                 if pattern in between_text:
                     return {
                         "type": rel_type,
-                        "confidence": 0.7,
-                        "evidence": between_text.strip(),
+                        "confidence": 0.75,
+                        "evidence": between_text.strip()[:200],
                     }
+
+        # Check for co-occurrence
+        if self.enable_co_occurrence and distance <= self.CO_OCCURRENCE_DISTANCE:
+            return {
+                "type": "co_occurrence",
+                "confidence": max(0.3, 0.5 - distance / 500),
+                "evidence": between_text.strip()[:200] or f"Entities within {distance} chars",
+            }
 
         return None
