@@ -55,6 +55,7 @@ class EmbedShard(ArkhamShard):
         # Get optional services
         worker_service = frame.get_service("workers")
         event_bus = frame.get_service("events")
+        db_service = frame.get_service("database")
 
         # Register workers with Frame
         if worker_service:
@@ -98,6 +99,7 @@ class EmbedShard(ArkhamShard):
             vector_store=self.vector_store,
             worker_service=worker_service,
             event_bus=event_bus,
+            db_service=db_service,
         )
 
         # Subscribe to document events for auto-embedding

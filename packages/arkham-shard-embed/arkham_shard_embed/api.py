@@ -30,15 +30,17 @@ _embedding_manager = None
 _vector_store = None
 _worker_service = None
 _event_bus = None
+_db_service = None
 
 
-def init_api(embedding_manager, vector_store, worker_service, event_bus):
+def init_api(embedding_manager, vector_store, worker_service, event_bus, db_service=None):
     """Initialize API with shard dependencies."""
-    global _embedding_manager, _vector_store, _worker_service, _event_bus
+    global _embedding_manager, _vector_store, _worker_service, _event_bus, _db_service
     _embedding_manager = embedding_manager
     _vector_store = vector_store
     _worker_service = worker_service
     _event_bus = event_bus
+    _db_service = db_service
 
 
 # --- Request/Response Models ---
@@ -202,39 +204,67 @@ async def embed_document(doc_id: str, request: DocumentEmbedRequestBody | None =
     """
     Queue a job to embed all chunks of a document.
 
-    This is an asynchronous operation that dispatches to the gpu-embed worker pool.
+    This fetches document chunks from the database and dispatches them
+    as a batch to the gpu-embed worker pool.
     Returns a job ID that can be used to track progress.
     """
     if not _worker_service:
         raise HTTPException(status_code=503, detail="Worker service not initialized")
 
+    if not _db_service:
+        raise HTTPException(status_code=503, detail="Database service not initialized")
+
     try:
-        # Build payload for worker
+        # Fetch chunks for this document from the database
+        chunks = await _db_service.fetch_all(
+            """SELECT id, text, chunk_index FROM arkham_frame.chunks
+               WHERE document_id = :doc_id
+               ORDER BY chunk_index""",
+            {"doc_id": doc_id}
+        )
+
+        if not chunks:
+            raise HTTPException(status_code=404, detail=f"No chunks found for document {doc_id}")
+
+        # Extract texts and metadata
+        texts = []
+        chunk_ids = []
+        for chunk in chunks:
+            text = chunk.get("text", "")
+            if text and text.strip():
+                texts.append(text)
+                chunk_ids.append(chunk.get("id", ""))
+
+        if not texts:
+            raise HTTPException(status_code=404, detail=f"No valid text in chunks for document {doc_id}")
+
+        # Build payload for worker with batch mode
+        job_id = str(uuid.uuid4())
         payload = {
+            "batch": True,
+            "texts": texts,
             "doc_id": doc_id,
-            "force": request.force if request else False,
-            "chunk_size": request.chunk_size if request else 512,
-            "chunk_overlap": request.chunk_overlap if request else 50,
+            "chunk_ids": chunk_ids,
         }
 
-        # Dispatch to embed worker
-        job_id = str(uuid.uuid4())
-        payload["job_type"] = "embed_document"
         await _worker_service.enqueue(
             pool="gpu-embed",
             job_id=job_id,
             payload=payload,
         )
 
-        logger.info(f"Queued document embedding job {job_id} for doc {doc_id}")
+        logger.info(f"Queued document embedding job {job_id} for doc {doc_id} ({len(texts)} chunks)")
 
         return {
             "job_id": job_id,
             "doc_id": doc_id,
             "status": "queued",
+            "chunk_count": len(texts),
             "message": "Document embedding job queued"
         }
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Failed to queue document embedding: {e}", exc_info=True)
         raise HTTPException(

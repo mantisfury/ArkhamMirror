@@ -2,7 +2,7 @@
 
 import logging
 import time
-from typing import Annotated
+from typing import Annotated, Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
@@ -13,6 +13,7 @@ from .models import (
     AnomalyStatus,
     SeverityLevel,
     DetectRequest,
+    DetectionConfig,
     PatternRequest,
     AnomalyResult,
     AnomalyList,
@@ -29,14 +30,18 @@ router = APIRouter(prefix="/api/anomalies", tags=["anomalies"])
 _detector = None
 _store = None
 _event_bus = None
+_db = None
+_vectors = None
 
 
-def init_api(detector, store, event_bus):
+def init_api(detector, store, event_bus, db=None, vectors=None):
     """Initialize API with shard dependencies."""
-    global _detector, _store, _event_bus
+    global _detector, _store, _event_bus, _db, _vectors
     _detector = detector
     _store = store
     _event_bus = event_bus
+    _db = db
+    _vectors = vectors
 
 
 # --- Request/Response Models ---
@@ -106,11 +111,9 @@ async def detect_anomalies(request: DetectRequest):
     start_time = time.time()
 
     try:
-        # In a real implementation, this would be a background job
-        # For now, we'll just acknowledge the request
         logger.info(f"Anomaly detection requested for project: {request.project_id}")
 
-        # Emit event
+        # Emit detection started event
         if _event_bus:
             await _event_bus.emit(
                 "anomalies.detection_started",
@@ -122,12 +125,47 @@ async def detect_anomalies(request: DetectRequest):
                 source="anomalies-shard",
             )
 
+        # Get documents to analyze
+        doc_ids = request.doc_ids
+        if not doc_ids and _db:
+            # If no specific doc_ids, get all documents
+            rows = await _db.fetch_all(
+                "SELECT id FROM arkham_documents LIMIT 1000"
+            )
+            doc_ids = [row["id"] for row in rows] if rows else []
+
+        detected_anomalies = []
+        config = request.config or DetectionConfig()
+
+        # Run detection on each document
+        for doc_id in doc_ids:
+            try:
+                doc_anomalies = await _detect_document_anomalies_internal(doc_id, config)
+                for anomaly in doc_anomalies:
+                    await _store.create_anomaly(anomaly)
+                    detected_anomalies.append(anomaly)
+            except Exception as doc_error:
+                logger.warning(f"Failed to detect anomalies for doc {doc_id}: {doc_error}")
+
         duration_ms = (time.time() - start_time) * 1000
 
+        # Emit detection completed event
+        if _event_bus:
+            await _event_bus.emit(
+                "anomalies.detection_completed",
+                {
+                    "project_id": request.project_id,
+                    "doc_ids": doc_ids,
+                    "anomalies_detected": len(detected_anomalies),
+                    "duration_ms": duration_ms,
+                },
+                source="anomalies-shard",
+            )
+
         return DetectResponse(
-            anomalies_detected=0,
+            anomalies_detected=len(detected_anomalies),
             duration_ms=duration_ms,
-            job_id="job-123",  # Would be a real job ID
+            job_id=f"detect-{int(start_time)}",
         )
 
     except Exception as e:
@@ -151,13 +189,30 @@ async def detect_document_anomalies(doc_id: str):
     try:
         logger.info(f"Checking document {doc_id} for anomalies")
 
-        # In a real implementation, fetch document and run detection
-        # For now, just acknowledge
+        # Run detection for this document
+        config = DetectionConfig()
+        detected_anomalies = await _detect_document_anomalies_internal(doc_id, config)
+
+        # Store detected anomalies
+        for anomaly in detected_anomalies:
+            await _store.create_anomaly(anomaly)
 
         duration_ms = (time.time() - start_time) * 1000
 
+        # Emit event if anomalies found
+        if _event_bus and detected_anomalies:
+            await _event_bus.emit(
+                "anomalies.detected",
+                {
+                    "doc_id": doc_id,
+                    "count": len(detected_anomalies),
+                    "types": [a.anomaly_type.value for a in detected_anomalies],
+                },
+                source="anomalies-shard",
+            )
+
         return DetectResponse(
-            anomalies_detected=0,
+            anomalies_detected=len(detected_anomalies),
             duration_ms=duration_ms,
         )
 
@@ -503,3 +558,267 @@ def _pattern_to_dict(pattern) -> dict:
         "detected_at": pattern.detected_at.isoformat(),
         "notes": pattern.notes,
     }
+
+
+async def _detect_document_anomalies_internal(
+    doc_id: str,
+    config: DetectionConfig,
+) -> List[Anomaly]:
+    """
+    Internal function to run anomaly detection on a single document.
+
+    Args:
+        doc_id: Document ID to analyze
+        config: Detection configuration
+
+    Returns:
+        List of detected anomalies
+    """
+    anomalies: List[Anomaly] = []
+
+    if not _detector or not _db:
+        logger.warning("Detector or database not available for anomaly detection")
+        return anomalies
+
+    try:
+        # Fetch document data from database
+        doc_row = await _db.fetch_one(
+            "SELECT id, content, file_name, file_size, file_type, created_at, metadata FROM arkham_documents WHERE id = :doc_id",
+            {"doc_id": doc_id}
+        )
+
+        if not doc_row:
+            logger.warning(f"Document {doc_id} not found in database")
+            return anomalies
+
+        text = doc_row.get("content") or ""
+        metadata = {}
+        if doc_row.get("metadata"):
+            import json
+            try:
+                metadata = json.loads(doc_row["metadata"])
+            except (json.JSONDecodeError, TypeError):
+                metadata = {}
+
+        # Add file info to metadata
+        metadata["file_name"] = doc_row.get("file_name")
+        metadata["file_size"] = doc_row.get("file_size")
+        metadata["file_type"] = doc_row.get("file_type")
+
+        # Run red flag detection (always runs, no corpus stats needed)
+        if config.detect_red_flags:
+            red_flag_anomalies = _detector.detect_red_flags(doc_id, text, metadata)
+            anomalies.extend(red_flag_anomalies)
+
+        # Run statistical detection if we can get corpus stats
+        if config.detect_statistical:
+            try:
+                corpus_stats = await _get_corpus_stats()
+                if corpus_stats:
+                    stat_anomalies = _detector.detect_statistical_anomalies(
+                        doc_id, text, corpus_stats
+                    )
+                    anomalies.extend(stat_anomalies)
+            except Exception as stat_error:
+                logger.debug(f"Statistical detection failed: {stat_error}")
+
+        # Run metadata detection if we can get corpus metadata stats
+        if config.detect_metadata:
+            try:
+                corpus_metadata_stats = await _get_corpus_metadata_stats()
+                if corpus_metadata_stats:
+                    meta_anomalies = _detector.detect_metadata_anomalies(
+                        doc_id, metadata, corpus_metadata_stats
+                    )
+                    anomalies.extend(meta_anomalies)
+            except Exception as meta_error:
+                logger.debug(f"Metadata detection failed: {meta_error}")
+
+        # Run content/embedding-based detection if vectors are available
+        if config.detect_content and _vectors:
+            try:
+                content_anomalies = await _detect_content_anomalies(doc_id, text)
+                anomalies.extend(content_anomalies)
+            except Exception as content_error:
+                logger.debug(f"Content detection failed: {content_error}")
+
+        logger.info(f"Detected {len(anomalies)} anomalies for document {doc_id}")
+
+    except Exception as e:
+        logger.error(f"Error during anomaly detection for {doc_id}: {e}", exc_info=True)
+
+    return anomalies
+
+
+async def _get_corpus_stats() -> Dict[str, Any]:
+    """
+    Calculate corpus-wide text statistics for comparison.
+
+    Returns:
+        Dictionary of corpus statistics by metric
+    """
+    if not _db:
+        return {}
+
+    try:
+        # Get aggregate text stats from documents table
+        rows = await _db.fetch_all(
+            """SELECT
+                AVG(LENGTH(content)) as avg_char_count,
+                AVG(LENGTH(content) - LENGTH(REPLACE(content, ' ', '')) + 1) as avg_word_count
+               FROM arkham_documents
+               WHERE content IS NOT NULL AND LENGTH(content) > 0
+               LIMIT 1000"""
+        )
+
+        if not rows or not rows[0]:
+            return {}
+
+        row = rows[0]
+
+        # Build corpus stats structure
+        corpus_stats = {
+            'char_count': {
+                'mean': float(row.get('avg_char_count') or 0),
+                'std': float(row.get('avg_char_count', 0) or 0) * 0.5,  # Estimate std as 50% of mean
+            },
+            'word_count': {
+                'mean': float(row.get('avg_word_count') or 0),
+                'std': float(row.get('avg_word_count', 0) or 0) * 0.5,
+            },
+        }
+
+        return corpus_stats
+
+    except Exception as e:
+        logger.debug(f"Failed to get corpus stats: {e}")
+        return {}
+
+
+async def _get_corpus_metadata_stats() -> Dict[str, Any]:
+    """
+    Calculate corpus-wide metadata statistics for comparison.
+
+    Returns:
+        Dictionary of metadata statistics
+    """
+    if not _db:
+        return {}
+
+    try:
+        # Get file size stats
+        row = await _db.fetch_one(
+            """SELECT
+                AVG(file_size) as avg_size,
+                MIN(file_size) as min_size,
+                MAX(file_size) as max_size
+               FROM arkham_documents
+               WHERE file_size IS NOT NULL"""
+        )
+
+        if not row:
+            return {}
+
+        avg_size = float(row.get('avg_size') or 0)
+        min_size = float(row.get('min_size') or 0)
+        max_size = float(row.get('max_size') or 0)
+
+        # Estimate std from range
+        estimated_std = (max_size - min_size) / 4 if max_size > min_size else avg_size * 0.5
+
+        return {
+            'file_size': {
+                'mean': avg_size,
+                'std': estimated_std,
+            }
+        }
+
+    except Exception as e:
+        logger.debug(f"Failed to get corpus metadata stats: {e}")
+        return {}
+
+
+async def _detect_content_anomalies(doc_id: str, text: str) -> List[Anomaly]:
+    """
+    Detect content anomalies using vector embeddings.
+
+    Args:
+        doc_id: Document ID
+        text: Document text
+
+    Returns:
+        List of content anomalies
+    """
+    if not _vectors or not _detector:
+        return []
+
+    try:
+        # This would use the vector service to get embeddings and compare
+        # For now, return empty as this requires a working vector service
+        # The detection would be:
+        # 1. Get embedding for this document
+        # 2. Get embeddings for corpus
+        # 3. Call _detector.detect_content_anomalies()
+
+        # Check if vector search is available
+        if hasattr(_vectors, 'search'):
+            # Search for similar documents
+            results = await _vectors.search(
+                collection="documents",
+                query=text[:1000],  # Use first 1000 chars as query
+                limit=10,
+            )
+
+            # If this document is very different from results, it might be anomalous
+            if results and len(results) > 0:
+                avg_score = sum(r.get('score', 0) for r in results) / len(results)
+                if avg_score < 0.3:  # Low similarity to corpus
+                    import uuid
+                    from datetime import datetime
+                    return [Anomaly(
+                        id=str(uuid.uuid4()),
+                        doc_id=doc_id,
+                        anomaly_type=AnomalyType.CONTENT,
+                        score=1.0 - avg_score,
+                        severity=SeverityLevel.MEDIUM,
+                        confidence=0.7,
+                        explanation=f"Document is semantically distant from corpus (avg similarity: {avg_score:.2f})",
+                        details={'avg_similarity': avg_score, 'compared_to': len(results)},
+                    )]
+
+        return []
+
+    except Exception as e:
+        logger.debug(f"Content anomaly detection failed: {e}")
+        return []
+
+
+@router.get("/count")
+async def get_anomaly_count(status: Optional[str] = None):
+    """
+    Get count of anomalies, optionally filtered by status.
+
+    Used for navigation badge.
+    """
+    if not _store:
+        return {"count": 0}
+
+    try:
+        status_filter = None
+        if status:
+            try:
+                status_filter = AnomalyStatus(status.lower())
+            except ValueError:
+                pass
+
+        anomalies, total = await _store.list_anomalies(
+            offset=0,
+            limit=1,
+            status=status_filter,
+        )
+
+        return {"count": total}
+
+    except Exception as e:
+        logger.error(f"Failed to get count: {e}")
+        return {"count": 0}

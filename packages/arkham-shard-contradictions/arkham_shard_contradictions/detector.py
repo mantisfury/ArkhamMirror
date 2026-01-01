@@ -109,9 +109,10 @@ Return a JSON array of claims with format:
         try:
             response = await self.llm_service.generate(prompt)
 
-            # Parse JSON response
+            # Parse JSON response - LLMResponse is a dataclass with .text attribute
             import json
-            claims_data = json.loads(response.get("text", "[]"))
+            response_text = response.text if hasattr(response, 'text') else str(response)
+            claims_data = json.loads(response_text) if response_text else []
 
             claims = []
             for i, claim_data in enumerate(claims_data):
@@ -235,9 +236,10 @@ Return JSON format:
         try:
             response = await self.llm_service.generate(prompt)
 
-            # Parse response
+            # Parse response - LLMResponse is a dataclass with .text attribute
             import json
-            result = json.loads(response.get("text", "{}"))
+            response_text = response.text if hasattr(response, 'text') else str(response)
+            result = json.loads(response_text) if response_text else {}
 
             if not result.get("contradicts", False):
                 return None

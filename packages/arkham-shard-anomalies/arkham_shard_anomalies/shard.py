@@ -1,6 +1,8 @@
 """Anomalies Shard - Anomaly and outlier detection."""
 
+import json
 import logging
+from typing import Any, Dict
 
 from arkham_frame.shard_interface import ArkhamShard
 
@@ -65,15 +67,21 @@ class AnomaliesShard(ArkhamShard):
 
         self._db_service = frame.get_service("database") or frame.get_service("db")
         if not self._db_service:
+            # Try direct database attribute
+            self._db_service = getattr(frame, "database", None)
+
+        if not self._db_service:
             logger.warning("Database service not available - storage will be in-memory only")
 
         # Get optional services
         self._event_bus = frame.get_service("events")
-        documents_service = frame.get_service("documents")
+
+        # Create database schema
+        await self._create_schema()
 
         # Initialize components
         self.detector = AnomalyDetector(config=self._config)
-        self.store = AnomalyStore()
+        self.store = AnomalyStore(db=self._db_service)
 
         logger.info("Anomaly detector initialized")
         logger.info("Anomaly store initialized")
@@ -83,13 +91,19 @@ class AnomaliesShard(ArkhamShard):
             detector=self.detector,
             store=self.store,
             event_bus=self._event_bus,
+            db=self._db_service,
+            vectors=self._vector_service,
         )
 
-        # Subscribe to events
+        # Subscribe to events (correct event names from system)
         if self._event_bus:
-            await self._event_bus.subscribe("embeddings.created", self._on_embedding_created)
-            await self._event_bus.subscribe("documents.indexed", self._on_document_indexed)
-            logger.info("Subscribed to embeddings and document events")
+            await self._event_bus.subscribe("embed.document.completed", self._on_embedding_created)
+            await self._event_bus.subscribe("documents.metadata.updated", self._on_document_indexed)
+            logger.info("Subscribed to embed.document.completed and documents.metadata.updated events")
+
+        # Register self in app state for API access
+        if hasattr(frame, "app") and frame.app:
+            frame.app.state.anomalies_shard = self
 
         logger.info("Anomalies Shard initialized")
 
@@ -99,14 +113,101 @@ class AnomaliesShard(ArkhamShard):
 
         # Unsubscribe from events
         if self._event_bus:
-            await self._event_bus.unsubscribe("embeddings.created", self._on_embedding_created)
-            await self._event_bus.unsubscribe("documents.indexed", self._on_document_indexed)
+            await self._event_bus.unsubscribe("embed.document.completed", self._on_embedding_created)
+            await self._event_bus.unsubscribe("documents.metadata.updated", self._on_document_indexed)
 
         # Clear components
         self.detector = None
         self.store = None
 
         logger.info("Anomalies Shard shutdown complete")
+
+    # === Database Schema ===
+
+    async def _create_schema(self) -> None:
+        """Create database tables for anomalies shard."""
+        if not self._db_service:
+            logger.warning("Database not available, skipping schema creation")
+            return
+
+        # Main anomalies table
+        await self._db_service.execute("""
+            CREATE TABLE IF NOT EXISTS arkham_anomalies (
+                id TEXT PRIMARY KEY,
+                doc_id TEXT NOT NULL,
+                project_id TEXT,
+                anomaly_type TEXT NOT NULL,
+                severity TEXT DEFAULT 'medium',
+                status TEXT DEFAULT 'detected',
+                score REAL DEFAULT 0.0,
+                confidence REAL DEFAULT 1.0,
+                title TEXT,
+                description TEXT,
+                explanation TEXT,
+                field_name TEXT,
+                expected_range TEXT,
+                actual_value TEXT,
+                evidence TEXT DEFAULT '{}',
+                details TEXT DEFAULT '{}',
+                tags TEXT DEFAULT '[]',
+                metadata TEXT DEFAULT '{}',
+                detected_at TEXT,
+                reviewed_at TEXT,
+                reviewed_by TEXT,
+                notes TEXT,
+                created_at TEXT,
+                updated_at TEXT
+            )
+        """)
+
+        # Analyst notes table
+        await self._db_service.execute("""
+            CREATE TABLE IF NOT EXISTS arkham_anomaly_notes (
+                id TEXT PRIMARY KEY,
+                anomaly_id TEXT NOT NULL,
+                author TEXT NOT NULL,
+                content TEXT NOT NULL,
+                created_at TEXT,
+                FOREIGN KEY (anomaly_id) REFERENCES arkham_anomalies(id)
+            )
+        """)
+
+        # Patterns table for detected patterns across anomalies
+        await self._db_service.execute("""
+            CREATE TABLE IF NOT EXISTS arkham_anomaly_patterns (
+                id TEXT PRIMARY KEY,
+                pattern_type TEXT NOT NULL,
+                description TEXT,
+                anomaly_ids TEXT DEFAULT '[]',
+                doc_ids TEXT DEFAULT '[]',
+                frequency INTEGER DEFAULT 0,
+                confidence REAL DEFAULT 1.0,
+                detected_at TEXT,
+                notes TEXT
+            )
+        """)
+
+        # Create indexes for common queries
+        await self._db_service.execute("""
+            CREATE INDEX IF NOT EXISTS idx_anomalies_doc_id ON arkham_anomalies(doc_id)
+        """)
+        await self._db_service.execute("""
+            CREATE INDEX IF NOT EXISTS idx_anomalies_type ON arkham_anomalies(anomaly_type)
+        """)
+        await self._db_service.execute("""
+            CREATE INDEX IF NOT EXISTS idx_anomalies_status ON arkham_anomalies(status)
+        """)
+        await self._db_service.execute("""
+            CREATE INDEX IF NOT EXISTS idx_anomalies_severity ON arkham_anomalies(severity)
+        """)
+        await self._db_service.execute("""
+            CREATE INDEX IF NOT EXISTS idx_anomalies_project ON arkham_anomalies(project_id)
+        """)
+        await self._db_service.execute("""
+            CREATE INDEX IF NOT EXISTS idx_anomaly_notes_anomaly ON arkham_anomaly_notes(anomaly_id)
+        """)
+
+        logger.debug("Anomalies schema created/verified")
 
     def get_routes(self):
         """Return FastAPI router for this shard."""

@@ -80,9 +80,8 @@ class ClaimsShard(ArkhamShard):
     async def shutdown(self) -> None:
         """Clean shutdown of shard."""
         if self._events:
-            await self._events.unsubscribe("document.processed", self._on_document_processed)
-            await self._events.unsubscribe("entity.created", self._on_entity_created)
-            await self._events.unsubscribe("entity.updated", self._on_entity_updated)
+            await self._events.unsubscribe("parse.document.completed", self._on_document_processed)
+            await self._events.unsubscribe("parse.entity.extracted", self._on_entity_created)
 
         self._initialized = False
         logger.info("ClaimsShard shutdown complete")
@@ -175,24 +174,81 @@ class ClaimsShard(ArkhamShard):
             logger.warning("Events service not available")
             return
 
-        await self._events.subscribe("document.processed", self._on_document_processed)
-        await self._events.subscribe("entity.created", self._on_entity_created)
-        await self._events.subscribe("entity.updated", self._on_entity_updated)
+        # Subscribe to parse shard events for automatic claim extraction
+        await self._events.subscribe("parse.document.completed", self._on_document_processed)
+        await self._events.subscribe("parse.entity.extracted", self._on_entity_created)
+        logger.info("Subscribed to parse.document.completed and parse.entity.extracted events")
 
     async def _on_document_processed(self, event: Dict[str, Any]) -> None:
-        """Handle document.processed event - extract claims from new documents."""
-        document_id = event.get("payload", {}).get("document_id")
+        """
+        Handle parse.document.completed event - extract claims from new documents.
+
+        Event payload from parse shard:
+            {
+                "document_id": str,
+                "entities": list,
+                "chunks": int,
+                "chunks_saved": int
+            }
+        """
+        # EventBus wraps events: {"event_type": ..., "payload": {...}, "source": ...}
+        payload = event.get("payload", event)  # Support both wrapped and unwrapped
+        document_id = payload.get("document_id")
+
         if not document_id:
+            logger.warning("parse.document.completed event missing document_id")
             return
 
-        logger.info(f"Document processed, queuing claim extraction: {document_id}")
-        # Queue extraction job via workers if available
-        if hasattr(self.frame, "workers"):
-            await self.frame.workers.enqueue(
-                pool="extraction",
-                job_id=f"claims-extract-{document_id}",
-                payload={"document_id": document_id, "action": "extract_claims"},
-            )
+        logger.info(f"Document processed, extracting claims: {document_id}")
+
+        try:
+            # Get document content from documents service
+            content = None
+            if hasattr(self.frame, "documents") and self.frame.documents:
+                # Try to get document chunks for content
+                chunks = await self.frame.documents.get_document_chunks(document_id)
+                if chunks:
+                    # Combine chunk content
+                    texts = []
+                    for chunk in chunks:
+                        if hasattr(chunk, 'content'):
+                            texts.append(chunk.content)
+                        elif hasattr(chunk, 'text'):
+                            texts.append(chunk.text)
+                        elif isinstance(chunk, dict):
+                            texts.append(chunk.get('content') or chunk.get('text', ''))
+                    content = "\n".join(filter(None, texts))
+
+            if not content:
+                logger.warning(f"No content found for document {document_id}, skipping claim extraction")
+                return
+
+            # Extract claims using LLM if available, otherwise simple extraction
+            if self._llm and hasattr(self._llm, 'is_available') and self._llm.is_available():
+                claims = await self._extract_claims_llm(content, document_id)
+            else:
+                claims = await self._extract_claims_simple(content, document_id)
+
+            # Store extracted claims
+            for claim in claims:
+                await self._store_claim(claim)
+
+            logger.info(f"Extracted and stored {len(claims)} claims from document {document_id}")
+
+            # Emit claims.extracted event
+            if self._events and claims:
+                await self._events.emit(
+                    "claims.extracted",
+                    {
+                        "document_id": document_id,
+                        "claim_count": len(claims),
+                        "claim_ids": [c.id for c in claims],
+                    },
+                    source=self.name,
+                )
+
+        except Exception as e:
+            logger.error(f"Claim extraction failed for document {document_id}: {e}", exc_info=True)
 
     async def _on_entity_created(self, event: Dict[str, Any]) -> None:
         """Handle entity.created event - link claims to new entities."""
@@ -206,6 +262,266 @@ class ClaimsShard(ArkhamShard):
         entity_id = event.get("payload", {}).get("entity_id")
         if entity_id:
             logger.debug(f"Entity updated, reviewing claim links: {entity_id}")
+
+    # === Claim Extraction Methods ===
+
+    async def _extract_claims_simple(self, text: str, document_id: Optional[str] = None) -> List[Claim]:
+        """
+        Simple claim extraction using sentence splitting.
+
+        Fallback when LLM is not available. Splits text into sentences
+        and creates claims from sentences that look like factual statements.
+
+        Args:
+            text: The text to extract claims from
+            document_id: Optional source document ID
+
+        Returns:
+            List of extracted Claim objects
+        """
+        import re
+
+        claims = []
+
+        # Split into sentences (handles . ! ? but preserves abbreviations like "Dr." "Mr.")
+        sentence_pattern = r'(?<=[.!?])\s+(?=[A-Z])'
+        sentences = re.split(sentence_pattern, text)
+
+        for sentence in sentences:
+            sentence = sentence.strip()
+
+            # Skip empty sentences
+            if not sentence:
+                continue
+
+            # Skip very short sentences (less than 5 words)
+            words = sentence.split()
+            if len(words) < 5:
+                continue
+
+            # Skip questions
+            if sentence.rstrip().endswith('?'):
+                continue
+
+            # Skip sentences that are likely headers or list items
+            if sentence.startswith('-') or sentence.startswith('*') or sentence.startswith('#'):
+                continue
+
+            # Create claim
+            claim_id = str(uuid4())
+            now = datetime.utcnow()
+
+            claim = Claim(
+                id=claim_id,
+                text=sentence[:1000],  # Limit claim length
+                claim_type=ClaimType.FACTUAL,
+                status=ClaimStatus.UNVERIFIED,
+                confidence=0.5,  # Low confidence for simple extraction
+                source_document_id=document_id,
+                source_start_char=None,
+                source_end_char=None,
+                source_context=None,
+                extracted_by=ExtractionMethod.RULE,
+                extraction_model=None,
+                entity_ids=[],
+                evidence_count=0,
+                supporting_count=0,
+                refuting_count=0,
+                created_at=now,
+                updated_at=now,
+                verified_at=None,
+                metadata={"extraction_type": "simple_sentence_split"},
+            )
+            claims.append(claim)
+
+            # Limit number of claims per document
+            if len(claims) >= 100:
+                logger.warning(f"Reached claim limit (100) for document {document_id}")
+                break
+
+        return claims
+
+    async def _extract_claims_llm(self, text: str, document_id: Optional[str] = None) -> List[Claim]:
+        """
+        Extract claims using LLM.
+
+        Uses the Frame's LLM service to identify factual claims with
+        higher accuracy than simple extraction.
+
+        Args:
+            text: The text to extract claims from
+            document_id: Optional source document ID
+
+        Returns:
+            List of extracted Claim objects
+        """
+        import json as json_module
+        import re
+
+        if not self._llm:
+            logger.warning("LLM not available, falling back to simple extraction")
+            return await self._extract_claims_simple(text, document_id)
+
+        # Truncate text to avoid token limits
+        max_text_length = 4000
+        if len(text) > max_text_length:
+            text = text[:max_text_length] + "..."
+
+        system_prompt = """You are a claim extraction assistant. Your task is to identify factual claims from text.
+
+A claim is a statement that can potentially be verified as true or false. Focus on:
+- Factual statements (verifiable facts)
+- Quantitative claims (numbers, statistics, dates)
+- Attribution claims (statements attributed to someone)
+
+Do NOT extract:
+- Questions
+- Opinions without factual basis
+- Vague statements
+
+Return a JSON array of claims. Each claim should have:
+- text: The exact claim text (keep it concise, under 200 characters)
+- type: One of "factual", "quantitative", "attribution", "opinion", "prediction"
+- confidence: Your confidence this is a valid claim (0.0 to 1.0)"""
+
+        prompt = f"""Extract factual claims from the following text.
+
+Text:
+{text}
+
+Return ONLY a valid JSON array, no other text. Example format:
+[{{"text": "The company was founded in 1995", "type": "factual", "confidence": 0.9}}]"""
+
+        try:
+            # Use LLM generate method
+            response = await self._llm.generate(
+                prompt,
+                system_prompt=system_prompt,
+                temperature=0.3
+            )
+
+            # Extract response text
+            response_text = response.text if hasattr(response, 'text') else str(response)
+            extraction_model = response.model if hasattr(response, 'model') else "unknown"
+
+            # Parse JSON from response
+            json_match = re.search(r'\[.*\]', response_text, re.DOTALL)
+            if not json_match:
+                logger.warning("LLM response did not contain JSON array, falling back to simple extraction")
+                return await self._extract_claims_simple(text, document_id)
+
+            claims_data = json_module.loads(json_match.group(0))
+
+            claims = []
+            now = datetime.utcnow()
+
+            for item in claims_data:
+                claim_text = item.get("text", "").strip()
+                if not claim_text or len(claim_text) < 10:
+                    continue
+
+                # Map type string to ClaimType
+                type_str = item.get("type", "factual").lower()
+                type_mapping = {
+                    "factual": ClaimType.FACTUAL,
+                    "quantitative": ClaimType.QUANTITATIVE,
+                    "attribution": ClaimType.ATTRIBUTION,
+                    "opinion": ClaimType.OPINION,
+                    "prediction": ClaimType.PREDICTION,
+                }
+                claim_type = type_mapping.get(type_str, ClaimType.FACTUAL)
+
+                confidence = float(item.get("confidence", 0.8))
+                confidence = max(0.0, min(1.0, confidence))  # Clamp to 0-1
+
+                claim_id = str(uuid4())
+
+                claim = Claim(
+                    id=claim_id,
+                    text=claim_text[:1000],
+                    claim_type=claim_type,
+                    status=ClaimStatus.UNVERIFIED,
+                    confidence=confidence,
+                    source_document_id=document_id,
+                    source_start_char=None,
+                    source_end_char=None,
+                    source_context=None,
+                    extracted_by=ExtractionMethod.LLM,
+                    extraction_model=extraction_model,
+                    entity_ids=[],
+                    evidence_count=0,
+                    supporting_count=0,
+                    refuting_count=0,
+                    created_at=now,
+                    updated_at=now,
+                    verified_at=None,
+                    metadata={"extraction_type": "llm"},
+                )
+                claims.append(claim)
+
+                # Limit claims
+                if len(claims) >= 50:
+                    break
+
+            logger.info(f"LLM extracted {len(claims)} claims from document {document_id}")
+            return claims
+
+        except Exception as e:
+            logger.error(f"LLM claim extraction failed: {e}", exc_info=True)
+            return await self._extract_claims_simple(text, document_id)
+
+    async def _store_claim(self, claim: Claim) -> None:
+        """
+        Store a claim in the database.
+
+        Args:
+            claim: The Claim object to store
+        """
+        if not self._db:
+            logger.warning("Database not available, cannot store claim")
+            return
+
+        import json as json_module
+
+        params = {
+            "id": claim.id,
+            "text": claim.text,
+            "claim_type": claim.claim_type.value if isinstance(claim.claim_type, ClaimType) else claim.claim_type,
+            "status": claim.status.value if isinstance(claim.status, ClaimStatus) else claim.status,
+            "confidence": claim.confidence,
+            "source_document_id": claim.source_document_id,
+            "source_start_char": claim.source_start_char,
+            "source_end_char": claim.source_end_char,
+            "source_context": claim.source_context,
+            "extracted_by": claim.extracted_by.value if isinstance(claim.extracted_by, ExtractionMethod) else claim.extracted_by,
+            "extraction_model": claim.extraction_model,
+            "entity_ids": json_module.dumps(claim.entity_ids),
+            "evidence_count": claim.evidence_count,
+            "supporting_count": claim.supporting_count,
+            "refuting_count": claim.refuting_count,
+            "created_at": claim.created_at.isoformat() if isinstance(claim.created_at, datetime) else claim.created_at,
+            "updated_at": claim.updated_at.isoformat() if isinstance(claim.updated_at, datetime) else claim.updated_at,
+            "verified_at": claim.verified_at.isoformat() if claim.verified_at else None,
+            "metadata": json_module.dumps(claim.metadata),
+        }
+
+        await self._db.execute("""
+            INSERT INTO arkham_claims (
+                id, text, claim_type, status, confidence,
+                source_document_id, source_start_char, source_end_char,
+                source_context, extracted_by, extraction_model,
+                entity_ids, evidence_count, supporting_count, refuting_count,
+                created_at, updated_at, verified_at, metadata
+            ) VALUES (
+                :id, :text, :claim_type, :status, :confidence,
+                :source_document_id, :source_start_char, :source_end_char,
+                :source_context, :extracted_by, :extraction_model,
+                :entity_ids, :evidence_count, :supporting_count, :refuting_count,
+                :created_at, :updated_at, :verified_at, :metadata
+            )
+        """, params)
+
+        logger.debug(f"Stored claim {claim.id}: {claim.text[:50]}...")
 
     # === Public API Methods ===
 
@@ -421,58 +737,44 @@ class ClaimsShard(ArkhamShard):
         document_id: Optional[str] = None,
         extraction_model: Optional[str] = None,
     ) -> ClaimExtractionResult:
-        """Extract claims from text using LLM."""
+        """
+        Extract claims from text and store them.
+
+        Uses LLM extraction if available, otherwise falls back to simple extraction.
+        This is the public API method called by the /extract endpoint.
+
+        Args:
+            text: The text to extract claims from
+            document_id: Optional source document ID
+            extraction_model: Optional specific model to use
+
+        Returns:
+            ClaimExtractionResult with extracted claims and metadata
+        """
         import time
         start_time = time.time()
         claims = []
         errors = []
-
-        if not self._llm or not self._llm.is_available():
-            errors.append("LLM service not available")
-            return ClaimExtractionResult(
-                claims=[],
-                source_document_id=document_id,
-                extraction_method=ExtractionMethod.LLM,
-                extraction_model=extraction_model,
-                total_extracted=0,
-                processing_time_ms=(time.time() - start_time) * 1000,
-                errors=errors,
-            )
+        method = ExtractionMethod.RULE
 
         try:
-            # LLM prompt for claim extraction
-            prompt = f"""Extract factual claims from the following text.
-For each claim, provide:
-- The exact claim text
-- The type (factual, opinion, prediction, quantitative, attribution)
-- Confidence score (0.0-1.0)
-- Start and end character positions
+            # Use LLM extraction if available
+            if self._llm and hasattr(self._llm, 'is_available') and self._llm.is_available():
+                claims = await self._extract_claims_llm(text, document_id)
+                method = ExtractionMethod.LLM
+            else:
+                # Fall back to simple extraction
+                claims = await self._extract_claims_simple(text, document_id)
+                method = ExtractionMethod.RULE
+                if not self._llm:
+                    errors.append("LLM service not available, using simple extraction")
 
-Text:
-{text}
-
-Return claims as JSON array."""
-
-            response = await self._llm.complete(prompt, model=extraction_model)
-
-            # Parse LLM response and create claims
-            extracted_data = self._parse_extraction_response(response)
-
-            for item in extracted_data:
-                claim = await self.create_claim(
-                    text=item.get("text", ""),
-                    claim_type=ClaimType(item.get("type", "factual")),
-                    source_document_id=document_id,
-                    source_start_char=item.get("start_char"),
-                    source_end_char=item.get("end_char"),
-                    extracted_by=ExtractionMethod.LLM,
-                    extraction_model=extraction_model,
-                    confidence=item.get("confidence", 0.8),
-                )
-                claims.append(claim)
+            # Store extracted claims
+            for claim in claims:
+                await self._store_claim(claim)
 
         except Exception as e:
-            logger.error(f"Claim extraction failed: {e}")
+            logger.error(f"Claim extraction failed: {e}", exc_info=True)
             errors.append(str(e))
 
         processing_time = (time.time() - start_time) * 1000
@@ -492,7 +794,7 @@ Return claims as JSON array."""
         return ClaimExtractionResult(
             claims=claims,
             source_document_id=document_id,
-            extraction_method=ExtractionMethod.LLM,
+            extraction_method=method,
             extraction_model=extraction_model,
             total_extracted=len(claims),
             processing_time_ms=processing_time,

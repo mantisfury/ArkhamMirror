@@ -4,11 +4,61 @@ import logging
 
 from arkham_frame.shard_interface import ArkhamShard
 
-from .api import init_api, router
+from .api import init_api, router, set_db_service
 from .detector import ContradictionDetector, ChainDetector
 from .storage import ContradictionStore
 
 logger = logging.getLogger(__name__)
+
+# SQL for schema creation
+SCHEMA_SQL = """
+-- Create schema if not exists
+CREATE SCHEMA IF NOT EXISTS arkham_contradictions;
+
+-- Main contradictions table
+CREATE TABLE IF NOT EXISTS arkham_contradictions.contradictions (
+    id TEXT PRIMARY KEY,
+    doc_a_id TEXT NOT NULL,
+    doc_b_id TEXT NOT NULL,
+    claim_a TEXT NOT NULL,
+    claim_b TEXT NOT NULL,
+    claim_a_location TEXT DEFAULT '',
+    claim_b_location TEXT DEFAULT '',
+    contradiction_type TEXT NOT NULL,
+    severity TEXT NOT NULL,
+    status TEXT DEFAULT 'detected',
+    explanation TEXT DEFAULT '',
+    confidence_score REAL DEFAULT 1.0,
+    detected_by TEXT DEFAULT 'system',
+    analyst_notes TEXT DEFAULT '[]',
+    chain_id TEXT,
+    related_contradictions TEXT DEFAULT '[]',
+    tags TEXT DEFAULT '[]',
+    metadata TEXT DEFAULT '{}',
+    confirmed_by TEXT,
+    confirmed_at TEXT,
+    created_at TEXT,
+    updated_at TEXT
+);
+
+-- Contradiction chains table
+CREATE TABLE IF NOT EXISTS arkham_contradictions.chains (
+    id TEXT PRIMARY KEY,
+    contradiction_ids TEXT DEFAULT '[]',
+    description TEXT DEFAULT '',
+    severity TEXT NOT NULL,
+    created_at TEXT,
+    updated_at TEXT
+);
+
+-- Indexes for efficient querying
+CREATE INDEX IF NOT EXISTS idx_contradictions_doc_a ON arkham_contradictions.contradictions(doc_a_id);
+CREATE INDEX IF NOT EXISTS idx_contradictions_doc_b ON arkham_contradictions.contradictions(doc_b_id);
+CREATE INDEX IF NOT EXISTS idx_contradictions_status ON arkham_contradictions.contradictions(status);
+CREATE INDEX IF NOT EXISTS idx_contradictions_chain ON arkham_contradictions.contradictions(chain_id);
+CREATE INDEX IF NOT EXISTS idx_contradictions_severity ON arkham_contradictions.contradictions(severity);
+CREATE INDEX IF NOT EXISTS idx_contradictions_type ON arkham_contradictions.contradictions(contradiction_type);
+"""
 
 
 class ContradictionsShard(ArkhamShard):
@@ -67,6 +117,9 @@ class ContradictionsShard(ArkhamShard):
 
         if not self._db_service:
             logger.warning("Database service not available - using in-memory storage")
+        else:
+            # Create database schema
+            await self._create_schema()
 
         if not self._llm_service:
             logger.warning("LLM service not available - using heuristic detection only")
@@ -86,7 +139,7 @@ class ContradictionsShard(ArkhamShard):
             db_service=self._db_service,
         )
 
-        # Initialize API with our instances
+        # Initialize API with our instances and database service
         init_api(
             detector=self.detector,
             storage=self.storage,
@@ -94,11 +147,30 @@ class ContradictionsShard(ArkhamShard):
             chain_detector=self.chain_detector,
         )
 
+        # Set database service for document fetching in API
+        set_db_service(self._db_service)
+
         # Subscribe to events
         if self._event_bus:
             await self._subscribe_to_events()
 
         logger.info("Contradictions Shard initialized")
+
+    async def _create_schema(self) -> None:
+        """Create the database schema for contradictions."""
+        if not self._db_service:
+            return
+
+        try:
+            # Execute schema creation SQL
+            for statement in SCHEMA_SQL.split(';'):
+                statement = statement.strip()
+                if statement:
+                    await self._db_service.execute(statement)
+            logger.info("Contradictions schema created/verified")
+        except Exception as e:
+            logger.error(f"Failed to create contradictions schema: {e}")
+            raise
 
     async def shutdown(self) -> None:
         """Clean up shard resources."""
@@ -228,9 +300,15 @@ class ContradictionsShard(ArkhamShard):
         if not self.detector or not self.storage:
             raise RuntimeError("Contradictions Shard not initialized")
 
-        # TODO: Fetch actual document content from Frame
-        doc_a_text = f"Document {doc_a_id} content"
-        doc_b_text = f"Document {doc_b_id} content"
+        # Fetch document content from Frame
+        doc_a_content = await self._get_document_content(doc_a_id)
+        doc_b_content = await self._get_document_content(doc_b_id)
+
+        if not doc_a_content or not doc_b_content:
+            raise RuntimeError(f"Could not fetch document content for analysis")
+
+        doc_a_text = doc_a_content["content"]
+        doc_b_text = doc_b_content["content"]
 
         # Extract claims
         if use_llm and self._llm_service:
@@ -250,7 +328,7 @@ class ContradictionsShard(ArkhamShard):
         for claim_a, claim_b, similarity in similar_pairs:
             contradiction = await self.detector.verify_contradiction(claim_a, claim_b, similarity)
             if contradiction:
-                self.storage.create(contradiction)
+                await self.storage.create(contradiction)
                 contradictions.append(
                     {
                         "id": contradiction.id,
@@ -264,7 +342,36 @@ class ContradictionsShard(ArkhamShard):
 
         return contradictions
 
-    def get_document_contradictions(self, document_id: str) -> list[dict]:
+    async def _get_document_content(self, doc_id: str) -> dict | None:
+        """Fetch document content from Frame database."""
+        if not self._db_service:
+            return None
+
+        try:
+            # Try arkham_frame.documents table first
+            result = await self._db_service.fetch_one(
+                "SELECT content, filename as title FROM arkham_frame.documents WHERE id = :id",
+                {"id": doc_id}
+            )
+
+            if result and result.get("content"):
+                return {"id": doc_id, "content": result["content"], "title": result.get("title")}
+
+            # Fallback: try parse shard's extracted text
+            result = await self._db_service.fetch_one(
+                "SELECT extracted_text, filename FROM arkham_parse.parse_results WHERE document_id = :id",
+                {"id": doc_id}
+            )
+
+            if result and result.get("extracted_text"):
+                return {"id": doc_id, "content": result["extracted_text"], "title": result.get("filename")}
+
+            return None
+        except Exception as e:
+            logger.error(f"Failed to fetch document {doc_id}: {e}")
+            return None
+
+    async def get_document_contradictions(self, document_id: str) -> list[dict]:
         """
         Public method to get contradictions for a document.
 
@@ -277,7 +384,7 @@ class ContradictionsShard(ArkhamShard):
         if not self.storage:
             raise RuntimeError("Contradictions Shard not initialized")
 
-        contradictions = self.storage.get_by_document(document_id)
+        contradictions = await self.storage.get_by_document(document_id)
 
         return [
             {
@@ -294,7 +401,7 @@ class ContradictionsShard(ArkhamShard):
             for c in contradictions
         ]
 
-    def get_statistics(self) -> dict:
+    async def get_statistics(self) -> dict:
         """
         Public method to get contradiction statistics.
 
@@ -304,7 +411,7 @@ class ContradictionsShard(ArkhamShard):
         if not self.storage:
             raise RuntimeError("Contradictions Shard not initialized")
 
-        return self.storage.get_statistics()
+        return await self.storage.get_statistics()
 
     async def detect_chains(self) -> list[dict]:
         """
@@ -319,7 +426,7 @@ class ContradictionsShard(ArkhamShard):
         # Get all contradictions except dismissed
         from .models import ContradictionStatus
 
-        contradictions = self.storage.search(status=None)
+        contradictions = await self.storage.search(status=None)
         contradictions = [
             c for c in contradictions if c.status != ContradictionStatus.DISMISSED
         ]
@@ -338,7 +445,7 @@ class ContradictionsShard(ArkhamShard):
                 contradiction_ids=chain_ids,
                 description=f"Chain of {len(chain_ids)} contradictions",
             )
-            self.storage.create_chain(chain)
+            await self.storage.create_chain(chain)
             created_chains.append(
                 {
                     "id": chain.id,

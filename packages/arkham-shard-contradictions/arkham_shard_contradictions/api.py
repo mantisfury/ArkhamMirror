@@ -29,6 +29,7 @@ _detector = None
 _storage = None
 _event_bus = None
 _chain_detector = None
+_db = None
 
 
 def init_api(detector, storage, event_bus, chain_detector):
@@ -38,6 +39,65 @@ def init_api(detector, storage, event_bus, chain_detector):
     _storage = storage
     _event_bus = event_bus
     _chain_detector = chain_detector
+
+
+def set_db_service(db_service):
+    """Set the database service for document fetching."""
+    global _db
+    _db = db_service
+
+
+async def _get_document_content(doc_id: str) -> dict | None:
+    """
+    Fetch document content from Frame database.
+
+    Gets document metadata and combines chunk text for content.
+
+    Args:
+        doc_id: Document ID to fetch
+
+    Returns:
+        Dict with id, content, title or None if not found
+    """
+    if not _db:
+        logger.warning("Database service not available for document fetching")
+        return None
+
+    try:
+        # Get document metadata
+        doc_result = await _db.fetch_one(
+            "SELECT id, filename FROM arkham_frame.documents WHERE id = :id",
+            {"id": doc_id}
+        )
+
+        if not doc_result:
+            logger.warning(f"Document not found: {doc_id}")
+            return None
+
+        # Get all chunks for the document, ordered by chunk_index
+        chunks = await _db.fetch_all(
+            """SELECT text FROM arkham_frame.chunks
+               WHERE document_id = :id
+               ORDER BY chunk_index""",
+            {"id": doc_id}
+        )
+
+        # Combine chunk text
+        content = "\n\n".join(c["text"] for c in chunks if c.get("text"))
+
+        if not content:
+            logger.warning(f"Document {doc_id} has no chunk content")
+            return None
+
+        return {
+            "id": doc_id,
+            "content": content,
+            "title": doc_result.get("filename", f"Document {doc_id}")
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to fetch document {doc_id}: {e}")
+        return None
 
 
 # --- Helper Functions ---
@@ -81,10 +141,19 @@ async def analyze_documents(request: AnalyzeRequest):
 
     logger.info(f"Analyzing documents: {request.doc_a_id} vs {request.doc_b_id}")
 
-    # TODO: Fetch actual document content from Frame
-    # For now, this is a placeholder
-    doc_a_text = f"Document {request.doc_a_id} content"
-    doc_b_text = f"Document {request.doc_b_id} content"
+    # Fetch actual document content from Frame
+    doc_a = await _get_document_content(request.doc_a_id)
+    doc_b = await _get_document_content(request.doc_b_id)
+
+    if not doc_a:
+        raise HTTPException(status_code=404, detail=f"Document not found: {request.doc_a_id}")
+    if not doc_b:
+        raise HTTPException(status_code=404, detail=f"Document not found: {request.doc_b_id}")
+
+    doc_a_text = doc_a["content"]
+    doc_b_text = doc_b["content"]
+
+    logger.info(f"Fetched documents: {doc_a.get('title')} ({len(doc_a_text)} chars) vs {doc_b.get('title')} ({len(doc_b_text)} chars)")
 
     # Extract claims
     if request.use_llm:
@@ -104,7 +173,7 @@ async def analyze_documents(request: AnalyzeRequest):
     for claim_a, claim_b, similarity in similar_pairs:
         contradiction = await _detector.verify_contradiction(claim_a, claim_b, similarity)
         if contradiction:
-            _storage.create(contradiction)
+            await _storage.create(contradiction)
             contradictions.append(contradiction)
 
     # Emit event
@@ -179,7 +248,7 @@ async def get_document_contradictions(
     if not _storage:
         raise HTTPException(status_code=503, detail="Contradiction service not initialized")
 
-    contradictions = _storage.get_by_document(doc_id, include_related=include_chains)
+    contradictions = await _storage.get_by_document(doc_id, include_related=include_chains)
 
     return {
         "document_id": doc_id,
@@ -217,7 +286,7 @@ async def list_contradictions(
             raise HTTPException(status_code=400, detail=f"Invalid severity: {severity}")
 
     # Get contradictions
-    contradictions, total = _storage.list_all(
+    contradictions, total = await _storage.list_all(
         page=page,
         page_size=page_size,
         status=status_filter,
@@ -273,7 +342,7 @@ async def get_statistics():
     if not _storage:
         raise HTTPException(status_code=503, detail="Contradiction service not initialized")
 
-    stats = _storage.get_statistics()
+    stats = await _storage.get_statistics()
     return StatsResponse(**stats)
 
 
@@ -288,7 +357,7 @@ async def detect_chains():
         raise HTTPException(status_code=503, detail="Contradiction service not initialized")
 
     # Get all confirmed or detected contradictions
-    contradictions = _storage.search(
+    contradictions = await _storage.search(
         status=None  # All statuses except dismissed
     )
     contradictions = [
@@ -310,7 +379,7 @@ async def detect_chains():
             contradiction_ids=chain_ids,
             description=f"Chain of {len(chain_ids)} contradictions",
         )
-        _storage.create_chain(chain)
+        await _storage.create_chain(chain)
         created_chains.append(chain)
 
     # Emit event
@@ -343,7 +412,7 @@ async def list_chains():
     if not _storage:
         raise HTTPException(status_code=503, detail="Contradiction service not initialized")
 
-    chains = _storage.list_chains()
+    chains = await _storage.list_chains()
 
     return {
         "count": len(chains),
@@ -367,12 +436,12 @@ async def get_chain(chain_id: str):
     if not _storage:
         raise HTTPException(status_code=503, detail="Contradiction service not initialized")
 
-    chain = _storage.get_chain(chain_id)
+    chain = await _storage.get_chain(chain_id)
     if not chain:
         raise HTTPException(status_code=404, detail=f"Chain not found: {chain_id}")
 
     # Get all contradictions in chain
-    contradictions = _storage.get_chain_contradictions(chain_id)
+    contradictions = await _storage.get_chain_contradictions(chain_id)
 
     return {
         "id": chain.id,
@@ -391,7 +460,7 @@ async def get_contradiction(contradiction_id: str):
     if not _storage:
         raise HTTPException(status_code=503, detail="Contradiction service not initialized")
 
-    contradiction = _storage.get(contradiction_id)
+    contradiction = await _storage.get(contradiction_id)
     if not contradiction:
         raise HTTPException(status_code=404, detail=f"Contradiction not found: {contradiction_id}")
 
@@ -415,7 +484,7 @@ async def update_status(contradiction_id: str, request: UpdateStatusRequest):
         raise HTTPException(status_code=400, detail=f"Invalid status: {request.status}")
 
     # Update
-    contradiction = _storage.update_status(
+    contradiction = await _storage.update_status(
         contradiction_id, status, analyst_id=request.analyst_id
     )
 
@@ -424,7 +493,7 @@ async def update_status(contradiction_id: str, request: UpdateStatusRequest):
 
     # Add notes if provided
     if request.notes:
-        _storage.add_note(contradiction_id, request.notes, request.analyst_id)
+        await _storage.add_note(contradiction_id, request.notes, request.analyst_id)
 
     # Emit event
     if _event_bus:
@@ -461,7 +530,7 @@ async def add_notes(contradiction_id: str, request: AddNotesRequest):
     if not _storage:
         raise HTTPException(status_code=503, detail="Contradiction service not initialized")
 
-    contradiction = _storage.add_note(
+    contradiction = await _storage.add_note(
         contradiction_id, request.notes, analyst_id=request.analyst_id
     )
 
@@ -477,8 +546,18 @@ async def delete_contradiction(contradiction_id: str):
     if not _storage:
         raise HTTPException(status_code=503, detail="Contradiction service not initialized")
 
-    success = _storage.delete(contradiction_id)
+    success = await _storage.delete(contradiction_id)
     if not success:
         raise HTTPException(status_code=404, detail=f"Contradiction not found: {contradiction_id}")
 
     return {"status": "deleted", "contradiction_id": contradiction_id}
+
+
+@router.get("/count")
+async def get_count():
+    """Get total contradiction count (for navigation badge)."""
+    if not _storage:
+        return {"count": 0}
+
+    stats = await _storage.get_statistics()
+    return {"count": stats.get("total_contradictions", 0)}
