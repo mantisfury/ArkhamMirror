@@ -129,6 +129,9 @@ export function useSearch(options: UseSearchOptions): UseSearchResult {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<Error | null>(null);
 
+  // Serialize request to avoid infinite re-renders from object reference changes
+  const requestJson = JSON.stringify(options.request || {});
+
   const fetchData = useCallback(async () => {
     if (!options.query || options.enabled === false) {
       setLoading(false);
@@ -139,9 +142,10 @@ export function useSearch(options: UseSearchOptions): UseSearchResult {
     setError(null);
 
     try {
+      const request = JSON.parse(requestJson);
       const result = await performSearch({
         query: options.query,
-        ...options.request,
+        ...request,
       });
       setData(result);
       setError(null);
@@ -150,7 +154,7 @@ export function useSearch(options: UseSearchOptions): UseSearchResult {
     } finally {
       setLoading(false);
     }
-  }, [options.query, options.request, options.enabled]);
+  }, [options.query, requestJson, options.enabled]);
 
   useEffect(() => {
     fetchData();
@@ -168,6 +172,8 @@ export function useSemantic(options: UseSearchOptions): UseSearchResult {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<Error | null>(null);
 
+  const requestJson = JSON.stringify(options.request || {});
+
   const fetchData = useCallback(async () => {
     if (!options.query || options.enabled === false) {
       setLoading(false);
@@ -178,9 +184,10 @@ export function useSemantic(options: UseSearchOptions): UseSearchResult {
     setError(null);
 
     try {
+      const request = JSON.parse(requestJson);
       const result = await performSemanticSearch({
         query: options.query,
-        ...options.request,
+        ...request,
       });
       setData(result);
       setError(null);
@@ -189,7 +196,7 @@ export function useSemantic(options: UseSearchOptions): UseSearchResult {
     } finally {
       setLoading(false);
     }
-  }, [options.query, options.request, options.enabled]);
+  }, [options.query, requestJson, options.enabled]);
 
   useEffect(() => {
     fetchData();
@@ -207,6 +214,8 @@ export function useKeyword(options: UseSearchOptions): UseSearchResult {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<Error | null>(null);
 
+  const requestJson = JSON.stringify(options.request || {});
+
   const fetchData = useCallback(async () => {
     if (!options.query || options.enabled === false) {
       setLoading(false);
@@ -217,9 +226,10 @@ export function useKeyword(options: UseSearchOptions): UseSearchResult {
     setError(null);
 
     try {
+      const request = JSON.parse(requestJson);
       const result = await performKeywordSearch({
         query: options.query,
-        ...options.request,
+        ...request,
       });
       setData(result);
       setError(null);
@@ -228,7 +238,7 @@ export function useKeyword(options: UseSearchOptions): UseSearchResult {
     } finally {
       setLoading(false);
     }
-  }, [options.query, options.request, options.enabled]);
+  }, [options.query, requestJson, options.enabled]);
 
   useEffect(() => {
     fetchData();

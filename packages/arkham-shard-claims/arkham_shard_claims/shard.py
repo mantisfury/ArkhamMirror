@@ -769,9 +769,33 @@ Return ONLY a valid JSON array, no other text. Example format:
                 if not self._llm:
                     errors.append("LLM service not available, using simple extraction")
 
-            # Store extracted claims
+            # Store extracted claims and auto-link source document as evidence
+            doc_title = None
+            if document_id and self._db:
+                # Fetch document filename for evidence reference (frame uses filename, not title)
+                doc_row = await self._db.fetch_one(
+                    "SELECT filename FROM arkham_frame.documents WHERE id = :doc_id",
+                    {"doc_id": document_id},
+                )
+                if doc_row:
+                    doc_title = doc_row.get("filename") or "Source Document"
+
             for claim in claims:
                 await self._store_claim(claim)
+
+                # Auto-link source document as evidence if we have a document_id
+                if document_id:
+                    await self.add_evidence(
+                        claim_id=claim.id,
+                        evidence_type=EvidenceType.DOCUMENT,
+                        reference_id=document_id,
+                        reference_title=doc_title,
+                        relationship=EvidenceRelationship.SUPPORTS,
+                        strength=EvidenceStrength.MODERATE,
+                        excerpt=claim.source_context,
+                        notes="Source document from which this claim was extracted",
+                        added_by="extraction",
+                    )
 
         except Exception as e:
             logger.error(f"Claim extraction failed: {e}", exc_info=True)

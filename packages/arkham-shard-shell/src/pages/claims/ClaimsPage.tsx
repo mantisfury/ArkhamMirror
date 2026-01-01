@@ -238,10 +238,10 @@ export function ClaimsPage() {
     setShowEvidence(false);
   };
 
-  const getConfidenceColor = (confidence: number): string => {
-    if (confidence >= 0.8) return 'confidence-high';
-    if (confidence >= 0.5) return 'confidence-medium';
-    return 'confidence-low';
+  const getClarityColor = (clarity: number): string => {
+    if (clarity >= 0.8) return 'clarity-high';
+    if (clarity >= 0.5) return 'clarity-medium';
+    return 'clarity-low';
   };
 
   const formatDate = (dateStr: string): string => {
@@ -338,8 +338,8 @@ export function ClaimsPage() {
                       <Icon name={STATUS_ICONS[claim.status]} size={14} />
                       {claim.status}
                     </span>
-                    <span className={`confidence-badge ${getConfidenceColor(claim.confidence)}`}>
-                      {Math.round(claim.confidence * 100)}% confidence
+                    <span className={`clarity-badge ${getClarityColor(claim.confidence)}`}>
+                      {Math.round(claim.confidence * 100)}% clarity
                     </span>
                   </div>
                   <div className="claim-actions">
@@ -458,7 +458,7 @@ export function ClaimsPage() {
                   </span>
                 </div>
                 <div className="metadata-row">
-                  <span className="label">Confidence:</span>
+                  <span className="label">Clarity:</span>
                   <span>{Math.round(selectedClaim.confidence * 100)}%</span>
                 </div>
                 <div className="metadata-row">
@@ -482,6 +482,18 @@ export function ClaimsPage() {
                 evidence.map((ev) => (
                   <div key={ev.id} className="evidence-item">
                     <div className="evidence-header">
+                      <span className={`evidence-type-badge evidence-type-${ev.evidence_type}`}>
+                        <Icon
+                          name={
+                            ev.evidence_type === 'document' ? 'FileText' :
+                            ev.evidence_type === 'entity' ? 'User' :
+                            ev.evidence_type === 'claim' ? 'Quote' :
+                            'ExternalLink'
+                          }
+                          size={12}
+                        />
+                        {ev.evidence_type}
+                      </span>
                       <span className={`relationship-badge relationship-${ev.relationship}`}>
                         <Icon
                           name={ev.relationship === 'supports' ? 'ThumbsUp' : ev.relationship === 'refutes' ? 'ThumbsDown' : 'Link'}
@@ -490,21 +502,46 @@ export function ClaimsPage() {
                         {ev.relationship}
                       </span>
                       <span className={`strength-badge strength-${ev.strength}`}>
-                        {ev.strength} strength
+                        {ev.strength}
                       </span>
                     </div>
                     {ev.reference_title && (
-                      <p className="evidence-title">{ev.reference_title}</p>
+                      <div className="evidence-title-row">
+                        <Icon name="FileText" size={14} />
+                        <span className="evidence-title">{ev.reference_title}</span>
+                        {ev.evidence_type === 'document' && ev.reference_id && (
+                          <a
+                            href={`/documents/${ev.reference_id}`}
+                            className="evidence-link"
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            <Icon name="ExternalLink" size={12} />
+                            View
+                          </a>
+                        )}
+                      </div>
                     )}
                     {ev.excerpt && (
-                      <p className="evidence-excerpt">{ev.excerpt}</p>
+                      <blockquote className="evidence-excerpt">
+                        <Icon name="Quote" size={12} className="quote-icon" />
+                        {ev.excerpt}
+                      </blockquote>
                     )}
                     {ev.notes && (
-                      <p className="evidence-notes">{ev.notes}</p>
+                      <p className="evidence-notes">
+                        <Icon name="MessageSquare" size={12} />
+                        {ev.notes}
+                      </p>
                     )}
                     <div className="evidence-meta">
-                      <span>Added {formatDate(ev.added_at)}</span>
-                      <span>by {ev.added_by}</span>
+                      <span>
+                        <Icon name="Calendar" size={10} />
+                        {formatDate(ev.added_at)}
+                      </span>
+                      <span>
+                        <Icon name="User" size={10} />
+                        {ev.added_by}
+                      </span>
                     </div>
                   </div>
                 ))
@@ -512,6 +549,9 @@ export function ClaimsPage() {
                 <div className="evidence-empty">
                   <Icon name="FileQuestion" size={32} />
                   <span>No evidence linked to this claim</span>
+                  <p className="evidence-empty-hint">
+                    Evidence will be automatically linked when claims are extracted from documents.
+                  </p>
                 </div>
               )}
             </div>

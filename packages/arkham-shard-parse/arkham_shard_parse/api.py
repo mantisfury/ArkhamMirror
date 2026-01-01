@@ -444,11 +444,30 @@ async def get_parse_stats():
             ))
             total_documents_parsed = result.scalar() or 0
 
+            # Get total entities from entities shard table
+            total_entities = 0
+            entity_types = {}
+            try:
+                result = conn.execute(text(
+                    "SELECT COUNT(*) FROM arkham_entities WHERE canonical_id IS NULL"
+                ))
+                total_entities = result.scalar() or 0
+
+                # Get entity counts by type
+                result = conn.execute(text(
+                    "SELECT entity_type, COUNT(*) as count FROM arkham_entities WHERE canonical_id IS NULL GROUP BY entity_type"
+                ))
+                for row in result:
+                    entity_types[row[0]] = row[1]
+            except Exception:
+                # Table may not exist yet
+                pass
+
         return {
-            "total_entities": 0,  # TODO: Implement entity storage
+            "total_entities": total_entities,
             "total_chunks": total_chunks,
             "total_documents_parsed": total_documents_parsed,
-            "entity_types": {},
+            "entity_types": entity_types,
         }
 
     except Exception as e:

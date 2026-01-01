@@ -4025,6 +4025,26 @@ a:hover {
   align-items: flex-start;
 }
 
+.clear-similar-button {
+  display: flex;
+  align-items: center;
+  gap: var(--arkham-space-xs);
+  background: transparent;
+  border: 1px solid var(--arkham-border);
+  color: var(--arkham-text-secondary);
+  padding: var(--arkham-space-xs) var(--arkham-space-md);
+  border-radius: var(--arkham-radius-sm);
+  cursor: pointer;
+  font-size: var(--arkham-font-size-sm);
+  transition: all 0.15s ease;
+}
+
+.clear-similar-button:hover {
+  background-color: var(--arkham-bg-primary);
+  color: var(--arkham-error);
+  border-color: var(--arkham-error);
+}
+
 .results-info h2 {
   font-size: var(--arkham-font-size-xl);
   font-weight: 600;

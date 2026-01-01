@@ -459,6 +459,67 @@ async def extract_claims_from_document(request: Request, document_id: str):
     )
 
 
+# === Backfill Evidence Endpoint ===
+
+
+@router.post("/backfill-evidence")
+async def backfill_source_evidence(request: Request):
+    """
+    Backfill source document evidence for existing claims.
+
+    Finds claims with source_document_id but no evidence linked,
+    and creates evidence entries linking them to their source documents.
+    """
+    shard = _get_shard(request)
+    db = shard._db
+    if not db:
+        raise HTTPException(status_code=503, detail="Database service not available")
+
+    # Find claims with source_document_id but no evidence
+    claims_without_evidence = await db.fetch_all(
+        """SELECT c.id, c.source_document_id, c.source_context
+           FROM arkham_claims c
+           LEFT JOIN arkham_claim_evidence e ON c.id = e.claim_id
+           WHERE c.source_document_id IS NOT NULL
+           AND e.id IS NULL""",
+        {},
+    )
+
+    linked_count = 0
+    for row in claims_without_evidence:
+        claim_id = row["id"]
+        doc_id = row["source_document_id"]
+        source_context = row.get("source_context")
+
+        # Get document filename (frame uses filename, not title)
+        doc_row = await db.fetch_one(
+            "SELECT filename FROM arkham_frame.documents WHERE id = :doc_id",
+            {"doc_id": doc_id},
+        )
+        doc_title = None
+        if doc_row:
+            doc_title = doc_row.get("filename") or "Source Document"
+
+        # Create evidence link
+        await shard.add_evidence(
+            claim_id=claim_id,
+            evidence_type=EvidenceType.DOCUMENT,
+            reference_id=doc_id,
+            reference_title=doc_title,
+            relationship=EvidenceRelationship.SUPPORTS,
+            strength=EvidenceStrength.MODERATE,
+            excerpt=source_context,
+            notes="Source document from which this claim was extracted (backfilled)",
+            added_by="backfill",
+        )
+        linked_count += 1
+
+    return {
+        "message": f"Backfilled evidence for {linked_count} claims",
+        "claims_updated": linked_count,
+    }
+
+
 # === Similarity & Deduplication Endpoints ===
 
 

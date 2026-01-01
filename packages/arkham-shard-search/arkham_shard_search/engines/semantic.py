@@ -59,32 +59,32 @@ class SemanticSearchEngine:
         # Search Qdrant for similar vectors
         try:
             results = await self.vectors.search(
-                collection="chunks",
-                vector=query_vector,
+                collection="arkham_chunks",
+                query_vector=query_vector,
                 limit=query.limit,
-                offset=query.offset if hasattr(query, 'offset') else 0,
-                filters=self._build_filters(query.filters) if query.filters else None,
+                filter=self._build_qdrant_filter(query.filters) if query.filters else None,
             )
         except Exception as e:
             logger.error(f"Vector search failed: {e}")
             results = []
 
-        # Convert Qdrant results to SearchResultItem
+        # Convert SearchResult objects to SearchResultItem
         search_items = []
         for result in results:
+            payload = result.payload if hasattr(result, 'payload') else {}
             item = SearchResultItem(
-                doc_id=result.get("doc_id", ""),
-                chunk_id=result.get("chunk_id"),
-                title=result.get("title", ""),
-                excerpt=result.get("text", "")[:300],
-                score=result.get("score", 0.0),
-                file_type=result.get("file_type"),
-                created_at=result.get("created_at"),
-                page_number=result.get("page_number"),
+                doc_id=payload.get("document_id", payload.get("doc_id", "")),
+                chunk_id=result.id if hasattr(result, 'id') else payload.get("chunk_id"),
+                title=payload.get("title", payload.get("filename", "")),
+                excerpt=payload.get("text", payload.get("content", ""))[:300],
+                score=result.score if hasattr(result, 'score') else 0.0,
+                file_type=payload.get("file_type", payload.get("mime_type")),
+                created_at=payload.get("created_at"),
+                page_number=payload.get("page_number"),
                 highlights=[],
-                entities=result.get("entities", []),
-                project_ids=result.get("project_ids", []),
-                metadata=result.get("metadata", {}),
+                entities=payload.get("entities", []),
+                project_ids=payload.get("project_ids", []),
+                metadata=payload.get("metadata", {}),
             )
             search_items.append(item)
 
@@ -106,7 +106,7 @@ class SemanticSearchEngine:
 
         # Get document vector from Qdrant
         try:
-            doc_vector = await self.vectors.get_vector(collection="documents", id=doc_id)
+            doc_vector = await self.vectors.get_vector(collection="arkham_documents", id=doc_id)
         except Exception as e:
             logger.error(f"Failed to get document vector: {e}")
             return []
@@ -118,8 +118,8 @@ class SemanticSearchEngine:
         # Search for similar vectors
         try:
             results = await self.vectors.search(
-                collection="documents",
-                vector=doc_vector,
+                collection="arkham_documents",
+                query_vector=doc_vector,
                 limit=limit + 1,  # +1 to exclude self
                 score_threshold=min_similarity,
             )
@@ -128,20 +128,21 @@ class SemanticSearchEngine:
             results = []
 
         # Filter out the source document
-        results = [r for r in results if r.get("doc_id") != doc_id][:limit]
+        results = [r for r in results if (r.payload.get("document_id") if hasattr(r, 'payload') else r.get("doc_id")) != doc_id][:limit]
 
         search_items = []
         for result in results:
+            payload = result.payload if hasattr(result, 'payload') else {}
             item = SearchResultItem(
-                doc_id=result.get("doc_id", ""),
+                doc_id=payload.get("document_id", payload.get("doc_id", "")),
                 chunk_id=None,
-                title=result.get("title", ""),
-                excerpt=result.get("excerpt", ""),
-                score=result.get("score", 0.0),
-                file_type=result.get("file_type"),
-                created_at=result.get("created_at"),
+                title=payload.get("title", payload.get("filename", "")),
+                excerpt=payload.get("excerpt", payload.get("text", "")[:300] if payload.get("text") else ""),
+                score=result.score if hasattr(result, 'score') else 0.0,
+                file_type=payload.get("file_type"),
+                created_at=payload.get("created_at"),
                 highlights=[],
-                metadata=result.get("metadata", {}),
+                metadata=payload.get("metadata", {}),
             )
             search_items.append(item)
 
@@ -157,7 +158,16 @@ class SemanticSearchEngine:
         Returns:
             Embedding vector or None if failed
         """
-        # Try direct embedding service first (faster for search)
+        # Try vectors service embed_text method first (primary method)
+        if self.vectors and hasattr(self.vectors, 'embed_text'):
+            try:
+                result = await self.vectors.embed_text(query)
+                if result:
+                    return result
+            except Exception as e:
+                logger.warning(f"Vectors embed_text failed: {e}")
+
+        # Try direct embedding service
         if self.embedding_service:
             try:
                 result = await self.embedding_service.embed(query)
@@ -208,7 +218,7 @@ class SemanticSearchEngine:
         logger.error("No embedding service available")
         return None
 
-    def _build_filters(self, filters) -> dict[str, Any]:
+    def _build_qdrant_filter(self, filters) -> dict[str, Any]:
         """
         Build Qdrant filters from SearchFilters.
 

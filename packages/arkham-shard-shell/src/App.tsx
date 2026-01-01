@@ -55,7 +55,7 @@ import { SettingsPage } from './pages/settings';
 // Wave 1 shard imports
 import { GraphPage } from './pages/graph';
 import { TimelinePage } from './pages/timeline';
-import { DocumentsPage } from './pages/documents';
+import { DocumentsPage, DocumentDetailPage } from './pages/documents';
 
 // Wave 2 shard imports
 import { EntitiesPage } from './pages/entities';
@@ -144,6 +144,7 @@ export function App() {
 
                   {/* Documents shard */}
                   <Route path="/documents" element={<DocumentsPage />} />
+                  <Route path="/documents/:id" element={<DocumentDetailPage />} />
 
                   {/* Wave 2 shards */}
                   {/* Entities shard with sub-routes */}

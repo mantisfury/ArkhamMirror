@@ -5,26 +5,30 @@
  */
 
 import { useState, useEffect } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useSearchParams, useNavigate } from 'react-router-dom';
 import { Icon } from '../../components/common/Icon';
 import { useToast } from '../../context/ToastContext';
 import { SearchResultCard } from './SearchResultCard';
-import { useSearch } from './api';
-import type { SearchMode, SearchFilters } from './types';
+import { useSearch, findSimilar } from './api';
+import type { SearchMode, SearchFilters, SearchResultItem } from './types';
 
 export function SearchPage() {
   const { toast } = useToast();
+  const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
 
   // Search state from URL
   const queryFromUrl = searchParams.get('q') || '';
   const modeFromUrl = (searchParams.get('mode') || 'hybrid') as SearchMode;
+  const similarDocId = searchParams.get('similar') || '';
 
   // Local state
   const [query, setQuery] = useState(queryFromUrl);
   const [searchMode, setSearchMode] = useState<SearchMode>(modeFromUrl);
   const [showFilters, setShowFilters] = useState(false);
   const [filters, setFilters] = useState<SearchFilters>({});
+  const [similarResults, setSimilarResults] = useState<SearchResultItem[] | null>(null);
+  const [similarLoading, setSimilarLoading] = useState(false);
 
   // Execute search when URL changes
   const { data, loading, error } = useSearch({
@@ -70,20 +74,41 @@ export function SearchPage() {
     setFilters({});
   };
 
-  // Handle view document
+  // Handle view document - navigate to document detail page
   const handleViewDocument = (docId: string) => {
-    toast.info(`View document: ${docId}`);
-    // TODO: Navigate to document viewer when available
+    navigate(`/documents/${docId}`);
   };
 
-  // Handle find similar
-  const handleFindSimilar = (docId: string) => {
-    // Execute similarity search
+  // Handle find similar - call the similar API
+  const handleFindSimilar = async (docId: string) => {
+    setSimilarLoading(true);
+    setSimilarResults(null);
+
+    // Update URL to show similar mode
     const params = new URLSearchParams();
     params.set('similar', docId);
     setSearchParams(params);
-    toast.info('Finding similar documents...');
+
+    try {
+      const response = await findSimilar(docId, 10, 0.3);
+      setSimilarResults(response.similar);
+      if (response.similar.length === 0) {
+        toast.info('No similar documents found. Try embedding your documents first.');
+      }
+    } catch (err) {
+      toast.error('Failed to find similar documents');
+      setSimilarResults([]);
+    } finally {
+      setSimilarLoading(false);
+    }
   };
+
+  // Handle similar search from URL on page load
+  useEffect(() => {
+    if (similarDocId && !similarResults && !similarLoading) {
+      handleFindSimilar(similarDocId);
+    }
+  }, [similarDocId]);
 
   // Show error toast if search fails
   useEffect(() => {
@@ -350,8 +375,65 @@ export function SearchPage() {
         </section>
       )}
 
+      {/* Similar Results Section */}
+      {similarDocId && (
+        <section className="results-section">
+          {similarLoading && (
+            <div className="results-loading">
+              <Icon name="Loader2" size={32} className="spinner" />
+              <p>Finding similar documents...</p>
+            </div>
+          )}
+
+          {similarResults && !similarLoading && (
+            <>
+              <div className="results-header">
+                <div className="results-info">
+                  <h2>
+                    <Icon name="GitCompare" size={24} />
+                    {similarResults.length} similar documents
+                  </h2>
+                  <p className="results-meta">
+                    Finding documents similar to {similarDocId.substring(0, 8)}...
+                  </p>
+                </div>
+                <button
+                  className="clear-similar-button"
+                  onClick={() => {
+                    setSimilarResults(null);
+                    setSearchParams(new URLSearchParams());
+                  }}
+                >
+                  <Icon name="X" size={16} />
+                  Clear
+                </button>
+              </div>
+
+              {similarResults.length === 0 && (
+                <div className="results-empty">
+                  <Icon name="SearchX" size={48} />
+                  <h3>No similar documents found</h3>
+                  <p>This feature requires document embeddings. Try running the Embed shard first.</p>
+                </div>
+              )}
+
+              <div className="results-list">
+                {similarResults.map(result => (
+                  <SearchResultCard
+                    key={`${result.doc_id}-${result.chunk_id || 'doc'}`}
+                    result={result}
+                    onView={handleViewDocument}
+                    onFindSimilar={handleFindSimilar}
+                  />
+                ))}
+              </div>
+            </>
+          )}
+        </section>
+      )}
+
       {/* Empty State */}
-      {!queryFromUrl && !loading && (
+      {!queryFromUrl && !similarDocId && !loading && (
         <section className="search-empty-state">
           <Icon name="Search" size={64} className="empty-state-icon" />
           <h2>Start searching</h2>

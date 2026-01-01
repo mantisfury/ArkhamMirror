@@ -38,36 +38,68 @@ class KeywordSearchEngine:
         """
         logger.info(f"Keyword search: '{query.query}' (limit={query.limit})")
 
-        # TODO: Perform PostgreSQL full-text search
-        # Use ts_vector and ts_query for text search
-        # Example SQL:
-        # SELECT doc_id, chunk_id, title, text, ts_rank(ts_vector, query) as score
-        # FROM chunks
-        # WHERE ts_vector @@ to_tsquery(%s)
-        # ORDER BY score DESC
-        # LIMIT %s OFFSET %s
+        if not self.db:
+            logger.warning("Database service not available")
+            return []
 
-        # Mock implementation
-        results = []
+        try:
+            # Use ILIKE for simple keyword matching (case-insensitive)
+            # Join with documents table to get metadata
+            search_term = f"%{query.query}%"
+
+            sql = """
+                SELECT
+                    c.id as chunk_id,
+                    c.document_id,
+                    c.text,
+                    c.page_number,
+                    c.chunk_index,
+                    d.filename as title,
+                    d.mime_type,
+                    d.created_at
+                FROM arkham_frame.chunks c
+                LEFT JOIN arkham_frame.documents d ON c.document_id = d.id
+                WHERE c.text ILIKE :search_term
+                ORDER BY c.chunk_index
+                LIMIT :limit OFFSET :offset
+            """
+
+            rows = await self.db.fetch_all(
+                sql,
+                {
+                    "search_term": search_term,
+                    "limit": query.limit,
+                    "offset": query.offset if hasattr(query, 'offset') else 0,
+                }
+            )
+        except Exception as e:
+            logger.error(f"Keyword search failed: {e}")
+            return []
 
         search_items = []
-        for result in results:
-            # Extract highlights using ts_headline
-            highlights = self._extract_highlights(result.get("text", ""), query.query)
+        for row in rows:
+            text = row.get("text", "") or ""
+            highlights = self._extract_highlights(text, query.query)
+
+            # Calculate simple score based on keyword frequency
+            query_lower = query.query.lower()
+            text_lower = text.lower()
+            occurrences = text_lower.count(query_lower)
+            score = min(1.0, occurrences * 0.2)  # Cap at 1.0
 
             item = SearchResultItem(
-                doc_id=result.get("doc_id", ""),
-                chunk_id=result.get("chunk_id"),
-                title=result.get("title", ""),
-                excerpt=result.get("text", "")[:300],
-                score=result.get("score", 0.0),
-                file_type=result.get("file_type"),
-                created_at=result.get("created_at"),
-                page_number=result.get("page_number"),
+                doc_id=row.get("document_id", ""),
+                chunk_id=row.get("chunk_id"),
+                title=row.get("title", ""),
+                excerpt=text[:300] if text else "",
+                score=score,
+                file_type=row.get("mime_type"),
+                created_at=row.get("created_at"),
+                page_number=row.get("page_number"),
                 highlights=highlights,
-                entities=result.get("entities", []),
-                project_ids=result.get("project_ids", []),
-                metadata=result.get("metadata", {}),
+                entities=[],
+                project_ids=[],
+                metadata={},
             )
             search_items.append(item)
 
