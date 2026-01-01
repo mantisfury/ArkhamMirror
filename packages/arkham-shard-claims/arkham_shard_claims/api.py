@@ -61,10 +61,10 @@ class ClaimResponse(BaseModel):
 
 class ClaimListResponse(BaseModel):
     """Response model for listing claims."""
-    claims: List[ClaimResponse]
+    items: List[ClaimResponse]
     total: int
-    limit: int
-    offset: int
+    page: int
+    page_size: int
 
 
 class StatusUpdateRequest(BaseModel):
@@ -246,13 +246,17 @@ async def list_claims(
     extracted_by: Optional[ExtractionMethod] = Query(None),
     has_evidence: Optional[bool] = Query(None),
     search: Optional[str] = Query(None, description="Search in claim text"),
-    limit: int = Query(50, ge=1, le=500),
-    offset: int = Query(0, ge=0),
+    page: int = Query(1, ge=1, description="Page number (1-indexed)"),
+    page_size: int = Query(50, ge=1, le=500, description="Items per page"),
 ):
     """List claims with optional filtering."""
     from .models import ClaimFilter
 
     shard = _get_shard(request)
+
+    # Convert page/page_size to limit/offset
+    limit = page_size
+    offset = (page - 1) * page_size
 
     filter = ClaimFilter(
         status=status,
@@ -270,10 +274,10 @@ async def list_claims(
     total = await shard.get_count(status=status.value if status else None)
 
     return ClaimListResponse(
-        claims=[_claim_to_response(c) for c in claims],
+        items=[_claim_to_response(c) for c in claims],
         total=total,
-        limit=limit,
-        offset=offset,
+        page=page,
+        page_size=page_size,
     )
 
 
@@ -407,6 +411,54 @@ async def extract_claims(request: Request, body: ExtractionRequest):
     )
 
 
+@router.post("/extract-from-document/{document_id}", response_model=ExtractionResponse)
+async def extract_claims_from_document(request: Request, document_id: str):
+    """
+    Extract claims from a document by ID.
+
+    Fetches the document content from the database and extracts claims using LLM.
+    """
+    shard = _get_shard(request)
+
+    # Get database service to fetch document content
+    db = shard._db
+    if not db:
+        raise HTTPException(status_code=503, detail="Database service not available")
+
+    # Fetch document chunks to get text content
+    chunks = await db.fetch_all(
+        """SELECT text FROM arkham_frame.chunks
+           WHERE document_id = :doc_id
+           ORDER BY chunk_index""",
+        {"doc_id": document_id}
+    )
+
+    if not chunks:
+        raise HTTPException(status_code=404, detail=f"No content found for document {document_id}")
+
+    # Combine chunk text
+    text = "\n\n".join(c["text"] for c in chunks if c.get("text"))
+
+    if not text.strip():
+        raise HTTPException(status_code=404, detail=f"Document {document_id} has no text content")
+
+    # Extract claims
+    result = await shard.extract_claims_from_text(
+        text=text,
+        document_id=document_id,
+    )
+
+    return ExtractionResponse(
+        claims=[_claim_to_response(c) for c in result.claims],
+        source_document_id=result.source_document_id,
+        extraction_method=result.extraction_method.value,
+        extraction_model=result.extraction_model,
+        total_extracted=result.total_extracted,
+        processing_time_ms=result.processing_time_ms,
+        errors=result.errors,
+    )
+
+
 # === Similarity & Deduplication Endpoints ===
 
 
@@ -491,66 +543,72 @@ async def get_statistics(request: Request):
 @router.get("/status/unverified", response_model=ClaimListResponse)
 async def list_unverified_claims(
     request: Request,
-    limit: int = Query(50, ge=1, le=500),
-    offset: int = Query(0, ge=0),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=500),
 ):
     """List unverified claims."""
     from .models import ClaimFilter
 
     shard = _get_shard(request)
+    limit = page_size
+    offset = (page - 1) * page_size
     filter = ClaimFilter(status=ClaimStatus.UNVERIFIED)
     claims = await shard.list_claims(filter=filter, limit=limit, offset=offset)
     total = await shard.get_count(status="unverified")
 
     return ClaimListResponse(
-        claims=[_claim_to_response(c) for c in claims],
+        items=[_claim_to_response(c) for c in claims],
         total=total,
-        limit=limit,
-        offset=offset,
+        page=page,
+        page_size=page_size,
     )
 
 
 @router.get("/status/verified", response_model=ClaimListResponse)
 async def list_verified_claims(
     request: Request,
-    limit: int = Query(50, ge=1, le=500),
-    offset: int = Query(0, ge=0),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=500),
 ):
     """List verified claims."""
     from .models import ClaimFilter
 
     shard = _get_shard(request)
+    limit = page_size
+    offset = (page - 1) * page_size
     filter = ClaimFilter(status=ClaimStatus.VERIFIED)
     claims = await shard.list_claims(filter=filter, limit=limit, offset=offset)
     total = await shard.get_count(status="verified")
 
     return ClaimListResponse(
-        claims=[_claim_to_response(c) for c in claims],
+        items=[_claim_to_response(c) for c in claims],
         total=total,
-        limit=limit,
-        offset=offset,
+        page=page,
+        page_size=page_size,
     )
 
 
 @router.get("/status/disputed", response_model=ClaimListResponse)
 async def list_disputed_claims(
     request: Request,
-    limit: int = Query(50, ge=1, le=500),
-    offset: int = Query(0, ge=0),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=500),
 ):
     """List disputed claims."""
     from .models import ClaimFilter
 
     shard = _get_shard(request)
+    limit = page_size
+    offset = (page - 1) * page_size
     filter = ClaimFilter(status=ClaimStatus.DISPUTED)
     claims = await shard.list_claims(filter=filter, limit=limit, offset=offset)
     total = await shard.get_count(status="disputed")
 
     return ClaimListResponse(
-        claims=[_claim_to_response(c) for c in claims],
+        items=[_claim_to_response(c) for c in claims],
         total=total,
-        limit=limit,
-        offset=offset,
+        page=page,
+        page_size=page_size,
     )
 
 
@@ -561,21 +619,23 @@ async def list_disputed_claims(
 async def list_claims_by_document(
     request: Request,
     document_id: str,
-    limit: int = Query(50, ge=1, le=500),
-    offset: int = Query(0, ge=0),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=500),
 ):
     """List claims extracted from a specific document."""
     from .models import ClaimFilter
 
     shard = _get_shard(request)
+    limit = page_size
+    offset = (page - 1) * page_size
     filter = ClaimFilter(document_id=document_id)
     claims = await shard.list_claims(filter=filter, limit=limit, offset=offset)
 
     return ClaimListResponse(
-        claims=[_claim_to_response(c) for c in claims],
+        items=[_claim_to_response(c) for c in claims],
         total=len(claims),
-        limit=limit,
-        offset=offset,
+        page=page,
+        page_size=page_size,
     )
 
 
@@ -586,19 +646,21 @@ async def list_claims_by_document(
 async def list_claims_by_entity(
     request: Request,
     entity_id: str,
-    limit: int = Query(50, ge=1, le=500),
-    offset: int = Query(0, ge=0),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=500),
 ):
     """List claims linked to a specific entity."""
     from .models import ClaimFilter
 
     shard = _get_shard(request)
+    limit = page_size
+    offset = (page - 1) * page_size
     filter = ClaimFilter(entity_id=entity_id)
     claims = await shard.list_claims(filter=filter, limit=limit, offset=offset)
 
     return ClaimListResponse(
-        claims=[_claim_to_response(c) for c in claims],
+        items=[_claim_to_response(c) for c in claims],
         total=len(claims),
-        limit=limit,
-        offset=offset,
+        page=page,
+        page_size=page_size,
     )

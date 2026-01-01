@@ -5,12 +5,21 @@
  * extracted from documents with evidence linking and verification workflow.
  */
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Icon } from '../../components/common/Icon';
 import { useToast } from '../../context/ToastContext';
 import { useFetch } from '../../hooks/useFetch';
 import { usePaginatedFetch } from '../../hooks';
 import './ClaimsPage.css';
+
+// Document type for extraction
+interface Document {
+  id: string;
+  filename: string;
+  title?: string;
+  status: string;
+  created_at: string;
+}
 
 // Types
 interface Claim {
@@ -81,6 +90,101 @@ export function ClaimsPage() {
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedClaim, setSelectedClaim] = useState<Claim | null>(null);
   const [showEvidence, setShowEvidence] = useState(false);
+
+  // Extraction state
+  const [showExtractModal, setShowExtractModal] = useState(false);
+  const [documents, setDocuments] = useState<Document[]>([]);
+  const [documentsLoading, setDocumentsLoading] = useState(false);
+  const [selectedDocuments, setSelectedDocuments] = useState<Set<string>>(new Set());
+  const [extracting, setExtracting] = useState(false);
+  const [extractionProgress, setExtractionProgress] = useState<{current: number; total: number} | null>(null);
+
+  // Fetch documents when modal opens
+  useEffect(() => {
+    if (showExtractModal) {
+      fetchDocuments();
+    }
+  }, [showExtractModal]);
+
+  const fetchDocuments = async () => {
+    setDocumentsLoading(true);
+    try {
+      const response = await fetch('/api/documents/items?limit=100&status=processed');
+      if (!response.ok) throw new Error('Failed to fetch documents');
+      const data = await response.json();
+      setDocuments(data.items || []);
+    } catch (err) {
+      toast.error('Failed to load documents');
+      setDocuments([]);
+    } finally {
+      setDocumentsLoading(false);
+    }
+  };
+
+  const toggleDocumentSelection = (docId: string) => {
+    setSelectedDocuments(prev => {
+      const next = new Set(prev);
+      if (next.has(docId)) {
+        next.delete(docId);
+      } else {
+        next.add(docId);
+      }
+      return next;
+    });
+  };
+
+  const selectAllDocuments = () => {
+    if (selectedDocuments.size === documents.length) {
+      setSelectedDocuments(new Set());
+    } else {
+      setSelectedDocuments(new Set(documents.map(d => d.id)));
+    }
+  };
+
+  const handleExtractClaims = async () => {
+    if (selectedDocuments.size === 0) {
+      toast.error('Please select at least one document');
+      return;
+    }
+
+    setExtracting(true);
+    setExtractionProgress({ current: 0, total: selectedDocuments.size });
+
+    const docIds = Array.from(selectedDocuments);
+    let successCount = 0;
+    let totalClaims = 0;
+
+    for (let i = 0; i < docIds.length; i++) {
+      setExtractionProgress({ current: i + 1, total: docIds.length });
+
+      try {
+        const response = await fetch(`/api/claims/extract-from-document/${docIds[i]}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+        });
+
+        if (response.ok) {
+          const result = await response.json();
+          totalClaims += result.total_extracted || 0;
+          successCount++;
+        }
+      } catch (err) {
+        console.error(`Failed to extract from document ${docIds[i]}:`, err);
+      }
+    }
+
+    setExtracting(false);
+    setExtractionProgress(null);
+    setShowExtractModal(false);
+    setSelectedDocuments(new Set());
+
+    if (successCount > 0) {
+      toast.success(`Extracted ${totalClaims} claims from ${successCount} document(s)`);
+      refetch();
+    } else {
+      toast.error('Failed to extract claims from any documents');
+    }
+  };
 
   // Fetch claims with filtering using usePaginatedFetch
   const { items: claims, total, loading, error, refetch } = usePaginatedFetch<Claim>(
@@ -160,6 +264,15 @@ export function ClaimsPage() {
               Extracted factual claims with verification status and evidence
             </p>
           </div>
+        </div>
+        <div className="page-actions">
+          <button
+            className="btn btn-primary"
+            onClick={() => setShowExtractModal(true)}
+          >
+            <Icon name="Sparkles" size={16} />
+            Extract Claims
+          </button>
         </div>
       </header>
 
@@ -404,6 +517,111 @@ export function ClaimsPage() {
             </div>
           </div>
         </aside>
+      )}
+
+      {/* Extract Claims Modal */}
+      {showExtractModal && (
+        <div className="dialog-overlay" onClick={() => !extracting && setShowExtractModal(false)}>
+          <div className="dialog dialog-lg" onClick={(e) => e.stopPropagation()}>
+            <div className="dialog-header">
+              <div className="dialog-title-with-icon">
+                <Icon name="Sparkles" size={18} className="icon-violet" />
+                <h2>Extract Claims from Documents</h2>
+              </div>
+              <button
+                className="btn btn-icon"
+                onClick={() => setShowExtractModal(false)}
+                disabled={extracting}
+              >
+                <Icon name="X" size={20} />
+              </button>
+            </div>
+
+            <p className="dialog-description">
+              Select documents to extract factual claims using AI analysis.
+              Claims will be added to your collection for review and verification.
+            </p>
+
+            {extracting && extractionProgress ? (
+              <div className="extraction-progress">
+                <Icon name="Loader2" size={32} className="spin" />
+                <p>Extracting claims from document {extractionProgress.current} of {extractionProgress.total}...</p>
+                <div className="progress-bar">
+                  <div
+                    className="progress-fill"
+                    style={{ width: `${(extractionProgress.current / extractionProgress.total) * 100}%` }}
+                  />
+                </div>
+              </div>
+            ) : documentsLoading ? (
+              <div className="documents-loading">
+                <Icon name="Loader2" size={32} className="spin" />
+                <span>Loading documents...</span>
+              </div>
+            ) : documents.length > 0 ? (
+              <div className="document-selection">
+                <div className="selection-header">
+                  <label className="checkbox-label">
+                    <input
+                      type="checkbox"
+                      checked={selectedDocuments.size === documents.length && documents.length > 0}
+                      onChange={selectAllDocuments}
+                    />
+                    <span>Select All ({documents.length} documents)</span>
+                  </label>
+                  <span className="selection-count">
+                    {selectedDocuments.size} selected
+                  </span>
+                </div>
+
+                <div className="document-list">
+                  {documents.map((doc) => (
+                    <label key={doc.id} className="document-item">
+                      <input
+                        type="checkbox"
+                        checked={selectedDocuments.has(doc.id)}
+                        onChange={() => toggleDocumentSelection(doc.id)}
+                      />
+                      <div className="document-info">
+                        <span className="document-name">
+                          <Icon name="FileText" size={14} />
+                          {doc.title || doc.filename}
+                        </span>
+                        <span className="document-date">
+                          {formatDate(doc.created_at)}
+                        </span>
+                      </div>
+                    </label>
+                  ))}
+                </div>
+              </div>
+            ) : (
+              <div className="documents-empty">
+                <Icon name="FileQuestion" size={48} />
+                <p>No processed documents found</p>
+                <p className="hint">Upload and process documents first to extract claims</p>
+              </div>
+            )}
+
+            <div className="dialog-actions">
+              <button
+                className="btn btn-secondary"
+                onClick={() => setShowExtractModal(false)}
+                disabled={extracting}
+              >
+                Cancel
+              </button>
+              <button
+                className="btn btn-primary"
+                onClick={handleExtractClaims}
+                disabled={extracting || selectedDocuments.size === 0}
+              >
+                <Icon name="Sparkles" size={14} />
+                Extract from {selectedDocuments.size} Document{selectedDocuments.size !== 1 ? 's' : ''}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
