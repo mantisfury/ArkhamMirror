@@ -199,26 +199,39 @@ class IngestShard(ArkhamShard):
             with open(file_path, "rb") as f:
                 content = f.read()
 
+            # Build metadata - start with ingest info
+            metadata = {
+                "ingest_job_id": job.id,
+                "category": job.file_info.category.value,
+                "mime_type": job.file_info.mime_type,
+                "checksum": job.file_info.checksum,
+                "storage_path": str(file_path),
+                "quality_score": (
+                    {
+                        "classification": job.quality_score.classification.value,
+                        "issues": job.quality_score.issues,
+                    }
+                    if job.quality_score
+                    else None
+                ),
+            }
+
+            # Add extracted document metadata (author, title, creator, etc.)
+            # This comes from PDF/DOCX property extraction in ExtractWorker
+            document_metadata = result.get("document_metadata", {})
+            if document_metadata:
+                # Merge extracted metadata into the main metadata dict
+                for key, value in document_metadata.items():
+                    if value:  # Only add non-empty values
+                        metadata[key] = value
+                logger.info(f"Including extracted metadata for job {job.id}: {list(document_metadata.keys())}")
+
             # Create document in Frame's document service
             doc = await doc_service.create_document(
                 filename=job.file_info.original_name,
                 content=content,
                 project_id=None,  # Could be extracted from job metadata
-                metadata={
-                    "ingest_job_id": job.id,
-                    "category": job.file_info.category.value,
-                    "mime_type": job.file_info.mime_type,
-                    "checksum": job.file_info.checksum,
-                    "storage_path": str(file_path),
-                    "quality_score": (
-                        {
-                            "classification": job.quality_score.classification.value,
-                            "issues": job.quality_score.issues,
-                        }
-                        if job.quality_score
-                        else None
-                    ),
-                },
+                metadata=metadata,
             )
 
             # Update status to processed

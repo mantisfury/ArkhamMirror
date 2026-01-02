@@ -22,6 +22,7 @@ class SemanticSearchEngine:
         documents_service=None,
         embedding_service=None,
         worker_service=None,
+        frame=None,
     ):
         """
         Initialize semantic search engine.
@@ -31,11 +32,20 @@ class SemanticSearchEngine:
             documents_service: Optional documents service for metadata
             embedding_service: Direct embedding service (for sync calls)
             worker_service: Worker service (for async dispatching)
+            frame: ArkhamFrame instance for active project context
         """
         self.vectors = vectors_service
         self.documents = documents_service
         self.embedding_service = embedding_service
         self.worker_service = worker_service
+        self.frame = frame
+
+    def _get_collection_name(self, base_name: str) -> str:
+        """Get collection name with project scope if active."""
+        if self.frame:
+            return self.frame.get_collection_name(base_name)
+        # Fallback to global collection
+        return f"arkham_{base_name}"
 
     async def search(self, query: SearchQuery) -> list[SearchResultItem]:
         """
@@ -56,10 +66,14 @@ class SemanticSearchEngine:
             logger.warning("Failed to generate query embedding, returning empty results")
             return []
 
+        # Get project-scoped collection name
+        collection_name = self._get_collection_name("chunks")
+        logger.debug(f"Searching collection: {collection_name}")
+
         # Search Qdrant for similar vectors
         try:
             results = await self.vectors.search(
-                collection="arkham_chunks",
+                collection=collection_name,
                 query_vector=query_vector,
                 limit=query.limit,
                 filter=self._build_qdrant_filter(query.filters) if query.filters else None,
@@ -104,9 +118,13 @@ class SemanticSearchEngine:
         """
         logger.info(f"Finding similar documents to {doc_id}")
 
+        # Get project-scoped collection name
+        collection_name = self._get_collection_name("documents")
+        logger.debug(f"Searching collection: {collection_name}")
+
         # Get document vector from Qdrant
         try:
-            doc_vector = await self.vectors.get_vector(collection="arkham_documents", id=doc_id)
+            doc_vector = await self.vectors.get_vector(collection=collection_name, id=doc_id)
         except Exception as e:
             logger.error(f"Failed to get document vector: {e}")
             return []
@@ -118,7 +136,7 @@ class SemanticSearchEngine:
         # Search for similar vectors
         try:
             results = await self.vectors.search(
-                collection="arkham_documents",
+                collection=collection_name,
                 query_vector=doc_vector,
                 limit=limit + 1,  # +1 to exclude self
                 score_threshold=min_similarity,

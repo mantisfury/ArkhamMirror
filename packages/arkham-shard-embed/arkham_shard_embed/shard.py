@@ -64,7 +64,9 @@ class EmbedShard(ArkhamShard):
             logger.info("Registered EmbedWorker to gpu-embed pool")
 
         # Load configuration from environment or use defaults
-        model = os.getenv("EMBED_MODEL", "BAAI/bge-m3")
+        # Default to all-MiniLM-L6-v2 (384D, ~80MB) for faster testing
+        # Use BAAI/bge-m3 (1024D, ~2.2GB) for production quality
+        model = os.getenv("EMBED_MODEL", "all-MiniLM-L6-v2")
         device = os.getenv("EMBED_DEVICE", "auto")
         batch_size = int(os.getenv("EMBED_BATCH_SIZE", "32"))
         cache_size = int(os.getenv("EMBED_CACHE_SIZE", "1000"))
@@ -100,6 +102,7 @@ class EmbedShard(ArkhamShard):
             worker_service=worker_service,
             event_bus=event_bus,
             db_service=db_service,
+            frame=frame,
         )
 
         # Subscribe to document events for auto-embedding
@@ -245,18 +248,22 @@ class EmbedShard(ArkhamShard):
                 )
                 points.append(point)
 
+            # Get collection name based on active project
+            collection_name = self.frame.get_collection_name("documents")
+            logger.info(f"Using collection: {collection_name}")
+
             # Ensure collection exists before upserting
             model_info = self.embedding_manager.get_model_info()
-            if not await vectors_service.collection_exists("documents"):
-                logger.info(f"Creating documents collection with {model_info.dimensions} dimensions")
+            if not await vectors_service.collection_exists(collection_name):
+                logger.info(f"Creating {collection_name} collection with {model_info.dimensions} dimensions")
                 await vectors_service.create_collection(
-                    name="documents",
+                    name=collection_name,
                     vector_size=model_info.dimensions,
                 )
 
             # Upsert to Qdrant
             await vectors_service.upsert(
-                collection="documents",
+                collection=collection_name,
                 points=points,
             )
 
@@ -329,20 +336,22 @@ class EmbedShard(ArkhamShard):
     async def find_similar(
         self,
         query: str | list[float],
-        collection: str = "documents",
+        collection: str | None = None,
         limit: int = 10,
         min_similarity: float = 0.5,
-        filters: dict | None = None
+        filters: dict | None = None,
+        use_project_scope: bool = True
     ) -> list[dict]:
         """
         Public method to find similar vectors in the vector store.
 
         Args:
             query: Query text or embedding vector
-            collection: Qdrant collection name
+            collection: Base collection name (e.g., "documents") or full name if use_project_scope=False
             limit: Maximum results
             min_similarity: Minimum similarity score
             filters: Optional filter conditions
+            use_project_scope: If True, prepends project prefix to collection name
 
         Returns:
             List of similar items with scores
@@ -352,6 +361,13 @@ class EmbedShard(ArkhamShard):
             return []
 
         try:
+            # Get collection name based on active project
+            base_collection = collection or "documents"
+            if use_project_scope and self.frame:
+                collection_name = self.frame.get_collection_name(base_collection)
+            else:
+                collection_name = base_collection
+
             # Convert query to vector if needed
             if isinstance(query, str):
                 if not self.embedding_manager:
@@ -363,7 +379,7 @@ class EmbedShard(ArkhamShard):
 
             # Search for similar vectors
             results = await self.vector_store.search(
-                collection_name=collection,
+                collection_name=collection_name,
                 query_vector=query_vector,
                 limit=limit,
                 score_threshold=min_similarity,
@@ -380,8 +396,9 @@ class EmbedShard(ArkhamShard):
         self,
         embedding: list[float],
         payload: dict,
-        collection: str = "documents",
-        vector_id: str | None = None
+        collection: str | None = None,
+        vector_id: str | None = None,
+        use_project_scope: bool = True
     ) -> str | None:
         """
         Public method to store an embedding in the vector store.
@@ -389,8 +406,9 @@ class EmbedShard(ArkhamShard):
         Args:
             embedding: The embedding vector
             payload: Metadata to store with the vector
-            collection: Qdrant collection name
+            collection: Base collection name (e.g., "documents")
             vector_id: Optional ID for the vector
+            use_project_scope: If True, prepends project prefix to collection name
 
         Returns:
             Vector ID if successful, None otherwise
@@ -400,8 +418,15 @@ class EmbedShard(ArkhamShard):
             return None
 
         try:
+            # Get collection name based on active project
+            base_collection = collection or "documents"
+            if use_project_scope and self.frame:
+                collection_name = self.frame.get_collection_name(base_collection)
+            else:
+                collection_name = base_collection
+
             return await self.vector_store.upsert_vector(
-                collection_name=collection,
+                collection_name=collection_name,
                 vector=embedding,
                 payload=payload,
                 vector_id=vector_id,
@@ -414,8 +439,9 @@ class EmbedShard(ArkhamShard):
         self,
         embeddings: list[list[float]],
         payloads: list[dict],
-        collection: str = "documents",
-        vector_ids: list[str] | None = None
+        collection: str | None = None,
+        vector_ids: list[str] | None = None,
+        use_project_scope: bool = True
     ) -> list[str] | None:
         """
         Public method to store multiple embeddings in batch.
@@ -423,8 +449,9 @@ class EmbedShard(ArkhamShard):
         Args:
             embeddings: List of embedding vectors
             payloads: List of metadata dictionaries
-            collection: Qdrant collection name
+            collection: Base collection name (e.g., "documents")
             vector_ids: Optional list of vector IDs
+            use_project_scope: If True, prepends project prefix to collection name
 
         Returns:
             List of vector IDs if successful, None otherwise
@@ -434,8 +461,15 @@ class EmbedShard(ArkhamShard):
             return None
 
         try:
+            # Get collection name based on active project
+            base_collection = collection or "documents"
+            if use_project_scope and self.frame:
+                collection_name = self.frame.get_collection_name(base_collection)
+            else:
+                collection_name = base_collection
+
             return await self.vector_store.upsert_batch(
-                collection_name=collection,
+                collection_name=collection_name,
                 vectors=embeddings,
                 payloads=payloads,
                 vector_ids=vector_ids,

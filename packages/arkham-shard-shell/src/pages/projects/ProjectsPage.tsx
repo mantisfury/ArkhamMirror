@@ -3,9 +3,10 @@
  *
  * Provides UI for creating, viewing, and managing project workspaces.
  * Projects organize documents, entities, and analyses into collaborative spaces.
+ * Each project has isolated vector collections with configurable embedding models.
  */
 
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import { Icon } from '../../components/common/Icon';
 import { useToast } from '../../context/ToastContext';
 import { usePaginatedFetch } from '../../hooks';
@@ -20,10 +21,32 @@ interface Project {
   owner_id: string;
   created_at: string;
   updated_at: string;
-  settings: Record<string, unknown>;
+  settings: {
+    embedding_model?: string;
+    embedding_dimensions?: number;
+    [key: string]: unknown;
+  };
   metadata: Record<string, unknown>;
   member_count: number;
   document_count: number;
+}
+
+interface EmbeddingModel {
+  name: string;
+  dimensions: number;
+  description: string;
+}
+
+interface CollectionStats {
+  available: boolean;
+  collections: Record<string, {
+    name: string;
+    vector_count?: number;
+    dimensions?: number;
+    status?: string;
+    exists?: boolean;
+    error?: string;
+  }>;
 }
 
 const STATUS_COLORS: Record<string, string> = {
@@ -47,6 +70,8 @@ export function ProjectsPage() {
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [selectedProject, setSelectedProject] = useState<Project | null>(null);
   const [showEditModal, setShowEditModal] = useState(false);
+  const [showDetailsModal, setShowDetailsModal] = useState(false);
+  const [embeddingModels, setEmbeddingModels] = useState<EmbeddingModel[]>([]);
 
   // Fetch projects with usePaginatedFetch
   const { items: projects, total, loading, error, refetch } = usePaginatedFetch<Project>(
@@ -59,7 +84,19 @@ export function ProjectsPage() {
     }
   );
 
-  const handleCreateProject = useCallback(async (name: string, description: string) => {
+  // Fetch available embedding models
+  useEffect(() => {
+    fetch('/api/projects/embedding-models')
+      .then(res => res.json())
+      .then(data => setEmbeddingModels(data))
+      .catch(err => console.error('Failed to fetch embedding models:', err));
+  }, []);
+
+  const handleCreateProject = useCallback(async (
+    name: string,
+    description: string,
+    embeddingModel?: string
+  ) => {
     try {
       const response = await fetch('/api/projects/', {
         method: 'POST',
@@ -69,6 +106,8 @@ export function ProjectsPage() {
           description,
           owner_id: 'system',
           status: 'active',
+          embedding_model: embeddingModel || 'all-MiniLM-L6-v2',
+          create_collections: true,
         }),
       });
 
@@ -77,7 +116,7 @@ export function ProjectsPage() {
         throw new Error(error.detail || 'Failed to create project');
       }
 
-      toast.success('Project created successfully');
+      toast.success('Project created with isolated vector collections');
       setShowCreateModal(false);
       refetch();
     } catch (err) {
@@ -241,6 +280,16 @@ export function ProjectsPage() {
                       className="icon-btn"
                       onClick={() => {
                         setSelectedProject(project);
+                        setShowDetailsModal(true);
+                      }}
+                      title="View details"
+                    >
+                      <Icon name="Eye" size={16} />
+                    </button>
+                    <button
+                      className="icon-btn"
+                      onClick={() => {
+                        setSelectedProject(project);
                         setShowEditModal(true);
                       }}
                       title="Edit project"
@@ -287,6 +336,17 @@ export function ProjectsPage() {
                   </div>
                 </div>
 
+                {/* Embedding Model Info */}
+                <div className="project-embedding">
+                  <Icon name="Brain" size={14} />
+                  <span>
+                    {project.settings?.embedding_model || 'all-MiniLM-L6-v2'}
+                    {project.settings?.embedding_dimensions && (
+                      <span className="dim-badge">{project.settings.embedding_dimensions}D</span>
+                    )}
+                  </span>
+                </div>
+
                 <div className="project-footer">
                   <span className="project-date">
                     Created {new Date(project.created_at).toLocaleDateString()}
@@ -321,6 +381,7 @@ export function ProjectsPage() {
       {showCreateModal && (
         <ProjectModal
           title="Create New Project"
+          embeddingModels={embeddingModels}
           onClose={() => setShowCreateModal(false)}
           onSave={handleCreateProject}
         />
@@ -331,6 +392,7 @@ export function ProjectsPage() {
         <ProjectModal
           title="Edit Project"
           project={selectedProject}
+          embeddingModels={embeddingModels}
           onClose={() => {
             setShowEditModal(false);
             setSelectedProject(null);
@@ -338,6 +400,19 @@ export function ProjectsPage() {
           onSave={(name, description, status) =>
             handleUpdateProject(selectedProject.id, name, description, status || selectedProject.status)
           }
+        />
+      )}
+
+      {/* Project Details Modal */}
+      {showDetailsModal && selectedProject && (
+        <ProjectDetailsModal
+          project={selectedProject}
+          embeddingModels={embeddingModels}
+          onClose={() => {
+            setShowDetailsModal(false);
+            setSelectedProject(null);
+          }}
+          onRefresh={refetch}
         />
       )}
     </div>
@@ -348,20 +423,26 @@ export function ProjectsPage() {
 interface ProjectModalProps {
   title: string;
   project?: Project;
+  embeddingModels: EmbeddingModel[];
   onClose: () => void;
-  onSave: (name: string, description: string, status?: string) => void;
+  onSave: (name: string, description: string, status?: string, embeddingModel?: string) => void;
 }
 
-function ProjectModal({ title, project, onClose, onSave }: ProjectModalProps) {
+function ProjectModal({ title, project, embeddingModels, onClose, onSave }: ProjectModalProps) {
   const [name, setName] = useState(project?.name || '');
   const [description, setDescription] = useState(project?.description || '');
   const [status, setStatus] = useState(project?.status || 'active');
+  const [embeddingModel, setEmbeddingModel] = useState(
+    project?.settings?.embedding_model || 'all-MiniLM-L6-v2'
+  );
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!name.trim()) return;
-    onSave(name, description, status);
+    onSave(name, description, status, embeddingModel);
   };
+
+  const selectedModelInfo = embeddingModels.find(m => m.name === embeddingModel);
 
   return (
     <div className="modal-overlay" onClick={onClose}>
@@ -414,6 +495,35 @@ function ProjectModal({ title, project, onClose, onSave }: ProjectModalProps) {
             </div>
           )}
 
+          {/* Embedding Model Selection - only for new projects */}
+          {!project && (
+            <div className="form-group">
+              <label htmlFor="embedding-model">
+                <Icon name="Brain" size={14} style={{ marginRight: '4px' }} />
+                Embedding Model
+              </label>
+              <select
+                id="embedding-model"
+                value={embeddingModel}
+                onChange={(e) => setEmbeddingModel(e.target.value)}
+              >
+                {embeddingModels.map(model => (
+                  <option key={model.name} value={model.name}>
+                    {model.name} ({model.dimensions}D)
+                  </option>
+                ))}
+              </select>
+              {selectedModelInfo && (
+                <p className="form-hint">
+                  {selectedModelInfo.description}
+                  <br />
+                  <strong>Note:</strong> Each project has isolated vector collections.
+                  Different projects can use different embedding models.
+                </p>
+              )}
+            </div>
+          )}
+
           <div className="modal-actions">
             <button type="button" className="btn btn-secondary" onClick={onClose}>
               Cancel
@@ -423,6 +533,273 @@ function ProjectModal({ title, project, onClose, onSave }: ProjectModalProps) {
             </button>
           </div>
         </form>
+      </div>
+    </div>
+  );
+}
+
+// Project Details Modal - Shows collection stats and allows model changes
+interface ProjectDetailsModalProps {
+  project: Project;
+  embeddingModels: EmbeddingModel[];
+  onClose: () => void;
+  onRefresh: () => void;
+}
+
+function ProjectDetailsModal({ project, embeddingModels, onClose, onRefresh }: ProjectDetailsModalProps) {
+  const { toast } = useToast();
+  const [collectionStats, setCollectionStats] = useState<CollectionStats | null>(null);
+  const [loadingStats, setLoadingStats] = useState(true);
+  const [showChangeModel, setShowChangeModel] = useState(false);
+  const [newModel, setNewModel] = useState(project.settings?.embedding_model || 'all-MiniLM-L6-v2');
+  const [changing, setChanging] = useState(false);
+
+  // Fetch collection stats
+  useEffect(() => {
+    setLoadingStats(true);
+    fetch(`/api/projects/${project.id}/collections`)
+      .then(res => res.json())
+      .then(data => setCollectionStats(data))
+      .catch(err => console.error('Failed to fetch collection stats:', err))
+      .finally(() => setLoadingStats(false));
+  }, [project.id]);
+
+  const currentModel = project.settings?.embedding_model || 'all-MiniLM-L6-v2';
+  const currentDims = project.settings?.embedding_dimensions || 384;
+  const newModelInfo = embeddingModels.find(m => m.name === newModel);
+  const requiresWipe = newModelInfo && newModelInfo.dimensions !== currentDims;
+
+  const handleChangeModel = async () => {
+    if (!newModel || newModel === currentModel) return;
+
+    if (requiresWipe) {
+      const confirmed = confirm(
+        `Changing from ${currentModel} (${currentDims}D) to ${newModel} (${newModelInfo?.dimensions}D) ` +
+        `requires wiping all vectors in this project's collections.\n\n` +
+        `This will delete all embedded vectors. You will need to re-embed documents.\n\n` +
+        `Are you sure you want to proceed?`
+      );
+      if (!confirmed) return;
+    }
+
+    setChanging(true);
+    try {
+      const response = await fetch(`/api/projects/${project.id}/embedding-model`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: newModel,
+          wipe_collections: requiresWipe,
+        }),
+      });
+
+      const result = await response.json();
+
+      if (!response.ok || !result.success) {
+        throw new Error(result.message || result.detail || 'Failed to change model');
+      }
+
+      toast.success(
+        result.wiped
+          ? `Model changed to ${newModel}. Collections wiped and recreated.`
+          : `Model changed to ${newModel}`
+      );
+      setShowChangeModel(false);
+      onRefresh();
+
+      // Refresh stats
+      const statsRes = await fetch(`/api/projects/${project.id}/collections`);
+      setCollectionStats(await statsRes.json());
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to change model');
+    } finally {
+      setChanging(false);
+    }
+  };
+
+  const getTotalVectors = () => {
+    if (!collectionStats?.collections) return 0;
+    return Object.values(collectionStats.collections).reduce(
+      (sum, c) => sum + (c.vector_count || 0),
+      0
+    );
+  };
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal modal-large" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-header">
+          <h2>
+            <Icon name="FolderKanban" size={20} style={{ marginRight: '8px' }} />
+            {project.name}
+          </h2>
+          <button className="icon-btn" onClick={onClose}>
+            <Icon name="X" size={20} />
+          </button>
+        </div>
+
+        <div className="modal-content">
+          {/* Project Info */}
+          <div className="details-section">
+            <h3>Project Info</h3>
+            <p className="project-description">{project.description || 'No description'}</p>
+            <div className="details-grid">
+              <div className="detail-item">
+                <span className="detail-label">Status</span>
+                <span className={`status-badge ${STATUS_COLORS[project.status]}`}>
+                  {STATUS_LABELS[project.status]}
+                </span>
+              </div>
+              <div className="detail-item">
+                <span className="detail-label">Documents</span>
+                <span>{project.document_count}</span>
+              </div>
+              <div className="detail-item">
+                <span className="detail-label">Members</span>
+                <span>{project.member_count}</span>
+              </div>
+              <div className="detail-item">
+                <span className="detail-label">Created</span>
+                <span>{new Date(project.created_at).toLocaleDateString()}</span>
+              </div>
+            </div>
+          </div>
+
+          {/* Embedding Model Section */}
+          <div className="details-section">
+            <h3>
+              <Icon name="Brain" size={16} style={{ marginRight: '8px' }} />
+              Embedding Model
+            </h3>
+            <div className="model-info-card">
+              <div className="model-current">
+                <strong>{currentModel}</strong>
+                <span className="dim-badge">{currentDims}D</span>
+              </div>
+              <p className="model-description">
+                {embeddingModels.find(m => m.name === currentModel)?.description || ''}
+              </p>
+              {!showChangeModel ? (
+                <button
+                  className="btn btn-secondary btn-sm"
+                  onClick={() => setShowChangeModel(true)}
+                >
+                  <Icon name="RefreshCw" size={14} />
+                  Change Model
+                </button>
+              ) : (
+                <div className="model-change-form">
+                  <select
+                    value={newModel}
+                    onChange={(e) => setNewModel(e.target.value)}
+                    disabled={changing}
+                  >
+                    {embeddingModels.map(model => (
+                      <option key={model.name} value={model.name}>
+                        {model.name} ({model.dimensions}D)
+                      </option>
+                    ))}
+                  </select>
+                  {requiresWipe && (
+                    <div className="warning-box">
+                      <Icon name="AlertTriangle" size={16} />
+                      <span>
+                        Dimension mismatch ({currentDims}D → {newModelInfo?.dimensions}D).
+                        Collections will be wiped.
+                      </span>
+                    </div>
+                  )}
+                  <div className="model-change-actions">
+                    <button
+                      className="btn btn-secondary btn-sm"
+                      onClick={() => {
+                        setShowChangeModel(false);
+                        setNewModel(currentModel);
+                      }}
+                      disabled={changing}
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      className={`btn btn-sm ${requiresWipe ? 'btn-danger' : 'btn-primary'}`}
+                      onClick={handleChangeModel}
+                      disabled={changing || newModel === currentModel}
+                    >
+                      {changing ? (
+                        <>
+                          <Icon name="Loader2" size={14} className="spin" />
+                          Changing...
+                        </>
+                      ) : requiresWipe ? (
+                        'Wipe & Change'
+                      ) : (
+                        'Apply'
+                      )}
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Vector Collections Section */}
+          <div className="details-section">
+            <h3>
+              <Icon name="Database" size={16} style={{ marginRight: '8px' }} />
+              Vector Collections
+            </h3>
+            {loadingStats ? (
+              <div className="loading-stats">
+                <Icon name="Loader2" size={20} className="spin" />
+                <span>Loading collection stats...</span>
+              </div>
+            ) : collectionStats?.available ? (
+              <div className="collections-grid">
+                {Object.entries(collectionStats.collections).map(([type, info]) => (
+                  <div key={type} className="collection-card">
+                    <div className="collection-header">
+                      <Icon
+                        name={type === 'documents' ? 'FileText' : type === 'chunks' ? 'Layers' : 'Users'}
+                        size={16}
+                      />
+                      <span>{type}</span>
+                    </div>
+                    {info.exists === false ? (
+                      <div className="collection-empty">Not created</div>
+                    ) : info.error ? (
+                      <div className="collection-error">{info.error}</div>
+                    ) : (
+                      <div className="collection-stats">
+                        <div className="coll-stat">
+                          <span className="coll-stat-value">{info.vector_count?.toLocaleString() || 0}</span>
+                          <span className="coll-stat-label">vectors</span>
+                        </div>
+                        <div className="coll-stat">
+                          <span className="coll-stat-value">{info.dimensions || currentDims}</span>
+                          <span className="coll-stat-label">dimensions</span>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                ))}
+                <div className="collection-total">
+                  Total: {getTotalVectors().toLocaleString()} vectors across all collections
+                </div>
+              </div>
+            ) : (
+              <div className="collections-unavailable">
+                <Icon name="AlertCircle" size={20} />
+                <span>Vector service not available</span>
+              </div>
+            )}
+          </div>
+        </div>
+
+        <div className="modal-actions">
+          <button className="btn btn-secondary" onClick={onClose}>
+            Close
+          </button>
+        </div>
       </div>
     </div>
   );

@@ -58,6 +58,9 @@ class ArkhamFrame:
         # Loaded shards
         self.shards: Dict[str, Any] = {}
 
+        # Active project for routing operations to project-scoped collections
+        self._active_project_id: Optional[str] = None
+
         _frame_instance = self
 
     @property
@@ -228,10 +231,106 @@ class ArkhamFrame:
         }
         return service_map.get(name)
 
+    # ---- Active Project Management ----
+
+    @property
+    def active_project_id(self) -> Optional[str]:
+        """Get the currently active project ID."""
+        return self._active_project_id
+
+    async def set_active_project(self, project_id: Optional[str]) -> bool:
+        """
+        Set the active project for routing operations.
+
+        Args:
+            project_id: Project ID to set as active, or None to clear.
+
+        Returns:
+            True if set successfully, False if project doesn't exist.
+        """
+        if project_id is None:
+            self._active_project_id = None
+            logger.info("Active project cleared")
+            return True
+
+        # Verify project exists
+        if self.projects:
+            try:
+                await self.projects.get_project(project_id)
+                self._active_project_id = project_id
+                logger.info(f"Active project set to: {project_id}")
+                return True
+            except Exception as e:
+                logger.warning(f"Failed to set active project: {e}")
+                return False
+        else:
+            # No project service, just set it
+            self._active_project_id = project_id
+            return True
+
+    async def get_active_project(self) -> Optional[Dict[str, Any]]:
+        """
+        Get the full active project details.
+
+        Returns:
+            Project dict or None if no active project.
+        """
+        if not self._active_project_id:
+            return None
+
+        if self.projects:
+            try:
+                project = await self.projects.get_project(self._active_project_id)
+                return project
+            except Exception:
+                return None
+        return None
+
+    def get_collection_name(self, base_name: str) -> str:
+        """
+        Get the collection name for the active project context.
+
+        If an active project is set, returns project-scoped collection name.
+        Otherwise, returns the global collection name.
+
+        Args:
+            base_name: Base collection name (e.g., "documents", "chunks", "entities")
+
+        Returns:
+            Collection name (e.g., "project_abc123_documents" or "arkham_documents")
+        """
+        if self._active_project_id:
+            return f"project_{self._active_project_id}_{base_name}"
+        # Fall back to global collections
+        return f"arkham_{base_name}"
+
+    def get_project_collections(self, project_id: Optional[str] = None) -> Dict[str, str]:
+        """
+        Get all collection names for a project.
+
+        Args:
+            project_id: Project ID, or None to use active project.
+
+        Returns:
+            Dict mapping base name to full collection name.
+        """
+        pid = project_id or self._active_project_id
+        if pid:
+            prefix = f"project_{pid}_"
+        else:
+            prefix = "arkham_"
+
+        return {
+            "documents": f"{prefix}documents",
+            "chunks": f"{prefix}chunks",
+            "entities": f"{prefix}entities",
+        }
+
     def get_state(self) -> Dict[str, Any]:
         """Get current Frame state for API."""
         state = {
             "version": "0.1.0",
+            "active_project_id": self._active_project_id,
             "services": {
                 "config": self.config is not None,
                 "resources": self.resources is not None,

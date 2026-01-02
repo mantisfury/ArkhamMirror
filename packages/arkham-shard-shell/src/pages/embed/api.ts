@@ -20,6 +20,11 @@ import type {
   SimilarityRequest,
   NearestRequest,
   DocumentEmbedRequest,
+  AvailableModel,
+  VectorCollection,
+  ModelSwitchCheckResult,
+  ModelSwitchResult,
+  CurrentModelInfo,
 } from './types';
 
 const API_PREFIX = '/api/embed';
@@ -284,4 +289,109 @@ export function useClearCache() {
   }, []);
 
   return { clear, loading, error };
+}
+
+// --- Model Management API Functions ---
+
+export async function getCurrentModel(): Promise<CurrentModelInfo> {
+  return fetchAPI<CurrentModelInfo>('/model/current');
+}
+
+export async function getAvailableModels(): Promise<AvailableModel[]> {
+  return fetchAPI<AvailableModel[]>('/model/available');
+}
+
+export async function getVectorCollections(): Promise<VectorCollection[]> {
+  return fetchAPI<VectorCollection[]>('/model/collections');
+}
+
+export async function checkModelSwitch(model: string): Promise<ModelSwitchCheckResult> {
+  return fetchAPI<ModelSwitchCheckResult>('/model/check-switch', {
+    method: 'POST',
+    body: JSON.stringify({ model }),
+  });
+}
+
+export async function switchModel(model: string, confirmWipe: boolean = false): Promise<ModelSwitchResult> {
+  return fetchAPI<ModelSwitchResult>('/model/switch', {
+    method: 'POST',
+    body: JSON.stringify({ model, confirm_wipe: confirmWipe }),
+  });
+}
+
+// --- Model Management Hooks ---
+
+/**
+ * Hook for fetching current model info
+ */
+export function useCurrentModel() {
+  return useFetch<CurrentModelInfo>(`${API_PREFIX}/model/current`);
+}
+
+/**
+ * Hook for fetching available models
+ */
+export function useAvailableModels() {
+  return useFetch<AvailableModel[]>(`${API_PREFIX}/model/available`);
+}
+
+/**
+ * Hook for fetching vector collections
+ */
+export function useVectorCollections() {
+  return useFetch<VectorCollection[]>(`${API_PREFIX}/model/collections`);
+}
+
+/**
+ * Hook for checking model switch impact
+ */
+export function useCheckModelSwitch() {
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<Error | null>(null);
+  const [data, setData] = useState<ModelSwitchCheckResult | null>(null);
+
+  const check = useCallback(async (model: string) => {
+    setLoading(true);
+    setError(null);
+    try {
+      const result = await checkModelSwitch(model);
+      setData(result);
+      return result;
+    } catch (err) {
+      const error = err instanceof Error ? err : new Error('Check failed');
+      setError(error);
+      throw error;
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  return { check, data, loading, error };
+}
+
+/**
+ * Hook for switching embedding model
+ */
+export function useSwitchModel() {
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<Error | null>(null);
+  const [data, setData] = useState<ModelSwitchResult | null>(null);
+
+  const switchTo = useCallback(async (model: string, confirmWipe: boolean = false) => {
+    setLoading(true);
+    setError(null);
+    try {
+      const result = await switchModel(model, confirmWipe);
+      setData(result);
+      return result;
+    } catch (err) {
+      const error = err instanceof Error ? err : new Error('Switch failed');
+      setError(error);
+      throw error;
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  return { switchTo, data, loading, error };
 }

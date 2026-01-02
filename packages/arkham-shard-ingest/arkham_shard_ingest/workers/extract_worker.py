@@ -210,13 +210,13 @@ class ExtractWorker(BaseWorker):
 
     async def _extract_pdf(self, path: Path) -> Dict[str, Any]:
         """
-        Extract text from PDF file.
+        Extract text and metadata from PDF file.
 
         Args:
             path: Path to PDF file
 
         Returns:
-            dict with text and page count
+            dict with text, page count, and document_metadata
 
         Raises:
             ImportError: If pypdf is not installed
@@ -242,6 +242,29 @@ class ExtractWorker(BaseWorker):
                         "Encrypted PDFs are not supported."
                     )
 
+                # Extract PDF metadata (author, title, creator, etc.)
+                document_metadata = {}
+                if reader.metadata:
+                    meta = reader.metadata
+                    # Standard PDF metadata fields
+                    if meta.author:
+                        document_metadata["author"] = str(meta.author)
+                    if meta.title:
+                        document_metadata["title"] = str(meta.title)
+                    if meta.subject:
+                        document_metadata["subject"] = str(meta.subject)
+                    if meta.creator:
+                        document_metadata["creator"] = str(meta.creator)
+                    if meta.producer:
+                        document_metadata["producer"] = str(meta.producer)
+                    if meta.creation_date:
+                        document_metadata["creation_date"] = str(meta.creation_date)
+                    if meta.modification_date:
+                        document_metadata["modification_date"] = str(meta.modification_date)
+                    # Keywords (may be comma-separated string)
+                    if hasattr(meta, 'keywords') and meta.keywords:
+                        document_metadata["keywords"] = str(meta.keywords)
+
                 pages = []
                 for page in reader.pages:
                     text = page.extract_text()
@@ -253,6 +276,7 @@ class ExtractWorker(BaseWorker):
                 return {
                     "text": full_text,
                     "pages": len(reader.pages),
+                    "document_metadata": document_metadata,
                 }
 
             except Exception as e:
@@ -264,13 +288,13 @@ class ExtractWorker(BaseWorker):
 
     async def _extract_docx(self, path: Path) -> Dict[str, Any]:
         """
-        Extract text from DOCX file.
+        Extract text and metadata from DOCX file.
 
         Args:
             path: Path to DOCX file
 
         Returns:
-            dict with text and paragraph count
+            dict with text, paragraph count, and document_metadata
 
         Raises:
             ImportError: If python-docx is not installed
@@ -288,6 +312,31 @@ class ExtractWorker(BaseWorker):
         def extract():
             try:
                 doc = Document(str(path))
+
+                # Extract document metadata from core properties
+                document_metadata = {}
+                if doc.core_properties:
+                    props = doc.core_properties
+                    if props.author:
+                        document_metadata["author"] = str(props.author)
+                    if props.title:
+                        document_metadata["title"] = str(props.title)
+                    if props.subject:
+                        document_metadata["subject"] = str(props.subject)
+                    if props.keywords:
+                        document_metadata["keywords"] = str(props.keywords)
+                    if props.category:
+                        document_metadata["category"] = str(props.category)
+                    if props.comments:
+                        document_metadata["comments"] = str(props.comments)
+                    if props.last_modified_by:
+                        document_metadata["last_modified_by"] = str(props.last_modified_by)
+                    if props.created:
+                        document_metadata["creation_date"] = str(props.created)
+                    if props.modified:
+                        document_metadata["modification_date"] = str(props.modified)
+                    if props.revision:
+                        document_metadata["revision"] = str(props.revision)
 
                 # Extract paragraphs
                 paragraphs = []
@@ -316,6 +365,7 @@ class ExtractWorker(BaseWorker):
                 return {
                     "text": full_text,
                     "pages": len(paragraphs),  # Use paragraph count as proxy
+                    "document_metadata": document_metadata,
                 }
 
             except Exception as e:
@@ -326,13 +376,13 @@ class ExtractWorker(BaseWorker):
 
     async def _extract_xlsx(self, path: Path) -> Dict[str, Any]:
         """
-        Extract text from XLSX file.
+        Extract text and metadata from XLSX file.
 
         Args:
             path: Path to XLSX file
 
         Returns:
-            dict with text and sheet count
+            dict with text, sheet count, and document_metadata
 
         Raises:
             ImportError: If openpyxl is not installed
@@ -349,12 +399,37 @@ class ExtractWorker(BaseWorker):
         # Run in executor to avoid blocking
         def extract():
             try:
-                # Load workbook (read-only for better performance)
+                # Load workbook (NOT read-only so we can access properties)
                 wb = load_workbook(
                     str(path),
-                    read_only=True,
+                    read_only=False,  # Need full load for properties
                     data_only=True  # Get computed values, not formulas
                 )
+
+                # Extract workbook metadata
+                document_metadata = {}
+                if wb.properties:
+                    props = wb.properties
+                    if props.creator:
+                        document_metadata["author"] = str(props.creator)
+                    if props.title:
+                        document_metadata["title"] = str(props.title)
+                    if props.subject:
+                        document_metadata["subject"] = str(props.subject)
+                    if props.description:
+                        document_metadata["description"] = str(props.description)
+                    if props.keywords:
+                        document_metadata["keywords"] = str(props.keywords)
+                    if props.category:
+                        document_metadata["category"] = str(props.category)
+                    if props.lastModifiedBy:
+                        document_metadata["last_modified_by"] = str(props.lastModifiedBy)
+                    if props.created:
+                        document_metadata["creation_date"] = str(props.created)
+                    if props.modified:
+                        document_metadata["modification_date"] = str(props.modified)
+                    if props.company:
+                        document_metadata["company"] = str(props.company)
 
                 sheets = []
 
@@ -377,6 +452,7 @@ class ExtractWorker(BaseWorker):
                 return {
                     "text": full_text,
                     "pages": len(wb.sheetnames),
+                    "document_metadata": document_metadata,
                 }
 
             except Exception as e:
@@ -429,13 +505,13 @@ class ExtractWorker(BaseWorker):
 
     async def _extract_eml(self, path: Path) -> Dict[str, Any]:
         """
-        Extract text from EML or EMLX (Apple Mail) email file.
+        Extract text and metadata from EML or EMLX (Apple Mail) email file.
 
         Args:
             path: Path to email file
 
         Returns:
-            dict with text (headers + body) and part count
+            dict with text (headers + body), part count, and document_metadata
         """
         import email
         from email import policy
@@ -462,10 +538,60 @@ class ExtractWorker(BaseWorker):
                 # Parse email
                 msg = email.message_from_bytes(content, policy=policy.default)
 
+                # Extract email metadata (headers are the metadata for emails!)
+                document_metadata = {}
+
+                # Core email metadata
+                if msg.get("From"):
+                    document_metadata["author"] = str(msg.get("From"))
+                    document_metadata["email_from"] = str(msg.get("From"))
+                if msg.get("To"):
+                    document_metadata["email_to"] = str(msg.get("To"))
+                if msg.get("Cc"):
+                    document_metadata["email_cc"] = str(msg.get("Cc"))
+                if msg.get("Bcc"):
+                    document_metadata["email_bcc"] = str(msg.get("Bcc"))
+                if msg.get("Subject"):
+                    document_metadata["title"] = str(msg.get("Subject"))
+                    document_metadata["email_subject"] = str(msg.get("Subject"))
+                if msg.get("Date"):
+                    document_metadata["creation_date"] = str(msg.get("Date"))
+                    document_metadata["email_date"] = str(msg.get("Date"))
+
+                # Additional email metadata
+                if msg.get("Reply-To"):
+                    document_metadata["email_reply_to"] = str(msg.get("Reply-To"))
+                if msg.get("Message-ID"):
+                    document_metadata["email_message_id"] = str(msg.get("Message-ID"))
+                if msg.get("In-Reply-To"):
+                    document_metadata["email_in_reply_to"] = str(msg.get("In-Reply-To"))
+                if msg.get("X-Mailer"):
+                    document_metadata["creator"] = str(msg.get("X-Mailer"))
+                if msg.get("User-Agent"):
+                    document_metadata["creator"] = str(msg.get("User-Agent"))
+                if msg.get("Organization"):
+                    document_metadata["organization"] = str(msg.get("Organization"))
+
+                # Check for attachments
+                attachment_count = 0
+                attachment_names = []
+                if msg.is_multipart():
+                    for part in msg.walk():
+                        if part.get_content_disposition() == "attachment":
+                            attachment_count += 1
+                            filename = part.get_filename()
+                            if filename:
+                                attachment_names.append(filename)
+
+                if attachment_count > 0:
+                    document_metadata["attachment_count"] = attachment_count
+                    if attachment_names:
+                        document_metadata["attachments"] = ", ".join(attachment_names)
+
                 parts = []
                 part_count = 0
 
-                # Extract headers
+                # Extract headers for text content
                 headers = []
                 for header in ["From", "To", "Cc", "Subject", "Date"]:
                     value = msg.get(header)
@@ -510,6 +636,7 @@ class ExtractWorker(BaseWorker):
                 return {
                     "text": "\n".join(parts),
                     "pages": max(1, part_count),
+                    "document_metadata": document_metadata,
                 }
 
             except Exception as e:

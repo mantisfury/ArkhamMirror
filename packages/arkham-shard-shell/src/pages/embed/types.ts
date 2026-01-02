@@ -109,3 +109,55 @@ export interface DocumentEmbedRequest {
   chunk_size?: number;
   chunk_overlap?: number;
 }
+
+// --- Model Management Types ---
+
+export interface AvailableModel {
+  name: string;
+  dimensions: number;
+  max_length: number;
+  size_mb: number;
+  description: string;
+  loaded: boolean;
+  is_current: boolean;
+}
+
+export interface VectorCollection {
+  name: string;
+  vector_size: number;
+  points_count: number;
+  status: string;
+}
+
+export interface ModelSwitchCheckResult {
+  success: boolean;
+  requires_wipe: boolean | null;
+  message: string;
+  current_model: string;
+  current_dimensions: number;
+  new_model: string;
+  new_dimensions: number | null;
+  affected_collections: string[];
+  total_vectors_affected?: number;
+}
+
+export interface ModelSwitchResult {
+  success: boolean;
+  message: string;
+  previous_model: string | null;
+  new_model: string | null;
+  previous_dimensions: number | null;
+  new_dimensions: number | null;
+  collections_wiped: boolean;
+  requires_wipe: boolean;
+  affected_collections: string[];
+}
+
+export interface CurrentModelInfo {
+  model: string;
+  dimensions: number;
+  max_length: number;
+  loaded: boolean;
+  device: string | null;
+  description: string;
+}

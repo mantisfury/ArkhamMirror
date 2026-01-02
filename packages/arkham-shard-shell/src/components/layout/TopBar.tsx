@@ -1,11 +1,12 @@
 /**
  * TopBar - Top navigation bar
  *
- * Shows current shard info, connection status, and quick actions.
+ * Shows current shard info, connection status, project selector, and quick actions.
  */
 
 import { useShell } from '../../context/ShellContext';
 import { Icon } from '../common/Icon';
+import { ProjectSelector } from '../common/ProjectSelector';
 
 export function TopBar() {
   const { currentShard, loading, error, connected, refetchShards } = useShell();
@@ -42,6 +43,9 @@ export function TopBar() {
       </div>
 
       <div className="topbar-right">
+        {/* Project selector */}
+        <ProjectSelector />
+
         {/* Connection status indicator */}
         <div className="topbar-status">
           <button

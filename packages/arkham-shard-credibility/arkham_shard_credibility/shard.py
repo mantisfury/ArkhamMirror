@@ -25,6 +25,15 @@ from .models import (
     SourceCredibility,
     SourceType,
     STANDARD_FACTORS,
+    # Deception detection models
+    DeceptionAssessment,
+    DeceptionChecklist,
+    DeceptionChecklistType,
+    DeceptionIndicator,
+    DeceptionRisk,
+    IndicatorStrength,
+    create_empty_checklist,
+    get_indicators_for_checklist,
 )
 
 logger = logging.getLogger(__name__)
@@ -134,6 +143,53 @@ class CredibilityShard(ArkhamShard):
         """)
         await self._db.execute("""
             CREATE INDEX IF NOT EXISTS idx_credibility_created ON arkham_credibility_assessments(created_at DESC)
+        """)
+
+        # Deception assessments table
+        await self._db.execute("""
+            CREATE TABLE IF NOT EXISTS arkham_deception_assessments (
+                id TEXT PRIMARY KEY,
+                source_type TEXT NOT NULL,
+                source_id TEXT NOT NULL,
+                source_name TEXT,
+
+                -- Checklist data (JSON)
+                mom_data TEXT DEFAULT '{}',
+                pop_data TEXT DEFAULT '{}',
+                moses_data TEXT DEFAULT '{}',
+                eve_data TEXT DEFAULT '{}',
+
+                -- Aggregate scores
+                overall_score INTEGER DEFAULT 0,
+                risk_level TEXT DEFAULT 'minimal',
+                confidence REAL DEFAULT 0.0,
+
+                -- Integration with main credibility
+                linked_assessment_id TEXT,
+                affects_credibility INTEGER DEFAULT 1,
+                credibility_weight REAL DEFAULT 0.3,
+
+                -- Metadata
+                assessed_by TEXT DEFAULT 'manual',
+                assessor_id TEXT,
+                summary TEXT,
+                red_flags TEXT DEFAULT '[]',
+
+                -- Timestamps
+                created_at TEXT,
+                updated_at TEXT
+            )
+        """)
+
+        # Create indexes for deception table
+        await self._db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_deception_source ON arkham_deception_assessments(source_type, source_id)
+        """)
+        await self._db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_deception_score ON arkham_deception_assessments(overall_score DESC)
+        """)
+        await self._db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_deception_risk ON arkham_deception_assessments(risk_level)
         """)
 
         logger.debug("Credibility schema created/verified")
@@ -516,9 +572,9 @@ Evaluate the following factors (0-100 scale):
 
 Return as JSON with factors and overall score."""
 
-                response = await self._llm.complete(prompt)
+                llm_response = await self._llm.generate(prompt)
                 # Parse LLM response
-                parsed = self._parse_llm_assessment(response)
+                parsed = self._parse_llm_assessment(llm_response.text)
                 factors = parsed.get("factors", [])
                 calculated_score = parsed.get("score", 50)
                 confidence = 0.8  # Higher confidence for LLM
@@ -810,3 +866,585 @@ Return as JSON with factors and overall score."""
             logger.warning("Failed to parse LLM assessment response as JSON")
 
         return {"score": 50, "factors": []}
+
+    # =========================================================================
+    # DECEPTION DETECTION (MOM/POP/MOSES/EVE) METHODS
+    # =========================================================================
+
+    async def create_deception_assessment(
+        self,
+        source_type: SourceType,
+        source_id: str,
+        source_name: Optional[str] = None,
+        linked_assessment_id: Optional[str] = None,
+        affects_credibility: bool = True,
+        credibility_weight: float = 0.3,
+    ) -> DeceptionAssessment:
+        """Create a new deception detection assessment with empty checklists."""
+        assessment_id = str(uuid4())
+        now = datetime.utcnow()
+
+        # Create empty checklists with standard indicators
+        mom_checklist = create_empty_checklist(DeceptionChecklistType.MOM)
+        pop_checklist = create_empty_checklist(DeceptionChecklistType.POP)
+        moses_checklist = create_empty_checklist(DeceptionChecklistType.MOSES)
+        eve_checklist = create_empty_checklist(DeceptionChecklistType.EVE)
+
+        assessment = DeceptionAssessment(
+            id=assessment_id,
+            source_type=source_type,
+            source_id=source_id,
+            source_name=source_name,
+            mom_checklist=mom_checklist,
+            pop_checklist=pop_checklist,
+            moses_checklist=moses_checklist,
+            eve_checklist=eve_checklist,
+            linked_assessment_id=linked_assessment_id,
+            affects_credibility=affects_credibility,
+            credibility_weight=credibility_weight,
+            created_at=now,
+            updated_at=now,
+        )
+
+        await self._save_deception_assessment(assessment)
+
+        # Emit event
+        if self._events:
+            await self._events.emit(
+                "credibility.deception.created",
+                {
+                    "assessment_id": assessment_id,
+                    "source_type": source_type.value,
+                    "source_id": source_id,
+                },
+                source=self.name,
+            )
+
+        return assessment
+
+    async def get_deception_assessment(self, assessment_id: str) -> Optional[DeceptionAssessment]:
+        """Get a deception assessment by ID."""
+        if not self._db:
+            return None
+
+        row = await self._db.fetch_one(
+            "SELECT * FROM arkham_deception_assessments WHERE id = ?",
+            [assessment_id],
+        )
+        return self._row_to_deception_assessment(row) if row else None
+
+    async def list_deception_assessments(
+        self,
+        source_type: Optional[SourceType] = None,
+        source_id: Optional[str] = None,
+        min_score: Optional[int] = None,
+        risk_level: Optional[str] = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> List[DeceptionAssessment]:
+        """List deception assessments with optional filtering."""
+        if not self._db:
+            return []
+
+        query = "SELECT * FROM arkham_deception_assessments WHERE 1=1"
+        params = []
+
+        if source_type:
+            query += " AND source_type = ?"
+            params.append(source_type.value)
+        if source_id:
+            query += " AND source_id = ?"
+            params.append(source_id)
+        if min_score is not None:
+            query += " AND overall_score >= ?"
+            params.append(min_score)
+        if risk_level:
+            query += " AND risk_level = ?"
+            params.append(risk_level)
+
+        query += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
+
+        rows = await self._db.fetch_all(query, params)
+        return [self._row_to_deception_assessment(row) for row in rows]
+
+    async def update_deception_assessment(
+        self,
+        assessment_id: str,
+        source_name: Optional[str] = None,
+        summary: Optional[str] = None,
+        red_flags: Optional[List[str]] = None,
+        affects_credibility: Optional[bool] = None,
+        credibility_weight: Optional[float] = None,
+    ) -> Optional[DeceptionAssessment]:
+        """Update a deception assessment metadata."""
+        assessment = await self.get_deception_assessment(assessment_id)
+        if not assessment:
+            return None
+
+        if source_name is not None:
+            assessment.source_name = source_name
+        if summary is not None:
+            assessment.summary = summary
+        if red_flags is not None:
+            assessment.red_flags = red_flags
+        if affects_credibility is not None:
+            assessment.affects_credibility = affects_credibility
+        if credibility_weight is not None:
+            assessment.credibility_weight = credibility_weight
+
+        assessment.updated_at = datetime.utcnow()
+
+        await self._save_deception_assessment(assessment, update=True)
+        return assessment
+
+    async def delete_deception_assessment(self, assessment_id: str) -> bool:
+        """Delete a deception assessment."""
+        if not self._db:
+            return False
+
+        await self._db.execute(
+            "DELETE FROM arkham_deception_assessments WHERE id = ?",
+            [assessment_id],
+        )
+        return True
+
+    async def update_deception_checklist(
+        self,
+        assessment_id: str,
+        checklist_type: DeceptionChecklistType,
+        indicators: List[Any],  # List of DeceptionIndicatorModel from API
+        summary: Optional[str] = None,
+    ) -> Optional[DeceptionAssessment]:
+        """Update a specific checklist within a deception assessment."""
+        assessment = await self.get_deception_assessment(assessment_id)
+        if not assessment:
+            return None
+
+        # Get the target checklist
+        if checklist_type == DeceptionChecklistType.MOM:
+            checklist = assessment.mom_checklist
+        elif checklist_type == DeceptionChecklistType.POP:
+            checklist = assessment.pop_checklist
+        elif checklist_type == DeceptionChecklistType.MOSES:
+            checklist = assessment.moses_checklist
+        elif checklist_type == DeceptionChecklistType.EVE:
+            checklist = assessment.eve_checklist
+        else:
+            return None
+
+        if not checklist:
+            checklist = create_empty_checklist(checklist_type)
+
+        # Update indicators
+        indicator_map = {ind.id: ind for ind in checklist.indicators}
+        for ind_data in indicators:
+            ind_id = ind_data.id if hasattr(ind_data, 'id') else ind_data.get('id')
+            if ind_id in indicator_map:
+                existing = indicator_map[ind_id]
+                existing.answer = ind_data.answer if hasattr(ind_data, 'answer') else ind_data.get('answer')
+                existing.strength = IndicatorStrength(ind_data.strength if hasattr(ind_data, 'strength') else ind_data.get('strength', 'none'))
+                existing.confidence = ind_data.confidence if hasattr(ind_data, 'confidence') else ind_data.get('confidence', 0.0)
+                existing.evidence_ids = ind_data.evidence_ids if hasattr(ind_data, 'evidence_ids') else ind_data.get('evidence_ids', [])
+                existing.notes = ind_data.notes if hasattr(ind_data, 'notes') else ind_data.get('notes')
+
+        # Calculate checklist score
+        checklist.overall_score = checklist.calculate_score()
+        checklist.risk_level = self._score_to_risk_level(checklist.overall_score)
+        checklist.summary = summary
+        checklist.completed_at = datetime.utcnow()
+
+        # Store updated checklist
+        if checklist_type == DeceptionChecklistType.MOM:
+            assessment.mom_checklist = checklist
+        elif checklist_type == DeceptionChecklistType.POP:
+            assessment.pop_checklist = checklist
+        elif checklist_type == DeceptionChecklistType.MOSES:
+            assessment.moses_checklist = checklist
+        elif checklist_type == DeceptionChecklistType.EVE:
+            assessment.eve_checklist = checklist
+
+        # Recalculate overall score
+        assessment.overall_score = assessment.calculate_overall_score()
+        assessment.risk_level = assessment.get_risk_level(assessment.overall_score)
+        assessment.updated_at = datetime.utcnow()
+
+        await self._save_deception_assessment(assessment, update=True)
+
+        # Emit event
+        if self._events:
+            await self._events.emit(
+                "credibility.deception.checklist.updated",
+                {
+                    "assessment_id": assessment_id,
+                    "checklist_type": checklist_type.value,
+                    "score": checklist.overall_score,
+                    "overall_score": assessment.overall_score,
+                },
+                source=self.name,
+            )
+
+        return assessment
+
+    async def recalculate_deception_score(self, assessment_id: str) -> Optional[DeceptionAssessment]:
+        """Recalculate overall deception score from completed checklists."""
+        assessment = await self.get_deception_assessment(assessment_id)
+        if not assessment:
+            return None
+
+        # Recalculate each checklist score
+        for checklist in [assessment.mom_checklist, assessment.pop_checklist,
+                          assessment.moses_checklist, assessment.eve_checklist]:
+            if checklist:
+                checklist.overall_score = checklist.calculate_score()
+                checklist.risk_level = self._score_to_risk_level(checklist.overall_score)
+
+        # Recalculate overall
+        assessment.overall_score = assessment.calculate_overall_score()
+        assessment.risk_level = assessment.get_risk_level(assessment.overall_score)
+
+        # Calculate confidence based on completed checklists
+        assessment.confidence = assessment.completed_checklists / 4.0
+
+        assessment.updated_at = datetime.utcnow()
+        await self._save_deception_assessment(assessment, update=True)
+
+        return assessment
+
+    async def get_deception_count(
+        self,
+        risk_level: Optional[str] = None,
+        min_score: Optional[int] = None,
+    ) -> int:
+        """Get count of deception assessments."""
+        if not self._db:
+            return 0
+
+        query = "SELECT COUNT(*) as count FROM arkham_deception_assessments WHERE 1=1"
+        params = []
+
+        if risk_level:
+            query += " AND risk_level = ?"
+            params.append(risk_level)
+        if min_score is not None:
+            query += " AND overall_score >= ?"
+            params.append(min_score)
+
+        result = await self._db.fetch_one(query, params)
+        return result["count"] if result else 0
+
+    async def analyze_checklist_with_llm(
+        self,
+        assessment_id: str,
+        checklist_type: DeceptionChecklistType,
+        context: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Use LLM to analyze and populate a checklist."""
+        import time
+        start_time = time.time()
+
+        assessment = await self.get_deception_assessment(assessment_id)
+        if not assessment:
+            return None
+
+        if not self._llm or not self._llm.is_available():
+            logger.warning("LLM service not available for deception analysis")
+            return None
+
+        # Get indicators for this checklist type
+        indicators = get_indicators_for_checklist(checklist_type)
+
+        # Build prompt
+        checklist_guidance = {
+            DeceptionChecklistType.MOM: "MOM Analysis (Motive, Opportunity, Means): Focus on whether the source has incentive, access, and capability to deceive.",
+            DeceptionChecklistType.POP: "POP Analysis (Past Opposition Practices): Focus on historical deception patterns by this source or organization.",
+            DeceptionChecklistType.MOSES: "MOSES Analysis (Manipulability of Sources): Focus on whether the source could be manipulated or is an unwitting conduit.",
+            DeceptionChecklistType.EVE: "EVE Analysis (Evaluation of Evidence): Focus on the evidence quality, consistency, and signs of fabrication.",
+        }
+
+        questions_formatted = "\n".join([
+            f"- ID: {ind.id}\n  Question: {ind.question}\n  Guidance: {ind.guidance}"
+            for ind in indicators
+        ])
+
+        prompt = f"""You are an intelligence analyst specializing in deception detection.
+
+Analyze the following source for deception risk using the {checklist_type.value.upper()} framework.
+
+## Source Information
+- Type: {assessment.source_type.value}
+- ID: {assessment.source_id}
+- Name: {assessment.source_name or 'Unknown'}
+
+## {checklist_guidance.get(checklist_type, '')}
+
+## Context
+{context or 'No additional context provided.'}
+
+## Questions to Assess
+
+{questions_formatted}
+
+For each question, provide an assessment using the EXACT indicator ID shown above.
+
+## Output Format (JSON)
+IMPORTANT: Use the exact indicator IDs from the questions above (e.g., "{indicators[0].id if indicators else 'id_example'}").
+{{
+  "indicators": [
+    {{
+      "id": "<exact ID from the question>",
+      "answer": "Your assessment of the question",
+      "strength": "none|weak|moderate|strong|conclusive",
+      "confidence": 0.5,
+      "reasoning": "Brief explanation"
+    }}
+  ],
+  "overall_assessment": "Summary of deception risk based on this checklist",
+  "checklist_score": 0-100,
+  "key_concerns": ["concern1", "concern2"]
+}}
+"""
+
+        try:
+            llm_response = await self._llm.generate(prompt)
+            parsed = self._parse_llm_deception_response(llm_response.text, checklist_type, indicators)
+
+            processing_time = (time.time() - start_time) * 1000
+
+            # Save the analyzed checklist to the assessment
+            analyzed_checklist = parsed["checklist"]
+            await self.update_deception_checklist(
+                assessment_id=assessment_id,
+                checklist_type=checklist_type,
+                indicators=analyzed_checklist.indicators,
+                summary=analyzed_checklist.summary,
+            )
+
+            return {
+                "checklist": analyzed_checklist,
+                "reasoning": parsed.get("reasoning", ""),
+                "confidence": parsed.get("confidence", 0.7),
+                "processing_time_ms": processing_time,
+            }
+
+        except Exception as e:
+            logger.error(f"LLM deception analysis failed: {e}")
+            return None
+
+    # === Private Deception Helper Methods ===
+
+    def _score_to_risk_level(self, score: int) -> str:
+        """Convert score to risk level string."""
+        if score <= 20:
+            return "minimal"
+        elif score <= 40:
+            return "low"
+        elif score <= 60:
+            return "moderate"
+        elif score <= 80:
+            return "high"
+        else:
+            return "critical"
+
+    async def _save_deception_assessment(self, assessment: DeceptionAssessment, update: bool = False) -> None:
+        """Save a deception assessment to the database."""
+        if not self._db:
+            return
+
+        import json
+
+        data = {
+            "id": assessment.id,
+            "source_type": assessment.source_type.value,
+            "source_id": assessment.source_id,
+            "source_name": assessment.source_name,
+            "mom_data": json.dumps(assessment.mom_checklist.to_dict()) if assessment.mom_checklist else "{}",
+            "pop_data": json.dumps(assessment.pop_checklist.to_dict()) if assessment.pop_checklist else "{}",
+            "moses_data": json.dumps(assessment.moses_checklist.to_dict()) if assessment.moses_checklist else "{}",
+            "eve_data": json.dumps(assessment.eve_checklist.to_dict()) if assessment.eve_checklist else "{}",
+            "overall_score": assessment.overall_score,
+            "risk_level": assessment.risk_level.value if isinstance(assessment.risk_level, DeceptionRisk) else assessment.risk_level,
+            "confidence": assessment.confidence,
+            "linked_assessment_id": assessment.linked_assessment_id,
+            "affects_credibility": 1 if assessment.affects_credibility else 0,
+            "credibility_weight": assessment.credibility_weight,
+            "assessed_by": assessment.assessed_by.value,
+            "assessor_id": assessment.assessor_id,
+            "summary": assessment.summary,
+            "red_flags": json.dumps(assessment.red_flags),
+            "created_at": assessment.created_at.isoformat(),
+            "updated_at": assessment.updated_at.isoformat(),
+        }
+
+        if update:
+            await self._db.execute("""
+                UPDATE arkham_deception_assessments SET
+                    source_type=:source_type, source_id=:source_id, source_name=:source_name,
+                    mom_data=:mom_data, pop_data=:pop_data, moses_data=:moses_data, eve_data=:eve_data,
+                    overall_score=:overall_score, risk_level=:risk_level, confidence=:confidence,
+                    linked_assessment_id=:linked_assessment_id, affects_credibility=:affects_credibility,
+                    credibility_weight=:credibility_weight, assessed_by=:assessed_by, assessor_id=:assessor_id,
+                    summary=:summary, red_flags=:red_flags, created_at=:created_at, updated_at=:updated_at
+                WHERE id=:id
+            """, data)
+        else:
+            await self._db.execute("""
+                INSERT INTO arkham_deception_assessments (
+                    id, source_type, source_id, source_name,
+                    mom_data, pop_data, moses_data, eve_data,
+                    overall_score, risk_level, confidence,
+                    linked_assessment_id, affects_credibility, credibility_weight,
+                    assessed_by, assessor_id, summary, red_flags,
+                    created_at, updated_at
+                ) VALUES (:id, :source_type, :source_id, :source_name,
+                    :mom_data, :pop_data, :moses_data, :eve_data,
+                    :overall_score, :risk_level, :confidence,
+                    :linked_assessment_id, :affects_credibility, :credibility_weight,
+                    :assessed_by, :assessor_id, :summary, :red_flags,
+                    :created_at, :updated_at)
+            """, data)
+
+    def _row_to_deception_assessment(self, row: Dict[str, Any]) -> DeceptionAssessment:
+        """Convert database row to DeceptionAssessment object."""
+        import json
+
+        def parse_checklist(data_str: str, checklist_type: DeceptionChecklistType) -> Optional[DeceptionChecklist]:
+            if not data_str or data_str == "{}":
+                return create_empty_checklist(checklist_type)
+
+            try:
+                data = json.loads(data_str)
+                if not data.get("indicators"):
+                    return create_empty_checklist(checklist_type)
+
+                indicators = [
+                    DeceptionIndicator(
+                        id=ind.get("id", ""),
+                        checklist=DeceptionChecklistType(ind.get("checklist", checklist_type.value)),
+                        question=ind.get("question", ""),
+                        answer=ind.get("answer"),
+                        strength=IndicatorStrength(ind.get("strength", "none")),
+                        confidence=ind.get("confidence", 0.0),
+                        evidence_ids=ind.get("evidence_ids", []),
+                        notes=ind.get("notes"),
+                    )
+                    for ind in data.get("indicators", [])
+                ]
+
+                completed_at = None
+                if data.get("completed_at"):
+                    try:
+                        completed_at = datetime.fromisoformat(data["completed_at"])
+                    except (ValueError, TypeError):
+                        pass
+
+                return DeceptionChecklist(
+                    checklist_type=checklist_type,
+                    indicators=indicators,
+                    overall_score=data.get("overall_score", 0),
+                    risk_level=data.get("risk_level", "minimal"),
+                    summary=data.get("summary"),
+                    completed_at=completed_at,
+                )
+            except (json.JSONDecodeError, KeyError, ValueError) as e:
+                logger.warning(f"Failed to parse checklist data: {e}")
+                return create_empty_checklist(checklist_type)
+
+        risk_level_str = row.get("risk_level", "minimal")
+        try:
+            risk_level = DeceptionRisk(risk_level_str)
+        except ValueError:
+            risk_level = DeceptionRisk.MINIMAL
+
+        return DeceptionAssessment(
+            id=row["id"],
+            source_type=SourceType(row["source_type"]),
+            source_id=row["source_id"],
+            source_name=row.get("source_name"),
+            mom_checklist=parse_checklist(row.get("mom_data", "{}"), DeceptionChecklistType.MOM),
+            pop_checklist=parse_checklist(row.get("pop_data", "{}"), DeceptionChecklistType.POP),
+            moses_checklist=parse_checklist(row.get("moses_data", "{}"), DeceptionChecklistType.MOSES),
+            eve_checklist=parse_checklist(row.get("eve_data", "{}"), DeceptionChecklistType.EVE),
+            overall_score=row.get("overall_score", 0),
+            risk_level=risk_level,
+            confidence=row.get("confidence", 0.0),
+            linked_assessment_id=row.get("linked_assessment_id"),
+            affects_credibility=bool(row.get("affects_credibility", 1)),
+            credibility_weight=row.get("credibility_weight", 0.3),
+            assessed_by=AssessmentMethod(row.get("assessed_by", "manual")),
+            assessor_id=row.get("assessor_id"),
+            summary=row.get("summary"),
+            red_flags=json.loads(row.get("red_flags", "[]")),
+            created_at=datetime.fromisoformat(row["created_at"]) if row.get("created_at") else datetime.utcnow(),
+            updated_at=datetime.fromisoformat(row["updated_at"]) if row.get("updated_at") else datetime.utcnow(),
+        )
+
+    def _parse_llm_deception_response(
+        self,
+        response: str,
+        checklist_type: DeceptionChecklistType,
+        standard_indicators: List[Any],
+    ) -> Dict[str, Any]:
+        """Parse LLM deception analysis response."""
+        import json
+
+        logger.info(f"Parsing LLM response for {checklist_type.value}: {response[:500]}...")
+
+        try:
+            # Try to extract JSON from response
+            start = response.find("{")
+            end = response.rfind("}") + 1
+            if start >= 0 and end > start:
+                json_str = response[start:end]
+                logger.info(f"Extracted JSON: {json_str[:300]}...")
+                data = json.loads(json_str)
+                logger.info(f"Parsed data keys: {list(data.keys())}, indicators count: {len(data.get('indicators', []))}")
+
+                # Build indicators from response
+                indicators = []
+                response_indicators = {ind.get("id"): ind for ind in data.get("indicators", [])}
+
+                for std_ind in standard_indicators:
+                    resp_ind = response_indicators.get(std_ind.id, {})
+
+                    strength_str = resp_ind.get("strength", "none").lower()
+                    try:
+                        strength = IndicatorStrength(strength_str)
+                    except ValueError:
+                        strength = IndicatorStrength.NONE
+
+                    indicators.append(DeceptionIndicator(
+                        id=std_ind.id,
+                        checklist=checklist_type,
+                        question=std_ind.question,
+                        answer=resp_ind.get("answer"),
+                        strength=strength,
+                        confidence=resp_ind.get("confidence", 0.5),
+                        notes=resp_ind.get("reasoning"),
+                    ))
+
+                checklist = DeceptionChecklist(
+                    checklist_type=checklist_type,
+                    indicators=indicators,
+                    overall_score=data.get("checklist_score", 0),
+                    risk_level=self._score_to_risk_level(data.get("checklist_score", 0)),
+                    summary=data.get("overall_assessment"),
+                    completed_at=datetime.utcnow(),
+                )
+
+                return {
+                    "checklist": checklist,
+                    "reasoning": data.get("overall_assessment", ""),
+                    "confidence": 0.7,
+                    "key_concerns": data.get("key_concerns", []),
+                }
+
+        except json.JSONDecodeError:
+            logger.warning("Failed to parse LLM deception response as JSON")
+
+        # Return empty checklist on failure
+        return {
+            "checklist": create_empty_checklist(checklist_type),
+            "reasoning": "Failed to parse LLM response",
+            "confidence": 0.0,
+        }

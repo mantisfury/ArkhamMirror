@@ -266,3 +266,465 @@ class CredibilityHistory:
     avg_score: float = 0.0
     min_score: int = 0
     max_score: int = 100
+
+
+# =============================================================================
+# DECEPTION DETECTION (MOM/POP/MOSES/EVE Framework)
+# =============================================================================
+
+class DeceptionChecklistType(str, Enum):
+    """The four deception detection checklists."""
+    MOM = "mom"      # Motive, Opportunity, Means
+    POP = "pop"      # Past Opposition Practices
+    MOSES = "moses"  # Manipulability of Sources
+    EVE = "eve"      # Evaluation of Evidence
+
+
+class DeceptionRisk(str, Enum):
+    """Overall deception risk level."""
+    MINIMAL = "minimal"       # 0-20: Very unlikely to be deception
+    LOW = "low"              # 21-40: Some minor indicators
+    MODERATE = "moderate"    # 41-60: Notable deception indicators
+    HIGH = "high"            # 61-80: Significant deception risk
+    CRITICAL = "critical"    # 81-100: Strong indicators of deception
+
+
+class IndicatorStrength(str, Enum):
+    """Strength of a deception indicator."""
+    NONE = "none"          # No indicator present
+    WEAK = "weak"          # Minor/circumstantial
+    MODERATE = "moderate"  # Notable indicator
+    STRONG = "strong"      # Clear indicator
+    CONCLUSIVE = "conclusive"  # Definitive indicator
+
+
+@dataclass
+class DeceptionIndicator:
+    """
+    A single indicator from a deception checklist.
+
+    Each checklist (MOM, POP, MOSES, EVE) contains multiple indicators.
+    """
+    id: str
+    checklist: DeceptionChecklistType  # Which checklist this belongs to
+    question: str                       # The diagnostic question
+    answer: Optional[str] = None        # Analyst's answer/assessment
+    strength: IndicatorStrength = IndicatorStrength.NONE
+    confidence: float = 0.0             # How confident in this assessment (0-1)
+    evidence_ids: List[str] = field(default_factory=list)  # Supporting evidence
+    notes: Optional[str] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "id": self.id,
+            "checklist": self.checklist.value,
+            "question": self.question,
+            "answer": self.answer,
+            "strength": self.strength.value,
+            "confidence": self.confidence,
+            "evidence_ids": self.evidence_ids,
+            "notes": self.notes,
+        }
+
+
+@dataclass
+class DeceptionChecklist:
+    """
+    A completed deception checklist assessment.
+
+    Contains all indicators for one checklist type (MOM, POP, MOSES, or EVE).
+    """
+    checklist_type: DeceptionChecklistType
+    indicators: List[DeceptionIndicator] = field(default_factory=list)
+    overall_score: int = 0                  # 0-100 score for this checklist
+    risk_level: str = "minimal"             # Derived risk level
+    summary: Optional[str] = None           # LLM-generated or manual summary
+    completed_at: Optional[datetime] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "checklist_type": self.checklist_type.value,
+            "indicators": [i.to_dict() for i in self.indicators],
+            "overall_score": self.overall_score,
+            "risk_level": self.risk_level,
+            "summary": self.summary,
+            "completed_at": self.completed_at.isoformat() if self.completed_at else None,
+        }
+
+    def calculate_score(self) -> int:
+        """Calculate checklist score from indicators."""
+        if not self.indicators:
+            return 0
+
+        strength_scores = {
+            IndicatorStrength.NONE: 0,
+            IndicatorStrength.WEAK: 25,
+            IndicatorStrength.MODERATE: 50,
+            IndicatorStrength.STRONG: 75,
+            IndicatorStrength.CONCLUSIVE: 100,
+        }
+
+        total = sum(
+            strength_scores.get(ind.strength, 0) * ind.confidence
+            for ind in self.indicators
+        )
+        max_possible = len(self.indicators) * 100
+        return int((total / max_possible) * 100) if max_possible > 0 else 0
+
+
+@dataclass
+class DeceptionAssessment:
+    """
+    A complete deception detection assessment for a source.
+
+    Contains all four checklists (MOM, POP, MOSES, EVE) and produces
+    an overall deception risk score.
+    """
+    id: str
+    source_type: SourceType
+    source_id: str
+    source_name: Optional[str] = None       # Human-readable source name
+
+    # The four checklists
+    mom_checklist: Optional[DeceptionChecklist] = None
+    pop_checklist: Optional[DeceptionChecklist] = None
+    moses_checklist: Optional[DeceptionChecklist] = None
+    eve_checklist: Optional[DeceptionChecklist] = None
+
+    # Aggregate scores
+    overall_score: int = 0              # 0-100 deception risk score
+    risk_level: DeceptionRisk = DeceptionRisk.MINIMAL
+    confidence: float = 0.0             # Overall assessment confidence
+
+    # Integration with main credibility
+    linked_assessment_id: Optional[str] = None  # Link to CredibilityAssessment
+    affects_credibility: bool = True    # Whether to factor into credibility score
+    credibility_weight: float = 0.3     # Weight in credibility calculation
+
+    # Assessment metadata
+    assessed_by: AssessmentMethod = AssessmentMethod.MANUAL
+    assessor_id: Optional[str] = None
+    summary: Optional[str] = None       # Overall assessment summary
+    red_flags: List[str] = field(default_factory=list)  # Key concerns
+
+    # Timestamps
+    created_at: datetime = field(default_factory=datetime.utcnow)
+    updated_at: datetime = field(default_factory=datetime.utcnow)
+
+    @property
+    def completed_checklists(self) -> int:
+        """Count how many checklists have been completed."""
+        count = 0
+        if self.mom_checklist and self.mom_checklist.completed_at:
+            count += 1
+        if self.pop_checklist and self.pop_checklist.completed_at:
+            count += 1
+        if self.moses_checklist and self.moses_checklist.completed_at:
+            count += 1
+        if self.eve_checklist and self.eve_checklist.completed_at:
+            count += 1
+        return count
+
+    def calculate_overall_score(self) -> int:
+        """Calculate overall deception risk from completed checklists."""
+        scores = []
+        weights = {
+            'mom': 0.35,    # MOM most heavily weighted
+            'eve': 0.25,    # Evidence evaluation second
+            'moses': 0.25,  # Manipulability third
+            'pop': 0.15,    # Past practices least (often unknown)
+        }
+
+        if self.mom_checklist and self.mom_checklist.completed_at:
+            scores.append(('mom', self.mom_checklist.overall_score))
+        if self.pop_checklist and self.pop_checklist.completed_at:
+            scores.append(('pop', self.pop_checklist.overall_score))
+        if self.moses_checklist and self.moses_checklist.completed_at:
+            scores.append(('moses', self.moses_checklist.overall_score))
+        if self.eve_checklist and self.eve_checklist.completed_at:
+            scores.append(('eve', self.eve_checklist.overall_score))
+
+        if not scores:
+            return 0
+
+        # Normalize weights for completed checklists
+        total_weight = sum(weights[s[0]] for s in scores)
+        weighted_sum = sum(weights[s[0]] * s[1] for s in scores)
+
+        return int(weighted_sum / total_weight) if total_weight > 0 else 0
+
+    def get_risk_level(self, score: int) -> DeceptionRisk:
+        """Get risk level from score."""
+        if score <= 20:
+            return DeceptionRisk.MINIMAL
+        elif score <= 40:
+            return DeceptionRisk.LOW
+        elif score <= 60:
+            return DeceptionRisk.MODERATE
+        elif score <= 80:
+            return DeceptionRisk.HIGH
+        else:
+            return DeceptionRisk.CRITICAL
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "id": self.id,
+            "source_type": self.source_type.value,
+            "source_id": self.source_id,
+            "source_name": self.source_name,
+            "mom_checklist": self.mom_checklist.to_dict() if self.mom_checklist else None,
+            "pop_checklist": self.pop_checklist.to_dict() if self.pop_checklist else None,
+            "moses_checklist": self.moses_checklist.to_dict() if self.moses_checklist else None,
+            "eve_checklist": self.eve_checklist.to_dict() if self.eve_checklist else None,
+            "overall_score": self.overall_score,
+            "risk_level": self.risk_level.value,
+            "confidence": self.confidence,
+            "completed_checklists": self.completed_checklists,
+            "linked_assessment_id": self.linked_assessment_id,
+            "affects_credibility": self.affects_credibility,
+            "credibility_weight": self.credibility_weight,
+            "assessed_by": self.assessed_by.value,
+            "assessor_id": self.assessor_id,
+            "summary": self.summary,
+            "red_flags": self.red_flags,
+            "created_at": self.created_at.isoformat(),
+            "updated_at": self.updated_at.isoformat(),
+        }
+
+
+# =============================================================================
+# STANDARD DECEPTION INDICATORS
+# =============================================================================
+
+@dataclass
+class StandardIndicator:
+    """Definition of a standard deception indicator."""
+    id: str
+    checklist: DeceptionChecklistType
+    question: str
+    guidance: str
+    category: str  # Sub-category within checklist
+
+
+# MOM Indicators (Motive, Opportunity, Means)
+MOM_INDICATORS: List[StandardIndicator] = [
+    # Motive
+    StandardIndicator(
+        id="mom_motive_gain",
+        checklist=DeceptionChecklistType.MOM,
+        question="Does the source have something to gain from deceiving us?",
+        guidance="Consider financial, political, personal, or organizational incentives",
+        category="motive"
+    ),
+    StandardIndicator(
+        id="mom_motive_harm",
+        checklist=DeceptionChecklistType.MOM,
+        question="Does the source have reason to want to harm us or our mission?",
+        guidance="Consider adversarial relationships, competition, revenge motivations",
+        category="motive"
+    ),
+    StandardIndicator(
+        id="mom_motive_protect",
+        checklist=DeceptionChecklistType.MOM,
+        question="Is the source protecting someone or something through deception?",
+        guidance="Consider loyalty, self-preservation, covering for others",
+        category="motive"
+    ),
+    # Opportunity
+    StandardIndicator(
+        id="mom_opportunity_access",
+        checklist=DeceptionChecklistType.MOM,
+        question="Did the source have access to plant or manipulate this information?",
+        guidance="Evaluate the source's access to information channels",
+        category="opportunity"
+    ),
+    StandardIndicator(
+        id="mom_opportunity_time",
+        checklist=DeceptionChecklistType.MOM,
+        question="Did the source have sufficient time to fabricate this information?",
+        guidance="Consider timing of when information was provided vs. events",
+        category="opportunity"
+    ),
+    # Means
+    StandardIndicator(
+        id="mom_means_capability",
+        checklist=DeceptionChecklistType.MOM,
+        question="Does the source have the capability to create convincing deception?",
+        guidance="Technical skills, resources, sophistication level",
+        category="means"
+    ),
+    StandardIndicator(
+        id="mom_means_resources",
+        checklist=DeceptionChecklistType.MOM,
+        question="Does the source have resources to sustain a deception operation?",
+        guidance="Financial backing, support network, infrastructure",
+        category="means"
+    ),
+]
+
+# POP Indicators (Past Opposition Practices)
+POP_INDICATORS: List[StandardIndicator] = [
+    StandardIndicator(
+        id="pop_history_source",
+        checklist=DeceptionChecklistType.POP,
+        question="Has this specific source been caught deceiving before?",
+        guidance="Check historical record of this source",
+        category="history"
+    ),
+    StandardIndicator(
+        id="pop_history_org",
+        checklist=DeceptionChecklistType.POP,
+        question="Has the source's organization/affiliation used deception?",
+        guidance="Organizational track record, institutional practices",
+        category="history"
+    ),
+    StandardIndicator(
+        id="pop_tactics_match",
+        checklist=DeceptionChecklistType.POP,
+        question="Does this information match known deception tactics?",
+        guidance="Compare to documented deception methods and patterns",
+        category="tactics"
+    ),
+    StandardIndicator(
+        id="pop_timing_pattern",
+        checklist=DeceptionChecklistType.POP,
+        question="Is the timing consistent with past deception campaigns?",
+        guidance="Historical pattern analysis of when deceptions occur",
+        category="timing"
+    ),
+    StandardIndicator(
+        id="pop_target_match",
+        checklist=DeceptionChecklistType.POP,
+        question="Are we a typical target for deception by this source?",
+        guidance="Historical targeting patterns of the adversary",
+        category="targeting"
+    ),
+]
+
+# MOSES Indicators (Manipulability of Sources)
+MOSES_INDICATORS: List[StandardIndicator] = [
+    StandardIndicator(
+        id="moses_chain_length",
+        checklist=DeceptionChecklistType.MOSES,
+        question="How many intermediaries are in the information chain?",
+        guidance="More intermediaries = more manipulation opportunities",
+        category="chain"
+    ),
+    StandardIndicator(
+        id="moses_chain_integrity",
+        checklist=DeceptionChecklistType.MOSES,
+        question="Can we verify the integrity of the information chain?",
+        guidance="Chain of custody, transmission security",
+        category="chain"
+    ),
+    StandardIndicator(
+        id="moses_source_vulnerable",
+        checklist=DeceptionChecklistType.MOSES,
+        question="Is the source vulnerable to manipulation by others?",
+        guidance="Coercion, blackmail, ideological manipulation potential",
+        category="vulnerability"
+    ),
+    StandardIndicator(
+        id="moses_witting_unwitting",
+        checklist=DeceptionChecklistType.MOSES,
+        question="Could the source be an unwitting conduit for deception?",
+        guidance="Is source aware they might be passing false info?",
+        category="awareness"
+    ),
+    StandardIndicator(
+        id="moses_single_point",
+        checklist=DeceptionChecklistType.MOSES,
+        question="Is this a single point of failure for this intelligence?",
+        guidance="No independent corroboration = higher manipulation risk",
+        category="corroboration"
+    ),
+    StandardIndicator(
+        id="moses_technical_compromise",
+        checklist=DeceptionChecklistType.MOSES,
+        question="Could the technical channel be compromised?",
+        guidance="SIGINT intercept, digital manipulation, spoofing",
+        category="technical"
+    ),
+]
+
+# EVE Indicators (Evaluation of Evidence)
+EVE_INDICATORS: List[StandardIndicator] = [
+    StandardIndicator(
+        id="eve_internal_consistency",
+        checklist=DeceptionChecklistType.EVE,
+        question="Is the evidence internally consistent?",
+        guidance="Check for contradictions within the evidence itself",
+        category="consistency"
+    ),
+    StandardIndicator(
+        id="eve_external_consistency",
+        checklist=DeceptionChecklistType.EVE,
+        question="Is the evidence consistent with other sources?",
+        guidance="Compare to independent reporting",
+        category="consistency"
+    ),
+    StandardIndicator(
+        id="eve_too_good",
+        checklist=DeceptionChecklistType.EVE,
+        question="Does the evidence seem 'too good to be true'?",
+        guidance="Suspiciously complete, convenient, or perfectly aligned",
+        category="quality"
+    ),
+    StandardIndicator(
+        id="eve_verifiable",
+        checklist=DeceptionChecklistType.EVE,
+        question="Can key claims in the evidence be independently verified?",
+        guidance="Testable predictions, checkable facts",
+        category="verifiability"
+    ),
+    StandardIndicator(
+        id="eve_provenance",
+        checklist=DeceptionChecklistType.EVE,
+        question="Is the provenance of the evidence clear and credible?",
+        guidance="Source, chain of custody, original context",
+        category="provenance"
+    ),
+    StandardIndicator(
+        id="eve_technical_markers",
+        checklist=DeceptionChecklistType.EVE,
+        question="Are there technical indicators of fabrication?",
+        guidance="Metadata anomalies, editing artifacts, anachronisms",
+        category="technical"
+    ),
+    StandardIndicator(
+        id="eve_logical_coherence",
+        checklist=DeceptionChecklistType.EVE,
+        question="Is the evidence logically coherent with known facts?",
+        guidance="Does it make sense given what we know?",
+        category="logic"
+    ),
+]
+
+# Combined indicator lookup
+ALL_DECEPTION_INDICATORS: Dict[DeceptionChecklistType, List[StandardIndicator]] = {
+    DeceptionChecklistType.MOM: MOM_INDICATORS,
+    DeceptionChecklistType.POP: POP_INDICATORS,
+    DeceptionChecklistType.MOSES: MOSES_INDICATORS,
+    DeceptionChecklistType.EVE: EVE_INDICATORS,
+}
+
+
+def get_indicators_for_checklist(checklist_type: DeceptionChecklistType) -> List[StandardIndicator]:
+    """Get standard indicators for a checklist type."""
+    return ALL_DECEPTION_INDICATORS.get(checklist_type, [])
+
+
+def create_empty_checklist(checklist_type: DeceptionChecklistType) -> DeceptionChecklist:
+    """Create an empty checklist with all standard indicators."""
+    indicators = [
+        DeceptionIndicator(
+            id=ind.id,
+            checklist=ind.checklist,
+            question=ind.question,
+        )
+        for ind in get_indicators_for_checklist(checklist_type)
+    ]
+    return DeceptionChecklist(
+        checklist_type=checklist_type,
+        indicators=indicators,
+    )

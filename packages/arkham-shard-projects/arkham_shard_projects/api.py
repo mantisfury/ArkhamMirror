@@ -24,6 +24,14 @@ class ProjectCreate(BaseModel):
     status: ProjectStatus = Field(default=ProjectStatus.ACTIVE)
     settings: Optional[Dict[str, Any]] = None
     metadata: Optional[Dict[str, Any]] = None
+    embedding_model: Optional[str] = Field(
+        default=None,
+        description="Embedding model for this project (default: all-MiniLM-L6-v2)"
+    )
+    create_collections: bool = Field(
+        default=True,
+        description="Whether to create vector collections for this project"
+    )
 
 
 class ProjectUpdate(BaseModel):
@@ -229,9 +237,38 @@ async def list_projects(
     )
 
 
+# === Embedding Model Endpoints (must be before /{project_id} routes) ===
+
+
+class EmbeddingModelInfo(BaseModel):
+    """Information about an embedding model."""
+    name: str
+    dimensions: int
+    description: str
+
+
+@router.get("/embedding-models", response_model=List[EmbeddingModelInfo])
+def list_embedding_models():
+    """List available embedding models."""
+    from .shard import KNOWN_EMBEDDING_MODELS
+
+    models = [
+        EmbeddingModelInfo(
+            name=name,
+            dimensions=info["dimensions"],
+            description=info["description"],
+        )
+        for name, info in KNOWN_EMBEDDING_MODELS.items()
+    ]
+    return models
+
+
+# === Project CRUD Endpoints ===
+
+
 @router.post("/", response_model=ProjectResponse, status_code=201)
 async def create_project(req: Request, request: ProjectCreate):
-    """Create a new project."""
+    """Create a new project with optional embedding model and vector collections."""
     shard = _get_shard(req)
 
     project = await shard.create_project(
@@ -241,6 +278,8 @@ async def create_project(req: Request, request: ProjectCreate):
         status=request.status,
         settings=request.settings,
         metadata=request.metadata,
+        embedding_model=request.embedding_model,
+        create_collections=request.create_collections,
     )
 
     return _project_to_response(project)
@@ -435,3 +474,164 @@ async def get_project_activity(
 
     activities = await shard.get_activity(project_id, limit=limit, offset=offset)
     return [_activity_to_response(a) for a in activities]
+
+
+# === Embedding Model Request/Response Models ===
+
+
+class EmbeddingModelUpdate(BaseModel):
+    """Request to update embedding model."""
+    model: str
+    wipe_collections: bool = Field(
+        default=False,
+        description="If True and dimensions differ, wipe and recreate collections"
+    )
+
+
+class EmbeddingModelResponse(BaseModel):
+    """Response for embedding model operations."""
+    success: bool
+    message: str = ""
+    current_model: Optional[str] = None
+    current_dimensions: Optional[int] = None
+    requires_wipe: bool = False
+    previous_model: Optional[str] = None
+    new_model: Optional[str] = None
+    wiped: bool = False
+
+
+class CollectionStatsResponse(BaseModel):
+    """Response for collection statistics."""
+    available: bool
+    collections: Dict[str, Any]
+
+
+@router.get("/{project_id}/embedding-model")
+async def get_project_embedding_model(request: Request, project_id: str):
+    """Get the embedding model configuration for a project."""
+    shard = _get_shard(request)
+
+    project = await shard.get_project(project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail=f"Project {project_id} not found")
+
+    from .shard import KNOWN_EMBEDDING_MODELS, DEFAULT_EMBEDDING_MODEL
+
+    model = project.settings.get("embedding_model", DEFAULT_EMBEDDING_MODEL)
+    dimensions = project.settings.get(
+        "embedding_dimensions",
+        KNOWN_EMBEDDING_MODELS.get(model, {}).get("dimensions", 384)
+    )
+
+    return {
+        "project_id": project_id,
+        "embedding_model": model,
+        "embedding_dimensions": dimensions,
+        "description": KNOWN_EMBEDDING_MODELS.get(model, {}).get("description", ""),
+    }
+
+
+@router.put("/{project_id}/embedding-model", response_model=EmbeddingModelResponse)
+async def update_project_embedding_model(
+    req: Request,
+    project_id: str,
+    request: EmbeddingModelUpdate,
+):
+    """
+    Update the embedding model for a project.
+
+    If the new model has different dimensions, you must set wipe_collections=True
+    to confirm deletion of existing vectors.
+    """
+    shard = _get_shard(req)
+
+    project = await shard.get_project(project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail=f"Project {project_id} not found")
+
+    result = await shard.update_project_embedding_model(
+        project_id=project_id,
+        new_model=request.model,
+        wipe_collections=request.wipe_collections,
+    )
+
+    if not result.get("success") and result.get("requires_wipe"):
+        return EmbeddingModelResponse(
+            success=False,
+            message=result.get("message", "Model change requires wiping collections"),
+            current_model=result.get("current_model"),
+            current_dimensions=result.get("current_dimensions"),
+            requires_wipe=True,
+        )
+
+    if not result.get("success"):
+        raise HTTPException(
+            status_code=400,
+            detail=result.get("error", "Failed to update embedding model")
+        )
+
+    return EmbeddingModelResponse(
+        success=True,
+        message="Embedding model updated successfully",
+        previous_model=result.get("previous_model"),
+        new_model=result.get("new_model"),
+        wiped=result.get("wiped", False),
+    )
+
+
+# === Collection Endpoints ===
+
+
+@router.get("/{project_id}/collections", response_model=CollectionStatsResponse)
+async def get_project_collections(request: Request, project_id: str):
+    """Get vector collection statistics for a project."""
+    shard = _get_shard(request)
+
+    project = await shard.get_project(project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail=f"Project {project_id} not found")
+
+    stats = await shard.get_project_collection_stats(project_id)
+
+    return CollectionStatsResponse(
+        available=stats.get("available", False),
+        collections=stats.get("collections", {}),
+    )
+
+
+@router.post("/{project_id}/collections/create")
+async def create_project_collections(request: Request, project_id: str):
+    """Create vector collections for a project (if not already created)."""
+    shard = _get_shard(request)
+
+    project = await shard.get_project(project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail=f"Project {project_id} not found")
+
+    from .shard import DEFAULT_EMBEDDING_MODEL
+    model = project.settings.get("embedding_model", DEFAULT_EMBEDDING_MODEL)
+
+    results = await shard.create_project_collections(project_id, model)
+
+    return {
+        "project_id": project_id,
+        "created": results,
+        "embedding_model": model,
+    }
+
+
+@router.delete("/{project_id}/collections")
+async def delete_project_collections(request: Request, project_id: str):
+    """Delete all vector collections for a project."""
+    shard = _get_shard(request)
+
+    project = await shard.get_project(project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail=f"Project {project_id} not found")
+
+    results = await shard.delete_project_collections(project_id)
+
+    return {
+        "project_id": project_id,
+        "deleted": results,
+    }

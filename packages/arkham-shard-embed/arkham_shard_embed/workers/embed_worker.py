@@ -33,9 +33,10 @@ class EmbedWorker(BaseWorker):
     name = "EmbedWorker"
     job_timeout = 60.0  # Embedding can be slow for long texts
 
-    # Model configuration
-    DEFAULT_MODEL = "BAAI/bge-m3"  # Multilingual, 1024 dims, ~2.2GB
-    FALLBACK_MODEL = "all-MiniLM-L6-v2"  # 384 dims, faster, smaller
+    # Model configuration - default to smaller model for fast testing
+    # Set EMBED_MODEL=BAAI/bge-m3 for production quality (1024 dims, ~2.2GB)
+    DEFAULT_MODEL = "all-MiniLM-L6-v2"  # 384 dims, fast, ~80MB
+    FALLBACK_MODEL = "paraphrase-MiniLM-L6-v2"  # 384 dims, alternative small model
 
     # Class-level lazy-loaded model
     _model = None
@@ -66,8 +67,8 @@ class EmbedWorker(BaseWorker):
                 logger.info(f"Loading embedding model: {cls.DEFAULT_MODEL}")
                 cls._model = SentenceTransformer(cls.DEFAULT_MODEL)
                 cls._model_name = cls.DEFAULT_MODEL
-                # BGE-M3 produces 1024-dimensional embeddings
-                cls._dimensions = 1024
+                # Get actual dimensions from model
+                cls._dimensions = cls._model.get_sentence_embedding_dimension()
                 logger.info(f"Loaded model {cls._model_name} ({cls._dimensions} dimensions)")
             except Exception as e:
                 logger.warning(
@@ -77,8 +78,7 @@ class EmbedWorker(BaseWorker):
                 try:
                     cls._model = SentenceTransformer(cls.FALLBACK_MODEL)
                     cls._model_name = cls.FALLBACK_MODEL
-                    # MiniLM produces 384-dimensional embeddings
-                    cls._dimensions = 384
+                    cls._dimensions = cls._model.get_sentence_embedding_dimension()
                     logger.info(f"Loaded fallback model {cls._model_name} ({cls._dimensions} dimensions)")
                 except Exception as fallback_error:
                     raise RuntimeError(

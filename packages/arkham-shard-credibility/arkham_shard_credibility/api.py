@@ -13,6 +13,9 @@ from .models import (
     AssessmentMethod,
     CredibilityLevel,
     SourceType,
+    DeceptionChecklistType,
+    DeceptionRisk,
+    IndicatorStrength,
 )
 
 router = APIRouter(prefix="/api/credibility", tags=["credibility"])
@@ -68,10 +71,10 @@ class AssessmentResponse(BaseModel):
 
 class AssessmentListResponse(BaseModel):
     """Response model for listing assessments."""
-    assessments: List[AssessmentResponse]
+    items: List[AssessmentResponse]
     total: int
-    limit: int
-    offset: int
+    page: int
+    page_size: int
 
 
 class SourceCredibilityResponse(BaseModel):
@@ -246,13 +249,17 @@ async def list_assessments(
     assessor_id: Optional[str] = Query(None),
     min_confidence: Optional[float] = Query(None, ge=0.0, le=1.0),
     max_confidence: Optional[float] = Query(None, ge=0.0, le=1.0),
-    limit: int = Query(50, ge=1, le=500),
-    offset: int = Query(0, ge=0),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=500),
 ):
     """List credibility assessments with optional filtering."""
     from .models import CredibilityFilter
 
     shard = _get_shard(request)
+
+    # Convert page/page_size to offset/limit
+    offset = (page - 1) * page_size
+    limit = page_size
 
     filter = CredibilityFilter(
         source_type=source_type,
@@ -270,10 +277,10 @@ async def list_assessments(
     total = await shard.get_count()
 
     return AssessmentListResponse(
-        assessments=[_assessment_to_response(a) for a in assessments],
+        items=[_assessment_to_response(a) for a in assessments],
         total=total,
-        limit=limit,
-        offset=offset,
+        page=page,
+        page_size=page_size,
     )
 
 
@@ -297,49 +304,6 @@ async def create_assessment(body: AssessmentCreate, request: Request):
     )
 
     return _assessment_to_response(assessment)
-
-
-@router.get("/{assessment_id}", response_model=AssessmentResponse)
-async def get_assessment(assessment_id: str, request: Request):
-    """Get a specific assessment by ID."""
-    shard = _get_shard(request)
-    assessment = await shard.get_assessment(assessment_id)
-
-    if not assessment:
-        raise HTTPException(status_code=404, detail=f"Assessment {assessment_id} not found")
-
-    return _assessment_to_response(assessment)
-
-
-@router.put("/{assessment_id}", response_model=AssessmentResponse)
-async def update_assessment(assessment_id: str, body: AssessmentUpdate, request: Request):
-    """Update an existing assessment."""
-    shard = _get_shard(request)
-
-    factors = _models_to_factors(body.factors) if body.factors else None
-
-    assessment = await shard.update_assessment(
-        assessment_id=assessment_id,
-        score=body.score,
-        confidence=body.confidence,
-        factors=factors,
-        notes=body.notes,
-    )
-
-    if not assessment:
-        raise HTTPException(status_code=404, detail=f"Assessment {assessment_id} not found")
-
-    return _assessment_to_response(assessment)
-
-
-@router.delete("/{assessment_id}", status_code=204)
-async def delete_assessment(assessment_id: str, request: Request):
-    """Delete an assessment."""
-    shard = _get_shard(request)
-    success = await shard.delete_assessment(assessment_id)
-
-    if not success:
-        raise HTTPException(status_code=404, detail=f"Assessment {assessment_id} not found")
 
 
 # === Source Endpoints ===
@@ -478,89 +442,542 @@ async def get_stats_by_source_type(request: Request):
 # === Filtered List Endpoints (for sub-routes) ===
 
 
-@router.get("/level/high", response_model=AssessmentListResponse)
-async def list_high_credibility(
+@router.get("/level/{level}", response_model=AssessmentListResponse)
+async def list_by_level(
+    level: str,
     request: Request,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=500),
+):
+    """List credibility assessments by level (unreliable, low, medium, high, verified)."""
+    from .models import CredibilityFilter
+
+    # Validate and convert level
+    try:
+        cred_level = CredibilityLevel(level.lower())
+    except ValueError:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid level: {level}. Must be one of: unreliable, low, medium, high, verified"
+        )
+
+    shard = _get_shard(request)
+
+    # Convert page/page_size to offset/limit
+    offset = (page - 1) * page_size
+    limit = page_size
+
+    filter = CredibilityFilter(level=cred_level)
+    assessments = await shard.list_assessments(filter=filter, limit=limit, offset=offset)
+    total = await shard.get_count(level=level.lower())
+
+    return AssessmentListResponse(
+        items=[_assessment_to_response(a) for a in assessments],
+        total=total,
+        page=page,
+        page_size=page_size,
+    )
+
+
+# =============================================================================
+# DECEPTION DETECTION (MOM/POP/MOSES/EVE)
+# =============================================================================
+
+# === Deception Pydantic Models ===
+
+
+class DeceptionIndicatorModel(BaseModel):
+    """Request/response model for deception indicator."""
+    id: str
+    checklist: str
+    question: str
+    answer: Optional[str] = None
+    strength: str = "none"
+    confidence: float = Field(0.0, ge=0.0, le=1.0)
+    evidence_ids: List[str] = []
+    notes: Optional[str] = None
+
+
+class DeceptionChecklistModel(BaseModel):
+    """Request/response model for a single checklist."""
+    checklist_type: str
+    indicators: List[DeceptionIndicatorModel]
+    overall_score: int = Field(0, ge=0, le=100)
+    risk_level: str = "minimal"
+    summary: Optional[str] = None
+    completed_at: Optional[str] = None
+
+
+class DeceptionAssessmentCreate(BaseModel):
+    """Request model for creating a deception assessment."""
+    source_type: SourceType
+    source_id: str = Field(..., description="ID of the source being assessed")
+    source_name: Optional[str] = Field(None, description="Human-readable source name")
+    linked_assessment_id: Optional[str] = None
+    affects_credibility: bool = True
+    credibility_weight: float = Field(0.3, ge=0.0, le=1.0)
+
+
+class DeceptionChecklistUpdate(BaseModel):
+    """Request model for updating a single checklist."""
+    indicators: List[DeceptionIndicatorModel]
+    summary: Optional[str] = None
+
+
+class DeceptionAssessmentUpdate(BaseModel):
+    """Request model for updating a deception assessment."""
+    source_name: Optional[str] = None
+    summary: Optional[str] = None
+    red_flags: Optional[List[str]] = None
+    affects_credibility: Optional[bool] = None
+    credibility_weight: Optional[float] = Field(None, ge=0.0, le=1.0)
+
+
+class DeceptionAssessmentResponse(BaseModel):
+    """Response model for a deception assessment."""
+    id: str
+    source_type: str
+    source_id: str
+    source_name: Optional[str]
+    mom_checklist: Optional[DeceptionChecklistModel]
+    pop_checklist: Optional[DeceptionChecklistModel]
+    moses_checklist: Optional[DeceptionChecklistModel]
+    eve_checklist: Optional[DeceptionChecklistModel]
+    overall_score: int
+    risk_level: str
+    confidence: float
+    completed_checklists: int
+    linked_assessment_id: Optional[str]
+    affects_credibility: bool
+    credibility_weight: float
+    assessed_by: str
+    assessor_id: Optional[str]
+    summary: Optional[str]
+    red_flags: List[str]
+    created_at: str
+    updated_at: str
+
+
+class DeceptionAssessmentListResponse(BaseModel):
+    """Response model for listing deception assessments."""
+    assessments: List[DeceptionAssessmentResponse]
+    total: int
+    limit: int
+    offset: int
+
+
+class LLMChecklistRequest(BaseModel):
+    """Request for LLM-assisted checklist completion."""
+    context: Optional[str] = Field(None, description="Additional context for LLM analysis")
+
+
+class LLMChecklistResponse(BaseModel):
+    """Response from LLM checklist analysis."""
+    checklist: DeceptionChecklistModel
+    reasoning: str
+    confidence: float
+    processing_time_ms: float
+
+
+class StandardIndicatorResponse(BaseModel):
+    """Response model for standard indicator."""
+    id: str
+    checklist: str
+    question: str
+    guidance: str
+    category: str
+
+
+# === Deception Helper Functions ===
+
+
+def _checklist_to_model(checklist) -> Optional[DeceptionChecklistModel]:
+    """Convert DeceptionChecklist to Pydantic model."""
+    if not checklist:
+        return None
+
+    return DeceptionChecklistModel(
+        checklist_type=checklist.checklist_type.value,
+        indicators=[
+            DeceptionIndicatorModel(
+                id=ind.id,
+                checklist=ind.checklist.value,
+                question=ind.question,
+                answer=ind.answer,
+                strength=ind.strength.value,
+                confidence=ind.confidence,
+                evidence_ids=ind.evidence_ids,
+                notes=ind.notes,
+            )
+            for ind in checklist.indicators
+        ],
+        overall_score=checklist.overall_score,
+        risk_level=checklist.risk_level,
+        summary=checklist.summary,
+        completed_at=checklist.completed_at.isoformat() if checklist.completed_at else None,
+    )
+
+
+def _deception_to_response(assessment) -> DeceptionAssessmentResponse:
+    """Convert DeceptionAssessment to response model."""
+    return DeceptionAssessmentResponse(
+        id=assessment.id,
+        source_type=assessment.source_type.value,
+        source_id=assessment.source_id,
+        source_name=assessment.source_name,
+        mom_checklist=_checklist_to_model(assessment.mom_checklist),
+        pop_checklist=_checklist_to_model(assessment.pop_checklist),
+        moses_checklist=_checklist_to_model(assessment.moses_checklist),
+        eve_checklist=_checklist_to_model(assessment.eve_checklist),
+        overall_score=assessment.overall_score,
+        risk_level=assessment.risk_level.value,
+        confidence=assessment.confidence,
+        completed_checklists=assessment.completed_checklists,
+        linked_assessment_id=assessment.linked_assessment_id,
+        affects_credibility=assessment.affects_credibility,
+        credibility_weight=assessment.credibility_weight,
+        assessed_by=assessment.assessed_by.value,
+        assessor_id=assessment.assessor_id,
+        summary=assessment.summary,
+        red_flags=assessment.red_flags,
+        created_at=assessment.created_at.isoformat(),
+        updated_at=assessment.updated_at.isoformat(),
+    )
+
+
+# === Deception Endpoints ===
+
+
+@router.post("/deception", response_model=DeceptionAssessmentResponse, status_code=201)
+async def create_deception_assessment(body: DeceptionAssessmentCreate, request: Request):
+    """
+    Create a new deception detection assessment.
+
+    This creates an empty assessment with all four checklists (MOM, POP, MOSES, EVE)
+    ready to be filled out.
+    """
+    shard = _get_shard(request)
+
+    assessment = await shard.create_deception_assessment(
+        source_type=body.source_type,
+        source_id=body.source_id,
+        source_name=body.source_name,
+        linked_assessment_id=body.linked_assessment_id,
+        affects_credibility=body.affects_credibility,
+        credibility_weight=body.credibility_weight,
+    )
+
+    return _deception_to_response(assessment)
+
+
+@router.get("/deception", response_model=DeceptionAssessmentListResponse)
+async def list_deception_assessments(
+    request: Request,
+    source_type: Optional[SourceType] = Query(None),
+    source_id: Optional[str] = Query(None),
+    min_score: Optional[int] = Query(None, ge=0, le=100),
+    risk_level: Optional[str] = Query(None),
     limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
 ):
-    """List high-credibility assessments."""
-    from .models import CredibilityFilter
-
+    """List deception assessments with optional filtering."""
     shard = _get_shard(request)
-    filter = CredibilityFilter(level=CredibilityLevel.HIGH)
-    assessments = await shard.list_assessments(filter=filter, limit=limit, offset=offset)
-    total = await shard.get_count(level="high")
 
-    return AssessmentListResponse(
-        assessments=[_assessment_to_response(a) for a in assessments],
+    assessments = await shard.list_deception_assessments(
+        source_type=source_type,
+        source_id=source_id,
+        min_score=min_score,
+        risk_level=risk_level,
+        limit=limit,
+        offset=offset,
+    )
+    total = await shard.get_deception_count()
+
+    return DeceptionAssessmentListResponse(
+        assessments=[_deception_to_response(a) for a in assessments],
         total=total,
         limit=limit,
         offset=offset,
     )
 
 
-@router.get("/level/low", response_model=AssessmentListResponse)
-async def list_low_credibility(
+@router.get("/deception/high-risk", response_model=DeceptionAssessmentListResponse)
+async def list_high_risk_sources(
     request: Request,
+    min_score: int = Query(60, ge=0, le=100),
     limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
 ):
-    """List low-credibility assessments."""
-    from .models import CredibilityFilter
-
+    """List sources with high deception risk (score >= min_score)."""
     shard = _get_shard(request)
-    filter = CredibilityFilter(level=CredibilityLevel.LOW)
-    assessments = await shard.list_assessments(filter=filter, limit=limit, offset=offset)
-    total = await shard.get_count(level="low")
 
-    return AssessmentListResponse(
-        assessments=[_assessment_to_response(a) for a in assessments],
+    assessments = await shard.list_deception_assessments(
+        min_score=min_score,
+        limit=limit,
+        offset=offset,
+    )
+    total = await shard.get_deception_count(min_score=min_score)
+
+    return DeceptionAssessmentListResponse(
+        assessments=[_deception_to_response(a) for a in assessments],
         total=total,
         limit=limit,
         offset=offset,
     )
 
 
-@router.get("/level/unreliable", response_model=AssessmentListResponse)
-async def list_unreliable(
+@router.get("/deception/count", response_model=CountResponse)
+async def get_deception_count(
     request: Request,
-    limit: int = Query(50, ge=1, le=500),
-    offset: int = Query(0, ge=0),
+    risk_level: Optional[str] = Query(None),
+    min_score: Optional[int] = Query(None, ge=0, le=100),
 ):
-    """List unreliable assessments."""
-    from .models import CredibilityFilter
+    """Get count of deception assessments."""
+    shard = _get_shard(request)
+    count = await shard.get_deception_count(risk_level=risk_level, min_score=min_score)
+    return CountResponse(count=count)
+
+
+@router.get("/deception/indicators/{checklist_type}", response_model=List[StandardIndicatorResponse])
+async def get_checklist_indicators(checklist_type: str, request: Request):
+    """
+    Get the standard indicators for a checklist type.
+
+    checklist_type: 'mom', 'pop', 'moses', or 'eve'
+    """
+    from .models import get_indicators_for_checklist, DeceptionChecklistType
+
+    try:
+        ct = DeceptionChecklistType(checklist_type.lower())
+    except ValueError:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid checklist type: {checklist_type}. Must be one of: mom, pop, moses, eve"
+        )
+
+    indicators = get_indicators_for_checklist(ct)
+
+    return [
+        StandardIndicatorResponse(
+            id=ind.id,
+            checklist=ind.checklist.value,
+            question=ind.question,
+            guidance=ind.guidance,
+            category=ind.category,
+        )
+        for ind in indicators
+    ]
+
+
+@router.get("/deception/{assessment_id}", response_model=DeceptionAssessmentResponse)
+async def get_deception_assessment(assessment_id: str, request: Request):
+    """Get a deception assessment by ID."""
+    shard = _get_shard(request)
+    assessment = await shard.get_deception_assessment(assessment_id)
+
+    if not assessment:
+        raise HTTPException(status_code=404, detail=f"Deception assessment {assessment_id} not found")
+
+    return _deception_to_response(assessment)
+
+
+@router.put("/deception/{assessment_id}", response_model=DeceptionAssessmentResponse)
+async def update_deception_assessment(
+    assessment_id: str,
+    body: DeceptionAssessmentUpdate,
+    request: Request,
+):
+    """Update a deception assessment metadata."""
+    shard = _get_shard(request)
+
+    assessment = await shard.update_deception_assessment(
+        assessment_id=assessment_id,
+        source_name=body.source_name,
+        summary=body.summary,
+        red_flags=body.red_flags,
+        affects_credibility=body.affects_credibility,
+        credibility_weight=body.credibility_weight,
+    )
+
+    if not assessment:
+        raise HTTPException(status_code=404, detail=f"Deception assessment {assessment_id} not found")
+
+    return _deception_to_response(assessment)
+
+
+@router.delete("/deception/{assessment_id}", status_code=204)
+async def delete_deception_assessment(assessment_id: str, request: Request):
+    """Delete a deception assessment."""
+    shard = _get_shard(request)
+    success = await shard.delete_deception_assessment(assessment_id)
+
+    if not success:
+        raise HTTPException(status_code=404, detail=f"Deception assessment {assessment_id} not found")
+
+
+@router.put("/deception/{assessment_id}/checklist/{checklist_type}", response_model=DeceptionAssessmentResponse)
+async def update_checklist(
+    assessment_id: str,
+    checklist_type: str,
+    body: DeceptionChecklistUpdate,
+    request: Request,
+):
+    """
+    Update a specific checklist within a deception assessment.
+
+    checklist_type: 'mom', 'pop', 'moses', or 'eve'
+    """
+    try:
+        ct = DeceptionChecklistType(checklist_type.lower())
+    except ValueError:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid checklist type: {checklist_type}. Must be one of: mom, pop, moses, eve"
+        )
 
     shard = _get_shard(request)
-    filter = CredibilityFilter(level=CredibilityLevel.UNRELIABLE)
-    assessments = await shard.list_assessments(filter=filter, limit=limit, offset=offset)
-    total = await shard.get_count(level="unreliable")
 
-    return AssessmentListResponse(
-        assessments=[_assessment_to_response(a) for a in assessments],
-        total=total,
-        limit=limit,
-        offset=offset,
+    assessment = await shard.update_deception_checklist(
+        assessment_id=assessment_id,
+        checklist_type=ct,
+        indicators=body.indicators,
+        summary=body.summary,
+    )
+
+    if not assessment:
+        raise HTTPException(status_code=404, detail=f"Deception assessment {assessment_id} not found")
+
+    return _deception_to_response(assessment)
+
+
+@router.post("/deception/{assessment_id}/recalculate", response_model=DeceptionAssessmentResponse)
+async def recalculate_deception_score(assessment_id: str, request: Request):
+    """Recalculate overall deception score from completed checklists."""
+    shard = _get_shard(request)
+
+    assessment = await shard.recalculate_deception_score(assessment_id)
+
+    if not assessment:
+        raise HTTPException(status_code=404, detail=f"Deception assessment {assessment_id} not found")
+
+    return _deception_to_response(assessment)
+
+
+@router.post("/deception/{assessment_id}/checklist/{checklist_type}/llm", response_model=LLMChecklistResponse)
+async def analyze_checklist_with_llm(
+    assessment_id: str,
+    checklist_type: str,
+    body: LLMChecklistRequest,
+    request: Request,
+):
+    """
+    Use LLM to analyze and populate a checklist.
+
+    The LLM will assess each indicator based on available information
+    about the source.
+    """
+    try:
+        ct = DeceptionChecklistType(checklist_type.lower())
+    except ValueError:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid checklist type: {checklist_type}. Must be one of: mom, pop, moses, eve"
+        )
+
+    shard = _get_shard(request)
+
+    # First check if assessment exists
+    assessment = await shard.get_deception_assessment(assessment_id)
+    if not assessment:
+        raise HTTPException(status_code=404, detail=f"Deception assessment {assessment_id} not found")
+
+    # Check if LLM is available
+    if not shard._llm or not shard._llm.is_available():
+        raise HTTPException(
+            status_code=503,
+            detail="LLM service is not available. Please configure LLM in Dashboard > LLM Config."
+        )
+
+    result = await shard.analyze_checklist_with_llm(
+        assessment_id=assessment_id,
+        checklist_type=ct,
+        context=body.context,
+    )
+
+    if not result:
+        raise HTTPException(
+            status_code=500,
+            detail="LLM analysis failed. Check server logs for details."
+        )
+
+    return LLMChecklistResponse(
+        checklist=_checklist_to_model(result["checklist"]),
+        reasoning=result["reasoning"],
+        confidence=result["confidence"],
+        processing_time_ms=result["processing_time_ms"],
     )
 
 
-@router.get("/level/verified", response_model=AssessmentListResponse)
-async def list_verified(
+@router.get("/deception/source/{source_type}/{source_id}", response_model=List[DeceptionAssessmentResponse])
+async def get_source_deception_history(
+    source_type: SourceType,
+    source_id: str,
     request: Request,
-    limit: int = Query(50, ge=1, le=500),
-    offset: int = Query(0, ge=0),
 ):
-    """List verified/high-credibility assessments."""
-    from .models import CredibilityFilter
-
+    """Get deception assessment history for a source."""
     shard = _get_shard(request)
-    filter = CredibilityFilter(level=CredibilityLevel.VERIFIED)
-    assessments = await shard.list_assessments(filter=filter, limit=limit, offset=offset)
-    total = await shard.get_count(level="verified")
 
-    return AssessmentListResponse(
-        assessments=[_assessment_to_response(a) for a in assessments],
-        total=total,
-        limit=limit,
-        offset=offset,
+    assessments = await shard.list_deception_assessments(
+        source_type=source_type,
+        source_id=source_id,
+        limit=100,
+        offset=0,
     )
+
+    return [_deception_to_response(a) for a in assessments]
+
+
+# === Catch-all Routes (must be last) ===
+
+
+@router.get("/{assessment_id}", response_model=AssessmentResponse)
+async def get_assessment(assessment_id: str, request: Request):
+    """Get a specific assessment by ID."""
+    shard = _get_shard(request)
+    assessment = await shard.get_assessment(assessment_id)
+
+    if not assessment:
+        raise HTTPException(status_code=404, detail=f"Assessment {assessment_id} not found")
+
+    return _assessment_to_response(assessment)
+
+
+@router.put("/{assessment_id}", response_model=AssessmentResponse)
+async def update_assessment(assessment_id: str, body: AssessmentUpdate, request: Request):
+    """Update an existing assessment."""
+    shard = _get_shard(request)
+
+    factors = _models_to_factors(body.factors) if body.factors else None
+
+    assessment = await shard.update_assessment(
+        assessment_id=assessment_id,
+        score=body.score,
+        confidence=body.confidence,
+        factors=factors,
+        notes=body.notes,
+    )
+
+    if not assessment:
+        raise HTTPException(status_code=404, detail=f"Assessment {assessment_id} not found")
+
+    return _assessment_to_response(assessment)
+
+
+@router.delete("/{assessment_id}", status_code=204)
+async def delete_assessment(assessment_id: str, request: Request):
+    """Delete an assessment."""
+    shard = _get_shard(request)
+    success = await shard.delete_assessment(assessment_id)
+
+    if not success:
+        raise HTTPException(status_code=404, detail=f"Assessment {assessment_id} not found")

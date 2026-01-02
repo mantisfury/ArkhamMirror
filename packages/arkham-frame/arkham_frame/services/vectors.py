@@ -154,7 +154,7 @@ class VectorService:
         self._available = False
         self._embedding_model = None
         self._embedding_available = False
-        self._default_dimension = 1024  # BGE-M3 default
+        self._default_dimension = 384  # all-MiniLM-L6-v2 default (fast testing)
 
     async def initialize(self) -> None:
         """Initialize Qdrant connection and optional embedding model."""
@@ -185,9 +185,10 @@ class VectorService:
             if not embedding_model:
                 embedding_model = await self._get_embedding_model_from_settings()
 
-            # Default to BAAI/bge-m3 (1024 dims, multilingual, high quality)
+            # Default to all-MiniLM-L6-v2 (384 dims, fast, lightweight) for testing
+            # Use BAAI/bge-m3 (1024 dims) for production quality
             if not embedding_model:
-                embedding_model = "BAAI/bge-m3"
+                embedding_model = "all-MiniLM-L6-v2"
 
             await self._load_embedding_model(embedding_model)
         except Exception as e:

@@ -83,7 +83,48 @@ class FiltersResponse(BaseModel):
     available: dict
 
 
+class SearchConfigResponse(BaseModel):
+    """Current search configuration and weights."""
+    embedding_dimensions: int | None
+    semantic_weight: float
+    keyword_weight: float
+    bm25_enabled: bool
+    engines: dict
+
+
 # --- Endpoints ---
+
+
+@router.get("/config", response_model=SearchConfigResponse)
+async def get_search_config():
+    """
+    Get current search configuration including model-aware weights.
+
+    Returns:
+        - embedding_dimensions: Current embedding model dimensions
+        - semantic_weight: Weight for semantic/vector search (0.0-1.0)
+        - keyword_weight: Weight for BM25 keyword search (0.0-1.0)
+        - bm25_enabled: Whether BM25 scoring is active
+        - engines: Status of each search engine
+    """
+    config = {
+        "embedding_dimensions": None,
+        "semantic_weight": 0.7,
+        "keyword_weight": 0.3,
+        "bm25_enabled": _keyword_engine is not None,
+        "engines": {
+            "semantic": _semantic_engine is not None,
+            "keyword": _keyword_engine is not None,
+            "hybrid": _hybrid_engine is not None,
+        },
+    }
+
+    if _hybrid_engine:
+        config["embedding_dimensions"] = getattr(_hybrid_engine, 'embedding_dimensions', None)
+        config["semantic_weight"] = getattr(_hybrid_engine, 'default_semantic_weight', 0.7)
+        config["keyword_weight"] = getattr(_hybrid_engine, 'default_keyword_weight', 0.3)
+
+    return SearchConfigResponse(**config)
 
 
 @router.post("/", response_model=SearchResponse)

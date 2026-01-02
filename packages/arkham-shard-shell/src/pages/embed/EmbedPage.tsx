@@ -13,7 +13,18 @@ import { useState, useEffect } from 'react';
 import { Icon } from '../../components/common/Icon';
 import { useToast } from '../../context/ToastContext';
 import { SimilarityCalculator } from './SimilarityCalculator';
-import { useModels, useCacheStats, useNearest, useEmbedDocument, useClearCache } from './api';
+import {
+  useModels,
+  useCacheStats,
+  useNearest,
+  useEmbedDocument,
+  useClearCache,
+  useAvailableModels,
+  useVectorCollections,
+  useCheckModelSwitch,
+  useSwitchModel,
+} from './api';
+import type { AvailableModel, ModelSwitchCheckResult } from './types';
 
 export function EmbedPage() {
   const { toast } = useToast();
@@ -21,11 +32,20 @@ export function EmbedPage() {
   const [searchLimit, setSearchLimit] = useState(10);
   const [docIdInput, setDocIdInput] = useState('');
 
+  // Model management state
+  const [selectedModel, setSelectedModel] = useState<string | null>(null);
+  const [showWipeConfirm, setShowWipeConfirm] = useState(false);
+  const [switchCheckResult, setSwitchCheckResult] = useState<ModelSwitchCheckResult | null>(null);
+
   const { data: models, loading: loadingModels } = useModels();
+  const { data: availableModels, loading: loadingAvailable, refetch: refetchAvailable } = useAvailableModels();
+  const { data: collections, refetch: refetchCollections } = useVectorCollections();
   const { data: cacheStats, loading: loadingCache, refetch: refetchCache } = useCacheStats();
   const { search, data: searchResults, loading: searching } = useNearest();
   const { embed: embedDoc, loading: embeddingDoc } = useEmbedDocument();
   const { clear: clearCacheAPI, loading: clearingCache } = useClearCache();
+  const { check: checkSwitch, loading: checkingSwitch } = useCheckModelSwitch();
+  const { switchTo: switchModelAPI, loading: switchingModel } = useSwitchModel();
 
   // Auto-refresh cache stats
   useEffect(() => {
@@ -36,7 +56,7 @@ export function EmbedPage() {
     return () => clearInterval(interval);
   }, [refetchCache]);
 
-  const currentModel = models?.find(m => m.loaded);
+  const currentModel = models?.find(m => m.loaded) || availableModels?.find(m => m.is_current);
 
   const handleSearch = async () => {
     if (!searchQuery.trim()) {
@@ -74,6 +94,81 @@ export function EmbedPage() {
     } catch (error) {
       toast.error(error instanceof Error ? error.message : 'Clear cache failed');
     }
+  };
+
+  const handleModelSelect = async (model: AvailableModel) => {
+    if (model.is_current) {
+      toast.info('This model is already active');
+      return;
+    }
+
+    setSelectedModel(model.name);
+
+    try {
+      const result = await checkSwitch(model.name);
+      setSwitchCheckResult(result);
+
+      if (result.requires_wipe) {
+        setShowWipeConfirm(true);
+      } else {
+        // No wipe needed, switch directly
+        await performModelSwitch(model.name, false);
+      }
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Failed to check model switch');
+      setSelectedModel(null);
+    }
+  };
+
+  const performModelSwitch = async (modelName: string, confirmWipe: boolean) => {
+    try {
+      const result = await switchModelAPI(modelName, confirmWipe);
+
+      if (result.success) {
+        toast.success(result.message);
+        // Refresh all model-related data
+        refetchAvailable();
+        refetchCollections();
+        refetchCache();
+      } else if (result.requires_wipe) {
+        // Need confirmation
+        setSwitchCheckResult({
+          success: false,
+          requires_wipe: true,
+          message: result.message,
+          current_model: result.previous_model || '',
+          current_dimensions: result.previous_dimensions || 0,
+          new_model: modelName,
+          new_dimensions: result.new_dimensions,
+          affected_collections: result.affected_collections,
+        });
+        setShowWipeConfirm(true);
+      } else {
+        toast.error(result.message);
+      }
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Model switch failed');
+    } finally {
+      if (!showWipeConfirm) {
+        setSelectedModel(null);
+        setSwitchCheckResult(null);
+      }
+    }
+  };
+
+  const handleConfirmWipe = async () => {
+    if (!selectedModel) return;
+
+    setShowWipeConfirm(false);
+    await performModelSwitch(selectedModel, true);
+    setSelectedModel(null);
+    setSwitchCheckResult(null);
+  };
+
+  const handleCancelWipe = () => {
+    setShowWipeConfirm(false);
+    setSelectedModel(null);
+    setSwitchCheckResult(null);
   };
 
   const formatNumber = (num: number): string => {
@@ -153,6 +248,147 @@ export function EmbedPage() {
           </div>
         )}
       </section>
+
+      {/* Model Selection Section */}
+      <section className="model-selection-section">
+        <div className="section-header">
+          <h2>
+            <Icon name="RefreshCw" size={20} />
+            Switch Embedding Model
+          </h2>
+          <p className="section-description">
+            Select a different embedding model. Different dimensions require wiping the vector database.
+          </p>
+        </div>
+
+        {loadingAvailable ? (
+          <div className="loading-state">
+            <Icon name="Loader" size={24} className="spinner" />
+            Loading available models...
+          </div>
+        ) : availableModels && availableModels.length > 0 ? (
+          <div className="model-grid">
+            {availableModels.map((model) => (
+              <div
+                key={model.name}
+                className={`model-option ${model.is_current ? 'active' : ''} ${selectedModel === model.name && (checkingSwitch || switchingModel) ? 'loading' : ''}`}
+                onClick={() => handleModelSelect(model)}
+              >
+                <div className="model-option-header">
+                  <h4>{model.name}</h4>
+                  {model.is_current && (
+                    <span className="current-badge">
+                      <Icon name="CheckCircle2" size={14} />
+                      Current
+                    </span>
+                  )}
+                  {selectedModel === model.name && (checkingSwitch || switchingModel) && (
+                    <Icon name="Loader" size={16} className="spinner" />
+                  )}
+                </div>
+                <div className="model-option-stats">
+                  <span className="model-dim">
+                    <Icon name="Layers" size={12} />
+                    {model.dimensions}D
+                  </span>
+                  <span className="model-size">
+                    <Icon name="HardDrive" size={12} />
+                    {model.size_mb}MB
+                  </span>
+                </div>
+                <p className="model-option-desc">{model.description}</p>
+                {currentModel && model.dimensions !== currentModel.dimensions && !model.is_current && (
+                  <div className="dimension-warning">
+                    <Icon name="AlertTriangle" size={14} />
+                    Requires database wipe ({currentModel.dimensions}D → {model.dimensions}D)
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="empty-state">
+            <Icon name="AlertCircle" size={48} />
+            <p>No models available</p>
+          </div>
+        )}
+
+        {/* Vector Collections Info */}
+        {collections && collections.length > 0 && (
+          <div className="collections-info">
+            <h4>
+              <Icon name="Database" size={16} />
+              Vector Collections
+            </h4>
+            <div className="collections-grid">
+              {collections.map((coll) => (
+                <div key={coll.name} className="collection-item">
+                  <span className="collection-name">{coll.name}</span>
+                  <span className="collection-stats">
+                    {formatNumber(coll.points_count)} vectors ({coll.vector_size}D)
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </section>
+
+      {/* Wipe Confirmation Modal */}
+      {showWipeConfirm && switchCheckResult && (
+        <div className="modal-overlay" onClick={handleCancelWipe}>
+          <div className="modal-content" onClick={e => e.stopPropagation()}>
+            <div className="modal-header">
+              <Icon name="AlertTriangle" size={24} className="warning-icon" />
+              <h3>Vector Database Wipe Required</h3>
+            </div>
+            <div className="modal-body">
+              <p className="warning-text">
+                Switching from <strong>{switchCheckResult.current_model}</strong> ({switchCheckResult.current_dimensions}D)
+                to <strong>{switchCheckResult.new_model}</strong> ({switchCheckResult.new_dimensions}D)
+                requires wiping all vector embeddings.
+              </p>
+              {switchCheckResult.affected_collections.length > 0 && (
+                <div className="affected-collections">
+                  <p>The following collections will be wiped:</p>
+                  <ul>
+                    {switchCheckResult.affected_collections.map(name => (
+                      <li key={name}>{name}</li>
+                    ))}
+                  </ul>
+                  {switchCheckResult.total_vectors_affected !== undefined && (
+                    <p className="vectors-count">
+                      <Icon name="AlertCircle" size={14} />
+                      {formatNumber(switchCheckResult.total_vectors_affected)} vectors will be deleted
+                    </p>
+                  )}
+                </div>
+              )}
+              <p className="warning-note">
+                After switching, you will need to re-embed all documents with the new model.
+              </p>
+            </div>
+            <div className="modal-actions">
+              <button className="button-secondary" onClick={handleCancelWipe}>
+                Cancel
+              </button>
+              <button className="button-danger" onClick={handleConfirmWipe} disabled={switchingModel}>
+                {switchingModel ? (
+                  <>
+                    <Icon name="Loader" size={16} className="spinner" />
+                    Switching...
+                  </>
+                ) : (
+                  <>
+                    <Icon name="Trash2" size={16} />
+                    Wipe & Switch Model
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Similarity Calculator */}
       <section className="similarity-section">
@@ -809,6 +1045,286 @@ export function EmbedPage() {
           to {
             transform: rotate(360deg);
           }
+        }
+
+        /* Model Selection Styles */
+        .model-selection-section {
+          margin-bottom: 2rem;
+        }
+
+        .model-grid {
+          display: grid;
+          grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+          gap: 1rem;
+        }
+
+        .model-option {
+          background: #1f2937;
+          border: 2px solid #374151;
+          border-radius: 0.75rem;
+          padding: 1.25rem;
+          cursor: pointer;
+          transition: all 0.15s;
+        }
+
+        .model-option:hover:not(.active):not(.loading) {
+          border-color: #6366f1;
+          background: #1e293b;
+        }
+
+        .model-option.active {
+          border-color: #22c55e;
+          background: rgba(34, 197, 94, 0.1);
+        }
+
+        .model-option.loading {
+          opacity: 0.7;
+          cursor: wait;
+        }
+
+        .model-option-header {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 0.5rem;
+          margin-bottom: 0.75rem;
+        }
+
+        .model-option-header h4 {
+          margin: 0;
+          font-size: 0.875rem;
+          font-weight: 600;
+          color: #f9fafb;
+          word-break: break-all;
+        }
+
+        .current-badge {
+          display: inline-flex;
+          align-items: center;
+          gap: 0.25rem;
+          padding: 0.125rem 0.5rem;
+          background: #22c55e;
+          color: white;
+          border-radius: 9999px;
+          font-size: 0.625rem;
+          font-weight: 600;
+          text-transform: uppercase;
+          white-space: nowrap;
+        }
+
+        .model-option-stats {
+          display: flex;
+          gap: 1rem;
+          margin-bottom: 0.75rem;
+        }
+
+        .model-dim,
+        .model-size {
+          display: inline-flex;
+          align-items: center;
+          gap: 0.25rem;
+          padding: 0.25rem 0.5rem;
+          background: #374151;
+          border-radius: 0.25rem;
+          font-size: 0.75rem;
+          color: #d1d5db;
+        }
+
+        .model-option-desc {
+          margin: 0;
+          font-size: 0.75rem;
+          color: #9ca3af;
+          line-height: 1.4;
+        }
+
+        .dimension-warning {
+          display: flex;
+          align-items: center;
+          gap: 0.375rem;
+          margin-top: 0.75rem;
+          padding: 0.5rem;
+          background: rgba(245, 158, 11, 0.1);
+          border: 1px solid rgba(245, 158, 11, 0.3);
+          border-radius: 0.375rem;
+          color: #f59e0b;
+          font-size: 0.75rem;
+        }
+
+        .collections-info {
+          margin-top: 1.5rem;
+          padding: 1rem;
+          background: #111827;
+          border: 1px solid #374151;
+          border-radius: 0.5rem;
+        }
+
+        .collections-info h4 {
+          margin: 0 0 0.75rem 0;
+          display: flex;
+          align-items: center;
+          gap: 0.5rem;
+          font-size: 0.875rem;
+          font-weight: 500;
+          color: #d1d5db;
+        }
+
+        .collections-grid {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 0.5rem;
+        }
+
+        .collection-item {
+          display: flex;
+          flex-direction: column;
+          gap: 0.125rem;
+          padding: 0.5rem 0.75rem;
+          background: #1f2937;
+          border: 1px solid #374151;
+          border-radius: 0.375rem;
+        }
+
+        .collection-name {
+          font-size: 0.75rem;
+          font-weight: 600;
+          color: #f9fafb;
+        }
+
+        .collection-stats {
+          font-size: 0.625rem;
+          color: #9ca3af;
+        }
+
+        /* Modal Styles */
+        .modal-overlay {
+          position: fixed;
+          inset: 0;
+          background: rgba(0, 0, 0, 0.75);
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          z-index: 1000;
+          padding: 1rem;
+        }
+
+        .modal-content {
+          background: #1f2937;
+          border: 1px solid #374151;
+          border-radius: 0.75rem;
+          max-width: 500px;
+          width: 100%;
+          box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+        }
+
+        .modal-header {
+          display: flex;
+          align-items: center;
+          gap: 0.75rem;
+          padding: 1.25rem;
+          border-bottom: 1px solid #374151;
+        }
+
+        .modal-header .warning-icon {
+          color: #f59e0b;
+        }
+
+        .modal-header h3 {
+          margin: 0;
+          font-size: 1.125rem;
+          font-weight: 600;
+          color: #f9fafb;
+        }
+
+        .modal-body {
+          padding: 1.25rem;
+        }
+
+        .warning-text {
+          margin: 0 0 1rem 0;
+          color: #d1d5db;
+          line-height: 1.5;
+        }
+
+        .warning-text strong {
+          color: #f9fafb;
+        }
+
+        .affected-collections {
+          background: #111827;
+          border: 1px solid #374151;
+          border-radius: 0.5rem;
+          padding: 1rem;
+          margin-bottom: 1rem;
+        }
+
+        .affected-collections p {
+          margin: 0 0 0.5rem 0;
+          color: #9ca3af;
+          font-size: 0.875rem;
+        }
+
+        .affected-collections ul {
+          margin: 0;
+          padding-left: 1.25rem;
+          color: #d1d5db;
+          font-size: 0.875rem;
+        }
+
+        .affected-collections li {
+          margin-bottom: 0.25rem;
+        }
+
+        .vectors-count {
+          display: flex;
+          align-items: center;
+          gap: 0.375rem;
+          margin-top: 0.75rem !important;
+          padding-top: 0.75rem;
+          border-top: 1px solid #374151;
+          color: #ef4444;
+          font-size: 0.875rem;
+          font-weight: 500;
+        }
+
+        .warning-note {
+          margin: 0;
+          color: #9ca3af;
+          font-size: 0.875rem;
+          font-style: italic;
+        }
+
+        .modal-actions {
+          display: flex;
+          justify-content: flex-end;
+          gap: 0.75rem;
+          padding: 1rem 1.25rem;
+          border-top: 1px solid #374151;
+          background: #111827;
+          border-radius: 0 0 0.75rem 0.75rem;
+        }
+
+        .button-danger {
+          display: inline-flex;
+          align-items: center;
+          gap: 0.5rem;
+          padding: 0.625rem 1.25rem;
+          background: #dc2626;
+          color: white;
+          border: none;
+          border-radius: 0.375rem;
+          font-size: 0.875rem;
+          font-weight: 500;
+          cursor: pointer;
+          transition: background 0.15s;
+        }
+
+        .button-danger:hover:not(:disabled) {
+          background: #b91c1c;
+        }
+
+        .button-danger:disabled {
+          opacity: 0.5;
+          cursor: not-allowed;
         }
       `}</style>
     </div>

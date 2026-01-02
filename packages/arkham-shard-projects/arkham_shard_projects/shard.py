@@ -3,6 +3,11 @@ Projects Shard - Main Shard Implementation
 
 Project workspace management for ArkhamFrame - organize documents,
 entities, and analyses into collaborative workspaces.
+
+Supports:
+- Project-scoped vector collections for data isolation
+- Per-project embedding model configuration
+- Automatic collection creation/deletion on project lifecycle
 """
 
 import logging
@@ -24,6 +29,18 @@ from .models import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+# Known embedding models with their dimensions
+KNOWN_EMBEDDING_MODELS = {
+    "all-MiniLM-L6-v2": {"dimensions": 384, "description": "Fast, lightweight (384D)"},
+    "BAAI/bge-m3": {"dimensions": 1024, "description": "High quality, multilingual (1024D)"},
+    "all-mpnet-base-v2": {"dimensions": 768, "description": "Balanced quality (768D)"},
+    "paraphrase-MiniLM-L6-v2": {"dimensions": 384, "description": "Paraphrase optimized (384D)"},
+}
+
+# Default embedding model for new projects
+DEFAULT_EMBEDDING_MODEL = "all-MiniLM-L6-v2"
 
 
 class ProjectsShard(ArkhamShard):
@@ -48,6 +65,7 @@ class ProjectsShard(ArkhamShard):
         self._db = None
         self._events = None
         self._storage = None
+        self._vectors = None
         self._initialized = False
 
     async def initialize(self, frame) -> None:
@@ -56,6 +74,7 @@ class ProjectsShard(ArkhamShard):
         self._db = frame.database
         self._events = frame.events
         self._storage = getattr(frame, "storage", None)
+        self._vectors = frame.get_service("vectors")
 
         # Create database schema
         await self._create_schema()
@@ -69,6 +88,8 @@ class ProjectsShard(ArkhamShard):
 
         self._initialized = True
         logger.info(f"ProjectsShard initialized (v{self.version})")
+        if self._vectors:
+            logger.info("Vector service available for project-scoped collections")
 
     async def shutdown(self) -> None:
         """Clean shutdown of shard."""
@@ -199,6 +220,206 @@ class ProjectsShard(ArkhamShard):
         if entity_id and project_id:
             logger.debug(f"Entity {entity_id} created in project {project_id} context")
 
+    # === Vector Collection Management ===
+
+    def get_collection_names(self, project_id: str) -> Dict[str, str]:
+        """
+        Get the collection names for a project.
+
+        Returns:
+            Dict with 'documents', 'chunks', 'entities' keys mapping to collection names
+        """
+        return {
+            "documents": f"project_{project_id}_documents",
+            "chunks": f"project_{project_id}_chunks",
+            "entities": f"project_{project_id}_entities",
+        }
+
+    async def create_project_collections(
+        self,
+        project_id: str,
+        embedding_model: str = DEFAULT_EMBEDDING_MODEL,
+    ) -> Dict[str, bool]:
+        """
+        Create vector collections for a project.
+
+        Args:
+            project_id: Project ID
+            embedding_model: Embedding model to use (determines vector dimensions)
+
+        Returns:
+            Dict mapping collection type to creation success
+        """
+        if not self._vectors:
+            logger.warning("Vector service not available, skipping collection creation")
+            return {}
+
+        # Get dimensions for the embedding model
+        model_info = KNOWN_EMBEDDING_MODELS.get(embedding_model)
+        if model_info:
+            dimensions = model_info["dimensions"]
+        else:
+            # Unknown model - use default dimensions
+            dimensions = 384
+            logger.warning(f"Unknown embedding model '{embedding_model}', using default dimensions: {dimensions}")
+
+        collection_names = self.get_collection_names(project_id)
+        results = {}
+
+        for coll_type, coll_name in collection_names.items():
+            try:
+                await self._vectors.create_collection(
+                    name=coll_name,
+                    vector_size=dimensions,
+                )
+                results[coll_type] = True
+                logger.info(f"Created collection '{coll_name}' ({dimensions}D) for project {project_id}")
+            except Exception as e:
+                # Collection may already exist
+                if "already exists" in str(e).lower():
+                    results[coll_type] = True
+                    logger.debug(f"Collection '{coll_name}' already exists")
+                else:
+                    results[coll_type] = False
+                    logger.error(f"Failed to create collection '{coll_name}': {e}")
+
+        return results
+
+    async def delete_project_collections(self, project_id: str) -> Dict[str, bool]:
+        """
+        Delete all vector collections for a project.
+
+        Args:
+            project_id: Project ID
+
+        Returns:
+            Dict mapping collection type to deletion success
+        """
+        if not self._vectors:
+            return {}
+
+        collection_names = self.get_collection_names(project_id)
+        results = {}
+
+        for coll_type, coll_name in collection_names.items():
+            try:
+                await self._vectors.delete_collection(coll_name)
+                results[coll_type] = True
+                logger.info(f"Deleted collection '{coll_name}' for project {project_id}")
+            except Exception as e:
+                # Collection may not exist
+                if "not found" in str(e).lower() or "does not exist" in str(e).lower():
+                    results[coll_type] = True
+                else:
+                    results[coll_type] = False
+                    logger.error(f"Failed to delete collection '{coll_name}': {e}")
+
+        return results
+
+    async def get_project_collection_stats(self, project_id: str) -> Dict[str, Any]:
+        """
+        Get statistics for a project's vector collections.
+
+        Returns:
+            Dict with collection stats (vector counts, dimensions, etc.)
+        """
+        if not self._vectors:
+            return {"available": False}
+
+        collection_names = self.get_collection_names(project_id)
+        stats = {"available": True, "collections": {}}
+
+        for coll_type, coll_name in collection_names.items():
+            try:
+                info = await self._vectors.get_collection(coll_name)
+                if info:
+                    stats["collections"][coll_type] = {
+                        "name": coll_name,
+                        "vector_count": info.points_count,
+                        "dimensions": info.vector_size,
+                        "status": info.status,
+                    }
+                else:
+                    stats["collections"][coll_type] = {"name": coll_name, "exists": False}
+            except Exception as e:
+                stats["collections"][coll_type] = {"name": coll_name, "error": str(e)}
+
+        return stats
+
+    async def update_project_embedding_model(
+        self,
+        project_id: str,
+        new_model: str,
+        wipe_collections: bool = False,
+    ) -> Dict[str, Any]:
+        """
+        Update the embedding model for a project.
+
+        If the new model has different dimensions, collections must be wiped.
+
+        Args:
+            project_id: Project ID
+            new_model: New embedding model name
+            wipe_collections: If True, wipe and recreate collections
+
+        Returns:
+            Result dict with success status and details
+        """
+        project = await self.get_project(project_id)
+        if not project:
+            return {"success": False, "error": "Project not found"}
+
+        current_model = project.settings.get("embedding_model", DEFAULT_EMBEDDING_MODEL)
+        current_dims = KNOWN_EMBEDDING_MODELS.get(current_model, {}).get("dimensions", 384)
+        new_dims = KNOWN_EMBEDDING_MODELS.get(new_model, {}).get("dimensions", 384)
+
+        # Check if dimensions differ
+        requires_wipe = current_dims != new_dims
+
+        if requires_wipe and not wipe_collections:
+            return {
+                "success": False,
+                "requires_wipe": True,
+                "message": f"Model change ({current_model} -> {new_model}) requires wiping collections ({current_dims}D -> {new_dims}D)",
+                "current_model": current_model,
+                "current_dimensions": current_dims,
+                "new_model": new_model,
+                "new_dimensions": new_dims,
+            }
+
+        # Update project settings
+        project.settings["embedding_model"] = new_model
+        project.settings["embedding_dimensions"] = new_dims
+        await self._save_project(project, update=True)
+
+        # If wiping, recreate collections
+        wiped = False
+        if requires_wipe and wipe_collections:
+            await self.delete_project_collections(project_id)
+            await self.create_project_collections(project_id, new_model)
+            wiped = True
+
+        # Log activity
+        await self._log_activity(
+            project_id=project_id,
+            action="embedding_model_changed",
+            actor_id="system",
+            target_type="settings",
+            target_id="embedding_model",
+            details={
+                "previous_model": current_model,
+                "new_model": new_model,
+                "wiped": wiped,
+            },
+        )
+
+        return {
+            "success": True,
+            "previous_model": current_model,
+            "new_model": new_model,
+            "wiped": wiped,
+        }
+
     # === Public API Methods ===
 
     async def create_project(
@@ -209,10 +430,33 @@ class ProjectsShard(ArkhamShard):
         status: ProjectStatus = ProjectStatus.ACTIVE,
         settings: Optional[Dict[str, Any]] = None,
         metadata: Optional[Dict[str, Any]] = None,
+        embedding_model: Optional[str] = None,
+        create_collections: bool = True,
     ) -> Project:
-        """Create a new project."""
+        """
+        Create a new project.
+
+        Args:
+            name: Project name
+            description: Project description
+            owner_id: Owner user ID
+            status: Initial status
+            settings: Custom settings dict
+            metadata: Custom metadata dict
+            embedding_model: Embedding model for this project (default: all-MiniLM-L6-v2)
+            create_collections: Whether to create vector collections for this project
+
+        Returns:
+            Created Project object
+        """
         project_id = str(uuid4())
         now = datetime.utcnow()
+
+        # Set up settings with embedding model
+        project_settings = settings or {}
+        model = embedding_model or DEFAULT_EMBEDDING_MODEL
+        project_settings["embedding_model"] = model
+        project_settings["embedding_dimensions"] = KNOWN_EMBEDDING_MODELS.get(model, {}).get("dimensions", 384)
 
         project = Project(
             id=project_id,
@@ -222,11 +466,16 @@ class ProjectsShard(ArkhamShard):
             owner_id=owner_id,
             created_at=now,
             updated_at=now,
-            settings=settings or {},
+            settings=project_settings,
             metadata=metadata or {},
         )
 
         await self._save_project(project)
+
+        # Create vector collections for this project
+        if create_collections and self._vectors:
+            collection_results = await self.create_project_collections(project_id, model)
+            logger.info(f"Created collections for project {project_id}: {collection_results}")
 
         # Log activity
         await self._log_activity(
@@ -235,6 +484,7 @@ class ProjectsShard(ArkhamShard):
             actor_id=owner_id,
             target_type="project",
             target_id=project_id,
+            details={"embedding_model": model},
         )
 
         # Emit event
@@ -245,6 +495,7 @@ class ProjectsShard(ArkhamShard):
                     "project_id": project_id,
                     "name": name,
                     "owner_id": owner_id,
+                    "embedding_model": model,
                 },
                 source=self.name,
             )
@@ -339,18 +590,36 @@ class ProjectsShard(ArkhamShard):
 
         return project
 
-    async def delete_project(self, project_id: str) -> bool:
-        """Delete a project."""
+    async def delete_project(self, project_id: str, delete_collections: bool = True) -> bool:
+        """
+        Delete a project and optionally its vector collections.
+
+        Args:
+            project_id: Project ID to delete
+            delete_collections: Whether to delete vector collections (default: True)
+
+        Returns:
+            True if successful
+        """
         if not self._db:
             return False
 
+        # Delete vector collections first
+        if delete_collections and self._vectors:
+            collection_results = await self.delete_project_collections(project_id)
+            logger.info(f"Deleted collections for project {project_id}: {collection_results}")
+
+        # Delete related data
+        await self._db.execute("DELETE FROM arkham_project_activity WHERE project_id = ?", [project_id])
+        await self._db.execute("DELETE FROM arkham_project_documents WHERE project_id = ?", [project_id])
+        await self._db.execute("DELETE FROM arkham_project_members WHERE project_id = ?", [project_id])
         await self._db.execute("DELETE FROM arkham_projects WHERE id = ?", [project_id])
 
         # Emit event
         if self._events:
             await self._events.emit(
                 "projects.project.deleted",
-                {"project_id": project_id},
+                {"project_id": project_id, "collections_deleted": delete_collections},
                 source=self.name,
             )
 

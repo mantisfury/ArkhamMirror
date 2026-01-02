@@ -269,26 +269,46 @@ class DatabaseService:
             logger.error(f"Database reset failed: {e}")
             return {"success": False, "error": str(e)}
 
-    async def execute(self, query: str, params: Optional[Dict[str, Any]] = None) -> None:
+    def _convert_params(self, query: str, params) -> tuple[str, Dict[str, Any]]:
+        """Convert list-style params (?) to named params (:param_N) for SQLAlchemy."""
+        if params is None:
+            return query, {}
+        if isinstance(params, dict):
+            return query, params
+        # Convert list/tuple params with ? placeholders to named params
+        if isinstance(params, (list, tuple)):
+            new_query = query
+            param_dict = {}
+            for i, value in enumerate(params):
+                param_name = f"param_{i}"
+                # Replace first ? with :param_N
+                new_query = new_query.replace("?", f":{param_name}", 1)
+                param_dict[param_name] = value
+            return new_query, param_dict
+        return query, {}
+
+    async def execute(self, query: str, params=None) -> None:
         """Execute a query (for DDL, INSERT, UPDATE, DELETE)."""
         if not self._connected:
             raise DatabaseError("Database not connected")
         try:
             from sqlalchemy import text
+            query, params = self._convert_params(query, params)
             with self._engine.connect() as conn:
-                conn.execute(text(query), params or {})
+                conn.execute(text(query), params)
                 conn.commit()
         except Exception as e:
             raise QueryExecutionError(str(e), query)
 
-    async def fetch_one(self, query: str, params: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
+    async def fetch_one(self, query: str, params=None) -> Optional[Dict[str, Any]]:
         """Fetch a single row."""
         if not self._connected:
             raise DatabaseError("Database not connected")
         try:
             from sqlalchemy import text
+            query, params = self._convert_params(query, params)
             with self._engine.connect() as conn:
-                result = conn.execute(text(query), params or {})
+                result = conn.execute(text(query), params)
                 row = result.fetchone()
                 if row:
                     return dict(row._mapping)
@@ -296,14 +316,15 @@ class DatabaseService:
         except Exception as e:
             raise QueryExecutionError(str(e), query)
 
-    async def fetch_all(self, query: str, params: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+    async def fetch_all(self, query: str, params=None) -> List[Dict[str, Any]]:
         """Fetch all rows."""
         if not self._connected:
             raise DatabaseError("Database not connected")
         try:
             from sqlalchemy import text
+            query, params = self._convert_params(query, params)
             with self._engine.connect() as conn:
-                result = conn.execute(text(query), params or {})
+                result = conn.execute(text(query), params)
                 return [dict(row._mapping) for row in result.fetchall()]
         except Exception as e:
             raise QueryExecutionError(str(e), query)

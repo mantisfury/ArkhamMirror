@@ -65,6 +65,7 @@ class SearchShard(ArkhamShard):
             self.semantic_engine = SemanticSearchEngine(
                 vectors_service=vectors_service,
                 documents_service=documents_service,
+                frame=frame,
             )
             logger.info("Semantic search engine initialized")
 
@@ -76,11 +77,18 @@ class SearchShard(ArkhamShard):
             logger.info("Keyword search engine initialized")
 
         if self.semantic_engine and self.keyword_engine:
+            # Get embedding dimensions from vectors service for model-aware weight tuning
+            embedding_dimensions = None
+            if vectors_service:
+                embedding_dimensions = getattr(vectors_service, '_default_dimension', None)
+                logger.info(f"Detected embedding dimensions: {embedding_dimensions}")
+
             self.hybrid_engine = HybridSearchEngine(
                 semantic_engine=self.semantic_engine,
                 keyword_engine=self.keyword_engine,
+                embedding_dimensions=embedding_dimensions,
             )
-            logger.info("Hybrid search engine initialized")
+            logger.info("Hybrid search engine initialized with model-aware weights")
 
         # Initialize filter optimizer
         if database_service:

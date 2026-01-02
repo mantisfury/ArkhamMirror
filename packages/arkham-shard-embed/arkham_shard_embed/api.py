@@ -31,16 +31,26 @@ _vector_store = None
 _worker_service = None
 _event_bus = None
 _db_service = None
+_frame = None
 
 
-def init_api(embedding_manager, vector_store, worker_service, event_bus, db_service=None):
+def init_api(embedding_manager, vector_store, worker_service, event_bus, db_service=None, frame=None):
     """Initialize API with shard dependencies."""
-    global _embedding_manager, _vector_store, _worker_service, _event_bus, _db_service
+    global _embedding_manager, _vector_store, _worker_service, _event_bus, _db_service, _frame
     _embedding_manager = embedding_manager
     _vector_store = vector_store
     _worker_service = worker_service
     _event_bus = event_bus
     _db_service = db_service
+    _frame = frame
+
+
+def get_collection_name(base_name: str) -> str:
+    """Get collection name with project scope if active."""
+    if _frame:
+        return _frame.get_collection_name(base_name)
+    # Fallback to global collection
+    return f"arkham_{base_name}"
 
 
 # --- Request/Response Models ---
@@ -279,15 +289,19 @@ async def get_document_embeddings(doc_id: str):
     Get existing embeddings for a document from the vector store.
 
     Returns all stored embeddings for the document's chunks.
+    Uses project-scoped collection if active project is set.
     """
     if not _vector_store:
         raise HTTPException(status_code=503, detail="Vector store not initialized")
 
     try:
+        # Get collection name with project scope
+        collection_name = get_collection_name("documents")
+
         # Search for embeddings with this doc_id in metadata
         # This assumes embeddings are stored with doc_id in the payload
         results = await _vector_store.search(
-            collection_name="documents",
+            collection_name=collection_name,
             query_vector=None,  # No query vector, just filter
             limit=1000,  # Large limit to get all chunks
             filters={"doc_id": doc_id}
@@ -295,6 +309,7 @@ async def get_document_embeddings(doc_id: str):
 
         return {
             "doc_id": doc_id,
+            "collection": collection_name,
             "embeddings": results,
             "count": len(results),
         }
@@ -350,6 +365,9 @@ async def find_nearest(request: NearestRequestBody):
 
     If query is a string, it will be embedded first. If it's already a vector,
     it will be used directly for search.
+
+    The collection name is resolved based on active project context.
+    For example, "documents" becomes "project_{id}_documents" if a project is active.
     """
     if not _embedding_manager or not _vector_store:
         raise HTTPException(status_code=503, detail="Embedding service not initialized")
@@ -361,9 +379,12 @@ async def find_nearest(request: NearestRequestBody):
         else:
             query_vector = request.query
 
+        # Get collection name with project scope
+        collection_name = get_collection_name(request.collection)
+
         # Search for nearest neighbors
         results = await _vector_store.search(
-            collection_name=request.collection,
+            collection_name=collection_name,
             query_vector=query_vector,
             limit=request.limit,
             score_threshold=request.min_similarity,
@@ -503,3 +524,350 @@ async def clear_cache():
     except Exception as e:
         logger.error(f"Failed to clear cache: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to clear cache: {str(e)}")
+
+
+# --- Model Management ---
+
+class ModelSwitchRequest(BaseModel):
+    """Request to switch embedding model."""
+    model: str
+    confirm_wipe: bool = False  # Must be True if dimensions differ
+
+
+class VectorCollectionInfo(BaseModel):
+    """Information about a vector collection."""
+    name: str
+    vector_size: int
+    points_count: int
+    status: str
+
+
+class ModelSwitchResponse(BaseModel):
+    """Response from model switch operation."""
+    success: bool
+    message: str
+    previous_model: str | None = None
+    new_model: str | None = None
+    previous_dimensions: int | None = None
+    new_dimensions: int | None = None
+    collections_wiped: bool = False
+    requires_wipe: bool = False
+    affected_collections: list[str] = []
+
+
+# Known embedding models with their dimensions
+KNOWN_MODELS = {
+    "BAAI/bge-m3": {
+        "dimensions": 1024,
+        "max_length": 8192,
+        "size_mb": 2200.0,
+        "description": "Multilingual, high-quality embeddings (large)"
+    },
+    "all-MiniLM-L6-v2": {
+        "dimensions": 384,
+        "max_length": 512,
+        "size_mb": 80.0,
+        "description": "Lightweight, fast embeddings (small)"
+    },
+    "all-mpnet-base-v2": {
+        "dimensions": 768,
+        "max_length": 512,
+        "size_mb": 420.0,
+        "description": "High quality, balanced size (medium)"
+    },
+    "paraphrase-MiniLM-L6-v2": {
+        "dimensions": 384,
+        "max_length": 512,
+        "size_mb": 80.0,
+        "description": "Optimized for paraphrase detection (small)"
+    },
+}
+
+
+@router.get("/model/current")
+async def get_current_model():
+    """
+    Get information about the currently active embedding model.
+    """
+    if not _embedding_manager:
+        raise HTTPException(status_code=503, detail="Embedding service not initialized")
+
+    model_info = _embedding_manager.get_model_info()
+
+    return {
+        "model": model_info.name,
+        "dimensions": model_info.dimensions,
+        "max_length": model_info.max_length,
+        "loaded": model_info.loaded,
+        "device": model_info.device,
+        "description": model_info.description,
+    }
+
+
+@router.get("/model/available")
+async def get_available_models():
+    """
+    Get list of available embedding models with their specifications.
+    """
+    current_model = None
+    if _embedding_manager:
+        current_info = _embedding_manager.get_model_info()
+        current_model = current_info.name if current_info.loaded else None
+
+    models = []
+    for name, info in KNOWN_MODELS.items():
+        models.append({
+            "name": name,
+            "dimensions": info["dimensions"],
+            "max_length": info["max_length"],
+            "size_mb": info["size_mb"],
+            "description": info["description"],
+            "loaded": name == current_model,
+            "is_current": name == current_model,
+        })
+
+    return models
+
+
+@router.get("/model/collections")
+async def get_vector_collections():
+    """
+    Get information about current vector collections and their dimensions.
+    """
+    if not _vector_store or not _vector_store.vectors_service:
+        raise HTTPException(status_code=503, detail="Vector service not initialized")
+
+    try:
+        vectors_service = _vector_store.vectors_service
+        collections = await vectors_service.list_collections()
+
+        result = []
+        for coll in collections:
+            result.append({
+                "name": coll.name,
+                "vector_size": coll.vector_size,
+                "points_count": coll.points_count,
+                "status": coll.status,
+            })
+
+        return result
+    except Exception as e:
+        logger.error(f"Failed to get collections: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to get collections: {str(e)}")
+
+
+@router.post("/model/check-switch")
+async def check_model_switch(request: ModelSwitchRequest):
+    """
+    Check what would happen if switching to a new model.
+    Returns whether a wipe is required and which collections would be affected.
+    """
+    if not _embedding_manager:
+        raise HTTPException(status_code=503, detail="Embedding service not initialized")
+
+    if not _vector_store or not _vector_store.vectors_service:
+        raise HTTPException(status_code=503, detail="Vector service not initialized")
+
+    # Get current model info
+    current_info = _embedding_manager.get_model_info()
+    current_model = current_info.name
+    current_dimensions = current_info.dimensions
+
+    # Get new model dimensions
+    new_model = request.model
+    if new_model in KNOWN_MODELS:
+        new_dimensions = KNOWN_MODELS[new_model]["dimensions"]
+    else:
+        # Unknown model - we'll need to load it to get dimensions
+        # For now, return that we can't determine without loading
+        return {
+            "success": True,
+            "requires_wipe": None,  # Unknown until model is loaded
+            "message": f"Model '{new_model}' is not in known list. Dimensions will be determined on load.",
+            "current_model": current_model,
+            "current_dimensions": current_dimensions,
+            "new_model": new_model,
+            "new_dimensions": None,
+            "affected_collections": [],
+        }
+
+    # Check if dimensions differ
+    requires_wipe = current_dimensions != new_dimensions and current_dimensions > 0
+
+    # Get affected collections (non-empty ones)
+    affected_collections = []
+    if requires_wipe:
+        try:
+            vectors_service = _vector_store.vectors_service
+            collections = await vectors_service.list_collections()
+            for coll in collections:
+                if coll.points_count > 0:
+                    affected_collections.append(coll.name)
+        except Exception as e:
+            logger.warning(f"Could not check collections: {e}")
+
+    return {
+        "success": True,
+        "requires_wipe": requires_wipe,
+        "message": "Dimensions differ - vector database wipe required" if requires_wipe else "Model can be switched without data loss",
+        "current_model": current_model,
+        "current_dimensions": current_dimensions,
+        "new_model": new_model,
+        "new_dimensions": new_dimensions,
+        "affected_collections": affected_collections,
+        "total_vectors_affected": sum(
+            c.points_count for c in (await _vector_store.vectors_service.list_collections())
+            if c.name in affected_collections
+        ) if affected_collections else 0,
+    }
+
+
+@router.post("/model/switch", response_model=ModelSwitchResponse)
+async def switch_model(request: ModelSwitchRequest):
+    """
+    Switch to a different embedding model.
+
+    If the new model has different dimensions than the current one,
+    all vector collections must be wiped and recreated. This requires
+    setting confirm_wipe=True in the request.
+
+    This is a destructive operation when dimensions differ!
+    """
+    if not _embedding_manager:
+        raise HTTPException(status_code=503, detail="Embedding service not initialized")
+
+    if not _vector_store or not _vector_store.vectors_service:
+        raise HTTPException(status_code=503, detail="Vector service not initialized")
+
+    vectors_service = _vector_store.vectors_service
+
+    # Get current model info
+    current_info = _embedding_manager.get_model_info()
+    current_model = current_info.name
+    current_dimensions = current_info.dimensions
+
+    new_model = request.model
+
+    # Same model - no change needed
+    if new_model == current_model:
+        return ModelSwitchResponse(
+            success=True,
+            message="Model is already active",
+            previous_model=current_model,
+            new_model=new_model,
+            previous_dimensions=current_dimensions,
+            new_dimensions=current_dimensions,
+            collections_wiped=False,
+            requires_wipe=False,
+        )
+
+    # Get new model dimensions
+    if new_model in KNOWN_MODELS:
+        new_dimensions = KNOWN_MODELS[new_model]["dimensions"]
+    else:
+        # For unknown models, we need to try loading to get dimensions
+        # This is a temporary load just to check dimensions
+        try:
+            from sentence_transformers import SentenceTransformer
+            temp_model = SentenceTransformer(new_model)
+            new_dimensions = temp_model.get_sentence_embedding_dimension()
+            del temp_model
+        except Exception as e:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Failed to load model '{new_model}': {str(e)}"
+            )
+
+    # Check if wipe is required
+    requires_wipe = current_dimensions != new_dimensions and current_dimensions > 0
+
+    if requires_wipe and not request.confirm_wipe:
+        # Get affected collections
+        affected = []
+        try:
+            collections = await vectors_service.list_collections()
+            affected = [c.name for c in collections if c.points_count > 0]
+        except Exception:
+            pass
+
+        return ModelSwitchResponse(
+            success=False,
+            message=f"Model switch requires wiping vector database (dimensions: {current_dimensions} -> {new_dimensions}). Set confirm_wipe=True to proceed.",
+            previous_model=current_model,
+            new_model=new_model,
+            previous_dimensions=current_dimensions,
+            new_dimensions=new_dimensions,
+            collections_wiped=False,
+            requires_wipe=True,
+            affected_collections=affected,
+        )
+
+    try:
+        wiped_collections = []
+
+        # If dimensions differ and wipe confirmed, wipe collections
+        if requires_wipe:
+            logger.warning(f"Wiping vector collections for model switch: {current_model} -> {new_model}")
+
+            # Get all collections
+            collections = await vectors_service.list_collections()
+
+            # Delete and recreate each collection with new dimensions
+            for coll in collections:
+                try:
+                    await vectors_service.delete_collection(coll.name)
+                    await vectors_service.create_collection(
+                        name=coll.name,
+                        vector_size=new_dimensions,
+                    )
+                    wiped_collections.append(coll.name)
+                    logger.info(f"Recreated collection '{coll.name}' with {new_dimensions} dimensions")
+                except Exception as e:
+                    logger.error(f"Failed to recreate collection '{coll.name}': {e}")
+
+        # Update the embedding manager config
+        _embedding_manager.config.model = new_model
+        _embedding_manager._model = None  # Force reload
+        _embedding_manager._model_name = None
+        _embedding_manager._dimensions = None
+
+        # Clear cache since embeddings from old model are invalid
+        _embedding_manager.clear_cache()
+
+        # Trigger model load
+        _ = _embedding_manager.embed_text("test")
+
+        # Get updated model info
+        new_info = _embedding_manager.get_model_info()
+
+        # Emit event
+        if _event_bus:
+            await _event_bus.emit(
+                "embed.model.switched",
+                {
+                    "previous_model": current_model,
+                    "new_model": new_model,
+                    "previous_dimensions": current_dimensions,
+                    "new_dimensions": new_info.dimensions,
+                    "collections_wiped": len(wiped_collections),
+                },
+                source="embed-shard",
+            )
+
+        logger.info(f"Switched embedding model: {current_model} -> {new_model}")
+
+        return ModelSwitchResponse(
+            success=True,
+            message=f"Successfully switched to {new_model}" + (f" (wiped {len(wiped_collections)} collections)" if wiped_collections else ""),
+            previous_model=current_model,
+            new_model=new_model,
+            previous_dimensions=current_dimensions,
+            new_dimensions=new_info.dimensions,
+            collections_wiped=bool(wiped_collections),
+            requires_wipe=False,
+            affected_collections=wiped_collections,
+        )
+
+    except Exception as e:
+        logger.error(f"Failed to switch model: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to switch model: {str(e)}")

@@ -27,6 +27,7 @@ import { ShellProvider } from './context/ShellContext';
 import { ToastProvider } from './context/ToastContext';
 import { ConfirmProvider } from './context/ConfirmContext';
 import { BadgeProvider } from './context/BadgeContext';
+import { ProjectProvider } from './context/ProjectContext';
 import { Shell } from './components/layout/Shell';
 import { GenericShardPage } from './pages/generic';
 import { useStartPage } from './hooks';
@@ -82,10 +83,11 @@ export function App() {
     <BrowserRouter>
       <ThemeProvider>
         <ShellProvider>
-          <ToastProvider>
-            <ConfirmProvider>
-              <BadgeProvider>
-                <Routes>
+          <ProjectProvider>
+            <ToastProvider>
+              <ConfirmProvider>
+                <BadgeProvider>
+                  <Routes>
                 {/* Shell layout wrapper */}
                 <Route element={<Shell />}>
                   {/* Default redirect to user's configured start page */}
@@ -191,10 +193,11 @@ export function App() {
                   {/* Catch-all: try to render shard with generic UI */}
                   <Route path="*" element={<GenericShardPage />} />
                 </Route>
-                </Routes>
-              </BadgeProvider>
-            </ConfirmProvider>
-          </ToastProvider>
+                  </Routes>
+                </BadgeProvider>
+              </ConfirmProvider>
+            </ToastProvider>
+          </ProjectProvider>
         </ShellProvider>
       </ThemeProvider>
     </BrowserRouter>
