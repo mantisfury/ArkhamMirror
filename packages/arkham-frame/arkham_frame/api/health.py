@@ -56,9 +56,12 @@ async def api_status() -> Dict[str, Any]:
 
     # Database status
     if frame.db:
+        # Only expose host/database, never credentials
+        db_url = frame.config.database_url if frame.config else ""
+        safe_url = db_url.split("@")[-1] if "@" in db_url else "configured"
         services["database"] = {
             "available": True,
-            "url": frame.config.database_url[:30] + "..." if frame.config else "N/A",
+            "url": safe_url,
         }
     else:
         services["database"] = {"available": False}

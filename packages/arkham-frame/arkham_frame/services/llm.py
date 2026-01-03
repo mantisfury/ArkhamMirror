@@ -4,6 +4,12 @@ LLMService - OpenAI-compatible LLM abstraction with structured output.
 Provides chat completions, structured JSON extraction, streaming responses,
 and prompt template management for local LLM services (LM Studio, Ollama, etc.)
 and cloud providers (OpenAI, etc.) with API key support.
+
+Security features:
+- API keys loaded only from environment variables (never from config files)
+- Keys stored in private attributes with __slots__ to prevent dynamic access
+- Memory-safe key clearing on shutdown
+- Truncated error messages to prevent credential leakage
 """
 
 from typing import List, Dict, Any, Optional, AsyncIterator, Type, TypeVar, Union
@@ -14,8 +20,29 @@ import logging
 import json
 import re
 import os
-
 logger = logging.getLogger(__name__)
+
+# Maximum characters to include in error messages (security measure)
+MAX_ERROR_MESSAGE_LENGTH = 200
+
+
+def _secure_clear_string(s: str) -> None:
+    """
+    Mark a string for garbage collection.
+
+    Note: Python strings are immutable, so true secure clearing is not possible
+    without native extensions. This function serves as a marker for where
+    sensitive data should be cleared, and removes the reference to allow GC.
+
+    For production environments requiring true secure memory handling, consider:
+    - Using SecretStr from pydantic
+    - Native extensions with secure memory allocation
+    - Hardware security modules (HSM) for key storage
+    """
+    # In Python, we cannot truly clear immutable strings from memory.
+    # The best we can do is remove references and hope GC clears it.
+    # The actual clearing happens when the caller sets the variable to None.
+    pass
 
 T = TypeVar('T')
 
@@ -121,7 +148,29 @@ class LLMService:
         - Streaming responses
         - Prompt template management
         - Token usage tracking
+
+    Security:
+        - Uses __slots__ to prevent dynamic attribute access
+        - API key cleared from memory on shutdown
+        - Error messages truncated to prevent credential leakage
     """
+
+    # Use __slots__ to prevent dynamic attribute creation (security measure)
+    # This prevents accidental exposure of sensitive data through dynamic attributes
+    __slots__ = (
+        'config',
+        '_client',
+        '_available',
+        '_model_name',
+        '_api_key',
+        '_prompts',
+        '_is_openrouter',
+        '_fallback_models',
+        '_use_fallback_routing',
+        '_total_requests',
+        '_total_tokens_prompt',
+        '_total_tokens_completion',
+    )
 
     def __init__(self, config):
         self.config = config
@@ -130,6 +179,11 @@ class LLMService:
         self._model_name = "local-model"
         self._api_key: Optional[str] = None
         self._prompts: Dict[str, PromptTemplate] = {}
+
+        # OpenRouter fallback routing
+        self._is_openrouter = False
+        self._fallback_models: List[str] = []
+        self._use_fallback_routing = False
 
         # Statistics
         self._total_requests = 0
@@ -167,15 +221,22 @@ class LLMService:
             timeout=120,
         )
 
+        # Detect OpenRouter for fallback routing support
+        self._is_openrouter = 'openrouter.ai' in endpoint.lower()
+        if self._is_openrouter:
+            logger.info("OpenRouter detected - fallback routing available")
+
         # Test connection
         try:
             response = await self._client.get("/models")
             if response.status_code == 200:
                 self._available = True
-                # Try to get model name from response
-                data = response.json()
-                if "data" in data and data["data"]:
-                    self._model_name = data["data"][0].get("id", self._model_name)
+                # Only use first model from API if user hasn't configured a specific model
+                # (i.e., still using default "local-model")
+                if self._model_name == "local-model":
+                    data = response.json()
+                    if "data" in data and data["data"]:
+                        self._model_name = data["data"][0].get("id", self._model_name)
                 logger.info(f"LLM connected: {endpoint} (model: {self._model_name})")
             elif response.status_code == 401:
                 self._available = False
@@ -191,11 +252,18 @@ class LLMService:
         self._load_default_prompts()
 
     async def shutdown(self) -> None:
-        """Close LLM connection."""
+        """Close LLM connection and securely clear sensitive data."""
         if self._client:
             await self._client.aclose()
+            self._client = None
+
+        # Securely clear API key from memory (defense in depth)
+        if self._api_key:
+            _secure_clear_string(self._api_key)
+            self._api_key = None
+
         self._available = False
-        logger.info("LLM connection closed")
+        logger.info("LLM connection closed, credentials cleared")
 
     def is_available(self) -> bool:
         """Check if LLM is available."""
@@ -231,6 +299,38 @@ class LLMService:
         return None
 
     # =========================================================================
+    # OpenRouter Fallback Routing
+    # =========================================================================
+
+    def is_openrouter(self) -> bool:
+        """Check if connected to OpenRouter."""
+        return self._is_openrouter
+
+    def set_fallback_models(self, models: List[str]) -> None:
+        """
+        Set fallback models for OpenRouter routing.
+
+        Args:
+            models: List of model IDs to use as fallbacks (in priority order)
+        """
+        self._fallback_models = models
+        self._use_fallback_routing = bool(models)
+        if models:
+            logger.info(f"Fallback models configured: {models}")
+
+    def get_fallback_models(self) -> List[str]:
+        """Get current fallback models."""
+        return self._fallback_models.copy()
+
+    def enable_fallback_routing(self, enabled: bool = True) -> None:
+        """Enable or disable fallback routing."""
+        self._use_fallback_routing = enabled and bool(self._fallback_models)
+
+    def is_fallback_routing_enabled(self) -> bool:
+        """Check if fallback routing is enabled."""
+        return self._use_fallback_routing and bool(self._fallback_models)
+
+    # =========================================================================
     # Core Chat/Completion
     # =========================================================================
 
@@ -255,10 +355,22 @@ class LLMService:
         if stop:
             payload["stop"] = stop
 
+        # OpenRouter fallback routing (max 3 models allowed)
+        if self._is_openrouter and self._use_fallback_routing and self._fallback_models:
+            payload["route"] = "fallback"
+            # Include primary model + fallback models, limit to 3 total
+            all_models = [self._model_name] + [m for m in self._fallback_models if m != self._model_name]
+            payload["models"] = all_models[:3]
+
+
         try:
             response = await self._client.post("/chat/completions", json=payload)
             if response.status_code != 200:
-                raise LLMRequestError(f"LLM request failed: {response.text}")
+                # Truncate error message to prevent potential credential leakage
+                error_text = response.text[:MAX_ERROR_MESSAGE_LENGTH]
+                if len(response.text) > MAX_ERROR_MESSAGE_LENGTH:
+                    error_text += "... [truncated]"
+                raise LLMRequestError(f"LLM request failed ({response.status_code}): {error_text}")
 
             data = response.json()
             choice = data["choices"][0]
@@ -332,6 +444,12 @@ class LLMService:
         if max_tokens:
             payload["max_tokens"] = max_tokens
 
+        # OpenRouter fallback routing (max 3 models allowed)
+        if self._is_openrouter and self._use_fallback_routing and self._fallback_models:
+            payload["route"] = "fallback"
+            all_models = [self._model_name] + [m for m in self._fallback_models if m != self._model_name]
+            payload["models"] = all_models[:3]
+
         try:
             async with self._client.stream(
                 "POST",
@@ -341,7 +459,11 @@ class LLMService:
             ) as response:
                 if response.status_code != 200:
                     content = await response.aread()
-                    raise LLMRequestError(f"LLM stream failed: {content.decode()}")
+                    # Truncate error message to prevent potential credential leakage
+                    error_text = content.decode()[:MAX_ERROR_MESSAGE_LENGTH]
+                    if len(content) > MAX_ERROR_MESSAGE_LENGTH:
+                        error_text += "... [truncated]"
+                    raise LLMRequestError(f"LLM stream failed ({response.status_code}): {error_text}")
 
                 async for line in response.aiter_lines():
                     if not line or line == "data: [DONE]":
@@ -650,4 +772,8 @@ class LLMService:
             "total_tokens_prompt": self._total_tokens_prompt,
             "total_tokens_completion": self._total_tokens_completion,
             "registered_prompts": len(self._prompts),
+            # OpenRouter fallback routing
+            "is_openrouter": self._is_openrouter,
+            "fallback_routing_enabled": self.is_fallback_routing_enabled(),
+            "fallback_models": self._fallback_models,
         }

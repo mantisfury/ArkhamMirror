@@ -2,7 +2,7 @@
  * LLMConfigTab - LLM configuration management with provider presets
  */
 
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import { Icon } from '../../../components/common/Icon';
 import { useToast } from '../../../context/ToastContext';
 import { useConfirm } from '../../../context/ConfirmContext';
@@ -64,8 +64,16 @@ const LLM_PROVIDERS: LLMProvider[] = [
     name: 'OpenRouter',
     description: 'Access multiple LLM providers through one API',
     endpoint: 'https://openrouter.ai/api/v1',
-    defaultModel: 'openai/gpt-4o',
-    models: ['openai/gpt-4o', 'anthropic/claude-3.5-sonnet', 'google/gemini-pro', 'meta-llama/llama-3.1-70b-instruct'],
+    defaultModel: 'google/gemini-2.5-flash-lite',
+    models: [
+      'google/gemini-2.5-flash-lite',
+      'google/gemini-2.5-flash',
+      'meta-llama/llama-4-scout',
+      'meta-llama/llama-4-maverick',
+      'mistralai/mistral-small-3.1-24b-instruct',
+      'anthropic/claude-3.5-sonnet',
+      'openai/gpt-4o',
+    ],
     requiresApiKey: true,
     apiKeyEnvVar: 'OPENROUTER_API_KEY',
     icon: 'Route',
@@ -125,7 +133,7 @@ function getResponseText(response: TestResult['response']): string {
 export function LLMConfigTab() {
   const { toast } = useToast();
   const confirm = useConfirm();
-  const { config, loading, error, updateConfig, testConnection, resetConfig } = useLLMConfig();
+  const { config, loading, error, updateConfig, testConnection, resetConfig, setFallbackModels } = useLLMConfig();
 
   // Build providers with Docker-aware endpoints from backend config
   const providers = useMemo(() => {
@@ -166,8 +174,61 @@ export function LLMConfigTab() {
   const [updating, setUpdating] = useState(false);
   const [resetting, setResetting] = useState(false);
 
+  // Fallback routing state
+  const [fallbackModels, setFallbackModelsState] = useState<string[]>([]);
+  const [newFallbackModel, setNewFallbackModel] = useState('');
+  const [fallbackEnabled, setFallbackEnabled] = useState(false);
+  const [savingFallback, setSavingFallback] = useState(false);
+
   const selectedProvider = providers.find(p => p.id === selectedProviderId);
   const currentProvider = config?.endpoint ? detectProvider(config.endpoint) : null;
+
+  // Sync fallback state from config
+  useEffect(() => {
+    if (config) {
+      setFallbackModelsState(config.fallback_models || []);
+      setFallbackEnabled(config.fallback_routing_enabled || false);
+    }
+  }, [config]);
+
+  // Fallback model handlers
+  const handleAddFallbackModel = () => {
+    if (!newFallbackModel.trim()) return;
+    if (fallbackModels.includes(newFallbackModel.trim())) {
+      toast.warning('Model already in fallback list');
+      return;
+    }
+    setFallbackModelsState([...fallbackModels, newFallbackModel.trim()]);
+    setNewFallbackModel('');
+  };
+
+  const handleRemoveFallbackModel = (model: string) => {
+    setFallbackModelsState(fallbackModels.filter(m => m !== model));
+  };
+
+  const handleMoveFallbackModel = (index: number, direction: 'up' | 'down') => {
+    const newModels = [...fallbackModels];
+    const newIndex = direction === 'up' ? index - 1 : index + 1;
+    if (newIndex < 0 || newIndex >= newModels.length) return;
+    [newModels[index], newModels[newIndex]] = [newModels[newIndex], newModels[index]];
+    setFallbackModelsState(newModels);
+  };
+
+  const handleSaveFallback = async () => {
+    setSavingFallback(true);
+    try {
+      const result = await setFallbackModels(fallbackModels, fallbackEnabled);
+      if (result.success) {
+        toast.success('Fallback routing configuration saved');
+      } else {
+        toast.error(result.error || 'Failed to save fallback config');
+      }
+    } catch (e) {
+      toast.error((e as Error).message);
+    } finally {
+      setSavingFallback(false);
+    }
+  };
 
   const handleProviderSelect = (providerId: string) => {
     const provider = providers.find(p => p.id === providerId);
@@ -467,15 +528,36 @@ export function LLMConfigTab() {
             {selectedProvider.id !== 'custom' && selectedProvider.models.length > 0 && (
               <div className="form-group">
                 <label className="form-label">Model</label>
-                <select
-                  className="form-select"
-                  value={selectedModel}
-                  onChange={(e) => setSelectedModel(e.target.value)}
-                >
-                  {selectedProvider.models.map((model) => (
-                    <option key={model} value={model}>{model}</option>
-                  ))}
-                </select>
+                {selectedProvider.id === 'openrouter' ? (
+                  <>
+                    <input
+                      type="text"
+                      className="form-input"
+                      placeholder="e.g., google/gemini-2.5-flash-lite"
+                      value={selectedModel}
+                      onChange={(e) => setSelectedModel(e.target.value)}
+                      list="openrouter-models"
+                    />
+                    <datalist id="openrouter-models">
+                      {selectedProvider.models.map((model) => (
+                        <option key={model} value={model} />
+                      ))}
+                    </datalist>
+                    <span className="form-hint">
+                      Type any OpenRouter model ID or select from suggestions
+                    </span>
+                  </>
+                ) : (
+                  <select
+                    className="form-select"
+                    value={selectedModel}
+                    onChange={(e) => setSelectedModel(e.target.value)}
+                  >
+                    {selectedProvider.models.map((model) => (
+                      <option key={model} value={model}>{model}</option>
+                    ))}
+                  </select>
+                )}
               </div>
             )}
 
@@ -547,6 +629,120 @@ export function LLMConfigTab() {
           </div>
         )}
       </section>
+
+      {/* OpenRouter Fallback Routing */}
+      {config?.is_openrouter && (
+        <section className="fallback-section">
+          <h3>
+            <Icon name="GitBranch" size={18} />
+            Fallback Routing
+          </h3>
+          <p className="section-description">
+            Configure fallback models for automatic failover when your primary model
+            is unavailable (quota exceeded, rate limited, etc).
+          </p>
+
+          <div className="fallback-config">
+            <div className="toggle-row">
+              <label className="toggle-label">
+                <input
+                  type="checkbox"
+                  checked={fallbackEnabled}
+                  onChange={(e) => setFallbackEnabled(e.target.checked)}
+                />
+                Enable fallback routing
+              </label>
+            </div>
+
+            <div className="fallback-models">
+              <label className="form-label">Fallback Models (in priority order)</label>
+
+              {fallbackModels.length === 0 ? (
+                <div className="empty-fallback">
+                  <Icon name="Info" size={16} />
+                  <span>No fallback models configured</span>
+                </div>
+              ) : (
+                <ul className="fallback-list">
+                  {fallbackModels.map((model, index) => (
+                    <li key={model} className="fallback-item">
+                      <span className="fallback-priority">{index + 1}</span>
+                      <code className="fallback-model-name">{model}</code>
+                      <div className="fallback-actions">
+                        <button
+                          className="btn btn-icon"
+                          onClick={() => handleMoveFallbackModel(index, 'up')}
+                          disabled={index === 0}
+                          title="Move up"
+                        >
+                          <Icon name="ChevronUp" size={14} />
+                        </button>
+                        <button
+                          className="btn btn-icon"
+                          onClick={() => handleMoveFallbackModel(index, 'down')}
+                          disabled={index === fallbackModels.length - 1}
+                          title="Move down"
+                        >
+                          <Icon name="ChevronDown" size={14} />
+                        </button>
+                        <button
+                          className="btn btn-icon btn-danger"
+                          onClick={() => handleRemoveFallbackModel(model)}
+                          title="Remove"
+                        >
+                          <Icon name="X" size={14} />
+                        </button>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              )}
+
+              <div className="add-fallback">
+                <input
+                  type="text"
+                  className="form-input"
+                  placeholder="e.g., google/gemini-2.0-flash-exp"
+                  value={newFallbackModel}
+                  onChange={(e) => setNewFallbackModel(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && handleAddFallbackModel()}
+                />
+                <button
+                  className="btn btn-secondary"
+                  onClick={handleAddFallbackModel}
+                  disabled={!newFallbackModel.trim()}
+                >
+                  <Icon name="Plus" size={14} />
+                  Add
+                </button>
+              </div>
+              <span className="form-hint">
+                Use OpenRouter model IDs like <code>google/gemini-2.0-flash-exp</code>
+              </span>
+            </div>
+
+            <div className="btn-group">
+              <button
+                className="btn btn-primary"
+                onClick={handleSaveFallback}
+                disabled={savingFallback}
+              >
+                {savingFallback ? (
+                  <>
+                    <Icon name="Loader2" size={16} className="spin" />
+                    Saving...
+                  </>
+                ) : (
+                  <>
+                    <Icon name="Save" size={16} />
+                    Save Fallback Config
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </section>
+      )}
     </div>
   );
 }

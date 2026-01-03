@@ -54,6 +54,18 @@ class UpdateLLMRequest(BaseModel):
     temperature: Optional[float] = Field(default=None, ge=0.0, le=2.0)
 
 
+class SetFallbackModelsRequest(BaseModel):
+    """Request to configure OpenRouter fallback models."""
+    models: List[str] = Field(
+        default_factory=list,
+        description="List of model IDs in priority order for fallback routing"
+    )
+    enabled: bool = Field(
+        default=True,
+        description="Enable or disable fallback routing"
+    )
+
+
 class LLMTestResult(BaseModel):
     """Result of LLM connection test."""
     success: bool

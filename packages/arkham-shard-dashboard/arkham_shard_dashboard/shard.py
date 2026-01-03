@@ -66,8 +66,11 @@ class DashboardShard(ArkhamShard):
         # Database
         if self.frame.db:
             health["database"]["available"] = True
+            # Only expose host/database, never credentials
+            db_url = self.frame.config.database_url
+            safe_url = db_url.split("@")[-1] if "@" in db_url else "configured"
             health["database"]["info"] = {
-                "url": self.frame.config.database_url[:30] + "...",
+                "url": safe_url,
             }
 
         # Vectors
@@ -109,6 +112,10 @@ class DashboardShard(ArkhamShard):
         if self.frame.llm:
             config["api_key_configured"] = self.frame.llm.has_api_key()
             config["api_key_source"] = self.frame.llm.get_api_key_source()
+            # OpenRouter fallback routing info
+            config["is_openrouter"] = self.frame.llm.is_openrouter()
+            config["fallback_routing_enabled"] = self.frame.llm.is_fallback_routing_enabled()
+            config["fallback_models"] = self.frame.llm.get_fallback_models()
 
         return config
 
@@ -159,6 +166,52 @@ class DashboardShard(ArkhamShard):
             return {"success": True, "response": response}
         except Exception as e:
             return {"success": False, "error": str(e)}
+
+    async def set_fallback_models(
+        self,
+        models: list[str],
+        enabled: bool = True,
+    ) -> Dict[str, Any]:
+        """
+        Configure OpenRouter fallback models.
+        
+        Args:
+            models: List of model IDs in priority order
+            enabled: Enable or disable fallback routing
+        """
+        if not self.frame.llm:
+            return {"success": False, "error": "LLM service not initialized"}
+        
+        if not self.frame.llm.is_openrouter():
+            return {
+                "success": False, 
+                "error": "Fallback routing is only available with OpenRouter"
+            }
+        
+        # Set fallback models
+        self.frame.llm.set_fallback_models(models)
+        self.frame.llm.enable_fallback_routing(enabled)
+        
+        return {
+            "success": True,
+            "fallback_models": self.frame.llm.get_fallback_models(),
+            "fallback_routing_enabled": self.frame.llm.is_fallback_routing_enabled(),
+        }
+
+    async def get_fallback_models(self) -> Dict[str, Any]:
+        """Get current fallback model configuration."""
+        if not self.frame.llm:
+            return {
+                "is_openrouter": False,
+                "fallback_models": [],
+                "fallback_routing_enabled": False,
+            }
+        
+        return {
+            "is_openrouter": self.frame.llm.is_openrouter(),
+            "fallback_models": self.frame.llm.get_fallback_models(),
+            "fallback_routing_enabled": self.frame.llm.is_fallback_routing_enabled(),
+        }
 
     # === Database Controls ===
 

@@ -50,6 +50,12 @@ class ResetDatabaseRequest(BaseModel):
     confirm: bool = False
 
 
+class SetFallbackModelsRequest(BaseModel):
+    """Request to configure OpenRouter fallback models."""
+    models: List[str] = []
+    enabled: bool = True
+
+
 # Helper to get shard instance
 def get_dashboard_shard():
     """Get the dashboard shard from the Frame."""
@@ -101,6 +107,28 @@ async def reset_llm_config() -> Dict[str, Any]:
     """Reset LLM configuration to defaults."""
     shard = get_dashboard_shard()
     return await shard.reset_llm_config()
+
+
+@router.post("/llm/fallback")
+async def set_fallback_models(request: SetFallbackModelsRequest) -> Dict[str, Any]:
+    """
+    Configure OpenRouter fallback models for intelligent routing.
+    
+    When enabled, requests will automatically fall back to the next model
+    if the primary model fails (quota exceeded, rate limited, etc).
+    """
+    shard = get_dashboard_shard()
+    return await shard.set_fallback_models(
+        models=request.models,
+        enabled=request.enabled,
+    )
+
+
+@router.get("/llm/fallback")
+async def get_fallback_models() -> Dict[str, Any]:
+    """Get current fallback model configuration."""
+    shard = get_dashboard_shard()
+    return await shard.get_fallback_models()
 
 
 # === Database ===

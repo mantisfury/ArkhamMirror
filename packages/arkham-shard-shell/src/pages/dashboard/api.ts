@@ -29,6 +29,10 @@ export interface LLMConfig {
   is_docker: boolean;
   default_lm_studio_endpoint: string;
   default_ollama_endpoint: string;
+  // OpenRouter fallback routing
+  is_openrouter?: boolean;
+  fallback_routing_enabled?: boolean;
+  fallback_models?: string[];
 }
 
 export interface DatabaseInfo {
@@ -212,7 +216,20 @@ export function useLLMConfig() {
     refresh();
   }, [refresh]);
 
-  return { config, loading, error, refresh, updateConfig, testConnection, resetConfig };
+  const setFallbackModels = async (models: string[], enabled: boolean = true): Promise<{ success: boolean; error?: string }> => {
+    const res = await fetch('/api/dashboard/llm/fallback', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ models, enabled }),
+    });
+    const data = await res.json();
+    if (data.success) {
+      await refresh();
+    }
+    return data;
+  };
+
+  return { config, loading, error, refresh, updateConfig, testConnection, resetConfig, setFallbackModels };
 }
 
 // Database hook
