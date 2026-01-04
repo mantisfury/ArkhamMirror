@@ -1,10 +1,16 @@
 /**
- * PatternsPage - Pattern detection and analysis
+ * PatternsPage - Full Pattern Detection and Analysis UI
  *
- * Provides UI for viewing patterns, pattern matches, and running pattern analysis.
+ * Features:
+ * - Pattern list with filtering and tabbed views
+ * - Create/Edit pattern modals
+ * - Pattern analysis panel (text & document analysis)
+ * - Correlation analysis
+ * - Pattern criteria display
+ * - Match evidence viewer
  */
 
-import { useState } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { Icon } from '../../components/common/Icon';
 import { useToast } from '../../context/ToastContext';
 import { useFetch } from '../../hooks/useFetch';
@@ -12,6 +18,16 @@ import { usePaginatedFetch } from '../../hooks';
 import './PatternsPage.css';
 
 // Types
+interface PatternCriteria {
+  keywords?: string[];
+  regex_patterns?: string[];
+  entity_types?: string[];
+  entity_ids?: string[];
+  min_occurrences?: number;
+  time_window_days?: number;
+  similarity_threshold?: number;
+}
+
 interface Pattern {
   id: string;
   name: string;
@@ -26,8 +42,10 @@ interface Pattern {
   last_matched: string | null;
   detection_method: string;
   detection_model: string | null;
+  criteria: PatternCriteria;
   created_at: string;
   updated_at: string;
+  metadata: Record<string, unknown>;
 }
 
 interface PatternMatch {
@@ -49,9 +67,28 @@ interface Stats {
   total_patterns: number;
   by_type: Record<string, number>;
   by_status: Record<string, number>;
+  by_detection_method: Record<string, number>;
   total_matches: number;
   avg_confidence: number;
   patterns_pending_review: number;
+  patterns_confirmed: number;
+  patterns_dismissed: number;
+}
+
+interface Capabilities {
+  llm_available: boolean;
+  vectors_available: boolean;
+  workers_available: boolean;
+  pattern_types: string[];
+  detection_methods: string[];
+}
+
+interface AnalysisResult {
+  patterns_detected: Pattern[];
+  matches_found: PatternMatch[];
+  documents_analyzed: number;
+  processing_time_ms: number;
+  errors: string[];
 }
 
 const PATTERN_TYPE_LABELS: Record<string, string> = {
@@ -64,6 +101,16 @@ const PATTERN_TYPE_LABELS: Record<string, string> = {
   custom: 'Custom',
 };
 
+const PATTERN_TYPE_ICONS: Record<string, string> = {
+  recurring_theme: 'Repeat',
+  behavioral: 'Activity',
+  temporal: 'Clock',
+  correlation: 'GitBranch',
+  linguistic: 'Type',
+  structural: 'Layout',
+  custom: 'Settings',
+};
+
 const STATUS_LABELS: Record<string, string> = {
   detected: 'Detected',
   confirmed: 'Confirmed',
@@ -71,42 +118,178 @@ const STATUS_LABELS: Record<string, string> = {
   archived: 'Archived',
 };
 
-const STATUS_ICONS: Record<string, string> = {
-  detected: 'AlertCircle',
-  confirmed: 'CheckCircle',
-  dismissed: 'XCircle',
-  archived: 'Archive',
-};
+
+type TabType = 'all' | 'recurring' | 'behavioral' | 'temporal' | 'analyze';
 
 export function PatternsPage() {
   const { toast } = useToast();
+
+  // State
   const [selectedPattern, setSelectedPattern] = useState<Pattern | null>(null);
+  const [activeTab, setActiveTab] = useState<TabType>('all');
   const [statusFilter, setStatusFilter] = useState<string>('');
-  const [typeFilter, setTypeFilter] = useState<string>('');
   const [searchQuery, setSearchQuery] = useState('');
 
-  // Build filter params
-  const filterParams: Record<string, string> = {};
-  if (statusFilter) filterParams.status = statusFilter;
-  if (typeFilter) filterParams.pattern_type = typeFilter;
-  if (searchQuery) filterParams.q = searchQuery;
+  // Modals
+  const [showCreateModal, setShowCreateModal] = useState(false);
+  const [showEditModal, setShowEditModal] = useState(false);
+  const [showAnalyzeModal, setShowAnalyzeModal] = useState(false);
+
+  // Form state
+  const [formName, setFormName] = useState('');
+  const [formDescription, setFormDescription] = useState('');
+  const [formType, setFormType] = useState('recurring_theme');
+  const [formConfidence, setFormConfidence] = useState(0.5);
+  const [formKeywords, setFormKeywords] = useState('');
+  const [formRegex, setFormRegex] = useState('');
+  const [formMinOccurrences, setFormMinOccurrences] = useState(2);
+
+  // Analysis state
+  const [analyzeText, setAnalyzeText] = useState('');
+  const [analyzeMinConfidence, setAnalyzeMinConfidence] = useState(0.5);
+  const [analyzing, setAnalyzing] = useState(false);
+  const [analysisResult, setAnalysisResult] = useState<AnalysisResult | null>(null);
+
+  // Build filter params based on active tab
+  const getFilterParams = useCallback(() => {
+    const params: Record<string, string> = {};
+
+    if (activeTab === 'recurring') params.pattern_type = 'recurring_theme';
+    else if (activeTab === 'behavioral') params.pattern_type = 'behavioral';
+    else if (activeTab === 'temporal') params.pattern_type = 'temporal';
+
+    if (statusFilter) params.status = statusFilter;
+    if (searchQuery) params.q = searchQuery;
+
+    return params;
+  }, [activeTab, statusFilter, searchQuery]);
 
   // Fetch patterns with pagination
-  const { items: patterns, loading, error, refetch } = usePaginatedFetch<Pattern>(
-    '/api/patterns/',
-    { params: filterParams }
-  );
+  const {
+    items: patterns,
+    loading,
+    error,
+    refetch
+  } = usePaginatedFetch<Pattern>('/api/patterns/', {
+    params: getFilterParams()
+  });
 
   // Fetch stats
-  const { data: stats } = useFetch<Stats>('/api/patterns/stats');
+  const { data: stats, refetch: refetchStats } = useFetch<Stats>('/api/patterns/stats');
 
-  // Fetch matches for selected pattern (keep as useFetch - secondary detail fetch)
+  // Fetch capabilities
+  const { data: capabilities } = useFetch<Capabilities>('/api/patterns/capabilities');
+
+  // Fetch matches for selected pattern
   const { data: matchesData, loading: matchesLoading } = useFetch<{ items: PatternMatch[]; total: number }>(
     selectedPattern ? `/api/patterns/${selectedPattern.id}/matches` : null
   );
-
   const matches = matchesData?.items || [];
 
+  // Refresh patterns when tab changes
+  useEffect(() => {
+    refetch();
+  }, [activeTab, statusFilter, searchQuery]);
+
+  // Reset form when opening create modal
+  const openCreateModal = () => {
+    setFormName('');
+    setFormDescription('');
+    setFormType('recurring_theme');
+    setFormConfidence(0.5);
+    setFormKeywords('');
+    setFormRegex('');
+    setFormMinOccurrences(2);
+    setShowCreateModal(true);
+  };
+
+  // Populate form when opening edit modal
+  const openEditModal = (pattern: Pattern) => {
+    setFormName(pattern.name);
+    setFormDescription(pattern.description);
+    setFormType(pattern.pattern_type);
+    setFormConfidence(pattern.confidence);
+    setFormKeywords(pattern.criteria?.keywords?.join(', ') || '');
+    setFormRegex(pattern.criteria?.regex_patterns?.join('\n') || '');
+    setFormMinOccurrences(pattern.criteria?.min_occurrences || 2);
+    setShowEditModal(true);
+  };
+
+  // Create pattern
+  const handleCreatePattern = async () => {
+    try {
+      const keywords = formKeywords.split(',').map(k => k.trim()).filter(k => k);
+      const regexPatterns = formRegex.split('\n').map(r => r.trim()).filter(r => r);
+
+      const response = await fetch('/api/patterns/', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: formName,
+          description: formDescription,
+          pattern_type: formType,
+          confidence: formConfidence,
+          criteria: {
+            keywords,
+            regex_patterns: regexPatterns,
+            min_occurrences: formMinOccurrences,
+          },
+        }),
+      });
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.detail || 'Failed to create pattern');
+      }
+
+      toast.success('Pattern created');
+      setShowCreateModal(false);
+      refetch();
+      refetchStats();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to create pattern');
+    }
+  };
+
+  // Update pattern
+  const handleUpdatePattern = async () => {
+    if (!selectedPattern) return;
+
+    try {
+      const keywords = formKeywords.split(',').map(k => k.trim()).filter(k => k);
+      const regexPatterns = formRegex.split('\n').map(r => r.trim()).filter(r => r);
+
+      const response = await fetch(`/api/patterns/${selectedPattern.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: formName,
+          description: formDescription,
+          confidence: formConfidence,
+          criteria: {
+            keywords,
+            regex_patterns: regexPatterns,
+            min_occurrences: formMinOccurrences,
+          },
+        }),
+      });
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.detail || 'Failed to update pattern');
+      }
+
+      const updated = await response.json();
+      toast.success('Pattern updated');
+      setShowEditModal(false);
+      setSelectedPattern(updated);
+      refetch();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to update pattern');
+    }
+  };
+
+  // Confirm pattern
   const handleConfirmPattern = async (patternId: string) => {
     try {
       const response = await fetch(`/api/patterns/${patternId}/confirm`, {
@@ -120,6 +303,7 @@ export function PatternsPage() {
 
       toast.success('Pattern confirmed');
       refetch();
+      refetchStats();
       if (selectedPattern?.id === patternId) {
         const updated = await response.json();
         setSelectedPattern(updated);
@@ -129,6 +313,7 @@ export function PatternsPage() {
     }
   };
 
+  // Dismiss pattern
   const handleDismissPattern = async (patternId: string) => {
     try {
       const response = await fetch(`/api/patterns/${patternId}/dismiss`, {
@@ -142,6 +327,7 @@ export function PatternsPage() {
 
       toast.success('Pattern dismissed');
       refetch();
+      refetchStats();
       if (selectedPattern?.id === patternId) {
         setSelectedPattern(null);
       }
@@ -150,6 +336,7 @@ export function PatternsPage() {
     }
   };
 
+  // Delete pattern
   const handleDeletePattern = async (patternId: string) => {
     if (!confirm('Are you sure you want to delete this pattern?')) return;
 
@@ -165,11 +352,49 @@ export function PatternsPage() {
 
       toast.success('Pattern deleted');
       refetch();
+      refetchStats();
       if (selectedPattern?.id === patternId) {
         setSelectedPattern(null);
       }
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Failed to delete pattern');
+    }
+  };
+
+  // Run analysis
+  const handleAnalyze = async () => {
+    if (!analyzeText.trim()) {
+      toast.error('Please enter text to analyze');
+      return;
+    }
+
+    setAnalyzing(true);
+    setAnalysisResult(null);
+
+    try {
+      const response = await fetch('/api/patterns/analyze', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          text: analyzeText,
+          min_confidence: analyzeMinConfidence,
+        }),
+      });
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.detail || 'Analysis failed');
+      }
+
+      const result = await response.json();
+      setAnalysisResult(result);
+      toast.success(`Found ${result.patterns_detected.length} patterns`);
+      refetch();
+      refetchStats();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Analysis failed');
+    } finally {
+      setAnalyzing(false);
     }
   };
 
@@ -186,6 +411,7 @@ export function PatternsPage() {
 
   return (
     <div className="patterns-page">
+      {/* Header */}
       <header className="page-header">
         <div className="page-title">
           <Icon name="Fingerprint" size={28} />
@@ -195,27 +421,70 @@ export function PatternsPage() {
           </div>
         </div>
 
+        <div className="header-actions">
+          <button className="btn btn-secondary" onClick={() => setShowAnalyzeModal(true)}>
+            <Icon name="Search" size={16} />
+            Analyze Text
+          </button>
+          <button className="btn btn-primary" onClick={openCreateModal}>
+            <Icon name="Plus" size={16} />
+            New Pattern
+          </button>
+        </div>
+
         {stats && (
           <div className="stats-summary">
             <div className="stat">
               <span className="stat-value">{stats.total_patterns}</span>
-              <span className="stat-label">Total Patterns</span>
+              <span className="stat-label">Total</span>
             </div>
-            <div className="stat">
+            <div className="stat stat-warning">
               <span className="stat-value">{stats.patterns_pending_review}</span>
-              <span className="stat-label">Pending Review</span>
+              <span className="stat-label">Pending</span>
+            </div>
+            <div className="stat stat-success">
+              <span className="stat-value">{stats.patterns_confirmed}</span>
+              <span className="stat-label">Confirmed</span>
             </div>
             <div className="stat">
               <span className="stat-value">{stats.total_matches}</span>
-              <span className="stat-label">Total Matches</span>
-            </div>
-            <div className="stat">
-              <span className="stat-value">{(stats.avg_confidence * 100).toFixed(0)}%</span>
-              <span className="stat-label">Avg Confidence</span>
+              <span className="stat-label">Matches</span>
             </div>
           </div>
         )}
       </header>
+
+      {/* Tabs */}
+      <div className="tabs-bar">
+        <button
+          className={`tab ${activeTab === 'all' ? 'active' : ''}`}
+          onClick={() => setActiveTab('all')}
+        >
+          <Icon name="List" size={16} />
+          All Patterns
+        </button>
+        <button
+          className={`tab ${activeTab === 'recurring' ? 'active' : ''}`}
+          onClick={() => setActiveTab('recurring')}
+        >
+          <Icon name="Repeat" size={16} />
+          Recurring
+        </button>
+        <button
+          className={`tab ${activeTab === 'behavioral' ? 'active' : ''}`}
+          onClick={() => setActiveTab('behavioral')}
+        >
+          <Icon name="Activity" size={16} />
+          Behavioral
+        </button>
+        <button
+          className={`tab ${activeTab === 'temporal' ? 'active' : ''}`}
+          onClick={() => setActiveTab('temporal')}
+        >
+          <Icon name="Clock" size={16} />
+          Temporal
+        </button>
+      </div>
 
       <div className="patterns-layout">
         {/* Filters */}
@@ -238,19 +507,20 @@ export function PatternsPage() {
             <option value="dismissed">Dismissed</option>
             <option value="archived">Archived</option>
           </select>
-          <select
-            value={typeFilter}
-            onChange={(e) => setTypeFilter(e.target.value)}
-            className="filter-select"
-          >
-            <option value="">All Types</option>
-            <option value="recurring_theme">Recurring Theme</option>
-            <option value="behavioral">Behavioral</option>
-            <option value="temporal">Temporal</option>
-            <option value="correlation">Correlation</option>
-            <option value="linguistic">Linguistic</option>
-            <option value="structural">Structural</option>
-          </select>
+          {capabilities && (
+            <div className="capabilities-badges">
+              {capabilities.llm_available && (
+                <span className="capability-badge">
+                  <Icon name="Sparkles" size={12} /> LLM
+                </span>
+              )}
+              {capabilities.vectors_available && (
+                <span className="capability-badge">
+                  <Icon name="Layers" size={12} /> Vectors
+                </span>
+              )}
+            </div>
+          )}
         </div>
 
         {/* Main content */}
@@ -274,7 +544,15 @@ export function PatternsPage() {
               <div className="empty-state">
                 <Icon name="Fingerprint" size={48} />
                 <span>No patterns found</span>
-                <p className="empty-hint">Patterns will appear here as they are detected</p>
+                <p className="empty-hint">
+                  {activeTab === 'all'
+                    ? 'Create a pattern or run analysis to get started'
+                    : `No ${activeTab} patterns detected yet`}
+                </p>
+                <button className="btn btn-primary" onClick={openCreateModal}>
+                  <Icon name="Plus" size={16} />
+                  Create Pattern
+                </button>
               </div>
             ) : (
               patterns.map((pattern) => (
@@ -284,7 +562,7 @@ export function PatternsPage() {
                   onClick={() => setSelectedPattern(pattern)}
                 >
                   <div className="pattern-header">
-                    <Icon name={STATUS_ICONS[pattern.status] || 'Circle'} size={20} />
+                    <Icon name={PATTERN_TYPE_ICONS[pattern.pattern_type] || 'Circle'} size={20} />
                     <div className="pattern-info">
                       <h3>{pattern.name}</h3>
                       <p className="pattern-type">{PATTERN_TYPE_LABELS[pattern.pattern_type] || pattern.pattern_type}</p>
@@ -303,9 +581,8 @@ export function PatternsPage() {
                       <Icon name="FileText" size={14} />
                       {pattern.document_count} docs
                     </span>
-                    <span className="stat-item">
-                      <Icon name="Users" size={14} />
-                      {pattern.entity_count} entities
+                    <span className={`status-pill status-${pattern.status}`}>
+                      {STATUS_LABELS[pattern.status]}
                     </span>
                   </div>
                 </div>
@@ -318,7 +595,7 @@ export function PatternsPage() {
             <div className="pattern-detail">
               <div className="detail-header">
                 <div className="detail-title">
-                  <Icon name="Fingerprint" size={24} />
+                  <Icon name={PATTERN_TYPE_ICONS[selectedPattern.pattern_type] || 'Fingerprint'} size={24} />
                   <h2>{selectedPattern.name}</h2>
                   <span className={`status-badge status-${selectedPattern.status}`}>
                     {STATUS_LABELS[selectedPattern.status]}
@@ -344,11 +621,17 @@ export function PatternsPage() {
                     </>
                   )}
                   <button
+                    className="btn btn-secondary"
+                    onClick={() => openEditModal(selectedPattern)}
+                  >
+                    <Icon name="Edit" size={16} />
+                    Edit
+                  </button>
+                  <button
                     className="btn btn-danger"
                     onClick={() => handleDeletePattern(selectedPattern.id)}
                   >
                     <Icon name="Trash2" size={16} />
-                    Delete
                   </button>
                   <button
                     className="btn btn-ghost"
@@ -360,25 +643,23 @@ export function PatternsPage() {
               </div>
 
               <div className="detail-body">
+                {/* Details Section */}
                 <div className="detail-section">
                   <h3>Details</h3>
                   <dl className="detail-list">
                     <dt>Type:</dt>
-                    <dd>{PATTERN_TYPE_LABELS[selectedPattern.pattern_type]}</dd>
+                    <dd>
+                      <Icon name={PATTERN_TYPE_ICONS[selectedPattern.pattern_type] || 'Circle'} size={14} />
+                      {PATTERN_TYPE_LABELS[selectedPattern.pattern_type]}
+                    </dd>
                     <dt>Confidence:</dt>
                     <dd>
                       <span className={`confidence-badge ${getConfidenceBadge(selectedPattern.confidence)}`}>
                         {(selectedPattern.confidence * 100).toFixed(0)}%
                       </span>
                     </dd>
-                    <dt>Detection Method:</dt>
+                    <dt>Detection:</dt>
                     <dd>{selectedPattern.detection_method}</dd>
-                    {selectedPattern.detection_model && (
-                      <>
-                        <dt>Model:</dt>
-                        <dd>{selectedPattern.detection_model}</dd>
-                      </>
-                    )}
                     <dt>First Detected:</dt>
                     <dd>{formatDate(selectedPattern.first_detected)}</dd>
                     {selectedPattern.last_matched && (
@@ -390,11 +671,68 @@ export function PatternsPage() {
                   </dl>
                 </div>
 
+                {/* Description */}
                 <div className="detail-section">
                   <h3>Description</h3>
-                  <p>{selectedPattern.description}</p>
+                  <p className="description-text">{selectedPattern.description}</p>
                 </div>
 
+                {/* Criteria Section */}
+                {selectedPattern.criteria && (
+                  <div className="detail-section">
+                    <h3>Matching Criteria</h3>
+                    <div className="criteria-display">
+                      {selectedPattern.criteria.keywords && selectedPattern.criteria.keywords.length > 0 && (
+                        <div className="criteria-item">
+                          <span className="criteria-label">Keywords:</span>
+                          <div className="criteria-tags">
+                            {selectedPattern.criteria.keywords.map((kw, i) => (
+                              <span key={i} className="criteria-tag">{kw}</span>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                      {selectedPattern.criteria.regex_patterns && selectedPattern.criteria.regex_patterns.length > 0 && (
+                        <div className="criteria-item">
+                          <span className="criteria-label">Regex:</span>
+                          <div className="criteria-patterns">
+                            {selectedPattern.criteria.regex_patterns.map((rx, i) => (
+                              <code key={i} className="criteria-regex">{rx}</code>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                      {selectedPattern.criteria.min_occurrences && selectedPattern.criteria.min_occurrences > 1 && (
+                        <div className="criteria-item">
+                          <span className="criteria-label">Min Occurrences:</span>
+                          <span>{selectedPattern.criteria.min_occurrences}</span>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {/* Evidence from LLM */}
+                {(() => {
+                  const evidence = selectedPattern.metadata?.evidence;
+                  if (!evidence || !Array.isArray(evidence)) return null;
+                  const evidenceItems = evidence as string[];
+                  return (
+                    <div className="detail-section">
+                      <h3>Supporting Evidence</h3>
+                      <div className="evidence-list">
+                        {evidenceItems.map((item, i) => (
+                          <div key={i} className="evidence-item">
+                            <Icon name="Quote" size={14} />
+                            <span>"{String(item)}"</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  );
+                })()}
+
+                {/* Matches Section */}
                 <div className="detail-section">
                   <h3>Matches ({selectedPattern.match_count})</h3>
                   {matchesLoading ? (
@@ -410,7 +748,9 @@ export function PatternsPage() {
                         <div key={match.id} className="match-item">
                           <div className="match-header">
                             <Icon name="Target" size={16} />
-                            <span className="match-source">{match.source_type}: {match.source_title || match.source_id}</span>
+                            <span className="match-source">
+                              {match.source_type}: {match.source_title || match.source_id}
+                            </span>
                             <span className={`confidence-badge ${getConfidenceBadge(match.match_score)}`}>
                               {(match.match_score * 100).toFixed(0)}%
                             </span>
@@ -420,7 +760,6 @@ export function PatternsPage() {
                           )}
                           <div className="match-meta">
                             <span>Matched: {formatDate(match.matched_at)}</span>
-                            <span>By: {match.matched_by}</span>
                           </div>
                         </div>
                       ))}
@@ -432,6 +771,302 @@ export function PatternsPage() {
           )}
         </div>
       </div>
+
+      {/* Create Pattern Modal */}
+      {showCreateModal && (
+        <div className="modal-overlay" onClick={() => setShowCreateModal(false)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h2>Create Pattern</h2>
+              <button className="btn btn-ghost" onClick={() => setShowCreateModal(false)}>
+                <Icon name="X" size={20} />
+              </button>
+            </div>
+            <div className="modal-body">
+              <div className="form-group">
+                <label>Name</label>
+                <input
+                  type="text"
+                  value={formName}
+                  onChange={(e) => setFormName(e.target.value)}
+                  placeholder="Pattern name"
+                  className="form-input"
+                />
+              </div>
+              <div className="form-group">
+                <label>Description</label>
+                <textarea
+                  value={formDescription}
+                  onChange={(e) => setFormDescription(e.target.value)}
+                  placeholder="What does this pattern represent?"
+                  className="form-textarea"
+                  rows={3}
+                />
+              </div>
+              <div className="form-row">
+                <div className="form-group">
+                  <label>Type</label>
+                  <select
+                    value={formType}
+                    onChange={(e) => setFormType(e.target.value)}
+                    className="form-select"
+                  >
+                    {Object.entries(PATTERN_TYPE_LABELS).map(([value, label]) => (
+                      <option key={value} value={value}>{label}</option>
+                    ))}
+                  </select>
+                </div>
+                <div className="form-group">
+                  <label>Confidence</label>
+                  <input
+                    type="number"
+                    min="0"
+                    max="1"
+                    step="0.1"
+                    value={formConfidence}
+                    onChange={(e) => setFormConfidence(parseFloat(e.target.value))}
+                    className="form-input"
+                  />
+                </div>
+              </div>
+              <div className="form-group">
+                <label>Keywords (comma-separated)</label>
+                <input
+                  type="text"
+                  value={formKeywords}
+                  onChange={(e) => setFormKeywords(e.target.value)}
+                  placeholder="keyword1, keyword2, keyword3"
+                  className="form-input"
+                />
+              </div>
+              <div className="form-group">
+                <label>Regex Patterns (one per line)</label>
+                <textarea
+                  value={formRegex}
+                  onChange={(e) => setFormRegex(e.target.value)}
+                  placeholder="Pattern1.*\nPattern2\d+"
+                  className="form-textarea"
+                  rows={2}
+                />
+              </div>
+              <div className="form-group">
+                <label>Minimum Occurrences</label>
+                <input
+                  type="number"
+                  min="1"
+                  value={formMinOccurrences}
+                  onChange={(e) => setFormMinOccurrences(parseInt(e.target.value))}
+                  className="form-input"
+                />
+              </div>
+            </div>
+            <div className="modal-footer">
+              <button className="btn btn-secondary" onClick={() => setShowCreateModal(false)}>
+                Cancel
+              </button>
+              <button className="btn btn-primary" onClick={handleCreatePattern} disabled={!formName.trim()}>
+                <Icon name="Plus" size={16} />
+                Create Pattern
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Edit Pattern Modal */}
+      {showEditModal && selectedPattern && (
+        <div className="modal-overlay" onClick={() => setShowEditModal(false)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h2>Edit Pattern</h2>
+              <button className="btn btn-ghost" onClick={() => setShowEditModal(false)}>
+                <Icon name="X" size={20} />
+              </button>
+            </div>
+            <div className="modal-body">
+              <div className="form-group">
+                <label>Name</label>
+                <input
+                  type="text"
+                  value={formName}
+                  onChange={(e) => setFormName(e.target.value)}
+                  className="form-input"
+                />
+              </div>
+              <div className="form-group">
+                <label>Description</label>
+                <textarea
+                  value={formDescription}
+                  onChange={(e) => setFormDescription(e.target.value)}
+                  className="form-textarea"
+                  rows={3}
+                />
+              </div>
+              <div className="form-group">
+                <label>Confidence</label>
+                <input
+                  type="number"
+                  min="0"
+                  max="1"
+                  step="0.1"
+                  value={formConfidence}
+                  onChange={(e) => setFormConfidence(parseFloat(e.target.value))}
+                  className="form-input"
+                />
+              </div>
+              <div className="form-group">
+                <label>Keywords (comma-separated)</label>
+                <input
+                  type="text"
+                  value={formKeywords}
+                  onChange={(e) => setFormKeywords(e.target.value)}
+                  className="form-input"
+                />
+              </div>
+              <div className="form-group">
+                <label>Regex Patterns (one per line)</label>
+                <textarea
+                  value={formRegex}
+                  onChange={(e) => setFormRegex(e.target.value)}
+                  className="form-textarea"
+                  rows={2}
+                />
+              </div>
+              <div className="form-group">
+                <label>Minimum Occurrences</label>
+                <input
+                  type="number"
+                  min="1"
+                  value={formMinOccurrences}
+                  onChange={(e) => setFormMinOccurrences(parseInt(e.target.value))}
+                  className="form-input"
+                />
+              </div>
+            </div>
+            <div className="modal-footer">
+              <button className="btn btn-secondary" onClick={() => setShowEditModal(false)}>
+                Cancel
+              </button>
+              <button className="btn btn-primary" onClick={handleUpdatePattern} disabled={!formName.trim()}>
+                <Icon name="Save" size={16} />
+                Save Changes
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Analyze Text Modal */}
+      {showAnalyzeModal && (
+        <div className="modal-overlay" onClick={() => setShowAnalyzeModal(false)}>
+          <div className="modal modal-large" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h2>
+                <Icon name="Search" size={20} />
+                Analyze Text for Patterns
+              </h2>
+              <button className="btn btn-ghost" onClick={() => setShowAnalyzeModal(false)}>
+                <Icon name="X" size={20} />
+              </button>
+            </div>
+            <div className="modal-body">
+              <div className="form-group">
+                <label>Text to Analyze</label>
+                <textarea
+                  value={analyzeText}
+                  onChange={(e) => setAnalyzeText(e.target.value)}
+                  placeholder="Paste text here to analyze for patterns..."
+                  className="form-textarea"
+                  rows={10}
+                />
+              </div>
+              <div className="form-row">
+                <div className="form-group">
+                  <label>Minimum Confidence</label>
+                  <input
+                    type="number"
+                    min="0"
+                    max="1"
+                    step="0.1"
+                    value={analyzeMinConfidence}
+                    onChange={(e) => setAnalyzeMinConfidence(parseFloat(e.target.value))}
+                    className="form-input"
+                  />
+                </div>
+                <div className="form-group">
+                  <label>Capabilities</label>
+                  <div className="capabilities-info">
+                    {capabilities?.llm_available ? (
+                      <span className="capability-active">
+                        <Icon name="Sparkles" size={14} /> LLM Analysis Available
+                      </span>
+                    ) : (
+                      <span className="capability-inactive">
+                        <Icon name="AlertCircle" size={14} /> Keyword Analysis Only
+                      </span>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              {analysisResult && (
+                <div className="analysis-results">
+                  <h3>Analysis Results</h3>
+                  <div className="analysis-stats">
+                    <span>Patterns Found: {analysisResult.patterns_detected.length}</span>
+                    <span>Processing Time: {analysisResult.processing_time_ms.toFixed(0)}ms</span>
+                  </div>
+                  {analysisResult.patterns_detected.length > 0 && (
+                    <div className="detected-patterns">
+                      {analysisResult.patterns_detected.map((pattern) => (
+                        <div key={pattern.id} className="detected-pattern">
+                          <div className="detected-header">
+                            <Icon name={PATTERN_TYPE_ICONS[pattern.pattern_type] || 'Circle'} size={16} />
+                            <span className="detected-name">{pattern.name}</span>
+                            <span className={`confidence-badge ${getConfidenceBadge(pattern.confidence)}`}>
+                              {(pattern.confidence * 100).toFixed(0)}%
+                            </span>
+                          </div>
+                          <p className="detected-description">{pattern.description}</p>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {analysisResult.errors.length > 0 && (
+                    <div className="analysis-errors">
+                      {analysisResult.errors.map((err, i) => (
+                        <p key={i} className="error-message">{err}</p>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+            <div className="modal-footer">
+              <button className="btn btn-secondary" onClick={() => setShowAnalyzeModal(false)}>
+                Close
+              </button>
+              <button
+                className="btn btn-primary"
+                onClick={handleAnalyze}
+                disabled={analyzing || !analyzeText.trim()}
+              >
+                {analyzing ? (
+                  <>
+                    <Icon name="Loader2" size={16} className="spin" />
+                    Analyzing...
+                  </>
+                ) : (
+                  <>
+                    <Icon name="Search" size={16} />
+                    Analyze
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

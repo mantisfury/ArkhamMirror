@@ -82,7 +82,7 @@ async def initialize(self, frame) -> None:
 
 ## Current State Overview
 
-### Fully Operational Shards (14 total)
+### Fully Operational Shards (16 total)
 These shards are functional with complete backend/frontend integration:
 
 | Shard | Status | Notes |
@@ -101,13 +101,13 @@ These shards are functional with complete backend/frontend integration:
 | credibility | Operational | Credibility assessment, deception detection |
 | ach | Operational | **REFERENCE IMPLEMENTATION** - Full ACH matrix |
 | projects | Operational | Project CRUD, scoping |
+| provenance | Operational | Evidence chains, artifact tracking, lineage graphs |
+| patterns | Operational | Cross-document pattern detection, statistical correlation |
 
-### Shards Requiring Work (11 total)
+### Shards Requiring Work (9 total)
 
 | Shard | Category | Backend % | Frontend % | Priority | Critical Gap |
 |-------|----------|-----------|------------|----------|--------------|
-| provenance | Analysis | 40% | 60% | High | Missing 4 DB tables (chains, links, artifacts, lineage) |
-| patterns | Analysis | 70% | 30% | High | `_source_matches_pattern()` returns False |
 | anomalies | Analysis | 60% | 50% | Medium | Event handlers only log, don't trigger detection |
 | summary | Analysis | 70% | 40% | Medium | `_fetch_source_content()` returns mock data |
 | graph | Visualize | 75% | 60% | High | No graph visualization library, no DB persistence |
@@ -124,107 +124,39 @@ These shards are functional with complete backend/frontend integration:
 
 ## Phase 1: Analysis Shards
 
-### 1.1 Provenance Shard
+### 1.1 Provenance Shard - COMPLETED (2026-01-04)
 
-**File Locations:**
-- Backend: `packages/arkham-shard-provenance/arkham_shard_provenance/`
-- Frontend: `packages/arkham-shard-shell/src/pages/provenance/`
-- Manifest: `packages/arkham-shard-provenance/shard.yaml`
+**Status: Fully Operational**
 
-**Current State:**
-- Has 3 tables (records, transformations, audit) but missing 4 core tables
-- API endpoints return stubs like `{"id": "stub_chain_id"}`
-- Event handlers subscribed but do nothing
-
-**Known Stub Locations:**
-```python
-# shard.py - These methods return hardcoded stubs:
-def create_chain(self, title, ...):      # Returns {"id": "stub_chain_id", ...}
-def add_link(self, chain_id, ...):       # Returns {"id": "stub_link_id", ...}
-def get_lineage(self, artifact_id):      # Returns {"nodes": [], "edges": []}
-def verify_chain(self, chain_id):        # Returns {"verified": True, "issues": []}
-
-# api.py - These endpoints raise 501 or return empty:
-POST /chains                             # Raises 501
-GET  /chains/{id}                        # Raises 404
-POST /chains/{chain_id}/links            # Raises 501
-GET  /lineage/{artifact_id}              # Returns empty graph
-```
-
-**Database Schema Needed:**
-```sql
--- Add these tables (records/transformations/audit already exist)
-CREATE TABLE arkham_provenance_chains (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    title TEXT NOT NULL,
-    description TEXT,
-    status VARCHAR(50) DEFAULT 'active',
-    created_at TIMESTAMPTZ DEFAULT NOW(),
-    updated_at TIMESTAMPTZ DEFAULT NOW(),
-    metadata JSONB DEFAULT '{}'
-);
-
-CREATE TABLE arkham_provenance_links (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    chain_id UUID REFERENCES arkham_provenance_chains(id) ON DELETE CASCADE,
-    source_artifact_id UUID NOT NULL,
-    target_artifact_id UUID NOT NULL,
-    link_type VARCHAR(50) NOT NULL,
-    verified BOOLEAN DEFAULT FALSE,
-    created_at TIMESTAMPTZ DEFAULT NOW()
-);
-
-CREATE TABLE arkham_provenance_artifacts (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    artifact_type VARCHAR(50) NOT NULL,
-    entity_id UUID,
-    entity_type VARCHAR(50),
-    metadata JSONB DEFAULT '{}'
-);
-```
-
-**Implementation Priority:**
-1. Add missing database tables in `_create_schema()`
-2. Implement chain CRUD in shard.py
-3. Implement link management
-4. Wire event handlers to create artifacts automatically
-5. Connect frontend to real API
+The provenance shard is now fully implemented with:
+- 4 database tables: chains, links, artifacts, records
+- Full CRUD for artifacts, chains, and links
+- BFS-based lineage traversal with graph visualization
+- Chain verification with integrity checking
+- Event handlers that auto-create artifacts for documents/entities/claims
+- Complete frontend with 3 tabs: Artifacts, Chains, Lineage
 
 ---
 
-### 1.2 Patterns Shard
+### 1.2 Patterns Shard - COMPLETED (2026-01-04)
 
-**File Locations:**
-- Backend: `packages/arkham-shard-patterns/arkham_shard_patterns/`
-- Frontend: `packages/arkham-shard-shell/src/pages/patterns/`
+**Status: Fully Operational**
 
-**Current State:**
-- Database schema complete (2 tables: patterns, matches)
-- 20+ methods implemented in shard.py
-- Pattern detection logic exists but matching is placeholder
-
-**Known Stub Locations:**
-```python
-# shard.py - Line ~450
-def _source_matches_pattern(self, source, pattern) -> bool:
-    return False  # TODO: Implement actual matching
-
-# shard.py - Line ~480
-def _check_source_against_patterns(self, source_type, source_id, content):
-    # Returns empty list, correlation detection returns 0.5 score placeholder
-```
-
-**Event Subscriptions (already configured):**
-- `document.processed` -> `_on_document_processed()`
-- `entity.created` -> `_on_entity_created()`
-- `claims.claim.created` -> `_on_claim_created()`
-- `timeline.event.created` -> `_on_timeline_event()`
-
-**Implementation Priority:**
-1. Implement `_source_matches_pattern()` with text/regex matching
-2. Implement co-occurrence analysis in `find_correlations()`
-3. Add LLM-based pattern detection (prompt exists in code)
-4. Build frontend PatternsPage.tsx (currently minimal)
+The patterns shard is now fully implemented with:
+- Database schema: 2 tables (patterns, pattern_matches)
+- Full pattern matching with graceful degradation:
+  - Keyword matching (always available)
+  - Regex matching (always available)
+  - Vector similarity (if vectors service available)
+- Statistical correlation analysis (Pearson correlation)
+- LLM-based pattern detection with structured prompts
+- Event handlers for documents, entities, claims, timeline events
+- Complete frontend with:
+  - Tabbed views (All, Recurring, Behavioral, Temporal)
+  - Create/Edit pattern modals
+  - Text analysis panel
+  - Pattern criteria display
+  - Match evidence viewer
 
 ---
 
@@ -813,5 +745,5 @@ npm install vis-network        # Alternative
 ---
 
 *Generated: 2026-01-03*
-*Last Updated: 2026-01-03*
+*Last Updated: 2026-01-04*
 *Context: Full codebase analysis by 5 parallel agents*

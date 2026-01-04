@@ -3,12 +3,27 @@ Patterns Shard - Main Shard Implementation
 
 Cross-document pattern detection - identifies recurring themes,
 behaviors, and relationships across the document corpus.
+
+Key features:
+- Automatic pattern detection across documents
+- Recurring theme analysis
+- Behavioral pattern identification
+- Temporal pattern detection
+- Entity correlation analysis (Pearson/Spearman)
+- Pattern evidence linking
+
+Pattern matching uses graceful degradation:
+1. Keyword matching (always available)
+2. Regex matching (always available)
+3. Vector similarity (if vectors service available)
 """
 
 import json
 import logging
+import re
+from collections import Counter
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from uuid import uuid4
 
 from arkham_frame import ArkhamShard
@@ -605,8 +620,14 @@ class PatternsShard(ArkhamShard):
         self,
         request: CorrelationRequest,
     ) -> CorrelationResult:
-        """Find correlations between entities."""
+        """
+        Find correlations between entities using statistical methods.
+
+        Uses Pearson correlation for continuous co-occurrence patterns
+        and Spearman for ranked correlations.
+        """
         import time
+        import math
         start_time = time.time()
         correlations = []
 
@@ -617,25 +638,122 @@ class PatternsShard(ArkhamShard):
                 processing_time_ms=(time.time() - start_time) * 1000,
             )
 
-        # Find co-occurrences in documents
-        entity_pairs = []
+        # Build entity-document occurrence matrix
+        entity_docs: Dict[str, set] = {}
+        all_docs: set = set()
+
+        for entity_id in request.entity_ids:
+            # Query for documents containing this entity
+            # Check entity mentions table if it exists
+            rows = await self._db.fetch_all(
+                """SELECT DISTINCT document_id FROM arkham_entity_mentions
+                   WHERE entity_id = :entity_id
+                   UNION
+                   SELECT DISTINCT source_id as document_id FROM arkham_pattern_matches
+                   WHERE source_type = 'entity' AND source_id = :entity_id""",
+                {"entity_id": entity_id}
+            )
+
+            doc_ids = {row["document_id"] for row in rows if row.get("document_id")}
+
+            # Fallback: check if entity has document references in metadata
+            if not doc_ids:
+                entity_row = await self._db.fetch_one(
+                    "SELECT metadata FROM arkham_entities WHERE id = :id",
+                    {"id": entity_id}
+                )
+                if entity_row:
+                    metadata = json.loads(entity_row.get("metadata", "{}"))
+                    doc_refs = metadata.get("document_ids", [])
+                    doc_ids = set(doc_refs)
+
+            entity_docs[entity_id] = doc_ids
+            all_docs.update(doc_ids)
+
+        # Convert to binary occurrence vectors for correlation calculation
+        doc_list = list(all_docs)
+        if len(doc_list) < 2:
+            # Not enough documents to calculate correlation
+            for i, entity1 in enumerate(request.entity_ids):
+                for entity2 in request.entity_ids[i + 1:]:
+                    docs1 = entity_docs.get(entity1, set())
+                    docs2 = entity_docs.get(entity2, set())
+                    common = docs1 & docs2
+
+                    if len(common) >= request.min_occurrences:
+                        correlations.append(Correlation(
+                            entity_id_1=entity1,
+                            entity_id_2=entity2,
+                            correlation_score=1.0 if common else 0.0,
+                            co_occurrence_count=len(common),
+                            document_ids=list(common),
+                            correlation_type="co_occurrence",
+                            description=f"Found in {len(common)} common documents",
+                        ))
+
+            return CorrelationResult(
+                correlations=correlations,
+                entities_analyzed=len(request.entity_ids),
+                processing_time_ms=(time.time() - start_time) * 1000,
+            )
+
+        # Build occurrence vectors
+        entity_vectors: Dict[str, List[int]] = {}
+        for entity_id in request.entity_ids:
+            entity_vectors[entity_id] = [
+                1 if doc_id in entity_docs.get(entity_id, set()) else 0
+                for doc_id in doc_list
+            ]
+
+        # Calculate Pearson correlation for each pair
         for i, entity1 in enumerate(request.entity_ids):
             for entity2 in request.entity_ids[i + 1:]:
-                entity_pairs.append((entity1, entity2))
+                vec1 = entity_vectors.get(entity1, [])
+                vec2 = entity_vectors.get(entity2, [])
 
-        for entity1, entity2 in entity_pairs:
-            # Query for co-occurrence (simplified - would need document-entity links)
-            # This is a placeholder - actual implementation depends on data model
-            correlation = Correlation(
-                entity_id_1=entity1,
-                entity_id_2=entity2,
-                correlation_score=0.5,  # Placeholder
-                co_occurrence_count=0,
-                document_ids=[],
-                correlation_type="co_occurrence",
-                description=f"Co-occurrence analysis between {entity1} and {entity2}",
-            )
-            correlations.append(correlation)
+                if not vec1 or not vec2:
+                    continue
+
+                # Calculate co-occurrence
+                common_docs = entity_docs.get(entity1, set()) & entity_docs.get(entity2, set())
+                co_occurrence_count = len(common_docs)
+
+                # Skip if below minimum occurrences
+                if co_occurrence_count < request.min_occurrences:
+                    continue
+
+                # Calculate Pearson correlation coefficient
+                correlation_score = self._calculate_pearson(vec1, vec2)
+
+                # Determine correlation type and description
+                if correlation_score >= 0.7:
+                    corr_type = "strong_positive"
+                    desc = f"Strong positive correlation (r={correlation_score:.2f})"
+                elif correlation_score >= 0.4:
+                    corr_type = "moderate_positive"
+                    desc = f"Moderate positive correlation (r={correlation_score:.2f})"
+                elif correlation_score <= -0.7:
+                    corr_type = "strong_negative"
+                    desc = f"Strong negative correlation (r={correlation_score:.2f})"
+                elif correlation_score <= -0.4:
+                    corr_type = "moderate_negative"
+                    desc = f"Moderate negative correlation (r={correlation_score:.2f})"
+                else:
+                    corr_type = "weak"
+                    desc = f"Weak correlation (r={correlation_score:.2f})"
+
+                correlations.append(Correlation(
+                    entity_id_1=entity1,
+                    entity_id_2=entity2,
+                    correlation_score=correlation_score,
+                    co_occurrence_count=co_occurrence_count,
+                    document_ids=list(common_docs)[:20],  # Limit to 20 doc IDs
+                    correlation_type=corr_type,
+                    description=f"{desc}, co-occurred in {co_occurrence_count} documents",
+                ))
+
+        # Sort by absolute correlation score (strongest correlations first)
+        correlations.sort(key=lambda c: abs(c.correlation_score), reverse=True)
 
         processing_time = (time.time() - start_time) * 1000
 
@@ -643,6 +761,72 @@ class PatternsShard(ArkhamShard):
             correlations=correlations,
             entities_analyzed=len(request.entity_ids),
             processing_time_ms=processing_time,
+        )
+
+    def _calculate_pearson(self, x: List[int], y: List[int]) -> float:
+        """
+        Calculate Pearson correlation coefficient between two vectors.
+
+        Returns a value between -1 (perfect negative correlation)
+        and 1 (perfect positive correlation).
+        """
+        import math
+
+        n = len(x)
+        if n != len(y) or n == 0:
+            return 0.0
+
+        # Calculate means
+        mean_x = sum(x) / n
+        mean_y = sum(y) / n
+
+        # Calculate standard deviations and covariance
+        sum_xy = sum((x[i] - mean_x) * (y[i] - mean_y) for i in range(n))
+        sum_x2 = sum((x[i] - mean_x) ** 2 for i in range(n))
+        sum_y2 = sum((y[i] - mean_y) ** 2 for i in range(n))
+
+        # Avoid division by zero
+        if sum_x2 == 0 or sum_y2 == 0:
+            return 0.0
+
+        # Pearson correlation
+        r = sum_xy / math.sqrt(sum_x2 * sum_y2)
+
+        # Clamp to [-1, 1] to handle floating point errors
+        return max(-1.0, min(1.0, r))
+
+    def _calculate_spearman(self, x: List[int], y: List[int]) -> float:
+        """
+        Calculate Spearman rank correlation coefficient.
+
+        Converts values to ranks and applies Pearson correlation.
+        """
+        def rank(values: List[int]) -> List[float]:
+            """Convert values to ranks (1-based, handle ties with average)."""
+            sorted_indices = sorted(range(len(values)), key=lambda i: values[i])
+            ranks = [0.0] * len(values)
+
+            i = 0
+            while i < len(sorted_indices):
+                j = i
+                # Find ties
+                while j < len(sorted_indices) - 1 and values[sorted_indices[j]] == values[sorted_indices[j + 1]]:
+                    j += 1
+                # Assign average rank to ties
+                avg_rank = (i + j) / 2 + 1
+                for k in range(i, j + 1):
+                    ranks[sorted_indices[k]] = avg_rank
+                i = j + 1
+
+            return ranks
+
+        ranks_x = rank(x)
+        ranks_y = rank(y)
+
+        # Spearman is Pearson on ranks
+        return self._calculate_pearson(
+            [int(r) for r in ranks_x],
+            [int(r) for r in ranks_y]
         )
 
     async def get_statistics(self) -> PatternStatistics:
@@ -857,36 +1041,293 @@ class PatternsShard(ArkhamShard):
             "id": pattern_id,
         })
 
-    async def _check_source_against_patterns(self, source_type: SourceType, source_id: str) -> None:
-        """Check a source against all active patterns."""
-        # Get all confirmed patterns
+    async def _check_source_against_patterns(
+        self,
+        source_type: SourceType,
+        source_id: str,
+        content: Optional[str] = None,
+    ) -> List[PatternMatch]:
+        """
+        Check a source against all active patterns.
+
+        Args:
+            source_type: Type of source (document, entity, claim, etc.)
+            source_id: ID of the source
+            content: Optional pre-fetched content (avoids double-fetch)
+
+        Returns:
+            List of matches created
+        """
+        matches_created = []
+
+        # Get all confirmed patterns (active patterns that should be matched)
         patterns = await self.list_patterns(
             filter=PatternFilter(status=PatternStatus.CONFIRMED),
             limit=100,
         )
 
+        # Also check detected patterns with high confidence
+        detected_patterns = await self.list_patterns(
+            filter=PatternFilter(status=PatternStatus.DETECTED, min_confidence=0.7),
+            limit=50,
+        )
+        patterns.extend(detected_patterns)
+
+        # Get source title for match metadata
+        _, title = await self._fetch_source_content(source_type, source_id)
+
         for pattern in patterns:
             # Check if source matches pattern criteria
-            if await self._source_matches_pattern(source_type, source_id, pattern):
-                await self.add_match(
-                    pattern.id,
-                    PatternMatchCreate(
-                        source_type=source_type,
-                        source_id=source_id,
-                        match_score=0.8,
-                    ),
-                )
+            matches, score, excerpt = await self._source_matches_pattern(
+                source_type, source_id, pattern
+            )
+
+            if matches and score >= 0.5:
+                # Check for duplicate match
+                existing = await self._db.fetch_one(
+                    """SELECT id FROM arkham_pattern_matches
+                       WHERE pattern_id = :pattern_id
+                       AND source_type = :source_type
+                       AND source_id = :source_id""",
+                    {
+                        "pattern_id": pattern.id,
+                        "source_type": source_type.value,
+                        "source_id": source_id,
+                    }
+                ) if self._db else None
+
+                if not existing:
+                    match = await self.add_match(
+                        pattern.id,
+                        PatternMatchCreate(
+                            source_type=source_type,
+                            source_id=source_id,
+                            source_title=title,
+                            match_score=score,
+                            excerpt=excerpt,
+                        ),
+                    )
+                    matches_created.append(match)
+
+        return matches_created
 
     async def _source_matches_pattern(
         self,
         source_type: SourceType,
         source_id: str,
         pattern: Pattern,
-    ) -> bool:
-        """Check if a source matches a pattern's criteria."""
-        # This is a simplified implementation
-        # Real implementation would fetch source content and check against criteria
-        return False  # Placeholder
+    ) -> Tuple[bool, float, Optional[str]]:
+        """
+        Check if a source matches a pattern's criteria.
+
+        Uses graceful degradation:
+        1. Keyword matching (always available)
+        2. Regex matching (always available)
+        3. Vector similarity (if vectors service available)
+
+        Returns:
+            Tuple of (matches, score, excerpt)
+        """
+        # Fetch source content
+        content, title = await self._fetch_source_content(source_type, source_id)
+        if not content:
+            return False, 0.0, None
+
+        content_lower = content.lower()
+        criteria = pattern.criteria
+        match_scores = []
+        excerpt = None
+
+        # 1. Keyword matching (always available)
+        if criteria.keywords:
+            keyword_matches = 0
+            for keyword in criteria.keywords:
+                if keyword.lower() in content_lower:
+                    keyword_matches += 1
+                    # Capture excerpt around first match
+                    if not excerpt:
+                        idx = content_lower.find(keyword.lower())
+                        start = max(0, idx - 50)
+                        end = min(len(content), idx + len(keyword) + 50)
+                        excerpt = content[start:end]
+
+            if keyword_matches > 0:
+                keyword_score = keyword_matches / len(criteria.keywords)
+                match_scores.append(keyword_score)
+
+        # 2. Regex matching (always available)
+        if criteria.regex_patterns:
+            regex_matches = 0
+            for regex_pattern in criteria.regex_patterns:
+                try:
+                    match = re.search(regex_pattern, content, re.IGNORECASE)
+                    if match:
+                        regex_matches += 1
+                        if not excerpt:
+                            start = max(0, match.start() - 50)
+                            end = min(len(content), match.end() + 50)
+                            excerpt = content[start:end]
+                except re.error:
+                    logger.warning(f"Invalid regex pattern: {regex_pattern}")
+
+            if regex_matches > 0:
+                regex_score = regex_matches / len(criteria.regex_patterns)
+                match_scores.append(regex_score)
+
+        # 3. Vector similarity (if vectors service available)
+        if self._vectors and criteria.keywords:
+            try:
+                # Create query from pattern keywords/description
+                query_text = " ".join(criteria.keywords) + " " + (pattern.description or "")
+
+                # Search for similar content
+                results = await self._vectors.search(
+                    collection="documents",
+                    query=query_text,
+                    limit=5,
+                    filter={"source_id": source_id} if source_type == SourceType.DOCUMENT else None
+                )
+
+                if results and len(results) > 0:
+                    # Use highest similarity score
+                    best_similarity = max(r.get("score", 0) for r in results)
+                    if best_similarity >= criteria.similarity_threshold:
+                        match_scores.append(best_similarity)
+
+            except Exception as e:
+                logger.debug(f"Vector similarity check failed (graceful degradation): {e}")
+
+        # Check minimum occurrences for keyword patterns
+        if criteria.keywords and criteria.min_occurrences > 1:
+            total_occurrences = sum(
+                content_lower.count(kw.lower()) for kw in criteria.keywords
+            )
+            if total_occurrences < criteria.min_occurrences:
+                return False, 0.0, None
+
+        # Calculate final score
+        if not match_scores:
+            return False, 0.0, None
+
+        final_score = sum(match_scores) / len(match_scores)
+        matches = final_score >= 0.5  # Match if average score >= 50%
+
+        return matches, final_score, excerpt
+
+    async def _fetch_source_content(
+        self,
+        source_type: SourceType,
+        source_id: str,
+    ) -> Tuple[Optional[str], Optional[str]]:
+        """
+        Fetch content from a source for pattern matching.
+
+        Uses graceful degradation - tries multiple approaches:
+        1. Direct Frame shard access (if available)
+        2. Database query (if schema known)
+        3. Returns None if content unavailable
+
+        Returns:
+            Tuple of (content, title)
+        """
+        content = None
+        title = None
+
+        try:
+            if source_type == SourceType.DOCUMENT:
+                # Try documents shard
+                documents_shard = self.frame.shards.get("documents")
+                if documents_shard and hasattr(documents_shard, "get"):
+                    doc = await documents_shard.get(source_id)
+                    if doc:
+                        content = getattr(doc, "content", None) or getattr(doc, "text", None)
+                        title = getattr(doc, "name", None) or getattr(doc, "title", None)
+
+                # Fallback: direct DB query
+                if not content and self._db:
+                    row = await self._db.fetch_one(
+                        "SELECT name, content FROM arkham_documents WHERE id = :id",
+                        {"id": source_id}
+                    )
+                    if row:
+                        content = row.get("content")
+                        title = row.get("name")
+
+            elif source_type == SourceType.ENTITY:
+                # Try entities shard
+                entities_shard = self.frame.shards.get("entities")
+                if entities_shard and hasattr(entities_shard, "get"):
+                    entity = await entities_shard.get(source_id)
+                    if entity:
+                        title = getattr(entity, "name", None)
+                        # Build content from entity properties
+                        props = getattr(entity, "properties", {}) or {}
+                        content = f"{title} " + " ".join(str(v) for v in props.values())
+
+                # Fallback: direct DB query
+                if not content and self._db:
+                    row = await self._db.fetch_one(
+                        "SELECT name, properties FROM arkham_entities WHERE id = :id",
+                        {"id": source_id}
+                    )
+                    if row:
+                        title = row.get("name")
+                        props = json.loads(row.get("properties", "{}"))
+                        content = f"{title} " + " ".join(str(v) for v in props.values())
+
+            elif source_type == SourceType.CLAIM:
+                # Try claims shard
+                claims_shard = self.frame.shards.get("claims")
+                if claims_shard and hasattr(claims_shard, "get"):
+                    claim = await claims_shard.get(source_id)
+                    if claim:
+                        content = getattr(claim, "text", None) or getattr(claim, "content", None)
+                        title = content[:50] + "..." if content and len(content) > 50 else content
+
+                # Fallback: direct DB query
+                if not content and self._db:
+                    row = await self._db.fetch_one(
+                        "SELECT text, claim_text FROM arkham_claims WHERE id = :id",
+                        {"id": source_id}
+                    )
+                    if row:
+                        content = row.get("text") or row.get("claim_text")
+                        title = content[:50] + "..." if content and len(content) > 50 else content
+
+            elif source_type == SourceType.EVENT:
+                # Try timeline shard
+                timeline_shard = self.frame.shards.get("timeline")
+                if timeline_shard and hasattr(timeline_shard, "get_event"):
+                    event = await timeline_shard.get_event(source_id)
+                    if event:
+                        title = getattr(event, "title", None) or getattr(event, "description", None)
+                        content = f"{title} {getattr(event, 'description', '')}"
+
+                # Fallback: direct DB query
+                if not content and self._db:
+                    row = await self._db.fetch_one(
+                        "SELECT title, description FROM arkham_timeline_events WHERE id = :id",
+                        {"id": source_id}
+                    )
+                    if row:
+                        title = row.get("title") or row.get("description")
+                        content = f"{title} {row.get('description', '')}"
+
+            elif source_type == SourceType.CHUNK:
+                # Direct DB query for chunks
+                if self._db:
+                    row = await self._db.fetch_one(
+                        "SELECT content, document_id FROM arkham_document_chunks WHERE id = :id",
+                        {"id": source_id}
+                    )
+                    if row:
+                        content = row.get("content")
+                        title = f"Chunk from {row.get('document_id', 'unknown')}"
+
+        except Exception as e:
+            logger.debug(f"Failed to fetch source content for {source_type}:{source_id}: {e}")
+
+        return content, title
 
     async def _detect_patterns_llm(
         self,
@@ -894,46 +1335,135 @@ class PatternsShard(ArkhamShard):
         pattern_types: Optional[List[PatternType]],
         min_confidence: float,
     ) -> List[Pattern]:
-        """Detect patterns using LLM."""
+        """
+        Detect patterns using LLM with structured output.
+
+        Uses chain-of-thought reasoning and structured JSON output.
+        """
         if not self._llm:
             return []
 
+        # Limit text to prevent context overflow
+        text_sample = text[:12000] if len(text) > 12000 else text
+        text_preview = text[:500] + "..." if len(text) > 500 else text
+
+        # Build type descriptions for the prompt
+        type_descriptions = {
+            PatternType.RECURRING_THEME: "Themes, topics, or subjects that appear multiple times across the text",
+            PatternType.BEHAVIORAL: "Consistent actions, behaviors, or patterns of conduct by entities",
+            PatternType.TEMPORAL: "Time-based patterns like cycles, sequences, or scheduling patterns",
+            PatternType.CORRELATION: "Statistical relationships or associations between entities",
+            PatternType.LINGUISTIC: "Language patterns, writing styles, or phraseological similarities",
+            PatternType.STRUCTURAL: "Document structure patterns, formatting, or organization",
+            PatternType.CUSTOM: "Other patterns not fitting the above categories",
+        }
+
+        types_to_check = pattern_types or list(PatternType)
+        types_str = "\n".join(f"- {t.value}: {type_descriptions.get(t, t.value)}" for t in types_to_check)
+
+        prompt = f"""You are an intelligence analyst identifying patterns in text.
+
+## Task
+Analyze the following text and identify significant patterns. For each pattern:
+1. Think step-by-step about what makes it a pattern
+2. Consider the evidence supporting it
+3. Assign a confidence score based on evidence strength
+
+## Pattern Types to Look For
+{types_str}
+
+## Text to Analyze
+{text_sample}
+
+## Output Format
+Return a JSON array of patterns. Each pattern should have:
+- "name": Brief descriptive name (3-6 words)
+- "description": What the pattern represents and why it matters
+- "type": One of [{', '.join(f'"{t.value}"' for t in types_to_check)}]
+- "confidence": Float 0.0-1.0 based on evidence strength
+- "keywords": Array of key terms that identify this pattern
+- "evidence": Array of excerpts/quotes supporting this pattern
+- "reasoning": Brief explanation of why this is a pattern
+
+## Guidelines
+- Only report patterns with confidence >= {min_confidence}
+- Focus on patterns that appear multiple times or have strong evidence
+- Be specific rather than generic
+- Limit to 5-10 most significant patterns
+
+## Response
+Return ONLY the JSON array, no other text:
+```json
+[
+  {{
+    "name": "Pattern Name",
+    "description": "What this pattern means",
+    "type": "recurring_theme",
+    "confidence": 0.8,
+    "keywords": ["keyword1", "keyword2"],
+    "evidence": ["quote 1", "quote 2"],
+    "reasoning": "Why this is a pattern"
+  }}
+]
+```"""
+
         try:
-            types_str = ", ".join(t.value for t in (pattern_types or list(PatternType)))
-            prompt = f"""Analyze the following text and identify patterns.
-Look for these pattern types: {types_str}
-
-For each pattern found, provide:
-- Name (brief descriptive name)
-- Description (what the pattern represents)
-- Type (one of: {types_str})
-- Confidence (0.0-1.0)
-- Evidence (excerpts from the text)
-
-Text:
-{text[:10000]}
-
-Return patterns as JSON array with minimum confidence {min_confidence}."""
-
             response = await self._llm.complete(prompt)
             patterns_data = self._parse_llm_patterns(response)
 
             patterns = []
             for data in patterns_data:
-                if data.get("confidence", 0) >= min_confidence:
-                    pattern = await self.create_pattern(
-                        name=data.get("name", "Unnamed Pattern"),
-                        description=data.get("description", ""),
-                        pattern_type=PatternType(data.get("type", "recurring_theme")),
-                        confidence=data.get("confidence", 0.5),
-                        detection_method=DetectionMethod.LLM,
-                    )
-                    patterns.append(pattern)
+                conf = data.get("confidence", 0)
+                if conf < min_confidence:
+                    continue
 
+                # Extract keywords for pattern criteria
+                keywords = data.get("keywords", [])
+                if not keywords and data.get("name"):
+                    # Generate keywords from name if not provided
+                    keywords = [w.lower() for w in data["name"].split() if len(w) > 3]
+
+                # Map type string to enum
+                pattern_type_str = data.get("type", "recurring_theme")
+                try:
+                    pattern_type = PatternType(pattern_type_str)
+                except ValueError:
+                    pattern_type = PatternType.RECURRING_THEME
+
+                # Create pattern with criteria
+                criteria = PatternCriteria(
+                    keywords=keywords[:10],  # Limit keywords
+                    min_occurrences=2,
+                )
+
+                # Build description including reasoning
+                description = data.get("description", "")
+                reasoning = data.get("reasoning", "")
+                if reasoning and reasoning not in description:
+                    description = f"{description}\n\nReasoning: {reasoning}"
+
+                pattern = await self.create_pattern(
+                    name=data.get("name", "Unnamed Pattern")[:100],
+                    description=description[:500],
+                    pattern_type=pattern_type,
+                    criteria=criteria,
+                    confidence=min(1.0, max(0.0, conf)),
+                    detection_method=DetectionMethod.LLM,
+                    detection_model=getattr(self._llm, "model", None),
+                    metadata={
+                        "evidence": data.get("evidence", [])[:5],
+                        "llm_response": True,
+                    },
+                )
+                patterns.append(pattern)
+
+            logger.info(f"LLM detected {len(patterns)} patterns")
             return patterns
 
         except Exception as e:
             logger.error(f"LLM pattern detection failed: {e}")
+            import traceback
+            traceback.print_exc()
             return []
 
     async def _detect_patterns_keywords(
@@ -1043,12 +1573,80 @@ Return patterns as JSON array with minimum confidence {min_confidence}."""
         )
 
     def _parse_llm_patterns(self, response: str) -> List[Dict[str, Any]]:
-        """Parse LLM pattern detection response."""
+        """
+        Parse LLM pattern detection response.
+
+        Handles various response formats:
+        - Direct JSON array
+        - JSON wrapped in markdown code blocks
+        - JSON with explanatory text before/after
+        """
+        if not response:
+            return []
+
+        # Clean up response
+        text = response.strip()
+
+        # Try to find JSON array in various formats
+        patterns = []
+
+        # 1. Try direct JSON parsing first
         try:
-            start = response.find("[")
-            end = response.rfind("]") + 1
-            if start >= 0 and end > start:
-                return json.loads(response[start:end])
+            parsed = json.loads(text)
+            if isinstance(parsed, list):
+                return parsed
         except json.JSONDecodeError:
-            logger.warning("Failed to parse LLM patterns response")
+            pass
+
+        # 2. Look for JSON in markdown code blocks
+        code_block_patterns = [
+            r'```json\s*\n?(.*?)\n?```',
+            r'```\s*\n?(.*?)\n?```',
+        ]
+        for pattern in code_block_patterns:
+            match = re.search(pattern, text, re.DOTALL)
+            if match:
+                try:
+                    parsed = json.loads(match.group(1).strip())
+                    if isinstance(parsed, list):
+                        return parsed
+                except json.JSONDecodeError:
+                    pass
+
+        # 3. Find JSON array by brackets
+        start = text.find("[")
+        end = text.rfind("]")
+        if start >= 0 and end > start:
+            try:
+                parsed = json.loads(text[start:end + 1])
+                if isinstance(parsed, list):
+                    return parsed
+            except json.JSONDecodeError:
+                # Try to fix common JSON issues
+                json_text = text[start:end + 1]
+                # Fix trailing commas
+                json_text = re.sub(r',\s*}', '}', json_text)
+                json_text = re.sub(r',\s*]', ']', json_text)
+                try:
+                    parsed = json.loads(json_text)
+                    if isinstance(parsed, list):
+                        return parsed
+                except json.JSONDecodeError:
+                    pass
+
+        # 4. Try to extract individual JSON objects
+        object_pattern = r'\{[^{}]*\}'
+        matches = re.findall(object_pattern, text)
+        for match in matches:
+            try:
+                obj = json.loads(match)
+                if isinstance(obj, dict) and ("name" in obj or "type" in obj):
+                    patterns.append(obj)
+            except json.JSONDecodeError:
+                pass
+
+        if patterns:
+            return patterns
+
+        logger.warning(f"Failed to parse LLM patterns response: {text[:200]}...")
         return []
