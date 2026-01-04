@@ -5,9 +5,19 @@ The main entry point for the Frame REST API.
 """
 
 from contextlib import asynccontextmanager
+from pathlib import Path
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 import logging
+
+# Load .env file before anything else accesses environment variables
+from dotenv import load_dotenv
+
+# Look for .env in project root (3 levels up from this file)
+_env_path = Path(__file__).parent.parent.parent.parent / ".env"
+if _env_path.exists():
+    load_dotenv(_env_path)
+    print(f"Loaded environment from {_env_path}")
 
 from .frame import ArkhamFrame
 

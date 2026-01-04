@@ -1,7 +1,7 @@
 """Provenance Shard API endpoints."""
 
 import logging
-from typing import Annotated, List, Optional, TYPE_CHECKING
+from typing import List, Optional, TYPE_CHECKING
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel
@@ -13,26 +13,20 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/provenance", tags=["provenance"])
 
-# These get set by the shard on initialization (legacy, kept for compatibility)
-_chain_manager = None
-_lineage_tracker = None
-_audit_logger = None
+# Shard instance set on initialization
+_shard: Optional["ProvenanceShard"] = None
 _event_bus = None
 _storage = None
 
 
 def init_api(
-    chain_manager,
-    lineage_tracker,
-    audit_logger,
+    shard: "ProvenanceShard",
     event_bus,
     storage,
 ):
-    """Initialize API with shard dependencies."""
-    global _chain_manager, _lineage_tracker, _audit_logger, _event_bus, _storage
-    _chain_manager = chain_manager
-    _lineage_tracker = lineage_tracker
-    _audit_logger = audit_logger
+    """Initialize API with shard instance."""
+    global _shard, _event_bus, _storage
+    _shard = shard
     _event_bus = event_bus
     _storage = storage
     logger.info("Provenance API initialized")
@@ -120,10 +114,12 @@ class ChainResponse(BaseModel):
     """Evidence chain response."""
     id: str
     title: str
-    description: str
-    status: str
-    created_at: str
-    updated_at: str
+    description: Optional[str] = None
+    chain_type: str = "evidence"
+    status: str = "active"
+    root_artifact_id: Optional[str] = None
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
     created_by: Optional[str] = None
     project_id: Optional[str] = None
     link_count: int = 0
@@ -137,36 +133,53 @@ class LinkResponse(BaseModel):
     source_artifact_id: str
     target_artifact_id: str
     link_type: str
-    confidence: float
-    verified: bool
+    confidence: float = 1.0
+    verified: bool = False
     verified_by: Optional[str] = None
     verified_at: Optional[str] = None
-    created_at: str
+    created_at: Optional[str] = None
     metadata: dict = {}
+    # Enrichment from JOINs
+    source_title: Optional[str] = None
+    source_type: Optional[str] = None
+    target_title: Optional[str] = None
+    target_type: Optional[str] = None
 
 
 class ArtifactResponse(BaseModel):
     """Tracked artifact response."""
     id: str
-    artifact_id: str
     artifact_type: str
-    shard_name: str
-    created_at: str
+    entity_id: str
+    entity_table: str
+    title: Optional[str] = None
+    hash: Optional[str] = None
+    created_at: Optional[str] = None
+    metadata: dict = {}
+
+
+class CreateArtifactRequest(BaseModel):
+    """Request to create a new artifact."""
+    artifact_type: str
+    entity_id: str
+    entity_table: str
+    title: Optional[str] = None
+    hash: Optional[str] = None
     metadata: dict = {}
 
 
 class LineageNode(BaseModel):
     """Node in lineage graph."""
     id: str
-    artifact_id: str
-    artifact_type: str
-    shard_name: str
-    label: str
-    metadata: dict = {}
+    title: Optional[str] = None
+    type: Optional[str] = None
+    is_focus: bool = False
+    depth: int = 0
 
 
 class LineageEdge(BaseModel):
     """Edge in lineage graph."""
+    id: str
     source: str
     target: str
     link_type: str
@@ -175,10 +188,11 @@ class LineageEdge(BaseModel):
 
 class LineageGraphResponse(BaseModel):
     """Lineage graph response."""
-    artifact_id: str
     nodes: List[LineageNode]
     edges: List[LineageEdge]
-    direction: str
+    root: Optional[str] = None
+    ancestor_count: int = 0
+    descendant_count: int = 0
 
 
 class AuditRecord(BaseModel):
@@ -224,149 +238,33 @@ async def health():
 @router.get("/count")
 async def get_count(request: Request):
     """
-    Get total provenance record count for navigation badge.
+    Get total counts for navigation badge.
 
     Returns:
-        dict: {"count": int}
+        dict: Combined count of chains and artifacts
     """
     shard = get_shard(request)
     try:
-        records = await shard.list_records(limit=1000)
-        return {"count": len(records)}
+        chains = await shard.count_chains()
+        artifacts = await shard.count_artifacts()
+        # Use artifacts count as primary metric, chains as secondary
+        return {"count": artifacts, "chains": chains, "artifacts": artifacts}
     except Exception as e:
         logger.error(f"Error getting count: {e}")
-        return {"count": 0}
+        return {"count": 0, "chains": 0, "artifacts": 0}
 
 
-# --- Provenance Record Endpoints ---
-
-
-@router.get("/", response_model=List[ProvenanceRecordResponse])
-async def list_records(
-    request: Request,
-    entity_type: Optional[str] = Query(None, description="Filter by entity type"),
-    limit: int = Query(20, ge=1, le=100),
-    offset: int = Query(0, ge=0),
-):
-    """
-    List provenance records with optional filtering.
-
-    Args:
-        entity_type: Filter by entity type
-        limit: Maximum records to return
-        offset: Number of records to skip
-
-    Returns:
-        List of provenance records
-    """
-    shard = get_shard(request)
-    try:
-        records = await shard.list_records(entity_type=entity_type, limit=limit, offset=offset)
-        return records
-    except Exception as e:
-        logger.error(f"Error listing records: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.get("/{id}", response_model=ProvenanceRecordResponse)
-async def get_record(id: str, request: Request):
-    """
-    Get a provenance record by ID.
-
-    Args:
-        id: Record ID
-
-    Returns:
-        Provenance record
-    """
-    shard = get_shard(request)
-    try:
-        record = await shard.get_record(id)
-        if not record:
-            raise HTTPException(status_code=404, detail=f"Record not found: {id}")
-        return record
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error getting record: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.get("/entity/{entity_type}/{entity_id}", response_model=ProvenanceRecordResponse)
-async def get_entity_record(entity_type: str, entity_id: str, request: Request):
-    """
-    Get provenance record for a specific entity.
-
-    Args:
-        entity_type: Type of entity
-        entity_id: Entity ID
-
-    Returns:
-        Provenance record
-    """
-    shard = get_shard(request)
-    try:
-        record = await shard.get_record_for_entity(entity_type, entity_id)
-        if not record:
-            raise HTTPException(status_code=404, detail=f"Record not found for {entity_type}/{entity_id}")
-        return record
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error getting entity record: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.get("/{id}/transformations", response_model=List[TransformationResponse])
-async def get_transformations(id: str, request: Request):
-    """
-    Get transformation history for a record.
-
-    Args:
-        id: Record ID
-
-    Returns:
-        List of transformations
-    """
-    shard = get_shard(request)
-    try:
-        transformations = await shard.get_transformations(id)
-        return transformations
-    except Exception as e:
-        logger.error(f"Error getting transformations: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.get("/{id}/audit", response_model=List[AuditRecordResponse])
-async def get_audit_trail(id: str, request: Request):
-    """
-    Get audit trail for a record.
-
-    Args:
-        id: Record ID
-
-    Returns:
-        List of audit records
-    """
-    shard = get_shard(request)
-    try:
-        audit_records = await shard.get_audit_trail(id)
-        return audit_records
-    except Exception as e:
-        logger.error(f"Error getting audit trail: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-# --- Evidence Chain Endpoints (Legacy/Future) ---
+# --- Evidence Chain Endpoints ---
+# NOTE: These must be defined BEFORE the catch-all /{id} routes
 
 
 @router.get("/chains", response_model=ChainListResponse)
 async def list_chains(
+    request: Request,
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
-    sort: str = Query("created_at", regex="^(created_at|updated_at|title)$"),
-    order: str = Query("desc", regex="^(asc|desc)$"),
-    q: Optional[str] = None,
+    project_id: Optional[str] = None,
+    chain_type: Optional[str] = None,
     status: Optional[str] = None,
 ):
     """
@@ -375,44 +273,62 @@ async def list_chains(
     Args:
         page: Page number (1-indexed)
         page_size: Items per page (max 100)
-        sort: Sort field
-        order: Sort order (asc/desc)
-        q: Search query
+        project_id: Filter by project
+        chain_type: Filter by chain type
         status: Filter by status
 
     Returns:
         Paginated list of chains
     """
-    # TODO: Implement actual chain listing
-    logger.info(f"Listing chains: page={page}, size={page_size}, q={q}")
-
-    return {
-        "items": [],
-        "total": 0,
-        "page": page,
-        "page_size": page_size,
-    }
+    shard = get_shard(request)
+    try:
+        offset = (page - 1) * page_size
+        chains = await shard.list_chains(
+            project_id=project_id,
+            chain_type=chain_type,
+            status=status,
+            limit=page_size,
+            offset=offset,
+        )
+        total = await shard.count_chains()
+        return {
+            "items": chains,
+            "total": total,
+            "page": page,
+            "page_size": page_size,
+        }
+    except Exception as e:
+        logger.error(f"Error listing chains: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.post("/chains", response_model=ChainResponse)
-async def create_chain(request: CreateChainRequest):
+async def create_chain(request_body: CreateChainRequest, request: Request):
     """
     Create a new evidence chain.
 
     Args:
-        request: Chain creation request
+        request_body: Chain creation request
 
     Returns:
         Created chain object
     """
-    # TODO: Implement actual chain creation
-    logger.info(f"Creating chain: {request.title}")
-
-    raise HTTPException(status_code=501, detail="Not implemented")
+    shard = get_shard(request)
+    try:
+        chain = await shard.create_chain_impl(
+            title=request_body.title,
+            description=request_body.description,
+            project_id=request_body.project_id,
+            created_by=request_body.created_by,
+        )
+        return chain
+    except Exception as e:
+        logger.error(f"Error creating chain: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/chains/{chain_id}", response_model=ChainResponse)
-async def get_chain(chain_id: str):
+async def get_chain(chain_id: str, request: Request):
     """
     Get a single chain by ID.
 
@@ -422,32 +338,51 @@ async def get_chain(chain_id: str):
     Returns:
         Chain object
     """
-    # TODO: Implement actual chain retrieval
-    logger.info(f"Getting chain: {chain_id}")
-
-    raise HTTPException(status_code=404, detail="Chain not found")
+    shard = get_shard(request)
+    try:
+        chain = await shard.get_chain_impl(chain_id)
+        if not chain:
+            raise HTTPException(status_code=404, detail=f"Chain not found: {chain_id}")
+        return chain
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting chain: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.put("/chains/{chain_id}", response_model=ChainResponse)
-async def update_chain(chain_id: str, request: UpdateChainRequest):
+async def update_chain(chain_id: str, request_body: UpdateChainRequest, request: Request):
     """
     Update chain metadata.
 
     Args:
         chain_id: Chain identifier
-        request: Update request
+        request_body: Update request
 
     Returns:
         Updated chain object
     """
-    # TODO: Implement actual chain update
-    logger.info(f"Updating chain: {chain_id}")
-
-    raise HTTPException(status_code=404, detail="Chain not found")
+    shard = get_shard(request)
+    try:
+        chain = await shard.update_chain_impl(
+            chain_id,
+            title=request_body.title,
+            description=request_body.description,
+            status=request_body.status,
+        )
+        if not chain:
+            raise HTTPException(status_code=404, detail=f"Chain not found: {chain_id}")
+        return chain
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error updating chain: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.delete("/chains/{chain_id}")
-async def delete_chain(chain_id: str):
+async def delete_chain(chain_id: str, request: Request):
     """
     Delete a chain.
 
@@ -457,35 +392,54 @@ async def delete_chain(chain_id: str):
     Returns:
         Success confirmation
     """
-    # TODO: Implement actual chain deletion
-    logger.info(f"Deleting chain: {chain_id}")
-
-    return {"deleted": True}
+    shard = get_shard(request)
+    try:
+        deleted = await shard.delete_chain_impl(chain_id)
+        if not deleted:
+            raise HTTPException(status_code=404, detail=f"Chain not found: {chain_id}")
+        return {"deleted": True, "id": chain_id}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting chain: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # --- Link Endpoints ---
 
 
 @router.post("/chains/{chain_id}/links", response_model=LinkResponse)
-async def add_link(chain_id: str, request: AddLinkRequest):
+async def add_link(chain_id: str, request_body: AddLinkRequest, request: Request):
     """
     Add a link to an evidence chain.
 
     Args:
         chain_id: Chain identifier
-        request: Link creation request
+        request_body: Link creation request
 
     Returns:
         Created link object
     """
-    # TODO: Implement actual link addition
-    logger.info(f"Adding link to chain {chain_id}")
-
-    raise HTTPException(status_code=501, detail="Not implemented")
+    shard = get_shard(request)
+    try:
+        link = await shard.add_link_impl(
+            chain_id=chain_id,
+            source_artifact_id=request_body.source_artifact_id,
+            target_artifact_id=request_body.target_artifact_id,
+            link_type=request_body.link_type,
+            confidence=request_body.confidence,
+            metadata=request_body.metadata,
+        )
+        return link
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error adding link: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/chains/{chain_id}/links", response_model=List[LinkResponse])
-async def list_chain_links(chain_id: str):
+async def list_chain_links(chain_id: str, request: Request):
     """
     List all links in a chain.
 
@@ -495,14 +449,17 @@ async def list_chain_links(chain_id: str):
     Returns:
         List of links
     """
-    # TODO: Implement actual link listing
-    logger.info(f"Listing links for chain: {chain_id}")
-
-    return []
+    shard = get_shard(request)
+    try:
+        links = await shard.get_chain_links(chain_id)
+        return links
+    except Exception as e:
+        logger.error(f"Error listing chain links: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.delete("/links/{link_id}")
-async def delete_link(link_id: str):
+async def delete_link(link_id: str, request: Request):
     """
     Remove a link from a chain.
 
@@ -512,28 +469,46 @@ async def delete_link(link_id: str):
     Returns:
         Success confirmation
     """
-    # TODO: Implement actual link deletion
-    logger.info(f"Deleting link: {link_id}")
-
-    return {"deleted": True}
+    shard = get_shard(request)
+    try:
+        deleted = await shard.remove_link(link_id)
+        if not deleted:
+            raise HTTPException(status_code=404, detail=f"Link not found: {link_id}")
+        return {"deleted": True, "id": link_id}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting link: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.put("/links/{link_id}/verify", response_model=LinkResponse)
-async def verify_link(link_id: str, request: VerifyLinkRequest):
+async def verify_link_endpoint(link_id: str, request_body: VerifyLinkRequest, request: Request):
     """
     Verify a link in the chain.
 
     Args:
         link_id: Link identifier
-        request: Verification request
+        request_body: Verification request
 
     Returns:
         Updated link object with verification status
     """
-    # TODO: Implement actual link verification
-    logger.info(f"Verifying link: {link_id}")
-
-    raise HTTPException(status_code=404, detail="Link not found")
+    shard = get_shard(request)
+    try:
+        link = await shard.verify_link(
+            link_id=link_id,
+            verified_by=request_body.verified_by,
+            notes=request_body.notes,
+        )
+        if not link:
+            raise HTTPException(status_code=404, detail=f"Link not found: {link_id}")
+        return link
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error verifying link: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # --- Lineage Endpoints ---
@@ -542,7 +517,8 @@ async def verify_link(link_id: str, request: VerifyLinkRequest):
 @router.get("/lineage/{artifact_id}", response_model=LineageGraphResponse)
 async def get_lineage(
     artifact_id: str,
-    direction: str = Query("both", regex="^(upstream|downstream|both)$"),
+    request: Request,
+    direction: str = Query("both", pattern="^(upstream|downstream|both)$"),
     max_depth: int = Query(5, ge=1, le=20),
 ):
     """
@@ -556,19 +532,17 @@ async def get_lineage(
     Returns:
         Lineage graph with nodes and edges
     """
-    # TODO: Implement actual lineage retrieval
-    logger.info(f"Getting lineage for {artifact_id}, direction={direction}, depth={max_depth}")
-
-    return {
-        "artifact_id": artifact_id,
-        "nodes": [],
-        "edges": [],
-        "direction": direction,
-    }
+    shard = get_shard(request)
+    try:
+        lineage = await shard.get_lineage_impl(artifact_id)
+        return lineage
+    except Exception as e:
+        logger.error(f"Error getting lineage: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/lineage/{artifact_id}/upstream", response_model=List[ArtifactResponse])
-async def get_upstream(artifact_id: str):
+async def get_upstream(artifact_id: str, request: Request):
     """
     Get upstream dependencies for an artifact.
 
@@ -578,14 +552,25 @@ async def get_upstream(artifact_id: str):
     Returns:
         List of upstream artifacts
     """
-    # TODO: Implement upstream dependency retrieval
-    logger.info(f"Getting upstream dependencies for: {artifact_id}")
-
-    return []
+    shard = get_shard(request)
+    try:
+        lineage = await shard.get_lineage_impl(artifact_id)
+        # Filter to only ancestors (negative depth)
+        upstream = [n for n in lineage.get("nodes", []) if n.get("depth", 0) < 0]
+        # Convert to artifact responses
+        artifacts = []
+        for node in upstream:
+            artifact = await shard.get_artifact(node["id"])
+            if artifact:
+                artifacts.append(artifact)
+        return artifacts
+    except Exception as e:
+        logger.error(f"Error getting upstream: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/lineage/{artifact_id}/downstream", response_model=List[ArtifactResponse])
-async def get_downstream(artifact_id: str):
+async def get_downstream(artifact_id: str, request: Request):
     """
     Get downstream dependents for an artifact.
 
@@ -595,10 +580,21 @@ async def get_downstream(artifact_id: str):
     Returns:
         List of downstream artifacts
     """
-    # TODO: Implement downstream dependent retrieval
-    logger.info(f"Getting downstream dependents for: {artifact_id}")
-
-    return []
+    shard = get_shard(request)
+    try:
+        lineage = await shard.get_lineage_impl(artifact_id)
+        # Filter to only descendants (positive depth)
+        downstream = [n for n in lineage.get("nodes", []) if n.get("depth", 0) > 0]
+        # Convert to artifact responses
+        artifacts = []
+        for node in downstream:
+            artifact = await shard.get_artifact(node["id"])
+            if artifact:
+                artifacts.append(artifact)
+        return artifacts
+    except Exception as e:
+        logger.error(f"Error getting downstream: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # --- Audit Endpoints ---
@@ -684,22 +680,251 @@ async def export_audit(
 
 
 @router.post("/chains/{chain_id}/verify")
-async def verify_chain(chain_id: str):
+async def verify_chain_endpoint(chain_id: str, request: Request, verified_by: Optional[str] = None):
     """
     Verify integrity of an evidence chain.
 
     Args:
         chain_id: Chain identifier
+        verified_by: User performing verification
 
     Returns:
         Verification result with status and issues
     """
-    # TODO: Implement chain verification
-    logger.info(f"Verifying chain integrity: {chain_id}")
+    shard = get_shard(request)
+    try:
+        result = await shard.verify_chain_impl(chain_id, verified_by=verified_by)
+        return result
+    except Exception as e:
+        logger.error(f"Error verifying chain: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
-    return {
-        "chain_id": chain_id,
-        "verified": True,
-        "issues": [],
-        "checked_at": "2025-12-25T00:00:00Z",
-    }
+
+# --- Artifact Endpoints ---
+
+
+@router.get("/artifacts", response_model=List[ArtifactResponse])
+async def list_artifacts(
+    request: Request,
+    artifact_type: Optional[str] = None,
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+):
+    """
+    List tracked artifacts with optional type filter.
+
+    Args:
+        artifact_type: Filter by artifact type
+        limit: Maximum items to return
+        offset: Items to skip
+
+    Returns:
+        List of artifacts
+    """
+    shard = get_shard(request)
+    try:
+        artifacts = await shard.list_artifacts(
+            artifact_type=artifact_type,
+            limit=limit,
+            offset=offset,
+        )
+        return artifacts
+    except Exception as e:
+        logger.error(f"Error listing artifacts: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/artifacts", response_model=ArtifactResponse)
+async def create_artifact(request_body: CreateArtifactRequest, request: Request):
+    """
+    Create a new artifact for tracking.
+
+    Args:
+        request_body: Artifact creation request
+
+    Returns:
+        Created artifact
+    """
+    shard = get_shard(request)
+    try:
+        artifact = await shard.create_artifact(
+            artifact_type=request_body.artifact_type,
+            entity_id=request_body.entity_id,
+            entity_table=request_body.entity_table,
+            title=request_body.title,
+            content_hash=request_body.hash,
+            metadata=request_body.metadata,
+        )
+        return artifact
+    except Exception as e:
+        logger.error(f"Error creating artifact: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/artifacts/{artifact_id}", response_model=ArtifactResponse)
+async def get_artifact(artifact_id: str, request: Request):
+    """
+    Get artifact by ID.
+
+    Args:
+        artifact_id: Artifact identifier
+
+    Returns:
+        Artifact object
+    """
+    shard = get_shard(request)
+    try:
+        artifact = await shard.get_artifact(artifact_id)
+        if not artifact:
+            raise HTTPException(status_code=404, detail=f"Artifact not found: {artifact_id}")
+        return artifact
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting artifact: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/artifacts/entity/{entity_id}")
+async def get_artifact_by_entity(entity_id: str, entity_table: str, request: Request):
+    """
+    Get artifact by the entity it tracks.
+
+    Args:
+        entity_id: Entity ID
+        entity_table: Entity table name
+
+    Returns:
+        Artifact object if found
+    """
+    shard = get_shard(request)
+    try:
+        artifact = await shard.get_artifact_by_entity(entity_id, entity_table)
+        if not artifact:
+            raise HTTPException(status_code=404, detail=f"Artifact not found for {entity_table}/{entity_id}")
+        return artifact
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting artifact by entity: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# --- Provenance Record Endpoints ---
+# NOTE: These MUST be defined LAST as they contain catch-all {id} routes
+
+
+@router.get("/", response_model=List[ProvenanceRecordResponse])
+async def list_records(
+    request: Request,
+    entity_type: Optional[str] = Query(None, description="Filter by entity type"),
+    limit: int = Query(20, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+):
+    """
+    List provenance records with optional filtering.
+
+    Args:
+        entity_type: Filter by entity type
+        limit: Maximum records to return
+        offset: Number of records to skip
+
+    Returns:
+        List of provenance records
+    """
+    shard = get_shard(request)
+    try:
+        records = await shard.list_records(entity_type=entity_type, limit=limit, offset=offset)
+        return records
+    except Exception as e:
+        logger.error(f"Error listing records: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/entity/{entity_type}/{entity_id}", response_model=ProvenanceRecordResponse)
+async def get_entity_record(entity_type: str, entity_id: str, request: Request):
+    """
+    Get provenance record for a specific entity.
+
+    Args:
+        entity_type: Type of entity
+        entity_id: Entity ID
+
+    Returns:
+        Provenance record
+    """
+    shard = get_shard(request)
+    try:
+        record = await shard.get_record_for_entity(entity_type, entity_id)
+        if not record:
+            raise HTTPException(status_code=404, detail=f"Record not found for {entity_type}/{entity_id}")
+        return record
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting entity record: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/{id}/transformations", response_model=List[TransformationResponse])
+async def get_transformations(id: str, request: Request):
+    """
+    Get transformation history for a record.
+
+    Args:
+        id: Record ID
+
+    Returns:
+        List of transformations
+    """
+    shard = get_shard(request)
+    try:
+        transformations = await shard.get_transformations(id)
+        return transformations
+    except Exception as e:
+        logger.error(f"Error getting transformations: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/{id}/audit", response_model=List[AuditRecordResponse])
+async def get_audit_trail(id: str, request: Request):
+    """
+    Get audit trail for a record.
+
+    Args:
+        id: Record ID
+
+    Returns:
+        List of audit records
+    """
+    shard = get_shard(request)
+    try:
+        audit_records = await shard.get_audit_trail(id)
+        return audit_records
+    except Exception as e:
+        logger.error(f"Error getting audit trail: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/{id}", response_model=ProvenanceRecordResponse)
+async def get_record(id: str, request: Request):
+    """
+    Get a provenance record by ID.
+
+    Args:
+        id: Record ID
+
+    Returns:
+        Provenance record
+    """
+    shard = get_shard(request)
+    try:
+        record = await shard.get_record(id)
+        if not record:
+            raise HTTPException(status_code=404, detail=f"Record not found: {id}")
+        return record
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting record: {e}")
+        raise HTTPException(status_code=500, detail=str(e))

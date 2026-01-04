@@ -87,17 +87,9 @@ class ProvenanceShard(ArkhamShard):
         # Create database schema
         await self._create_schema()
 
-        # Initialize component managers (stubs for now)
-        # TODO: Implement ChainManager, LineageTracker, AuditLogger
-        # self._chain_manager = ChainManager(self._db, self._event_bus)
-        # self._lineage_tracker = LineageTracker(self._db)
-        # self._audit_logger = AuditLogger(self._db)
-
-        # Initialize API with our instances
+        # Initialize API with shard instance (shard implements all managers)
         init_api(
-            chain_manager=None,  # TODO: Pass actual manager
-            lineage_tracker=None,  # TODO: Pass actual tracker
-            audit_logger=None,  # TODO: Pass actual logger
+            shard=self,
             event_bus=self._event_bus,
             storage=self._storage,
         )
@@ -129,11 +121,6 @@ class ProvenanceShard(ArkhamShard):
             await self._event_bus.unsubscribe("document.processed", self._on_document_processed)
             logger.info("Unsubscribed from provenance tracking events")
 
-        # Clear managers
-        self._chain_manager = None
-        self._lineage_tracker = None
-        self._audit_logger = None
-
         logger.info("Provenance Shard shutdown complete")
 
     def get_routes(self):
@@ -159,6 +146,66 @@ class ProvenanceShard(ArkhamShard):
                 imported_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 imported_by TEXT,
                 metadata JSONB DEFAULT '{}',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        # Chains table - groups of linked provenance records
+        await self._db.execute("""
+            CREATE TABLE IF NOT EXISTS arkham_provenance_chains (
+                id TEXT PRIMARY KEY,
+                project_id TEXT,
+                title TEXT NOT NULL,
+                description TEXT,
+                chain_type TEXT DEFAULT 'evidence',
+                status TEXT DEFAULT 'active',
+                root_artifact_id TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                created_by TEXT,
+                metadata JSONB DEFAULT '{}'
+            )
+        """)
+
+        # Artifacts table - tracked items (documents, entities, claims, etc.)
+        await self._db.execute("""
+            CREATE TABLE IF NOT EXISTS arkham_provenance_artifacts (
+                id TEXT PRIMARY KEY,
+                artifact_type TEXT NOT NULL,
+                entity_id TEXT NOT NULL,
+                entity_table TEXT NOT NULL,
+                title TEXT,
+                hash TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                metadata JSONB DEFAULT '{}'
+            )
+        """)
+
+        # Links table - connections between artifacts in a chain
+        await self._db.execute("""
+            CREATE TABLE IF NOT EXISTS arkham_provenance_links (
+                id TEXT PRIMARY KEY,
+                chain_id TEXT NOT NULL,
+                source_artifact_id TEXT NOT NULL,
+                target_artifact_id TEXT NOT NULL,
+                link_type TEXT NOT NULL,
+                confidence REAL DEFAULT 1.0,
+                verified INTEGER DEFAULT 0,
+                verified_by TEXT,
+                verified_at TIMESTAMP,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                metadata JSONB DEFAULT '{}'
+            )
+        """)
+
+        # Lineage cache - pre-computed paths for fast traversal
+        await self._db.execute("""
+            CREATE TABLE IF NOT EXISTS arkham_provenance_lineage (
+                id TEXT PRIMARY KEY,
+                artifact_id TEXT NOT NULL,
+                ancestor_id TEXT NOT NULL,
+                depth INTEGER NOT NULL,
+                path TEXT NOT NULL,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
@@ -219,6 +266,65 @@ class ProvenanceShard(ArkhamShard):
         await self._db.execute("""
             CREATE INDEX IF NOT EXISTS idx_audit_occurred
             ON arkham_provenance_audit(occurred_at DESC)
+        """)
+
+        # Indexes for chains table
+        await self._db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_provenance_chains_project
+            ON arkham_provenance_chains(project_id)
+        """)
+
+        await self._db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_provenance_chains_status
+            ON arkham_provenance_chains(status)
+        """)
+
+        await self._db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_provenance_chains_type
+            ON arkham_provenance_chains(chain_type)
+        """)
+
+        # Indexes for artifacts table
+        await self._db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_provenance_artifacts_type
+            ON arkham_provenance_artifacts(artifact_type)
+        """)
+
+        await self._db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_provenance_artifacts_entity
+            ON arkham_provenance_artifacts(entity_id)
+        """)
+
+        await self._db.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_provenance_artifacts_unique_entity
+            ON arkham_provenance_artifacts(entity_id, entity_table)
+        """)
+
+        # Indexes for links table
+        await self._db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_provenance_links_chain
+            ON arkham_provenance_links(chain_id)
+        """)
+
+        await self._db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_provenance_links_source
+            ON arkham_provenance_links(source_artifact_id)
+        """)
+
+        await self._db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_provenance_links_target
+            ON arkham_provenance_links(target_artifact_id)
+        """)
+
+        # Indexes for lineage table
+        await self._db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_provenance_lineage_artifact
+            ON arkham_provenance_lineage(artifact_id)
+        """)
+
+        await self._db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_provenance_lineage_ancestor
+            ON arkham_provenance_lineage(ancestor_id)
         """)
 
         logger.info("Provenance database schema created")
@@ -293,6 +399,63 @@ class ProvenanceShard(ArkhamShard):
             "actor": row.get("actor"),
             "details": details,
             "occurred_at": row.get("occurred_at").isoformat() if row.get("occurred_at") else None,
+        }
+
+    def _row_to_artifact(self, row: Dict[str, Any]) -> Dict[str, Any]:
+        """Convert database row to artifact object."""
+        metadata = self._parse_jsonb(row.get("metadata"), {})
+
+        return {
+            "id": row["id"],
+            "artifact_type": row["artifact_type"],
+            "entity_id": row["entity_id"],
+            "entity_table": row["entity_table"],
+            "title": row.get("title"),
+            "hash": row.get("hash"),
+            "created_at": row.get("created_at").isoformat() if row.get("created_at") else None,
+            "metadata": metadata,
+        }
+
+    def _row_to_chain(self, row: Dict[str, Any]) -> Dict[str, Any]:
+        """Convert database row to chain object."""
+        metadata = self._parse_jsonb(row.get("metadata"), {})
+
+        return {
+            "id": row["id"],
+            "project_id": row.get("project_id"),
+            "title": row["title"],
+            "description": row.get("description"),
+            "chain_type": row.get("chain_type", "evidence"),
+            "status": row.get("status", "active"),
+            "root_artifact_id": row.get("root_artifact_id"),
+            "created_at": row.get("created_at").isoformat() if row.get("created_at") else None,
+            "updated_at": row.get("updated_at").isoformat() if row.get("updated_at") else None,
+            "created_by": row.get("created_by"),
+            "link_count": row.get("link_count", 0),
+            "metadata": metadata,
+        }
+
+    def _row_to_link(self, row: Dict[str, Any]) -> Dict[str, Any]:
+        """Convert database row to link object."""
+        metadata = self._parse_jsonb(row.get("metadata"), {})
+
+        return {
+            "id": row["id"],
+            "chain_id": row["chain_id"],
+            "source_artifact_id": row["source_artifact_id"],
+            "target_artifact_id": row["target_artifact_id"],
+            "link_type": row["link_type"],
+            "confidence": row.get("confidence", 1.0),
+            "verified": bool(row.get("verified", 0)),
+            "verified_by": row.get("verified_by"),
+            "verified_at": row.get("verified_at").isoformat() if row.get("verified_at") else None,
+            "created_at": row.get("created_at").isoformat() if row.get("created_at") else None,
+            "metadata": metadata,
+            # Optional enrichment fields from JOINs
+            "source_title": row.get("source_title"),
+            "source_type": row.get("source_type"),
+            "target_title": row.get("target_title"),
+            "target_type": row.get("target_type"),
         }
 
     # --- Public Service Methods ---
@@ -541,40 +704,1036 @@ class ProvenanceShard(ArkhamShard):
             }
         )
 
+    # --- Artifact CRUD Methods ---
+
+    async def create_artifact(
+        self,
+        artifact_type: str,
+        entity_id: str,
+        entity_table: str,
+        title: Optional[str] = None,
+        content_hash: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        """
+        Register an artifact for provenance tracking.
+
+        Args:
+            artifact_type: Type of artifact (document, entity, claim, chunk, etc.)
+            entity_id: ID of the entity being tracked
+            entity_table: Source table name (e.g., arkham_documents)
+            title: Human-readable title
+            content_hash: SHA-256 hash of content for integrity
+            metadata: Additional metadata
+
+        Returns:
+            Created artifact object
+        """
+        if not self._db:
+            raise RuntimeError("Shard not initialized")
+
+        import uuid
+        import json
+
+        artifact_id = str(uuid.uuid4())
+
+        # Check if artifact already exists for this entity
+        existing = await self._db.fetch_one(
+            """
+            SELECT id FROM arkham_provenance_artifacts
+            WHERE entity_id = :entity_id AND entity_table = :entity_table
+            """,
+            {"entity_id": entity_id, "entity_table": entity_table}
+        )
+
+        if existing:
+            # Update existing artifact
+            await self._db.execute(
+                """
+                UPDATE arkham_provenance_artifacts
+                SET title = COALESCE(:title, title),
+                    hash = COALESCE(:hash, hash),
+                    metadata = metadata || :metadata
+                WHERE entity_id = :entity_id AND entity_table = :entity_table
+                """,
+                {
+                    "title": title,
+                    "hash": content_hash,
+                    "metadata": json.dumps(metadata or {}),
+                    "entity_id": entity_id,
+                    "entity_table": entity_table,
+                }
+            )
+            artifact_id = existing["id"]
+        else:
+            # Insert new artifact
+            await self._db.execute(
+                """
+                INSERT INTO arkham_provenance_artifacts
+                (id, artifact_type, entity_id, entity_table, title, hash, metadata)
+                VALUES (:id, :artifact_type, :entity_id, :entity_table, :title, :hash, :metadata)
+                """,
+                {
+                    "id": artifact_id,
+                    "artifact_type": artifact_type,
+                    "entity_id": entity_id,
+                    "entity_table": entity_table,
+                    "title": title,
+                    "hash": content_hash,
+                    "metadata": json.dumps(metadata or {}),
+                }
+            )
+
+            # Emit event for new artifact
+            if self._event_bus:
+                await self._event_bus.emit(
+                    "provenance.artifact.created",
+                    {"id": artifact_id, "type": artifact_type, "entity_id": entity_id},
+                    source="provenance-shard"
+                )
+
+        # Fetch and return the artifact
+        return await self.get_artifact(artifact_id)
+
+    async def get_artifact(self, artifact_id: str) -> Optional[Dict[str, Any]]:
+        """Get artifact by ID."""
+        if not self._db:
+            raise RuntimeError("Shard not initialized")
+
+        row = await self._db.fetch_one(
+            "SELECT * FROM arkham_provenance_artifacts WHERE id = :id",
+            {"id": artifact_id}
+        )
+        return self._row_to_artifact(row) if row else None
+
+    async def get_artifact_by_entity(
+        self,
+        entity_id: str,
+        entity_table: str
+    ) -> Optional[Dict[str, Any]]:
+        """Get artifact by the entity it tracks."""
+        if not self._db:
+            raise RuntimeError("Shard not initialized")
+
+        row = await self._db.fetch_one(
+            """
+            SELECT * FROM arkham_provenance_artifacts
+            WHERE entity_id = :entity_id AND entity_table = :entity_table
+            """,
+            {"entity_id": entity_id, "entity_table": entity_table}
+        )
+        return self._row_to_artifact(row) if row else None
+
+    async def list_artifacts(
+        self,
+        artifact_type: Optional[str] = None,
+        limit: int = 50,
+        offset: int = 0
+    ) -> List[Dict[str, Any]]:
+        """List artifacts with optional type filter."""
+        if not self._db:
+            raise RuntimeError("Shard not initialized")
+
+        if artifact_type:
+            rows = await self._db.fetch_all(
+                """
+                SELECT * FROM arkham_provenance_artifacts
+                WHERE artifact_type = :artifact_type
+                ORDER BY created_at DESC
+                LIMIT :limit OFFSET :offset
+                """,
+                {"artifact_type": artifact_type, "limit": limit, "offset": offset}
+            )
+        else:
+            rows = await self._db.fetch_all(
+                """
+                SELECT * FROM arkham_provenance_artifacts
+                ORDER BY created_at DESC
+                LIMIT :limit OFFSET :offset
+                """,
+                {"limit": limit, "offset": offset}
+            )
+
+        return [self._row_to_artifact(row) for row in rows]
+
+    async def count_artifacts(self) -> int:
+        """Get total artifact count."""
+        if not self._db:
+            raise RuntimeError("Shard not initialized")
+
+        result = await self._db.fetch_one(
+            "SELECT COUNT(*) as count FROM arkham_provenance_artifacts",
+            {}
+        )
+        return result["count"] if result else 0
+
+    # --- Chain CRUD Methods ---
+
+    async def create_chain_impl(
+        self,
+        title: str,
+        description: Optional[str] = None,
+        chain_type: str = "evidence",
+        project_id: Optional[str] = None,
+        root_artifact_id: Optional[str] = None,
+        created_by: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        """
+        Create a new provenance chain.
+
+        Args:
+            title: Chain title
+            description: Chain description
+            chain_type: Type (evidence, document, entity, claim, auto)
+            project_id: Associated project ID
+            root_artifact_id: Starting artifact for the chain
+            created_by: Creator identifier
+            metadata: Additional metadata
+
+        Returns:
+            Created chain object
+        """
+        if not self._db:
+            raise RuntimeError("Shard not initialized")
+
+        import uuid
+        import json
+
+        chain_id = str(uuid.uuid4())
+
+        await self._db.execute(
+            """
+            INSERT INTO arkham_provenance_chains
+            (id, title, description, chain_type, project_id, root_artifact_id, created_by, metadata)
+            VALUES (:id, :title, :description, :chain_type, :project_id, :root_artifact_id, :created_by, :metadata)
+            """,
+            {
+                "id": chain_id,
+                "title": title,
+                "description": description,
+                "chain_type": chain_type,
+                "project_id": project_id,
+                "root_artifact_id": root_artifact_id,
+                "created_by": created_by,
+                "metadata": json.dumps(metadata or {}),
+            }
+        )
+
+        # Emit event
+        if self._event_bus:
+            await self._event_bus.emit(
+                "provenance.chain.created",
+                {"id": chain_id, "title": title, "type": chain_type},
+                source="provenance-shard"
+            )
+
+        return await self.get_chain_impl(chain_id)
+
+    async def get_chain_impl(self, chain_id: str) -> Optional[Dict[str, Any]]:
+        """Get chain with link count."""
+        if not self._db:
+            raise RuntimeError("Shard not initialized")
+
+        row = await self._db.fetch_one(
+            """
+            SELECT c.*, COUNT(l.id) as link_count
+            FROM arkham_provenance_chains c
+            LEFT JOIN arkham_provenance_links l ON l.chain_id = c.id
+            WHERE c.id = :id
+            GROUP BY c.id
+            """,
+            {"id": chain_id}
+        )
+        return self._row_to_chain(row) if row else None
+
+    async def list_chains(
+        self,
+        project_id: Optional[str] = None,
+        chain_type: Optional[str] = None,
+        status: Optional[str] = None,
+        limit: int = 50,
+        offset: int = 0
+    ) -> List[Dict[str, Any]]:
+        """List chains with filters."""
+        if not self._db:
+            raise RuntimeError("Shard not initialized")
+
+        conditions = []
+        params = {"limit": limit, "offset": offset}
+
+        if project_id:
+            conditions.append("c.project_id = :project_id")
+            params["project_id"] = project_id
+
+        if chain_type:
+            conditions.append("c.chain_type = :chain_type")
+            params["chain_type"] = chain_type
+
+        if status:
+            conditions.append("c.status = :status")
+            params["status"] = status
+
+        where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+
+        rows = await self._db.fetch_all(
+            f"""
+            SELECT c.*, COUNT(l.id) as link_count
+            FROM arkham_provenance_chains c
+            LEFT JOIN arkham_provenance_links l ON l.chain_id = c.id
+            {where_clause}
+            GROUP BY c.id
+            ORDER BY c.created_at DESC
+            LIMIT :limit OFFSET :offset
+            """,
+            params
+        )
+
+        return [self._row_to_chain(row) for row in rows]
+
+    async def update_chain_impl(
+        self,
+        chain_id: str,
+        title: Optional[str] = None,
+        description: Optional[str] = None,
+        status: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None
+    ) -> Optional[Dict[str, Any]]:
+        """Update chain properties."""
+        if not self._db:
+            raise RuntimeError("Shard not initialized")
+
+        import json
+
+        updates = ["updated_at = CURRENT_TIMESTAMP"]
+        params = {"id": chain_id}
+
+        if title is not None:
+            updates.append("title = :title")
+            params["title"] = title
+
+        if description is not None:
+            updates.append("description = :description")
+            params["description"] = description
+
+        if status is not None:
+            updates.append("status = :status")
+            params["status"] = status
+
+        if metadata is not None:
+            updates.append("metadata = metadata || :metadata")
+            params["metadata"] = json.dumps(metadata)
+
+        await self._db.execute(
+            f"""
+            UPDATE arkham_provenance_chains
+            SET {', '.join(updates)}
+            WHERE id = :id
+            """,
+            params
+        )
+
+        chain = await self.get_chain_impl(chain_id)
+
+        if chain and self._event_bus:
+            await self._event_bus.emit(
+                "provenance.chain.updated",
+                {"id": chain_id, "status": status},
+                source="provenance-shard"
+            )
+
+        return chain
+
+    async def delete_chain_impl(self, chain_id: str) -> bool:
+        """Delete a chain and its links."""
+        if not self._db:
+            raise RuntimeError("Shard not initialized")
+
+        # Check if chain exists
+        chain = await self.get_chain_impl(chain_id)
+        if not chain:
+            return False
+
+        # Delete chain (links are cascade deleted if using FK)
+        await self._db.execute(
+            "DELETE FROM arkham_provenance_links WHERE chain_id = :chain_id",
+            {"chain_id": chain_id}
+        )
+        await self._db.execute(
+            "DELETE FROM arkham_provenance_chains WHERE id = :id",
+            {"id": chain_id}
+        )
+
+        if self._event_bus:
+            await self._event_bus.emit(
+                "provenance.chain.deleted",
+                {"id": chain_id, "title": chain.get("title")},
+                source="provenance-shard"
+            )
+
+        return True
+
+    async def count_chains(self) -> int:
+        """Get total chain count."""
+        if not self._db:
+            raise RuntimeError("Shard not initialized")
+
+        result = await self._db.fetch_one(
+            "SELECT COUNT(*) as count FROM arkham_provenance_chains",
+            {}
+        )
+        return result["count"] if result else 0
+
+    async def verify_chain_impl(
+        self,
+        chain_id: str,
+        verified_by: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Verify all links in a chain and update status."""
+        if not self._db:
+            raise RuntimeError("Shard not initialized")
+
+        # Get all links
+        links = await self._db.fetch_all(
+            "SELECT * FROM arkham_provenance_links WHERE chain_id = :chain_id",
+            {"chain_id": chain_id}
+        )
+
+        issues = []
+
+        for link in links:
+            # Check source artifact exists
+            source = await self.get_artifact(link["source_artifact_id"])
+            if not source:
+                issues.append({
+                    "link_id": link["id"],
+                    "issue": "source_artifact_missing",
+                    "artifact_id": link["source_artifact_id"]
+                })
+
+            # Check target artifact exists
+            target = await self.get_artifact(link["target_artifact_id"])
+            if not target:
+                issues.append({
+                    "link_id": link["id"],
+                    "issue": "target_artifact_missing",
+                    "artifact_id": link["target_artifact_id"]
+                })
+
+        verified = len(issues) == 0
+        new_status = "verified" if verified else "disputed"
+
+        # Update chain status
+        await self.update_chain_impl(chain_id, status=new_status)
+
+        # Mark all links as verified if no issues
+        if verified and verified_by:
+            await self._db.execute(
+                """
+                UPDATE arkham_provenance_links
+                SET verified = 1, verified_by = :verified_by, verified_at = CURRENT_TIMESTAMP
+                WHERE chain_id = :chain_id
+                """,
+                {"verified_by": verified_by, "chain_id": chain_id}
+            )
+
+        if self._event_bus:
+            await self._event_bus.emit(
+                "provenance.chain.verified",
+                {"id": chain_id, "verified": verified, "issue_count": len(issues)},
+                source="provenance-shard"
+            )
+
+        return {
+            "chain_id": chain_id,
+            "verified": verified,
+            "status": new_status,
+            "issues": issues,
+            "link_count": len(links)
+        }
+
+    # --- Link CRUD Methods ---
+
+    async def add_link_impl(
+        self,
+        chain_id: str,
+        source_artifact_id: str,
+        target_artifact_id: str,
+        link_type: str,
+        confidence: float = 1.0,
+        metadata: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        """Add a link between artifacts in a chain."""
+        if not self._db:
+            raise RuntimeError("Shard not initialized")
+
+        import uuid
+        import json
+
+        # Validate artifacts exist
+        source = await self.get_artifact(source_artifact_id)
+        if not source:
+            raise ValueError(f"Source artifact {source_artifact_id} not found")
+
+        target = await self.get_artifact(target_artifact_id)
+        if not target:
+            raise ValueError(f"Target artifact {target_artifact_id} not found")
+
+        link_id = str(uuid.uuid4())
+
+        await self._db.execute(
+            """
+            INSERT INTO arkham_provenance_links
+            (id, chain_id, source_artifact_id, target_artifact_id, link_type, confidence, metadata)
+            VALUES (:id, :chain_id, :source_artifact_id, :target_artifact_id, :link_type, :confidence, :metadata)
+            """,
+            {
+                "id": link_id,
+                "chain_id": chain_id,
+                "source_artifact_id": source_artifact_id,
+                "target_artifact_id": target_artifact_id,
+                "link_type": link_type,
+                "confidence": confidence,
+                "metadata": json.dumps(metadata or {}),
+            }
+        )
+
+        # Update lineage cache for target artifact
+        await self._update_lineage_cache(target_artifact_id)
+
+        if self._event_bus:
+            await self._event_bus.emit(
+                "provenance.link.added",
+                {
+                    "id": link_id,
+                    "chain_id": chain_id,
+                    "source": source_artifact_id,
+                    "target": target_artifact_id,
+                    "type": link_type
+                },
+                source="provenance-shard"
+            )
+
+        # Return the created link with artifact details
+        row = await self._db.fetch_one(
+            """
+            SELECT l.*,
+                   sa.title as source_title, sa.artifact_type as source_type,
+                   ta.title as target_title, ta.artifact_type as target_type
+            FROM arkham_provenance_links l
+            JOIN arkham_provenance_artifacts sa ON sa.id = l.source_artifact_id
+            JOIN arkham_provenance_artifacts ta ON ta.id = l.target_artifact_id
+            WHERE l.id = :id
+            """,
+            {"id": link_id}
+        )
+        return self._row_to_link(row) if row else {"id": link_id, "chain_id": chain_id}
+
+    async def get_chain_links(self, chain_id: str) -> List[Dict[str, Any]]:
+        """Get all links in a chain with artifact details."""
+        if not self._db:
+            raise RuntimeError("Shard not initialized")
+
+        rows = await self._db.fetch_all(
+            """
+            SELECT l.*,
+                   sa.title as source_title, sa.artifact_type as source_type,
+                   ta.title as target_title, ta.artifact_type as target_type
+            FROM arkham_provenance_links l
+            JOIN arkham_provenance_artifacts sa ON sa.id = l.source_artifact_id
+            JOIN arkham_provenance_artifacts ta ON ta.id = l.target_artifact_id
+            WHERE l.chain_id = :chain_id
+            ORDER BY l.created_at
+            """,
+            {"chain_id": chain_id}
+        )
+        return [self._row_to_link(row) for row in rows]
+
+    async def remove_link(self, link_id: str) -> bool:
+        """Remove a link from a chain."""
+        if not self._db:
+            raise RuntimeError("Shard not initialized")
+
+        # Get link details for event
+        link = await self._db.fetch_one(
+            "SELECT * FROM arkham_provenance_links WHERE id = :id",
+            {"id": link_id}
+        )
+
+        if not link:
+            return False
+
+        await self._db.execute(
+            "DELETE FROM arkham_provenance_links WHERE id = :id",
+            {"id": link_id}
+        )
+
+        # Update lineage cache for affected artifact
+        await self._update_lineage_cache(link["target_artifact_id"])
+
+        if self._event_bus:
+            await self._event_bus.emit(
+                "provenance.link.removed",
+                {"id": link_id, "chain_id": link["chain_id"]},
+                source="provenance-shard"
+            )
+
+        return True
+
+    async def verify_link(
+        self,
+        link_id: str,
+        verified_by: str,
+        notes: str = ""
+    ) -> Optional[Dict[str, Any]]:
+        """Verify a specific link."""
+        if not self._db:
+            raise RuntimeError("Shard not initialized")
+
+        import json
+
+        await self._db.execute(
+            """
+            UPDATE arkham_provenance_links
+            SET verified = 1,
+                verified_by = :verified_by,
+                verified_at = CURRENT_TIMESTAMP,
+                metadata = metadata || :notes_metadata
+            WHERE id = :id
+            """,
+            {
+                "verified_by": verified_by,
+                "notes_metadata": json.dumps({"verification_notes": notes}) if notes else "{}",
+                "id": link_id,
+            }
+        )
+
+        row = await self._db.fetch_one(
+            """
+            SELECT l.*,
+                   sa.title as source_title, sa.artifact_type as source_type,
+                   ta.title as target_title, ta.artifact_type as target_type
+            FROM arkham_provenance_links l
+            JOIN arkham_provenance_artifacts sa ON sa.id = l.source_artifact_id
+            JOIN arkham_provenance_artifacts ta ON ta.id = l.target_artifact_id
+            WHERE l.id = :id
+            """,
+            {"id": link_id}
+        )
+
+        if row and self._event_bus:
+            await self._event_bus.emit(
+                "provenance.link.verified",
+                {"id": link_id, "verified_by": verified_by},
+                source="provenance-shard"
+            )
+
+        return self._row_to_link(row) if row else None
+
+    # --- Lineage Methods ---
+
+    async def _update_lineage_cache(self, artifact_id: str) -> None:
+        """Rebuild lineage cache for an artifact using BFS."""
+        if not self._db:
+            return
+
+        import uuid
+        import json
+
+        # Clear existing lineage for this artifact
+        await self._db.execute(
+            "DELETE FROM arkham_provenance_lineage WHERE artifact_id = :artifact_id",
+            {"artifact_id": artifact_id}
+        )
+
+        # BFS to find all ancestors
+        visited = set()
+        queue = [(artifact_id, 0, [artifact_id])]  # (current_id, depth, path)
+
+        while queue:
+            current_id, depth, path = queue.pop(0)
+
+            if current_id in visited:
+                continue
+            visited.add(current_id)
+
+            # Find all sources (artifacts that link TO this one)
+            sources = await self._db.fetch_all(
+                """
+                SELECT DISTINCT source_artifact_id
+                FROM arkham_provenance_links
+                WHERE target_artifact_id = :target_id
+                """,
+                {"target_id": current_id}
+            )
+
+            for row in sources:
+                source_id = row["source_artifact_id"]
+                new_path = [source_id] + path
+
+                # Store lineage record
+                lineage_id = str(uuid.uuid4())
+                await self._db.execute(
+                    """
+                    INSERT INTO arkham_provenance_lineage
+                    (id, artifact_id, ancestor_id, depth, path)
+                    VALUES (:id, :artifact_id, :ancestor_id, :depth, :path)
+                    """,
+                    {
+                        "id": lineage_id,
+                        "artifact_id": artifact_id,
+                        "ancestor_id": source_id,
+                        "depth": depth + 1,
+                        "path": json.dumps(new_path),
+                    }
+                )
+
+                queue.append((source_id, depth + 1, new_path))
+
+    async def get_lineage_impl(self, artifact_id: str) -> Dict[str, Any]:
+        """Get full lineage graph for an artifact."""
+        if not self._db:
+            raise RuntimeError("Shard not initialized")
+
+        import json
+
+        # Get the artifact
+        artifact = await self.get_artifact(artifact_id)
+        if not artifact:
+            return {"nodes": [], "edges": [], "root": None}
+
+        # Get all ancestors from cache
+        ancestors = await self._db.fetch_all(
+            """
+            SELECT l.*, a.title, a.artifact_type, a.entity_id
+            FROM arkham_provenance_lineage l
+            JOIN arkham_provenance_artifacts a ON a.id = l.ancestor_id
+            WHERE l.artifact_id = :artifact_id
+            ORDER BY l.depth
+            """,
+            {"artifact_id": artifact_id}
+        )
+
+        # Get all descendants (artifacts that have this one as ancestor)
+        descendants = await self._db.fetch_all(
+            """
+            SELECT l.artifact_id, l.depth, a.title, a.artifact_type, a.entity_id
+            FROM arkham_provenance_lineage l
+            JOIN arkham_provenance_artifacts a ON a.id = l.artifact_id
+            WHERE l.ancestor_id = :artifact_id
+            ORDER BY l.depth
+            """,
+            {"artifact_id": artifact_id}
+        )
+
+        # Build nodes
+        nodes = [{
+            "id": artifact_id,
+            "title": artifact.get("title"),
+            "type": artifact.get("artifact_type"),
+            "is_focus": True,
+            "depth": 0
+        }]
+
+        seen_ids = {artifact_id}
+
+        for row in ancestors:
+            if row["ancestor_id"] not in seen_ids:
+                nodes.append({
+                    "id": row["ancestor_id"],
+                    "title": row["title"],
+                    "type": row["artifact_type"],
+                    "depth": -row["depth"]  # Negative for ancestors
+                })
+                seen_ids.add(row["ancestor_id"])
+
+        for row in descendants:
+            if row["artifact_id"] not in seen_ids:
+                nodes.append({
+                    "id": row["artifact_id"],
+                    "title": row["title"],
+                    "type": row["artifact_type"],
+                    "depth": row["depth"]  # Positive for descendants
+                })
+                seen_ids.add(row["artifact_id"])
+
+        # Get edges (links between all these artifacts)
+        if len(seen_ids) > 0:
+            # Build a query with placeholders
+            id_list = list(seen_ids)
+            placeholders = ", ".join([f":id_{i}" for i in range(len(id_list))])
+            params = {f"id_{i}": id_list[i] for i in range(len(id_list))}
+
+            edges_rows = await self._db.fetch_all(
+                f"""
+                SELECT id, source_artifact_id, target_artifact_id, link_type, confidence
+                FROM arkham_provenance_links
+                WHERE source_artifact_id IN ({placeholders}) AND target_artifact_id IN ({placeholders})
+                """,
+                params
+            )
+
+            edges = [{
+                "id": e["id"],
+                "source": e["source_artifact_id"],
+                "target": e["target_artifact_id"],
+                "link_type": e["link_type"],
+                "confidence": e["confidence"]
+            } for e in edges_rows]
+        else:
+            edges = []
+
+        return {
+            "nodes": nodes,
+            "edges": edges,
+            "root": artifact_id,
+            "ancestor_count": len(ancestors),
+            "descendant_count": len(descendants)
+        }
+
+    async def _get_or_create_default_chain(
+        self,
+        project_id: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Get or create a default auto-tracking chain."""
+        if not self._db:
+            raise RuntimeError("Shard not initialized")
+
+        chain_title = "Auto-tracked Provenance"
+
+        # Check for existing
+        if project_id:
+            existing = await self._db.fetch_one(
+                """
+                SELECT * FROM arkham_provenance_chains
+                WHERE title = :title AND project_id = :project_id
+                """,
+                {"title": chain_title, "project_id": project_id}
+            )
+        else:
+            existing = await self._db.fetch_one(
+                """
+                SELECT * FROM arkham_provenance_chains
+                WHERE title = :title AND project_id IS NULL
+                """,
+                {"title": chain_title}
+            )
+
+        if existing:
+            return self._row_to_chain(existing)
+
+        return await self.create_chain_impl(
+            title=chain_title,
+            description="Automatically tracked provenance links",
+            chain_type="auto",
+            project_id=project_id
+        )
+
     # --- Event Handlers ---
 
     async def _on_entity_created(self, event: Dict[str, Any]) -> None:
         """
         Handle entity creation events from any shard.
 
+        Automatically creates an artifact record to track the entity.
+
         Args:
             event: Event payload with entity details
+                - event_type: Event name (e.g., "documents.document.created")
+                - payload: Contains id, title, and other entity data
+                - source: Shard that emitted the event
         """
-        # TODO: Implement automatic artifact tracking
-        logger.debug(f"Tracking entity creation: {event}")
-        pass
+        try:
+            payload = event.get("payload", {})
+            event_type = event.get("event_type", "")
+            source = event.get("source", "unknown")
+
+            # Skip our own events to prevent recursion
+            if "provenance" in source.lower() or event_type.startswith("provenance."):
+                return
+
+            # Extract entity info from event
+            entity_id = payload.get("id") or payload.get("entity_id") or payload.get("document_id")
+            if not entity_id:
+                logger.debug(f"No entity_id in event: {event_type}")
+                return
+
+            # Determine artifact type from event type
+            # Event format: {shard}.{entity}.{action}
+            parts = event_type.split(".")
+            if len(parts) >= 2:
+                shard_name = parts[0]
+                entity_type = parts[1]
+            else:
+                shard_name = source.replace("-shard", "")
+                entity_type = "unknown"
+
+            # Map to table name
+            entity_table = f"arkham_{shard_name}_{entity_type}s"
+            if entity_type == "document":
+                entity_table = "arkham_documents"
+            elif entity_type == "entity":
+                entity_table = "arkham_entities"
+            elif entity_type == "claim":
+                entity_table = "arkham_claims"
+            elif entity_type == "chunk":
+                entity_table = "arkham_document_chunks"
+
+            # Create or update artifact
+            title = payload.get("title") or payload.get("name") or payload.get("text", "")[:100]
+
+            await self.create_artifact(
+                artifact_type=entity_type,
+                entity_id=entity_id,
+                entity_table=entity_table,
+                title=title,
+                metadata={
+                    "source_event": event_type,
+                    "source_shard": source,
+                    "created_from_event": True,
+                }
+            )
+
+            logger.debug(f"Created artifact for {entity_type}:{entity_id} from event {event_type}")
+
+        except Exception as e:
+            logger.warning(f"Failed to track entity creation: {e}")
 
     async def _on_process_completed(self, event: Dict[str, Any]) -> None:
         """
         Handle process completion events from any shard.
 
+        Automatically creates links between source and output artifacts.
+
         Args:
             event: Event payload with process details
+                - event_type: Event name (e.g., "parse.document.completed")
+                - payload: Contains source and output IDs
+                - source: Shard that emitted the event
         """
-        # TODO: Implement automatic link creation
-        logger.debug(f"Tracking process completion: {event}")
-        pass
+        try:
+            payload = event.get("payload", {})
+            event_type = event.get("event_type", "")
+            source = event.get("source", "unknown")
+
+            # Extract source and output IDs
+            source_id = payload.get("source_id") or payload.get("document_id") or payload.get("input_id")
+            output_ids = payload.get("output_ids") or payload.get("chunk_ids") or []
+
+            if not source_id:
+                logger.debug(f"No source_id in completion event: {event_type}")
+                return
+
+            if isinstance(output_ids, str):
+                output_ids = [output_ids]
+
+            if not output_ids:
+                logger.debug(f"No output_ids in completion event: {event_type}")
+                return
+
+            # Get or create default auto-tracking chain
+            project_id = payload.get("project_id")
+            chain = await self._get_or_create_default_chain(project_id)
+
+            # Get source artifact
+            source_artifact = await self.get_artifact_by_entity(
+                source_id,
+                payload.get("source_table", "arkham_documents")
+            )
+
+            if not source_artifact:
+                logger.debug(f"Source artifact not found for {source_id}")
+                return
+
+            # Determine link type from event
+            link_type = "derived_from"
+            if "extract" in event_type:
+                link_type = "extracted_from"
+            elif "embed" in event_type:
+                link_type = "generated_by"
+            elif "parse" in event_type or "chunk" in event_type:
+                link_type = "derived_from"
+
+            # Create links for each output
+            for output_id in output_ids:
+                output_artifact = await self.get_artifact_by_entity(
+                    output_id,
+                    payload.get("output_table", "arkham_document_chunks")
+                )
+
+                if output_artifact:
+                    try:
+                        await self.add_link_impl(
+                            chain_id=chain["id"],
+                            source_artifact_id=source_artifact["id"],
+                            target_artifact_id=output_artifact["id"],
+                            link_type=link_type,
+                            confidence=1.0,
+                            metadata={
+                                "source_event": event_type,
+                                "auto_linked": True,
+                            }
+                        )
+                        logger.debug(f"Created auto-link: {source_artifact['id']} -> {output_artifact['id']}")
+                    except Exception as e:
+                        logger.warning(f"Failed to create link: {e}")
+
+        except Exception as e:
+            logger.warning(f"Failed to track process completion: {e}")
 
     async def _on_document_processed(self, event: Dict[str, Any]) -> None:
         """
-        Handle document processing events.
+        Handle document processing events specifically.
+
+        Creates comprehensive provenance chain for document processing.
 
         Args:
             event: Event payload with document details
         """
-        # TODO: Implement document processing chain tracking
-        logger.debug(f"Tracking document processing: {event}")
-        pass
+        try:
+            payload = event.get("payload", {})
+            event_type = event.get("event_type", "")
+
+            document_id = payload.get("document_id") or payload.get("id")
+            if not document_id:
+                return
+
+            # Create document artifact if not exists
+            await self.create_artifact(
+                artifact_type="document",
+                entity_id=document_id,
+                entity_table="arkham_documents",
+                title=payload.get("title") or payload.get("filename"),
+                metadata={
+                    "processed_from_event": event_type,
+                    "status": payload.get("status", "processed"),
+                }
+            )
+
+            # Link to any extracted entities
+            entity_ids = payload.get("entity_ids") or []
+            claim_ids = payload.get("claim_ids") or []
+            chunk_ids = payload.get("chunk_ids") or []
+
+            if entity_ids or claim_ids or chunk_ids:
+                # Forward to completion handler
+                await self._on_process_completed({
+                    "event_type": event_type,
+                    "payload": {
+                        "source_id": document_id,
+                        "source_table": "arkham_documents",
+                        "output_ids": entity_ids + claim_ids,
+                        "output_table": "arkham_entities",
+                        "chunk_ids": chunk_ids,
+                        "project_id": payload.get("project_id"),
+                    },
+                    "source": "provenance-shard",
+                })
+
+            logger.debug(f"Tracked document processing: {document_id}")
+
+        except Exception as e:
+            logger.warning(f"Failed to track document processing: {e}")
 
     # --- Public API for other shards ---
 
@@ -597,9 +1756,13 @@ class ProvenanceShard(ArkhamShard):
         Returns:
             Chain object with ID and metadata
         """
-        # TODO: Implement chain creation
-        logger.info(f"Creating evidence chain: {title}")
-        return {"id": "stub_chain_id", "title": title}
+        return await self.create_chain_impl(
+            title=title,
+            description=description,
+            chain_type="evidence",
+            project_id=project_id,
+            created_by=created_by,
+        )
 
     async def add_link(
         self,
@@ -622,9 +1785,13 @@ class ProvenanceShard(ArkhamShard):
         Returns:
             Link object with ID and metadata
         """
-        # TODO: Implement link addition
-        logger.info(f"Adding link to chain {chain_id}: {source_id} -> {target_id}")
-        return {"id": "stub_link_id", "chain_id": chain_id}
+        return await self.add_link_impl(
+            chain_id=chain_id,
+            source_artifact_id=source_id,
+            target_artifact_id=target_id,
+            link_type=link_type,
+            confidence=confidence,
+        )
 
     async def get_lineage(
         self,
@@ -641,9 +1808,7 @@ class ProvenanceShard(ArkhamShard):
         Returns:
             Lineage graph with nodes and edges
         """
-        # TODO: Implement lineage retrieval
-        logger.info(f"Getting lineage for artifact: {artifact_id}")
-        return {"artifact_id": artifact_id, "nodes": [], "edges": []}
+        return await self.get_lineage_impl(artifact_id)
 
     async def verify_chain(self, chain_id: str) -> Dict[str, Any]:
         """
@@ -655,6 +1820,4 @@ class ProvenanceShard(ArkhamShard):
         Returns:
             Verification result with status and details
         """
-        # TODO: Implement chain verification
-        logger.info(f"Verifying chain: {chain_id}")
-        return {"chain_id": chain_id, "verified": True, "issues": []}
+        return await self.verify_chain_impl(chain_id)
