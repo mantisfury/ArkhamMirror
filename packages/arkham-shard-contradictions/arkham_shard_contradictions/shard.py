@@ -199,86 +199,146 @@ class ContradictionsShard(ArkhamShard):
             return
 
         # Subscribe to document events for background analysis
+        # Use correct Frame event names
         await self._event_bus.subscribe(
-            "document.ingested",
-            self._on_document_ingested,
+            "documents.document.created",
+            self._on_document_created,
         )
 
         await self._event_bus.subscribe(
-            "document.updated",
+            "documents.document.updated",
             self._on_document_updated,
         )
 
-        # Subscribe to LLM analysis completion
+        # Subscribe to embedding completion (documents are ready for analysis)
         await self._event_bus.subscribe(
-            "llm.analysis.completed",
-            self._on_llm_analysis_completed,
+            "embed.document.completed",
+            self._on_document_embedded,
         )
 
-        logger.info("Subscribed to events: document.ingested, document.updated, llm.analysis.completed")
+        logger.info("Subscribed to events: documents.document.created, documents.document.updated, embed.document.completed")
 
     async def _unsubscribe_from_events(self) -> None:
         """Unsubscribe from events."""
         if not self._event_bus:
             return
 
-        await self._event_bus.unsubscribe("document.ingested", self._on_document_ingested)
-        await self._event_bus.unsubscribe("document.updated", self._on_document_updated)
-        await self._event_bus.unsubscribe("llm.analysis.completed", self._on_llm_analysis_completed)
+        try:
+            await self._event_bus.unsubscribe("documents.document.created", self._on_document_created)
+            await self._event_bus.unsubscribe("documents.document.updated", self._on_document_updated)
+            await self._event_bus.unsubscribe("embed.document.completed", self._on_document_embedded)
+        except Exception as e:
+            logger.warning(f"Error unsubscribing from events: {e}")
 
         logger.info("Unsubscribed from events")
 
     # --- Event Handlers ---
 
-    async def _on_document_ingested(self, event_data: dict) -> None:
+    async def _on_document_created(self, event_data: dict) -> None:
         """
-        Handle document ingestion event.
+        Handle document creation event.
 
-        Triggers background analysis against existing documents.
+        Logs the event - actual analysis happens after embedding is complete.
         """
-        doc_id = event_data.get("document_id")
+        doc_id = event_data.get("document_id") or event_data.get("id")
         if not doc_id:
             return
 
-        logger.info(f"Document ingested: {doc_id} - scheduling contradiction analysis")
-
-        # TODO: Schedule background analysis job via worker service
-        # For now, just log the event
-        if self._worker_service:
-            # Submit background job to analyze this document against all others
-            # await self._worker_service.submit_job(
-            #     "contradiction_analysis",
-            #     document_id=doc_id,
-            # )
-            pass
+        logger.info(f"Document created: {doc_id} - will analyze after embedding completes")
 
     async def _on_document_updated(self, event_data: dict) -> None:
         """
         Handle document update event.
 
-        May trigger re-analysis if content changed.
+        Triggers re-analysis if content changed.
         """
-        doc_id = event_data.get("document_id")
+        doc_id = event_data.get("document_id") or event_data.get("id")
         if not doc_id:
             return
 
-        logger.info(f"Document updated: {doc_id}")
+        logger.info(f"Document updated: {doc_id} - checking for re-analysis")
 
-        # TODO: Determine if re-analysis is needed based on what changed
-        # If content changed significantly, trigger re-analysis
+        # Check if we have existing contradictions for this document
+        if self.storage:
+            existing = await self.storage.get_by_document(doc_id)
+            if existing:
+                logger.info(f"Document {doc_id} has {len(existing)} existing contradictions - may need re-analysis")
+                # Mark existing contradictions for review
+                for c in existing:
+                    if c.status.value == "confirmed":
+                        # Add note about document update
+                        await self.storage.add_note(
+                            c.id,
+                            f"Source document {doc_id} was updated - may require review",
+                            analyst_id="system"
+                        )
 
-    async def _on_llm_analysis_completed(self, event_data: dict) -> None:
+    async def _on_document_embedded(self, event_data: dict) -> None:
         """
-        Handle LLM analysis completion event.
+        Handle document embedding completion event.
 
-        Can be used for contradiction verification tasks.
+        This is the best time to analyze for contradictions since
+        the document text is available and embeddings are ready.
         """
-        job_id = event_data.get("job_id")
-        result = event_data.get("result")
+        doc_id = event_data.get("document_id") or event_data.get("id")
+        if not doc_id:
+            return
 
-        logger.debug(f"LLM analysis completed: job={job_id}")
+        logger.info(f"Document embedded: {doc_id} - running contradiction analysis")
 
-        # TODO: Process LLM results if they're for contradiction verification
+        if not self.detector or not self.storage or not self._db_service:
+            logger.warning("Cannot analyze - detector, storage, or db not available")
+            return
+
+        try:
+            # Get all other document IDs
+            other_docs = await self._db_service.fetch_all(
+                """SELECT id FROM arkham_frame.documents
+                   WHERE id != :id
+                   ORDER BY created_at DESC
+                   LIMIT 50""",
+                {"id": doc_id}
+            )
+
+            if not other_docs:
+                logger.info(f"No other documents to compare against {doc_id}")
+                return
+
+            # Analyze against each document
+            total_contradictions = 0
+            for other in other_docs:
+                other_id = other.get("id")
+                if not other_id:
+                    continue
+
+                try:
+                    # Use the public analyze_pair method
+                    results = await self.analyze_pair(
+                        doc_a_id=doc_id,
+                        doc_b_id=other_id,
+                        threshold=0.7,
+                        use_llm=self._llm_service is not None
+                    )
+                    total_contradictions += len(results)
+                except Exception as e:
+                    logger.debug(f"Failed to analyze {doc_id} vs {other_id}: {e}")
+
+            if total_contradictions > 0:
+                logger.info(f"Found {total_contradictions} contradictions for document {doc_id}")
+
+                # Emit event
+                if self._event_bus:
+                    await self._event_bus.emit(
+                        "contradictions.detected",
+                        {
+                            "document_id": doc_id,
+                            "count": total_contradictions,
+                        },
+                        source="contradictions-shard",
+                    )
+
+        except Exception as e:
+            logger.error(f"Error analyzing document {doc_id} for contradictions: {e}")
 
     # --- Public API for other shards ---
 
@@ -343,30 +403,47 @@ class ContradictionsShard(ArkhamShard):
         return contradictions
 
     async def _get_document_content(self, doc_id: str) -> dict | None:
-        """Fetch document content from Frame database."""
+        """
+        Fetch document content from Frame database.
+
+        Gets document metadata and combines chunk text for content.
+        Matches the implementation in api.py for consistency.
+        """
         if not self._db_service:
             return None
 
         try:
-            # Try arkham_frame.documents table first
-            result = await self._db_service.fetch_one(
-                "SELECT content, filename as title FROM arkham_frame.documents WHERE id = :id",
+            # Get document metadata
+            doc_result = await self._db_service.fetch_one(
+                "SELECT id, filename FROM arkham_frame.documents WHERE id = :id",
                 {"id": doc_id}
             )
 
-            if result and result.get("content"):
-                return {"id": doc_id, "content": result["content"], "title": result.get("title")}
+            if not doc_result:
+                logger.warning(f"Document not found: {doc_id}")
+                return None
 
-            # Fallback: try parse shard's extracted text
-            result = await self._db_service.fetch_one(
-                "SELECT extracted_text, filename FROM arkham_parse.parse_results WHERE document_id = :id",
+            # Get all chunks for the document, ordered by chunk_index
+            chunks = await self._db_service.fetch_all(
+                """SELECT text FROM arkham_frame.chunks
+                   WHERE document_id = :id
+                   ORDER BY chunk_index""",
                 {"id": doc_id}
             )
 
-            if result and result.get("extracted_text"):
-                return {"id": doc_id, "content": result["extracted_text"], "title": result.get("filename")}
+            # Combine chunk text
+            content = "\n\n".join(c["text"] for c in chunks if c.get("text"))
 
-            return None
+            if not content:
+                logger.warning(f"Document {doc_id} has no chunk content")
+                return None
+
+            return {
+                "id": doc_id,
+                "content": content,
+                "title": doc_result.get("filename", f"Document {doc_id}")
+            }
+
         except Exception as e:
             logger.error(f"Failed to fetch document {doc_id}: {e}")
             return None

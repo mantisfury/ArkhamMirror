@@ -186,7 +186,39 @@ The anomalies shard is now fully implemented with:
 
 ---
 
-### 1.4 Summary Shard
+### 1.4 Contradictions Shard - COMPLETED (2026-01-04)
+
+**Status: Fully Operational**
+
+The contradictions shard is now fully implemented with:
+- Database schema: 2 tables (contradictions, contradiction_chains)
+- Full contradiction detection pipeline:
+  - Claim extraction from documents via LLM
+  - Semantic similarity matching between claims
+  - LLM-based verification of contradictions
+  - Confidence scoring with configurable thresholds
+- Chain detection for multi-document contradictions
+- Event handlers wired to `documents.document.created`, `documents.document.updated`, `embed.document.completed`
+- Complete frontend with:
+  - Stats dashboard with severity/status breakdown
+  - Filtering by type/status/severity
+  - Bulk selection with checkboxes
+  - Bulk status actions (confirm/dismiss/investigate)
+  - Pagination
+  - Analysis dialog for running contradiction detection
+  - Detail view with source documents and chain visualization
+  - Analyst notes
+
+**Key API Endpoints:**
+- `GET /api/contradictions/count` - Total count (navigation badge)
+- `GET /api/contradictions/pending/count` - Pending count
+- `GET /api/contradictions/stats` - Full statistics
+- `POST /api/contradictions/analyze` - Run contradiction detection
+- `POST /api/contradictions/bulk-status` - Bulk status updates
+
+---
+
+### 1.5 Summary Shard
 
 **File Locations:**
 - Backend: `packages/arkham-shard-summary/arkham_shard_summary/`
@@ -737,3 +769,4 @@ npm install vis-network        # Alternative
 *Last Updated: 2026-01-04*
 *Context: Full codebase analysis by 5 parallel agents*
 *Anomalies shard completed: 2026-01-04*
+*Contradictions shard completed: 2026-01-04*

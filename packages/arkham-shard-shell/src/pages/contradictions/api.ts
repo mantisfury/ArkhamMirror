@@ -177,3 +177,122 @@ export async function getChain(chainId: string): Promise<{
 }> {
   return fetchAPI(`/chains/${chainId}`);
 }
+
+// ============================================
+// Bulk Operations
+// ============================================
+
+export async function bulkUpdateStatus(
+  contradictionIds: string[],
+  status: ContradictionStatus,
+  notes?: string,
+  analystId?: string
+): Promise<{
+  updated: number;
+  failed: number;
+  updated_ids: string[];
+  failures: Array<{ id: string; error: string }>;
+}> {
+  return fetchAPI('/bulk-status', {
+    method: 'POST',
+    body: JSON.stringify({
+      contradiction_ids: contradictionIds,
+      status,
+      notes: notes || null,
+      analyst_id: analystId || null,
+    }),
+  });
+}
+
+// ============================================
+// Claim Extraction
+// ============================================
+
+export async function extractClaims(
+  text: string,
+  useLLM: boolean = true,
+  documentId?: string
+): Promise<{
+  claims: Array<{
+    id: string;
+    text: string;
+    location: string;
+    type: string;
+    confidence: number;
+  }>;
+  count: number;
+  document_id: string | null;
+}> {
+  return fetchAPI('/claims', {
+    method: 'POST',
+    body: JSON.stringify({
+      text,
+      use_llm: useLLM,
+      document_id: documentId || null,
+    }),
+  });
+}
+
+// ============================================
+// Batch Analysis (Multiple Documents)
+// ============================================
+
+export async function batchAnalyze(
+  documentPairs: Array<[string, string]>,
+  threshold: number = 0.7,
+  useLLM: boolean = true
+): Promise<{
+  pairs_analyzed: number;
+  contradictions: Array<{
+    id: string;
+    doc_a_id: string;
+    doc_b_id: string;
+    claim_a: string;
+    claim_b: string;
+    contradiction_type: string;
+    severity: string;
+    status: string;
+    explanation: string;
+    confidence_score: number;
+    created_at: string;
+  }>;
+  count: number;
+}> {
+  return fetchAPI('/batch', {
+    method: 'POST',
+    body: JSON.stringify({
+      document_pairs: documentPairs,
+      threshold,
+      use_llm: useLLM,
+    }),
+  });
+}
+
+// ============================================
+// Document Fetching (from documents shard)
+// ============================================
+
+export interface DocumentItem {
+  id: string;
+  title: string;
+  filename: string;
+  file_type: string;
+  status: string;
+  created_at: string;
+}
+
+export async function fetchDocuments(
+  page: number = 1,
+  pageSize: number = 100
+): Promise<{
+  items: DocumentItem[];
+  total: number;
+  page: number;
+  page_size: number;
+}> {
+  const response = await fetch(`/api/documents/items?page=${page}&page_size=${pageSize}`);
+  if (!response.ok) {
+    throw new Error('Failed to fetch documents');
+  }
+  return response.json();
+}

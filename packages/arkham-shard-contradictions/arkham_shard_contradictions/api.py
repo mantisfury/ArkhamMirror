@@ -454,6 +454,32 @@ async def get_chain(chain_id: str):
     }
 
 
+# NOTE: These non-parameterized routes MUST be defined BEFORE /{contradiction_id}
+# to avoid FastAPI treating "count" or "pending" as an ID
+
+@router.get("/count")
+async def get_count():
+    """Get total contradiction count (for navigation badge)."""
+    if not _storage:
+        return {"count": 0}
+
+    stats = await _storage.get_statistics()
+    return {"count": stats.get("total_contradictions", 0)}
+
+
+@router.get("/pending/count")
+async def get_pending_count():
+    """Get pending contradiction count (for navigation badge)."""
+    if not _storage:
+        return {"count": 0}
+
+    stats = await _storage.get_statistics()
+    by_status = stats.get("by_status", {})
+    # Pending = detected + investigating (not yet confirmed/dismissed)
+    pending = by_status.get("detected", 0) + by_status.get("investigating", 0)
+    return {"count": pending}
+
+
 @router.get("/{contradiction_id}")
 async def get_contradiction(contradiction_id: str):
     """Get specific contradiction details."""
@@ -553,11 +579,63 @@ async def delete_contradiction(contradiction_id: str):
     return {"status": "deleted", "contradiction_id": contradiction_id}
 
 
-@router.get("/count")
-async def get_count():
-    """Get total contradiction count (for navigation badge)."""
-    if not _storage:
-        return {"count": 0}
+class BulkStatusRequest(BaseModel):
+    """Request model for bulk status update."""
+    contradiction_ids: list[str]
+    status: str
+    analyst_id: str | None = None
+    notes: str | None = None
 
-    stats = await _storage.get_statistics()
-    return {"count": stats.get("total_contradictions", 0)}
+
+@router.post("/bulk-status")
+async def bulk_update_status(request: BulkStatusRequest):
+    """
+    Update status for multiple contradictions at once.
+
+    Useful for bulk triage operations (confirm all, dismiss all, etc.).
+    """
+    if not _storage:
+        raise HTTPException(status_code=503, detail="Contradiction service not initialized")
+
+    # Parse status
+    try:
+        status = ContradictionStatus[request.status.upper()]
+    except KeyError:
+        raise HTTPException(status_code=400, detail=f"Invalid status: {request.status}")
+
+    updated = []
+    failed = []
+
+    for contradiction_id in request.contradiction_ids:
+        try:
+            contradiction = await _storage.update_status(
+                contradiction_id, status, analyst_id=request.analyst_id
+            )
+            if contradiction:
+                if request.notes:
+                    await _storage.add_note(contradiction_id, request.notes, request.analyst_id)
+                updated.append(contradiction_id)
+            else:
+                failed.append({"id": contradiction_id, "error": "Not found"})
+        except Exception as e:
+            failed.append({"id": contradiction_id, "error": str(e)})
+
+    # Emit bulk event
+    if _event_bus and updated:
+        await _event_bus.emit(
+            "contradictions.bulk_status_updated",
+            {
+                "contradiction_ids": updated,
+                "status": status.value,
+                "count": len(updated),
+                "analyst_id": request.analyst_id,
+            },
+            source="contradictions-shard",
+        )
+
+    return {
+        "updated": len(updated),
+        "failed": len(failed),
+        "updated_ids": updated,
+        "failures": failed,
+    }

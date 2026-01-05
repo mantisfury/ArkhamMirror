@@ -29,15 +29,16 @@ capabilities:
 
 events:
   publishes:
-    - contradictions.contradiction.detected
-    - contradictions.contradiction.confirmed
-    - contradictions.contradiction.dismissed
-    - contradictions.chain.detected
-    - contradictions.status.updated
+    - contradictions.detected
+    - contradictions.confirmed
+    - contradictions.dismissed
+    - contradictions.chain_detected
+    - contradictions.status_updated
+    - contradictions.bulk_status_updated
   subscribes:
-    - document.ingested
-    - document.updated
-    - llm.analysis.completed
+    - documents.document.created
+    - documents.document.updated
+    - embed.document.completed
 
 state:
   strategy: url
