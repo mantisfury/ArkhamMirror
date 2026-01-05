@@ -82,7 +82,7 @@ async def initialize(self, frame) -> None:
 
 ## Current State Overview
 
-### Fully Operational Shards (17 total)
+### Fully Operational Shards (18 total)
 These shards are functional with complete backend/frontend integration:
 
 | Shard | Status | Notes |
@@ -104,12 +104,12 @@ These shards are functional with complete backend/frontend integration:
 | provenance | Operational | Evidence chains, artifact tracking, lineage graphs |
 | patterns | Operational | Cross-document pattern detection, statistical correlation |
 | anomalies | Operational | Hybrid detection (sync+async), bulk triage, 6 detection strategies |
+| summary | Operational | LLM-powered summarization, source browser, statistics dashboard |
 
-### Shards Requiring Work (8 total)
+### Shards Requiring Work (7 total)
 
 | Shard | Category | Backend % | Frontend % | Priority | Critical Gap |
 |-------|----------|-----------|------------|----------|--------------|
-| summary | Analysis | 70% | 40% | Medium | `_fetch_source_content()` returns mock data |
 | graph | Visualize | 75% | 60% | High | No graph visualization library, no DB persistence |
 | timeline | Visualize | 85% | 50% | Medium | Event handlers stubbed |
 | export | Export | 70% | 90% | High | `_generate_export_file()` creates placeholder files |
@@ -218,30 +218,38 @@ The contradictions shard is now fully implemented with:
 
 ---
 
-### 1.5 Summary Shard
+### 1.5 Summary Shard - COMPLETED (2026-01-05)
 
-**File Locations:**
-- Backend: `packages/arkham-shard-summary/arkham_shard_summary/`
-- Frontend: `packages/arkham-shard-shell/src/pages/summary/`
+**Status: Fully Operational**
 
-**Current State:**
-- Database schema exists
-- LLM integration code exists with fallback to extractive
-- Source fetching returns mock data
+The summary shard is now fully implemented with:
+- Full LLM-powered summarization with extractive fallback
+- 5 summary types: brief, detailed, executive, bullet_points, abstract
+- 5 target lengths: very_short, short, medium, long, very_long
+- Source browser for documents, entities, projects, claims, timeline events
+- Database persistence with comprehensive statistics
+- Event handlers for auto-summarization
 
-**Known Stub Locations:**
-```python
-# shard.py - Line ~300
-async def _fetch_source_content(self, source_type, source_ids):
-    # Returns mock data like "Sample document content for {source_id}"
-    # TODO: Actually fetch from documents/entities/claims shards
-```
+**Backend Features:**
+- Fixed `_fetch_source_content()` to query `arkham_frame.chunks` table
+- Fixed LLMResponse handling (extract `.text` from response object)
+- Fixed `/stats` route ordering (moved before `/{summary_id}`)
+- Statistics aggregation from database with breakdowns by type/source/status/model
 
-**Implementation Priority:**
-1. Implement `_fetch_source_content()` to query other shards
-2. Test LLM summarization with real documents
-3. Improve extractive fallback (currently just first N sentences)
-4. Build frontend generation form
+**Frontend Features:**
+- 3-tab layout: Summaries list, Generate, Statistics
+- Source picker modal with document browser
+- Filters panel (search, type, source type, status)
+- Statistics dashboard with metric cards
+- Regenerate button on summary detail view
+- Pagination support
+
+**Key API Endpoints:**
+- `GET /api/summary/stats` - Full statistics with aggregations
+- `GET /api/summary/types` - Available summary types
+- `GET /api/summary/sources/documents` - Browse documents for summarization
+- `POST /api/summary/` - Generate new summary
+- `GET /api/summary/{id}` - Get summary details
 
 ---
 
@@ -766,7 +774,8 @@ npm install vis-network        # Alternative
 ---
 
 *Generated: 2026-01-03*
-*Last Updated: 2026-01-04*
+*Last Updated: 2026-01-05*
 *Context: Full codebase analysis by 5 parallel agents*
 *Anomalies shard completed: 2026-01-04*
 *Contradictions shard completed: 2026-01-04*
+*Summary shard completed: 2026-01-05*

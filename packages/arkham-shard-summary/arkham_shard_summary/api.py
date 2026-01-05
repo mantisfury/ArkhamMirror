@@ -204,6 +204,19 @@ async def get_types():
     return {"types": types}
 
 
+@router.get("/stats", response_model=SummaryStatistics)
+async def get_statistics(request: Request):
+    """
+    Get summary statistics.
+
+    Returns:
+        Aggregate statistics about all summaries
+    """
+    shard = get_shard(request)
+    stats = await shard.get_statistics()
+    return stats
+
+
 @router.get("/", response_model=SummaryListResponse)
 async def list_summaries(
     request: Request,
@@ -510,19 +523,6 @@ async def get_or_generate_document_summary(
         created_at=summary.created_at.isoformat(),
         tags=summary.tags,
     )
-
-
-@router.get("/stats", response_model=SummaryStatistics)
-async def get_statistics(request: Request):
-    """
-    Get summary statistics.
-
-    Returns:
-        Aggregate statistics about all summaries
-    """
-    shard = get_shard(request)
-    stats = await shard.get_statistics()
-    return stats
 
 
 # === Source Browser Endpoints ===

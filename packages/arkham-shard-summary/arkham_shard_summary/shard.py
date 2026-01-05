@@ -445,24 +445,98 @@ class SummaryShard(ArkhamShard):
         return row["count"] if row else 0
 
     async def get_statistics(self) -> SummaryStatistics:
-        """Get statistics about summaries."""
-        summaries = list(self._summaries.values())
+        """Get statistics about summaries from database."""
+        stats = SummaryStatistics()
 
-        stats = SummaryStatistics(
-            total_summaries=len(summaries),
-        )
+        if not self._db:
+            # Fallback to in-memory if no database
+            summaries = list(self._summaries.values())
+            stats.total_summaries = len(summaries)
+            for summary in summaries:
+                stats.by_type[summary.summary_type.value] = stats.by_type.get(summary.summary_type.value, 0) + 1
+                stats.by_source_type[summary.source_type.value] = stats.by_source_type.get(summary.source_type.value, 0) + 1
+                stats.by_status[summary.status.value] = stats.by_status.get(summary.status.value, 0) + 1
+            if summaries:
+                stats.avg_confidence = sum(s.confidence for s in summaries) / len(summaries)
+                stats.avg_word_count = sum(s.word_count for s in summaries) / len(summaries)
+                stats.avg_processing_time_ms = sum(s.processing_time_ms for s in summaries) / len(summaries)
+            return stats
 
-        # Count by type
-        for summary in summaries:
-            stats.by_type[summary.summary_type.value] = stats.by_type.get(summary.summary_type.value, 0) + 1
-            stats.by_source_type[summary.source_type.value] = stats.by_source_type.get(summary.source_type.value, 0) + 1
-            stats.by_status[summary.status.value] = stats.by_status.get(summary.status.value, 0) + 1
+        try:
+            # Get total count
+            total_row = await self._db.fetch_one(
+                "SELECT COUNT(*) as count FROM arkham_summaries"
+            )
+            stats.total_summaries = total_row["count"] if total_row else 0
 
-        # Calculate averages
-        if summaries:
-            stats.avg_confidence = sum(s.confidence for s in summaries) / len(summaries)
-            stats.avg_word_count = sum(s.word_count for s in summaries) / len(summaries)
-            stats.avg_processing_time_ms = sum(s.processing_time_ms for s in summaries) / len(summaries)
+            # Get counts by type
+            type_rows = await self._db.fetch_all(
+                "SELECT summary_type, COUNT(*) as count FROM arkham_summaries GROUP BY summary_type"
+            )
+            for row in type_rows:
+                stats.by_type[row["summary_type"]] = row["count"]
+
+            # Get counts by source type
+            source_rows = await self._db.fetch_all(
+                "SELECT source_type, COUNT(*) as count FROM arkham_summaries GROUP BY source_type"
+            )
+            for row in source_rows:
+                stats.by_source_type[row["source_type"]] = row["count"]
+
+            # Get counts by status
+            status_rows = await self._db.fetch_all(
+                "SELECT status, COUNT(*) as count FROM arkham_summaries GROUP BY status"
+            )
+            for row in status_rows:
+                stats.by_status[row["status"]] = row["count"]
+
+            # Get counts by model
+            model_rows = await self._db.fetch_all(
+                "SELECT model_used, COUNT(*) as count FROM arkham_summaries WHERE model_used IS NOT NULL GROUP BY model_used"
+            )
+            for row in model_rows:
+                stats.by_model[row["model_used"]] = row["count"]
+
+            # Get averages
+            avg_row = await self._db.fetch_one(
+                """
+                SELECT
+                    AVG(confidence) as avg_confidence,
+                    AVG(completeness) as avg_completeness,
+                    AVG(word_count) as avg_word_count,
+                    AVG(processing_time_ms) as avg_processing_time,
+                    SUM(word_count) as total_words,
+                    SUM(token_count) as total_tokens
+                FROM arkham_summaries
+                WHERE status = 'completed'
+                """
+            )
+            if avg_row:
+                stats.avg_confidence = float(avg_row["avg_confidence"] or 0)
+                stats.avg_completeness = float(avg_row["avg_completeness"] or 0)
+                stats.avg_word_count = float(avg_row["avg_word_count"] or 0)
+                stats.avg_processing_time_ms = float(avg_row["avg_processing_time"] or 0)
+                stats.total_words_generated = int(avg_row["total_words"] or 0)
+                stats.total_tokens_used = int(avg_row["total_tokens"] or 0)
+
+            # Get recent activity (last 24 hours)
+            recent_row = await self._db.fetch_one(
+                """
+                SELECT
+                    COUNT(*) FILTER (WHERE status = 'completed') as generated,
+                    COUNT(*) FILTER (WHERE status = 'failed') as failed
+                FROM arkham_summaries
+                WHERE created_at >= NOW() - INTERVAL '24 hours'
+                """
+            )
+            if recent_row:
+                stats.generated_last_24h = int(recent_row["generated"] or 0)
+                stats.failed_last_24h = int(recent_row["failed"] or 0)
+
+        except Exception as e:
+            logger.error(f"Failed to get statistics from database: {e}")
+            # Return empty stats on error
+            pass
 
         return stats
 
@@ -521,8 +595,18 @@ class SummaryShard(ArkhamShard):
             else:
                 raise RuntimeError("LLM service has no generate/complete method")
 
+            # Extract text from LLMResponse object
+            if hasattr(response, 'text'):
+                response_text = response.text
+            elif isinstance(response, dict) and 'text' in response:
+                response_text = response['text']
+            elif isinstance(response, str):
+                response_text = response
+            else:
+                raise RuntimeError(f"Unexpected LLM response type: {type(response)}")
+
             # Parse response
-            content, key_points, title = self._parse_llm_response(response, request)
+            content, key_points, title = self._parse_llm_response(response_text, request)
             return content, key_points, title
 
         except Exception as e:
@@ -883,18 +967,18 @@ Length: {length_map.get(request.target_length, "medium-length")}
             return None
 
         try:
-            # Try to get chunks
+            # Try to get chunks from arkham_frame.chunks
             rows = await self._db.fetch_all(
                 """
-                SELECT content, chunk_index
-                FROM arkham_chunks
+                SELECT text, chunk_index
+                FROM arkham_frame.chunks
                 WHERE document_id = :doc_id
                 ORDER BY chunk_index
                 """,
                 {"doc_id": doc_id}
             )
             if rows:
-                chunks = [row.get("content", "") for row in rows]
+                chunks = [row.get("text", "") for row in rows]
                 return "\n\n".join(chunks)
         except Exception as e:
             logger.debug(f"Could not fetch chunks: {e}")
