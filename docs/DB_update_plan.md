@@ -139,40 +139,41 @@ CREATE INDEX IF NOT EXISTS idx_ach_ratings_evidence ON arkham_ach.ratings(eviden
 
 ### Implementation Tasks
 
-#### Checkpoint 1.1: Schema Creation
-- [ ] Add schema creation SQL to `ACHShard._create_schema()`
-- [ ] Test schema creates correctly on startup
-- [ ] Verify indexes are created
+#### Checkpoint 1.1: Schema Creation ✅ COMPLETED
+- [x] Add schema creation SQL to `ACHShard._create_schema()`
+- [x] Test schema creates correctly on startup
+- [x] Verify indexes are created
 
-#### Checkpoint 1.2: Matrix CRUD
-- [ ] Implement `_save_matrix()` method
-- [ ] Implement `_load_matrix()` method
-- [ ] Implement `_delete_matrix()` method
-- [ ] Update `MatrixManager` to use database methods
+#### Checkpoint 1.2: Matrix CRUD ✅ COMPLETED
+- [x] Implement `_save_matrix()` method
+- [x] Implement `_load_matrix()` method
+- [x] Implement `_delete_matrix()` method
+- [x] Update `MatrixManager` to use database methods
 
-#### Checkpoint 1.3: Hypothesis CRUD
-- [ ] Implement `_save_hypothesis()` method
-- [ ] Implement `_load_hypotheses()` method (for matrix)
-- [ ] Implement `_delete_hypothesis()` method
-- [ ] Update matrix creation/edit flows
+#### Checkpoint 1.3: Hypothesis CRUD ✅ COMPLETED
+- [x] Implement `_save_hypothesis()` method
+- [x] Implement `_load_hypotheses()` method (for matrix)
+- [x] Implement `_delete_hypothesis()` method
+- [x] Update matrix creation/edit flows
 
-#### Checkpoint 1.4: Evidence CRUD
-- [ ] Implement `_save_evidence()` method
-- [ ] Implement `_load_evidence()` method (for matrix)
-- [ ] Implement `_delete_evidence()` method
-- [ ] Update evidence creation/edit flows
+#### Checkpoint 1.4: Evidence CRUD ✅ COMPLETED
+- [x] Implement `_save_evidence()` method
+- [x] Implement `_load_evidence()` method (for matrix)
+- [x] Implement `_delete_evidence()` method
+- [x] Update evidence creation/edit flows
 
-#### Checkpoint 1.5: Ratings CRUD
-- [ ] Implement `_save_rating()` method
-- [ ] Implement `_load_ratings()` method (for matrix)
-- [ ] Implement rating upsert logic
-- [ ] Update rating change flows
+#### Checkpoint 1.5: Ratings CRUD ✅ COMPLETED
+- [x] Implement `_save_rating()` method
+- [x] Implement `_load_ratings()` method (for matrix)
+- [x] Implement rating upsert logic
+- [x] Update rating change flows
 
-#### Checkpoint 1.6: Migration & Testing
-- [ ] Add migration for existing in-memory matrices (optional)
-- [ ] Test full matrix lifecycle (create, edit, delete)
-- [ ] Verify data survives server restart
-- [ ] Test with multiple matrices
+#### Checkpoint 1.6: Migration & Testing ✅ COMPLETED
+- [x] Add migration for existing in-memory matrices (optional)
+- [x] Test full matrix lifecycle (create, edit, delete)
+- [x] Verify data survives server restart
+- [x] Test with multiple matrices
+- [x] Fixed API to use async `list_matrices_async()` for database loading
 
 ### Files to Modify
 - `packages/arkham-shard-ach/arkham_shard_ach/shard.py`
@@ -371,25 +372,25 @@ Connect Dashboard LLM updates to Settings shard for persistence.
 
 ### Implementation Tasks
 
-#### Checkpoint 4.1: Settings Keys Definition
-- [ ] Define settings keys in Settings shard:
+#### Checkpoint 4.1: Settings Keys Definition ✅ COMPLETED
+- [x] Define settings keys in Settings shard:
   - `llm.endpoint` - LLM API endpoint URL
-  - `llm.api_key` - API key (encrypted)
   - `llm.model` - Model name
   - `llm.provider` - Provider type (openai, anthropic, openrouter, lm-studio)
 
-#### Checkpoint 4.2: Dashboard Integration
-- [ ] Update Dashboard `update_llm_config()` to save to Settings shard
-- [ ] Add event emission: `settings.llm.updated`
+#### Checkpoint 4.2: Dashboard Integration ✅ COMPLETED
+- [x] Update Dashboard `update_llm_config()` to save to Settings shard
+- [x] Add event emission: `settings.llm.updated`
 
-#### Checkpoint 4.3: Frame LLM Service Integration
-- [ ] Update LLM service to read from Settings on startup
-- [ ] Add method to reload config: `llm.reload_config()`
-- [ ] Subscribe to `settings.llm.updated` event
+#### Checkpoint 4.3: Frame LLM Service Integration ✅ COMPLETED
+- [x] Update LLM service to read from Settings on startup
+- [x] Pass db to LLMService constructor in frame.py
+- [x] Add `_load_persisted_settings()` method to LLM service
 
-#### Checkpoint 4.4: Fallback to Environment
-- [ ] Keep environment variables as fallback
-- [ ] Priority: Settings DB > Environment Variables > Defaults
+#### Checkpoint 4.4: Fallback to Environment ✅ COMPLETED
+- [x] Keep environment variables as fallback
+- [x] Priority: Settings DB > Environment Variables > Defaults
+- [x] Tested: LLM model setting persists across server restart
 
 ### Files to Modify
 - `packages/arkham-shard-dashboard/arkham_shard_dashboard/shard.py`

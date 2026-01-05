@@ -113,10 +113,10 @@ class ArkhamFrame:
         except Exception as e:
             logger.warning(f"VectorService failed to initialize: {e}")
 
-        # Initialize LLM
+        # Initialize LLM (pass db for loading persisted settings)
         try:
             from arkham_frame.services.llm import LLMService
-            self.llm = LLMService(config=self.config)
+            self.llm = LLMService(config=self.config, db=self.db)
             await self.llm.initialize()
             logger.info("LLMService initialized")
         except Exception as e:

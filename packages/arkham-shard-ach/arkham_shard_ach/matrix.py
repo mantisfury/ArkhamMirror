@@ -1,8 +1,10 @@
 """ACH Matrix operations and management."""
 
+import asyncio
+import logging
 import uuid
 from datetime import datetime
-from typing import Dict
+from typing import TYPE_CHECKING, Dict, Optional
 
 from .models import (
     ACHMatrix,
@@ -13,17 +15,60 @@ from .models import (
     ConsistencyRating,
 )
 
+if TYPE_CHECKING:
+    from .shard import ACHShard
+
+logger = logging.getLogger(__name__)
+
 
 class MatrixManager:
     """
-    Manages ACH matrices in memory.
+    Manages ACH matrices with in-memory caching and database persistence.
 
-    In a production implementation, this would interface with a database
-    service from the Frame. For now, it's in-memory storage.
+    Uses an in-memory cache for performance while persisting changes to
+    the database through the shard's persistence methods. When a matrix
+    is requested, it's first checked in the cache. If not found, it's
+    loaded from the database and cached.
     """
 
-    def __init__(self):
+    def __init__(self, shard: Optional["ACHShard"] = None):
+        """
+        Initialize the MatrixManager.
+
+        Args:
+            shard: Optional reference to the ACHShard for database persistence.
+                   If not provided, persistence is disabled and matrices are
+                   stored only in memory.
+        """
         self._matrices: Dict[str, ACHMatrix] = {}
+        self._shard: Optional["ACHShard"] = shard
+
+    def set_shard(self, shard: "ACHShard") -> None:
+        """
+        Set the shard reference for database persistence.
+
+        Args:
+            shard: The ACHShard instance to use for persistence
+        """
+        self._shard = shard
+        logger.debug("MatrixManager: shard reference set for persistence")
+
+    def _run_async(self, coro):
+        """
+        Run an async coroutine from sync context.
+
+        Uses the existing event loop if available, otherwise creates one.
+        This allows the MatrixManager's sync methods to call the shard's
+        async persistence methods.
+        """
+        try:
+            loop = asyncio.get_running_loop()
+            # We're in an async context, schedule as a task
+            # Note: This won't block, so caller needs to handle this
+            return asyncio.create_task(coro)
+        except RuntimeError:
+            # No running loop, create one
+            return asyncio.run(coro)
 
     def create_matrix(
         self,
@@ -45,11 +90,57 @@ class MatrixManager:
         )
 
         self._matrices[matrix_id] = matrix
+
+        # Persist to database
+        if self._shard:
+            try:
+                self._run_async(self._shard._save_matrix(matrix))
+            except Exception as e:
+                logger.error(f"Failed to persist matrix {matrix_id}: {e}")
+
         return matrix
 
     def get_matrix(self, matrix_id: str) -> ACHMatrix | None:
-        """Get a matrix by ID."""
-        return self._matrices.get(matrix_id)
+        """Get a matrix by ID, loading from database if not in cache."""
+        # Check cache first
+        if matrix_id in self._matrices:
+            return self._matrices[matrix_id]
+
+        # Try to load from database
+        if self._shard:
+            try:
+                result = self._run_async(self._shard._load_matrix(matrix_id))
+                # Handle both Task and direct result
+                if asyncio.isfuture(result) or asyncio.iscoroutine(result):
+                    # In async context, we can't block - return None for now
+                    # The async API should be used instead
+                    logger.debug(f"Matrix {matrix_id} not in cache, async load required")
+                    return None
+                if result:
+                    self._matrices[matrix_id] = result
+                    return result
+            except Exception as e:
+                logger.error(f"Failed to load matrix {matrix_id} from database: {e}")
+
+        return None
+
+    async def get_matrix_async(self, matrix_id: str) -> ACHMatrix | None:
+        """Get a matrix by ID asynchronously, loading from database if not in cache."""
+        # Check cache first
+        if matrix_id in self._matrices:
+            return self._matrices[matrix_id]
+
+        # Try to load from database
+        if self._shard:
+            try:
+                matrix = await self._shard._load_matrix(matrix_id)
+                if matrix:
+                    self._matrices[matrix_id] = matrix
+                    return matrix
+            except Exception as e:
+                logger.error(f"Failed to load matrix {matrix_id} from database: {e}")
+
+        return None
 
     def update_matrix(
         self,
@@ -74,10 +165,26 @@ class MatrixManager:
             matrix.notes = notes
 
         matrix.updated_at = datetime.utcnow()
+
+        # Persist to database
+        if self._shard:
+            try:
+                self._run_async(self._shard._save_matrix(matrix))
+            except Exception as e:
+                logger.error(f"Failed to persist matrix update {matrix_id}: {e}")
+
         return matrix
 
     def delete_matrix(self, matrix_id: str) -> bool:
-        """Delete a matrix."""
+        """Delete a matrix from cache and database."""
+        # Delete from database first
+        if self._shard:
+            try:
+                self._run_async(self._shard._delete_matrix_from_db(matrix_id))
+            except Exception as e:
+                logger.error(f"Failed to delete matrix {matrix_id} from database: {e}")
+
+        # Delete from cache
         if matrix_id in self._matrices:
             del self._matrices[matrix_id]
             return True
@@ -88,7 +195,7 @@ class MatrixManager:
         project_id: str | None = None,
         status: MatrixStatus | None = None,
     ) -> list[ACHMatrix]:
-        """List matrices with optional filtering."""
+        """List matrices with optional filtering (from cache only)."""
         matrices = list(self._matrices.values())
 
         if project_id:
@@ -98,6 +205,29 @@ class MatrixManager:
             matrices = [m for m in matrices if m.status == status]
 
         return sorted(matrices, key=lambda m: m.created_at, reverse=True)
+
+    async def list_matrices_async(
+        self,
+        project_id: str | None = None,
+        status: MatrixStatus | None = None,
+    ) -> list[ACHMatrix]:
+        """List matrices from database with optional filtering."""
+        if self._shard:
+            try:
+                status_str = status.value if status else None
+                matrices = await self._shard._load_all_matrices(
+                    project_id=project_id,
+                    status=status_str
+                )
+                # Update cache with loaded matrices
+                for matrix in matrices:
+                    self._matrices[matrix.id] = matrix
+                return matrices
+            except Exception as e:
+                logger.error(f"Failed to load matrices from database: {e}")
+
+        # Fallback to cache
+        return self.list_matrices(project_id=project_id, status=status)
 
     def add_hypothesis(
         self,
@@ -126,6 +256,13 @@ class MatrixManager:
         matrix.hypotheses.append(hypothesis)
         matrix.updated_at = datetime.utcnow()
 
+        # Persist to database
+        if self._shard:
+            try:
+                self._run_async(self._shard._save_hypothesis(hypothesis))
+            except Exception as e:
+                logger.error(f"Failed to persist hypothesis {hypothesis_id}: {e}")
+
         return hypothesis
 
     def remove_hypothesis(self, matrix_id: str, hypothesis_id: str) -> bool:
@@ -150,6 +287,17 @@ class MatrixManager:
             h.column_index = i
 
         matrix.updated_at = datetime.utcnow()
+
+        # Persist deletion to database
+        if self._shard:
+            try:
+                # Delete hypothesis and its ratings
+                self._run_async(self._shard._delete_hypothesis(hypothesis_id))
+                # Update column indexes for remaining hypotheses
+                self._run_async(self._shard._update_hypothesis_indexes(matrix_id, matrix.hypotheses))
+            except Exception as e:
+                logger.error(f"Failed to persist hypothesis deletion {hypothesis_id}: {e}")
+
         return True
 
     def add_evidence(
@@ -195,6 +343,13 @@ class MatrixManager:
         matrix.evidence.append(evidence)
         matrix.updated_at = datetime.utcnow()
 
+        # Persist to database
+        if self._shard:
+            try:
+                self._run_async(self._shard._save_evidence(evidence))
+            except Exception as e:
+                logger.error(f"Failed to persist evidence {evidence_id}: {e}")
+
         return evidence
 
     def remove_evidence(self, matrix_id: str, evidence_id: str) -> bool:
@@ -214,6 +369,17 @@ class MatrixManager:
             e.row_index = i
 
         matrix.updated_at = datetime.utcnow()
+
+        # Persist deletion to database
+        if self._shard:
+            try:
+                # Delete evidence and its ratings
+                self._run_async(self._shard._delete_evidence(evidence_id))
+                # Update row indexes for remaining evidence
+                self._run_async(self._shard._update_evidence_indexes(matrix_id, matrix.evidence))
+            except Exception as e:
+                logger.error(f"Failed to persist evidence deletion {evidence_id}: {e}")
+
         return True
 
     def set_rating(
@@ -263,6 +429,14 @@ class MatrixManager:
             matrix.ratings.append(rating_obj)
 
         matrix.updated_at = datetime.utcnow()
+
+        # Persist to database
+        if self._shard:
+            try:
+                self._run_async(self._shard._upsert_rating(rating_obj))
+            except Exception as e:
+                logger.error(f"Failed to persist rating: {e}")
+
         return rating_obj
 
     def get_matrix_data(self, matrix_id: str) -> dict | None:

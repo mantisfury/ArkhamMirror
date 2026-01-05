@@ -481,7 +481,7 @@ async def list_matrices(
         except KeyError:
             raise HTTPException(status_code=400, detail=f"Invalid status: {status}")
 
-    matrices = _matrix_manager.list_matrices(
+    matrices = await _matrix_manager.list_matrices_async(
         project_id=project_id,
         status=status_filter,
     )
@@ -512,7 +512,7 @@ async def get_matrices_count():
 
     from .models import MatrixStatus
 
-    matrices = _matrix_manager.list_matrices(status=MatrixStatus.ACTIVE)
+    matrices = await _matrix_manager.list_matrices_async(status=MatrixStatus.ACTIVE)
     return {"count": len(matrices)}
 
 

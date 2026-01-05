@@ -470,6 +470,55 @@ DEFAULT_SETTINGS: list[Setting] = [
         requires_restart=True,
         order=11,
     ),
+
+    # --- LLM Configuration ---
+    Setting(
+        key="llm.endpoint",
+        value="",
+        default_value="",
+        category=SettingCategory.ADVANCED,
+        data_type=SettingType.STRING,
+        label="LLM Endpoint",
+        description=(
+            "OpenAI-compatible API endpoint URL. Leave empty to use environment variable "
+            "(LLM_ENDPOINT or LM_STUDIO_URL). Examples: http://localhost:1234/v1, "
+            "https://openrouter.ai/api/v1, https://api.openai.com/v1"
+        ),
+        order=12,
+    ),
+    Setting(
+        key="llm.model",
+        value="",
+        default_value="",
+        category=SettingCategory.ADVANCED,
+        data_type=SettingType.STRING,
+        label="LLM Model",
+        description=(
+            "Model name/ID to use for AI requests. Leave empty to auto-detect from endpoint. "
+            "Examples: local-model, gpt-4o, claude-3-sonnet, mistralai/mistral-7b-instruct"
+        ),
+        order=13,
+    ),
+    Setting(
+        key="llm.provider",
+        value="auto",
+        default_value="auto",
+        category=SettingCategory.ADVANCED,
+        data_type=SettingType.SELECT,
+        label="LLM Provider",
+        description="AI provider type. Auto-detect works for most endpoints.",
+        options=[
+            {"value": "auto", "label": "Auto-detect"},
+            {"value": "lm-studio", "label": "LM Studio (local)"},
+            {"value": "ollama", "label": "Ollama (local)"},
+            {"value": "openai", "label": "OpenAI"},
+            {"value": "openrouter", "label": "OpenRouter"},
+            {"value": "anthropic", "label": "Anthropic"},
+            {"value": "together", "label": "Together AI"},
+            {"value": "groq", "label": "Groq"},
+        ],
+        order=14,
+    ),
 ]
 
 

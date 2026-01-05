@@ -124,11 +124,14 @@ class DashboardShard(ArkhamShard):
         endpoint: Optional[str] = None,
         model: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Update LLM configuration."""
+        """Update LLM configuration and persist to Settings shard."""
         if endpoint:
             self.frame.config.set("llm_endpoint", endpoint)
         if model:
             self.frame.config.set("llm.model", model)
+
+        # Persist to Settings shard for survival across restarts
+        await self._persist_llm_settings(endpoint, model)
 
         # Reinitialize LLM service
         if self.frame.llm:
@@ -136,6 +139,39 @@ class DashboardShard(ArkhamShard):
             await self.frame.llm.initialize()
 
         return await self.get_llm_config()
+
+    async def _persist_llm_settings(
+        self,
+        endpoint: Optional[str] = None,
+        model: Optional[str] = None,
+    ) -> None:
+        """Persist LLM settings to the Settings shard database."""
+        try:
+            # Get Settings shard from app state
+            settings_shard = getattr(self.frame.app.state, "settings_shard", None)
+            if not settings_shard:
+                logger.warning("Settings shard not available - LLM config will not persist")
+                return
+
+            # Update settings in database
+            if endpoint is not None:
+                await settings_shard.update_setting("llm.endpoint", endpoint, validate=False)
+                logger.info(f"Persisted llm.endpoint to Settings: {endpoint}")
+
+            if model is not None:
+                await settings_shard.update_setting("llm.model", model, validate=False)
+                logger.info(f"Persisted llm.model to Settings: {model}")
+
+            # Emit event for other services to react
+            if self.frame.events:
+                await self.frame.events.emit(
+                    "settings.llm.updated",
+                    {"endpoint": endpoint, "model": model},
+                    source="dashboard"
+                )
+
+        except Exception as e:
+            logger.error(f"Failed to persist LLM settings: {e}")
 
     async def reset_llm_config(self) -> Dict[str, Any]:
         """Reset LLM configuration to defaults."""
@@ -145,6 +181,9 @@ class DashboardShard(ArkhamShard):
 
         self.frame.config.set("llm_endpoint", default_endpoint)
         self.frame.config.set("llm.model", default_model)
+
+        # Persist reset values (empty string = use env var defaults)
+        await self._persist_llm_settings("", "")
 
         # Reinitialize LLM service
         if self.frame.llm:

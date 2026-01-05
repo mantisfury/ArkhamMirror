@@ -159,6 +159,7 @@ class LLMService:
     # This prevents accidental exposure of sensitive data through dynamic attributes
     __slots__ = (
         'config',
+        '_db',
         '_client',
         '_available',
         '_model_name',
@@ -172,8 +173,9 @@ class LLMService:
         '_total_tokens_completion',
     )
 
-    def __init__(self, config):
+    def __init__(self, config, db=None):
         self.config = config
+        self._db = db  # Database service for loading persisted settings
         self._client = None
         self._available = False
         self._model_name = "local-model"
@@ -193,6 +195,9 @@ class LLMService:
     async def initialize(self) -> None:
         """Initialize LLM connection."""
         import httpx
+
+        # Try to load persisted settings from database first
+        await self._load_persisted_settings()
 
         endpoint = self.config.llm_endpoint or "http://localhost:1234/v1"
         self._model_name = self.config.get("llm.model", "local-model")
@@ -777,3 +782,57 @@ class LLMService:
             "fallback_routing_enabled": self.is_fallback_routing_enabled(),
             "fallback_models": self._fallback_models,
         }
+
+    async def _load_persisted_settings(self) -> None:
+        """
+        Load LLM settings from the Settings shard database.
+
+        Priority: Settings DB > Environment Variables > Defaults
+        Only overrides config if the setting has a non-empty value.
+        """
+        if not self._db:
+            logger.debug("Database not available for loading persisted LLM settings")
+            return
+
+        try:
+            # Query llm.endpoint setting
+            try:
+                row = await self._db.fetch_one(
+                    "SELECT value FROM arkham_settings WHERE key = :key",
+                    {"key": "llm.endpoint"}
+                )
+                if row and row.get("value"):
+                    value = row["value"]
+                    # Parse JSON if needed (JSONB may return string or already parsed)
+                    if isinstance(value, str):
+                        try:
+                            value = json.loads(value)
+                        except json.JSONDecodeError:
+                            pass
+                    if value and str(value).strip():
+                        self.config.set("llm_endpoint", str(value))
+                        logger.info(f"Loaded persisted llm.endpoint: {value}")
+            except Exception as e:
+                logger.debug(f"Could not load llm.endpoint: {e}")
+
+            # Query llm.model setting
+            try:
+                row = await self._db.fetch_one(
+                    "SELECT value FROM arkham_settings WHERE key = :key",
+                    {"key": "llm.model"}
+                )
+                if row and row.get("value"):
+                    value = row["value"]
+                    if isinstance(value, str):
+                        try:
+                            value = json.loads(value)
+                        except json.JSONDecodeError:
+                            pass
+                    if value and str(value).strip():
+                        self.config.set("llm.model", str(value))
+                        logger.info(f"Loaded persisted llm.model: {value}")
+            except Exception as e:
+                logger.debug(f"Could not load llm.model: {e}")
+
+        except Exception as e:
+            logger.debug(f"Could not load persisted LLM settings: {e}")
