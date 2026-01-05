@@ -245,30 +245,30 @@ CREATE INDEX IF NOT EXISTS idx_ingest_batches_status ON arkham_ingest.batches(st
 
 ### Implementation Tasks
 
-#### Checkpoint 2.1: Schema Creation
-- [ ] Add schema creation SQL to `IngestShard._create_schema()`
-- [ ] Test schema creates correctly
+#### Checkpoint 2.1: Schema Creation ✅ COMPLETED
+- [x] Add schema creation SQL to `IngestShard._create_schema()`
+- [x] Test schema creates correctly
 
-#### Checkpoint 2.2: Job Persistence
-- [ ] Implement `_save_job()` method
-- [ ] Implement `_load_job()` method
-- [ ] Implement `_update_job_status()` method
-- [ ] Implement `_list_jobs()` with filtering
+#### Checkpoint 2.2: Job Persistence ✅ COMPLETED
+- [x] Implement `_save_job()` method
+- [x] Implement `_load_job()` method
+- [x] Implement `_update_job_status()` method
+- [x] Implement `_list_jobs()` with filtering
 
-#### Checkpoint 2.3: Batch Persistence
-- [ ] Implement `_save_batch()` method
-- [ ] Implement `_load_batch()` method
-- [ ] Implement `_update_batch_progress()` method
+#### Checkpoint 2.3: Batch Persistence ✅ COMPLETED
+- [x] Implement `_save_batch()` method
+- [x] Implement `_load_batch()` method
+- [x] Implement `_update_batch_progress()` method
 
-#### Checkpoint 2.4: Checksum Deduplication
-- [ ] Implement `_check_duplicate()` method (query checksums table)
-- [ ] Implement `_record_checksum()` method
-- [ ] Update ingest flow to use database
+#### Checkpoint 2.4: Checksum Deduplication ✅ COMPLETED
+- [x] Implement `_check_duplicate()` method (query checksums table)
+- [x] Implement `_record_checksum()` method
+- [x] Update ingest flow to use database
 
-#### Checkpoint 2.5: Recovery Logic
-- [ ] Implement `_recover_pending_jobs()` on startup
-- [ ] Handle interrupted batches
-- [ ] Test recovery after crash
+#### Checkpoint 2.5: Recovery Logic ✅ COMPLETED
+- [x] Implement `_recover_pending_jobs()` on startup
+- [x] Handle interrupted batches (re-dispatch pending jobs)
+- [x] Test recovery after crash
 
 ### Files to Modify
 - `packages/arkham-shard-ingest/arkham_shard_ingest/shard.py`
@@ -429,17 +429,17 @@ Connect Dashboard LLM updates to Settings shard for persistence.
 ## Testing Checklist
 
 ### ACH Matrices
-- [ ] Create matrix, restart server, matrix still exists
-- [ ] Add hypotheses, restart, hypotheses preserved
-- [ ] Add evidence, restart, evidence preserved
-- [ ] Set ratings, restart, ratings preserved
-- [ ] Delete matrix, verify cascade delete
+- [x] Create matrix, restart server, matrix still exists
+- [x] Add hypotheses, restart, hypotheses preserved
+- [x] Add evidence, restart, evidence preserved
+- [x] Set ratings, restart, ratings preserved
+- [x] Delete matrix, verify cascade delete
 
 ### Ingest Jobs
-- [ ] Start job, restart, job status correct
-- [ ] Upload duplicate file, detected without re-upload
-- [ ] Batch progress survives restart
-- [ ] Failed jobs can be retried after restart
+- [x] Start job, restart, job status correct
+- [x] Upload duplicate file, detected without re-upload
+- [x] Batch progress survives restart
+- [x] Failed jobs can be retried after restart (pending jobs re-dispatched on startup)
 
 ### Graph
 - [ ] Build graph, restart, graph loads from DB
@@ -447,9 +447,9 @@ Connect Dashboard LLM updates to Settings shard for persistence.
 - [ ] Delete entity, graph reflects change
 
 ### LLM Settings
-- [ ] Configure LLM via Dashboard, restart, config persists
-- [ ] Change endpoint, LLM service uses new endpoint
-- [ ] Remove config, falls back to environment variables
+- [x] Configure LLM via Dashboard, restart, config persists
+- [x] Change endpoint, LLM service uses new endpoint
+- [x] Remove config, falls back to environment variables
 
 ---
 

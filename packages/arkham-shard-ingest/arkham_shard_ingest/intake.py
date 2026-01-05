@@ -33,6 +33,11 @@ class ValidationError(Exception):
 class IntakeManager:
     """
     Manages file intake, classification, and job creation.
+
+    Uses an in-memory cache for performance while persisting changes to
+    the database through the shard's persistence methods. When a job/batch
+    is requested, it's first checked in the cache. If not found, it can be
+    loaded from the database.
     """
 
     # Validation defaults
@@ -51,6 +56,7 @@ class IntakeManager:
         enable_downscale: bool = True,
         skip_blank_pages: bool = True,
         data_silo_path: Path | None = None,
+        shard=None,
     ):
         self.storage_path = Path(storage_path)
         self.temp_path = Path(temp_path) if temp_path else self.storage_path / "temp"
@@ -65,6 +71,9 @@ class IntakeManager:
         self.min_file_size = min_file_size if min_file_size is not None else self.DEFAULT_MIN_SIZE_BYTES
         self.max_file_size = (max_file_size_mb if max_file_size_mb is not None else self.DEFAULT_MAX_SIZE_MB) * 1024 * 1024
 
+        # Shard reference for database persistence
+        self._shard = shard
+
         # Ensure directories exist
         self.storage_path.mkdir(parents=True, exist_ok=True)
         self.temp_path.mkdir(parents=True, exist_ok=True)
@@ -73,12 +82,23 @@ class IntakeManager:
         self.file_classifier = FileTypeClassifier()
         self.image_classifier = ImageQualityClassifier()
 
-        # Active jobs and batches
+        # Active jobs and batches (in-memory cache)
         self._jobs: dict[str, IngestJob] = {}
         self._batches: dict[str, IngestBatch] = {}
 
-        # Deduplication: checksum -> job_id
+        # Deduplication: checksum -> job_id (loaded from DB on startup)
         self._checksums: dict[str, str] = {}
+
+    def set_shard(self, shard) -> None:
+        """Set the shard reference for database persistence."""
+        self._shard = shard
+        logger.debug("IntakeManager: shard reference set for persistence")
+
+    async def initialize_from_db(self) -> None:
+        """Load checksums from database for deduplication on startup."""
+        if self._shard:
+            self._checksums = await self._shard._load_checksums()
+            logger.info(f"Loaded {len(self._checksums)} checksums from database")
 
     def get_relative_path(self, absolute_path: Path) -> str:
         """
@@ -133,9 +153,23 @@ class IntakeManager:
 
         # Deduplication check: if we've seen this file before, return existing job
         if self.enable_deduplication:
+            # Check cache first
             existing_job_id = self._checksums.get(file_hash)
+
+            # If not in cache, check database
+            if not existing_job_id and self._shard:
+                existing_job_id = await self._shard._check_duplicate(file_hash)
+                if existing_job_id:
+                    self._checksums[file_hash] = existing_job_id  # Cache it
+
             if existing_job_id:
                 existing_job = self._jobs.get(existing_job_id)
+                # If not in cache, load from database
+                if not existing_job and self._shard:
+                    existing_job = await self._shard._load_job(existing_job_id)
+                    if existing_job:
+                        self._jobs[existing_job_id] = existing_job  # Cache it
+
                 if existing_job:
                     # Clean up temp file and return existing job
                     temp_file.unlink(missing_ok=True)
@@ -187,9 +221,17 @@ class IntakeManager:
         shutil.move(temp_file, permanent_path)
         job.file_info.path = permanent_path
 
-        # Track job and checksum for deduplication
+        # Track job and checksum for deduplication (cache)
         self._jobs[job_id] = job
         self._checksums[file_hash] = job_id
+
+        # Persist to database
+        if self._shard:
+            try:
+                await self._shard._save_job(job)
+                await self._shard._record_checksum(file_hash, job_id, filename)
+            except Exception as e:
+                logger.error(f"Failed to persist job {job_id} to database: {e}")
 
         logger.info(
             f"Received file: {filename} -> job {job_id} "
@@ -231,6 +273,14 @@ class IntakeManager:
                 batch.failed += 1
 
         self._batches[batch_id] = batch
+
+        # Persist to database
+        if self._shard:
+            try:
+                await self._shard._save_batch(batch)
+            except Exception as e:
+                logger.error(f"Failed to persist batch {batch_id} to database: {e}")
+
         return batch
 
     async def receive_path(
@@ -301,7 +351,7 @@ class IntakeManager:
         pending.sort(key=lambda j: (j.priority.value, j.created_at))
         return pending[:limit]
 
-    def update_job_status(
+    async def update_job_status(
         self,
         job_id: str,
         status: JobStatus,
@@ -327,15 +377,31 @@ class IntakeManager:
             job.error = error
             job.retry_count += 1
 
+        # Persist to database
+        if self._shard:
+            try:
+                await self._shard._update_job_status(job_id, status, error, result)
+            except Exception as e:
+                logger.error(f"Failed to persist job status {job_id}: {e}")
+
         # Update batch if applicable
+        batch_id = None
         for batch in self._batches.values():
             if job in batch.jobs:
+                batch_id = batch.id
                 if status == JobStatus.COMPLETED:
                     batch.completed += 1
                 elif status in (JobStatus.FAILED, JobStatus.DEAD):
                     batch.failed += 1
                 if batch.is_complete:
                     batch.completed_at = datetime.utcnow()
+
+        # Update batch progress in database
+        if batch_id and self._shard:
+            try:
+                await self._shard._update_batch_progress(batch_id)
+            except Exception as e:
+                logger.error(f"Failed to persist batch progress {batch_id}: {e}")
 
     def _determine_route(self, file_info: FileInfo) -> list[str]:
         """Determine initial worker route for file."""
