@@ -19,6 +19,7 @@ _event_bus = None
 _llm_service = None
 _llm_integration = None
 _corpus_service = None
+_shard = None
 
 
 def init_api(
@@ -29,9 +30,10 @@ def init_api(
     event_bus,
     llm_service,
     corpus_service=None,
+    shard=None,
 ):
     """Initialize API with shard dependencies."""
-    global _matrix_manager, _scorer, _evidence_analyzer, _exporter, _event_bus, _llm_service, _llm_integration, _corpus_service
+    global _matrix_manager, _scorer, _evidence_analyzer, _exporter, _event_bus, _llm_service, _llm_integration, _corpus_service, _shard
     _matrix_manager = matrix_manager
     _scorer = scorer
     _evidence_analyzer = evidence_analyzer
@@ -39,6 +41,7 @@ def init_api(
     _event_bus = event_bus
     _llm_service = llm_service
     _corpus_service = corpus_service
+    _shard = shard
 
     # Initialize LLM integration if service available
     if llm_service:
@@ -203,6 +206,55 @@ class AcceptCorpusEvidenceRequest(BaseModel):
 class LinkDocumentsRequest(BaseModel):
     """Request to link documents to a matrix."""
     document_ids: list[str]
+
+
+# --- Premortem Request Models ---
+
+
+class RunPremortemRequest(BaseModel):
+    """Request to run premortem analysis on a hypothesis."""
+    matrix_id: str
+    hypothesis_id: str
+
+
+class ConvertFailureModeRequest(BaseModel):
+    """Request to convert a failure mode to hypothesis/milestone."""
+    premortem_id: str
+    failure_mode_id: str
+    convert_to: str  # "hypothesis" | "milestone"
+
+
+# --- Scenario/Cone Request Models ---
+
+
+class GenerateScenarioTreeRequest(BaseModel):
+    """Request to generate a scenario tree."""
+    matrix_id: str
+    title: str
+    situation_summary: str
+    max_depth: int = 2
+
+
+class AddScenarioBranchRequest(BaseModel):
+    """Request to add branches to an existing scenario node."""
+    tree_id: str
+    parent_node_id: str
+    situation_summary: str | None = None
+
+
+class UpdateScenarioNodeRequest(BaseModel):
+    """Request to update a scenario node."""
+    title: str | None = None
+    description: str | None = None
+    probability: float | None = None
+    status: str | None = None  # "active" | "occurred" | "ruled_out"
+    notes: str | None = None
+
+
+class ConvertScenarioRequest(BaseModel):
+    """Request to convert a scenario to a hypothesis."""
+    tree_id: str
+    node_id: str
 
 
 # --- Endpoints ---
@@ -1416,4 +1468,534 @@ async def accept_corpus_evidence(request: AcceptCorpusEvidenceRequest):
         "matrix_id": request.matrix_id,
         "added": len(added_ids),
         "evidence_ids": added_ids,
+    }
+
+
+# =============================================================================
+# Premortem Analysis Endpoints
+# =============================================================================
+
+
+@router.post("/ai/premortem")
+async def run_premortem(request: RunPremortemRequest):
+    """
+    Run premortem analysis on a hypothesis.
+
+    Assumes the hypothesis is WRONG and generates failure modes.
+    """
+    if not _llm_integration or not _llm_integration.is_available:
+        raise HTTPException(status_code=503, detail="AI features not available")
+
+    if not _matrix_manager or not _shard:
+        raise HTTPException(status_code=503, detail="ACH service not initialized")
+
+    matrix = _matrix_manager.get_matrix(request.matrix_id)
+    if not matrix:
+        raise HTTPException(status_code=404, detail=f"Matrix not found: {request.matrix_id}")
+
+    hypothesis = matrix.get_hypothesis(request.hypothesis_id)
+    if not hypothesis:
+        raise HTTPException(status_code=404, detail=f"Hypothesis not found: {request.hypothesis_id}")
+
+    try:
+        premortem = await _llm_integration.run_premortem(
+            matrix=matrix,
+            hypothesis_id=request.hypothesis_id,
+        )
+
+        # Save to database
+        await _shard.save_premortem(premortem)
+
+        # Emit event
+        if _event_bus:
+            await _event_bus.emit(
+                "ach.premortem.created",
+                {
+                    "matrix_id": request.matrix_id,
+                    "hypothesis_id": request.hypothesis_id,
+                    "premortem_id": premortem.id,
+                },
+                source="ach-shard",
+            )
+
+        return {
+            "premortem_id": premortem.id,
+            "matrix_id": premortem.matrix_id,
+            "hypothesis_id": premortem.hypothesis_id,
+            "hypothesis_title": premortem.hypothesis_title,
+            "scenario_description": premortem.scenario_description,
+            "overall_vulnerability": premortem.overall_vulnerability,
+            "key_risks": premortem.key_risks,
+            "recommendations": premortem.recommendations,
+            "failure_modes": [
+                {
+                    "id": fm.id,
+                    "failure_type": fm.failure_type.value,
+                    "description": fm.description,
+                    "likelihood": fm.likelihood,
+                    "early_warning_indicator": fm.early_warning_indicator,
+                    "mitigation_action": fm.mitigation_action,
+                }
+                for fm in premortem.failure_modes
+            ],
+            "model_used": premortem.model_used,
+            "created_at": premortem.created_at.isoformat(),
+        }
+
+    except Exception as e:
+        logger.error(f"Premortem analysis failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Premortem analysis failed: {str(e)}")
+
+
+@router.get("/matrix/{matrix_id}/premortems")
+async def get_premortems(matrix_id: str):
+    """Get all premortems for a matrix."""
+    if not _shard:
+        raise HTTPException(status_code=503, detail="ACH service not initialized")
+
+    premortems = await _shard.get_premortems(matrix_id)
+
+    return {
+        "matrix_id": matrix_id,
+        "premortems": [
+            {
+                "id": pm.id,
+                "hypothesis_id": pm.hypothesis_id,
+                "hypothesis_title": pm.hypothesis_title,
+                "overall_vulnerability": pm.overall_vulnerability,
+                "failure_mode_count": len(pm.failure_modes),
+                "key_risks": pm.key_risks,
+                "recommendations": pm.recommendations,
+                "created_at": pm.created_at.isoformat(),
+            }
+            for pm in premortems
+        ],
+        "count": len(premortems),
+    }
+
+
+@router.get("/premortem/{premortem_id}")
+async def get_premortem(premortem_id: str):
+    """Get a single premortem by ID."""
+    if not _shard:
+        raise HTTPException(status_code=503, detail="ACH service not initialized")
+
+    premortem = await _shard.get_premortem(premortem_id)
+    if not premortem:
+        raise HTTPException(status_code=404, detail=f"Premortem not found: {premortem_id}")
+
+    return {
+        "id": premortem.id,
+        "matrix_id": premortem.matrix_id,
+        "hypothesis_id": premortem.hypothesis_id,
+        "hypothesis_title": premortem.hypothesis_title,
+        "scenario_description": premortem.scenario_description,
+        "overall_vulnerability": premortem.overall_vulnerability,
+        "key_risks": premortem.key_risks,
+        "recommendations": premortem.recommendations,
+        "failure_modes": [
+            {
+                "id": fm.id,
+                "failure_type": fm.failure_type.value,
+                "description": fm.description,
+                "likelihood": fm.likelihood,
+                "early_warning_indicator": fm.early_warning_indicator,
+                "mitigation_action": fm.mitigation_action,
+                "converted_to": fm.converted_to.value if fm.converted_to else None,
+                "converted_id": fm.converted_id,
+            }
+            for fm in premortem.failure_modes
+        ],
+        "model_used": premortem.model_used,
+        "created_at": premortem.created_at.isoformat(),
+        "updated_at": premortem.updated_at.isoformat(),
+    }
+
+
+@router.delete("/premortem/{premortem_id}")
+async def delete_premortem(premortem_id: str):
+    """Delete a premortem."""
+    if not _shard:
+        raise HTTPException(status_code=503, detail="ACH service not initialized")
+
+    success = await _shard.delete_premortem(premortem_id)
+    if not success:
+        raise HTTPException(status_code=404, detail=f"Premortem not found: {premortem_id}")
+
+    return {"status": "deleted", "premortem_id": premortem_id}
+
+
+@router.post("/premortem/convert")
+async def convert_failure_mode(request: ConvertFailureModeRequest):
+    """
+    Convert a failure mode to a hypothesis or milestone.
+
+    The failure mode's alternative explanation can become a new hypothesis,
+    or its early warning indicator can become a milestone.
+    """
+    if not _shard or not _matrix_manager:
+        raise HTTPException(status_code=503, detail="ACH service not initialized")
+
+    premortem = await _shard.get_premortem(request.premortem_id)
+    if not premortem:
+        raise HTTPException(status_code=404, detail=f"Premortem not found: {request.premortem_id}")
+
+    # Find the failure mode
+    failure_mode = None
+    for fm in premortem.failure_modes:
+        if fm.id == request.failure_mode_id:
+            failure_mode = fm
+            break
+
+    if not failure_mode:
+        raise HTTPException(status_code=404, detail=f"Failure mode not found: {request.failure_mode_id}")
+
+    if request.convert_to == "hypothesis":
+        # Create a new hypothesis from the failure mode's alternative explanation
+        hypothesis = _matrix_manager.add_hypothesis(
+            matrix_id=premortem.matrix_id,
+            title=f"Alternative: {failure_mode.description[:50]}...",
+            description=failure_mode.description,
+            author="premortem-conversion",
+        )
+
+        if hypothesis:
+            # Update the failure mode with conversion info
+            from .models import PremortemConversionType
+            failure_mode.converted_to = PremortemConversionType.HYPOTHESIS
+            failure_mode.converted_id = hypothesis.id
+            await _shard.save_premortem(premortem)
+
+            return {
+                "status": "converted",
+                "convert_to": "hypothesis",
+                "hypothesis_id": hypothesis.id,
+                "hypothesis_title": hypothesis.title,
+            }
+
+    elif request.convert_to == "milestone":
+        # Return the milestone info - it would be stored in localStorage on frontend
+        # since milestones currently use localStorage
+        return {
+            "status": "converted",
+            "convert_to": "milestone",
+            "milestone": {
+                "hypothesis_id": premortem.hypothesis_id,
+                "description": failure_mode.early_warning_indicator or failure_mode.description,
+                "source": "premortem",
+                "premortem_id": premortem.id,
+                "failure_mode_id": failure_mode.id,
+            },
+        }
+
+    raise HTTPException(status_code=400, detail=f"Invalid convert_to: {request.convert_to}")
+
+
+# =============================================================================
+# Cone of Plausibility / Scenario Endpoints
+# =============================================================================
+
+
+@router.post("/ai/scenarios")
+async def generate_scenario_tree(request: GenerateScenarioTreeRequest):
+    """
+    Generate a cone of plausibility (scenario tree) for a matrix.
+
+    Creates a tree of branching scenarios from the current situation.
+    """
+    if not _llm_integration or not _llm_integration.is_available:
+        raise HTTPException(status_code=503, detail="AI features not available")
+
+    if not _matrix_manager or not _shard:
+        raise HTTPException(status_code=503, detail="ACH service not initialized")
+
+    matrix = _matrix_manager.get_matrix(request.matrix_id)
+    if not matrix:
+        raise HTTPException(status_code=404, detail=f"Matrix not found: {request.matrix_id}")
+
+    try:
+        tree = await _llm_integration.generate_scenario_tree(
+            matrix=matrix,
+            title=request.title,
+            situation_summary=request.situation_summary,
+            max_depth=request.max_depth,
+        )
+
+        # Save to database
+        await _shard.save_scenario_tree(tree)
+
+        # Emit event
+        if _event_bus:
+            await _event_bus.emit(
+                "ach.scenarios.created",
+                {
+                    "matrix_id": request.matrix_id,
+                    "tree_id": tree.id,
+                    "scenario_count": tree.total_scenarios,
+                },
+                source="ach-shard",
+            )
+
+        return _format_scenario_tree(tree)
+
+    except Exception as e:
+        logger.error(f"Scenario generation failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Scenario generation failed: {str(e)}")
+
+
+@router.get("/matrix/{matrix_id}/scenarios")
+async def get_scenario_trees(matrix_id: str):
+    """Get all scenario trees for a matrix."""
+    if not _shard:
+        raise HTTPException(status_code=503, detail="ACH service not initialized")
+
+    trees = await _shard.get_scenario_trees(matrix_id)
+
+    return {
+        "matrix_id": matrix_id,
+        "trees": [
+            {
+                "id": t.id,
+                "title": t.title,
+                "description": t.description,
+                "total_scenarios": t.total_scenarios,
+                "active_scenarios": len(t.active_scenarios),
+                "created_at": t.created_at.isoformat(),
+                "updated_at": t.updated_at.isoformat(),
+            }
+            for t in trees
+        ],
+        "count": len(trees),
+    }
+
+
+@router.get("/scenarios/{tree_id}")
+async def get_scenario_tree(tree_id: str):
+    """Get a single scenario tree by ID."""
+    if not _shard:
+        raise HTTPException(status_code=503, detail="ACH service not initialized")
+
+    tree = await _shard.get_scenario_tree(tree_id)
+    if not tree:
+        raise HTTPException(status_code=404, detail=f"Scenario tree not found: {tree_id}")
+
+    return _format_scenario_tree(tree)
+
+
+@router.delete("/scenarios/{tree_id}")
+async def delete_scenario_tree(tree_id: str):
+    """Delete a scenario tree."""
+    if not _shard:
+        raise HTTPException(status_code=503, detail="ACH service not initialized")
+
+    success = await _shard.delete_scenario_tree(tree_id)
+    if not success:
+        raise HTTPException(status_code=404, detail=f"Scenario tree not found: {tree_id}")
+
+    return {"status": "deleted", "tree_id": tree_id}
+
+
+@router.post("/scenarios/branch")
+async def add_scenario_branch(request: AddScenarioBranchRequest):
+    """Add new scenario branches to an existing node."""
+    if not _llm_integration or not _llm_integration.is_available:
+        raise HTTPException(status_code=503, detail="AI features not available")
+
+    if not _shard or not _matrix_manager:
+        raise HTTPException(status_code=503, detail="ACH service not initialized")
+
+    tree = await _shard.get_scenario_tree(request.tree_id)
+    if not tree:
+        raise HTTPException(status_code=404, detail=f"Scenario tree not found: {request.tree_id}")
+
+    parent_node = tree.get_node(request.parent_node_id)
+    if not parent_node:
+        raise HTTPException(status_code=404, detail=f"Parent node not found: {request.parent_node_id}")
+
+    matrix = _matrix_manager.get_matrix(tree.matrix_id)
+    if not matrix:
+        raise HTTPException(status_code=404, detail=f"Matrix not found: {tree.matrix_id}")
+
+    try:
+        situation = request.situation_summary or f"{tree.situation_summary}\n\nCurrent scenario: {parent_node.title}\n{parent_node.description}"
+
+        new_nodes = await _llm_integration.generate_scenarios(
+            matrix=matrix,
+            situation_summary=situation,
+            parent_node=parent_node,
+            depth=parent_node.depth + 1,
+        )
+
+        # Update tree_id on new nodes and add to tree
+        for node in new_nodes:
+            node.tree_id = tree.id
+            tree.nodes.append(node)
+
+        # Save updated tree
+        await _shard.save_scenario_tree(tree)
+
+        return {
+            "tree_id": tree.id,
+            "parent_node_id": parent_node.id,
+            "new_nodes": [
+                {
+                    "id": n.id,
+                    "title": n.title,
+                    "description": n.description,
+                    "probability": n.probability,
+                    "depth": n.depth,
+                }
+                for n in new_nodes
+            ],
+            "count": len(new_nodes),
+        }
+
+    except Exception as e:
+        logger.error(f"Branch generation failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Branch generation failed: {str(e)}")
+
+
+@router.put("/scenarios/{tree_id}/nodes/{node_id}")
+async def update_scenario_node(tree_id: str, node_id: str, request: UpdateScenarioNodeRequest):
+    """Update a scenario node."""
+    if not _shard:
+        raise HTTPException(status_code=503, detail="ACH service not initialized")
+
+    tree = await _shard.get_scenario_tree(tree_id)
+    if not tree:
+        raise HTTPException(status_code=404, detail=f"Scenario tree not found: {tree_id}")
+
+    node = tree.get_node(node_id)
+    if not node:
+        raise HTTPException(status_code=404, detail=f"Node not found: {node_id}")
+
+    # Update fields
+    if request.title is not None:
+        node.title = request.title
+    if request.description is not None:
+        node.description = request.description
+    if request.probability is not None:
+        node.probability = request.probability
+    if request.status is not None:
+        from .models import ScenarioStatus
+        try:
+            node.status = ScenarioStatus(request.status)
+        except ValueError:
+            raise HTTPException(status_code=400, detail=f"Invalid status: {request.status}")
+    if request.notes is not None:
+        node.notes = request.notes
+
+    from datetime import datetime
+    node.updated_at = datetime.utcnow()
+
+    await _shard.update_scenario_node(node)
+
+    return {
+        "tree_id": tree_id,
+        "node_id": node_id,
+        "updated": True,
+    }
+
+
+@router.post("/scenarios/convert")
+async def convert_scenario_to_hypothesis(request: ConvertScenarioRequest):
+    """Convert a scenario to an ACH hypothesis."""
+    if not _shard or not _matrix_manager:
+        raise HTTPException(status_code=503, detail="ACH service not initialized")
+
+    tree = await _shard.get_scenario_tree(request.tree_id)
+    if not tree:
+        raise HTTPException(status_code=404, detail=f"Scenario tree not found: {request.tree_id}")
+
+    node = tree.get_node(request.node_id)
+    if not node:
+        raise HTTPException(status_code=404, detail=f"Node not found: {request.node_id}")
+
+    # Create hypothesis from scenario
+    hypothesis = _matrix_manager.add_hypothesis(
+        matrix_id=tree.matrix_id,
+        title=node.title,
+        description=f"{node.description}\n\nProbability: {node.probability:.0%}\nTimeframe: {node.timeframe}",
+        author="scenario-conversion",
+    )
+
+    if hypothesis:
+        # Update scenario status
+        from .models import ScenarioStatus
+        node.status = ScenarioStatus.CONVERTED
+        node.converted_hypothesis_id = hypothesis.id
+        await _shard.update_scenario_node(node)
+
+        # Emit event
+        if _event_bus:
+            await _event_bus.emit(
+                "ach.scenario.converted",
+                {
+                    "tree_id": tree.id,
+                    "node_id": node.id,
+                    "hypothesis_id": hypothesis.id,
+                },
+                source="ach-shard",
+            )
+
+        return {
+            "status": "converted",
+            "tree_id": tree.id,
+            "node_id": node.id,
+            "hypothesis_id": hypothesis.id,
+            "hypothesis_title": hypothesis.title,
+        }
+
+    raise HTTPException(status_code=500, detail="Failed to create hypothesis")
+
+
+def _format_scenario_tree(tree) -> dict:
+    """Format a scenario tree for API response."""
+    return {
+        "id": tree.id,
+        "matrix_id": tree.matrix_id,
+        "title": tree.title,
+        "description": tree.description,
+        "situation_summary": tree.situation_summary,
+        "root_node_id": tree.root_node_id,
+        "total_scenarios": tree.total_scenarios,
+        "nodes": [
+            {
+                "id": n.id,
+                "parent_id": n.parent_id,
+                "title": n.title,
+                "description": n.description,
+                "probability": n.probability,
+                "timeframe": n.timeframe,
+                "key_drivers": n.key_drivers,
+                "trigger_conditions": n.trigger_conditions,
+                "indicators": [
+                    {
+                        "id": ind.id,
+                        "description": ind.description,
+                        "is_triggered": ind.is_triggered,
+                    }
+                    for ind in n.indicators
+                ],
+                "status": n.status.value,
+                "converted_hypothesis_id": n.converted_hypothesis_id,
+                "depth": n.depth,
+                "branch_order": n.branch_order,
+                "notes": n.notes,
+            }
+            for n in tree.nodes
+        ],
+        "drivers": [
+            {
+                "id": d.id,
+                "name": d.name,
+                "description": d.description,
+                "current_state": d.current_state,
+                "possible_states": d.possible_states,
+            }
+            for d in tree.drivers
+        ],
+        "model_used": tree.model_used,
+        "created_at": tree.created_at.isoformat(),
+        "updated_at": tree.updated_at.isoformat(),
     }

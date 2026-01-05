@@ -274,3 +274,165 @@ export interface StepProgress {
   completedSteps: number[];
   lastUpdated: string;
 }
+
+// ============================================
+// Premortem Analysis Types
+// ============================================
+
+export type FailureModeType =
+  | 'misinterpretation'
+  | 'missed_evidence'
+  | 'failed_assumption'
+  | 'deception'
+  | 'alternative_explanation';
+
+export type PremortemConversionType = 'hypothesis' | 'milestone' | 'assumption';
+
+export interface FailureMode {
+  id: string;
+  failure_type: FailureModeType;
+  description: string;
+  likelihood: 'low' | 'medium' | 'high';
+  early_warning_indicator: string;
+  mitigation_action: string;
+  converted_to?: PremortemConversionType | null;
+  converted_id?: string | null;
+}
+
+export interface PremortemAnalysis {
+  id: string;
+  matrix_id: string;
+  hypothesis_id: string;
+  hypothesis_title: string;
+  scenario_description: string;
+  overall_vulnerability: 'low' | 'medium' | 'high';
+  key_risks: string[];
+  recommendations: string[];
+  failure_modes: FailureMode[];
+  model_used?: string;
+  created_at: string;
+  updated_at?: string;
+}
+
+export interface PremortemListItem {
+  id: string;
+  hypothesis_id: string;
+  hypothesis_title: string;
+  overall_vulnerability: 'low' | 'medium' | 'high';
+  failure_mode_count: number;
+  key_risks: string[];
+  recommendations: string[];
+  created_at: string;
+}
+
+export interface PremortremsListResponse {
+  matrix_id: string;
+  premortems: PremortemListItem[];
+  count: number;
+}
+
+// ============================================
+// Cone of Plausibility / Scenario Types
+// ============================================
+
+export type ScenarioStatus = 'active' | 'occurred' | 'ruled_out' | 'converted';
+
+export interface ScenarioIndicator {
+  id: string;
+  description: string;
+  is_triggered: boolean;
+  triggered_at?: string | null;
+}
+
+export interface ScenarioNode {
+  id: string;
+  parent_id: string | null;
+  title: string;
+  description: string;
+  probability: number;
+  timeframe: string;
+  key_drivers: string[];
+  trigger_conditions: string[];
+  indicators: ScenarioIndicator[];
+  status: ScenarioStatus;
+  converted_hypothesis_id?: string | null;
+  depth: number;
+  branch_order: number;
+  notes: string;
+}
+
+export interface ScenarioDriver {
+  id: string;
+  name: string;
+  description: string;
+  current_state: string;
+  possible_states: string[];
+}
+
+export interface ScenarioTree {
+  id: string;
+  matrix_id: string;
+  title: string;
+  description: string;
+  situation_summary: string;
+  root_node_id: string | null;
+  total_scenarios: number;
+  nodes: ScenarioNode[];
+  drivers: ScenarioDriver[];
+  model_used?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ScenarioTreeListItem {
+  id: string;
+  title: string;
+  description: string;
+  total_scenarios: number;
+  active_scenarios: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ScenarioTreesListResponse {
+  matrix_id: string;
+  trees: ScenarioTreeListItem[];
+  count: number;
+}
+
+// Premortem display helpers
+export const FAILURE_MODE_LABELS: Record<FailureModeType, string> = {
+  misinterpretation: 'Misinterpretation',
+  missed_evidence: 'Missed Evidence',
+  failed_assumption: 'Failed Assumption',
+  deception: 'Deception',
+  alternative_explanation: 'Alternative Explanation',
+};
+
+export const FAILURE_MODE_ICONS: Record<FailureModeType, string> = {
+  misinterpretation: 'Eye',
+  missed_evidence: 'Search',
+  failed_assumption: 'AlertTriangle',
+  deception: 'ShieldAlert',
+  alternative_explanation: 'GitBranch',
+};
+
+export const LIKELIHOOD_COLORS: Record<'low' | 'medium' | 'high', string> = {
+  low: 'var(--arkham-success)',
+  medium: 'var(--arkham-warning)',
+  high: 'var(--arkham-error)',
+};
+
+export const SCENARIO_STATUS_LABELS: Record<ScenarioStatus, string> = {
+  active: 'Active',
+  occurred: 'Occurred',
+  ruled_out: 'Ruled Out',
+  converted: 'Converted to Hypothesis',
+};
+
+export const SCENARIO_STATUS_COLORS: Record<ScenarioStatus, string> = {
+  active: 'var(--arkham-primary)',
+  occurred: 'var(--arkham-success)',
+  ruled_out: 'var(--arkham-text-muted)',
+  converted: 'var(--arkham-info)',
+};

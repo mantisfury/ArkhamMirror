@@ -431,3 +431,146 @@ export async function acceptCorpusEvidence(data: {
     body: JSON.stringify(data),
   });
 }
+
+// ============================================
+// Premortem Analysis Operations
+// ============================================
+
+import type {
+  PremortemAnalysis,
+  PremortremsListResponse,
+  ScenarioTree,
+  ScenarioTreesListResponse,
+} from './types';
+
+export async function runPremortem(data: {
+  matrix_id: string;
+  hypothesis_id: string;
+}): Promise<PremortemAnalysis> {
+  return fetchAPI('/ai/premortem', {
+    method: 'POST',
+    body: JSON.stringify(data),
+  });
+}
+
+export async function getPremortems(matrixId: string): Promise<PremortremsListResponse> {
+  return fetchAPI(`/matrix/${matrixId}/premortems`);
+}
+
+export async function getPremortem(premortemId: string): Promise<PremortemAnalysis> {
+  return fetchAPI(`/premortem/${premortemId}`);
+}
+
+export async function deletePremortem(premortemId: string): Promise<{ status: string; premortem_id: string }> {
+  return fetchAPI(`/premortem/${premortemId}`, {
+    method: 'DELETE',
+  });
+}
+
+export async function convertFailureMode(data: {
+  premortem_id: string;
+  failure_mode_id: string;
+  convert_to: 'hypothesis' | 'milestone';
+}): Promise<{
+  status: string;
+  convert_to: string;
+  hypothesis_id?: string;
+  hypothesis_title?: string;
+  milestone?: {
+    hypothesis_id: string;
+    description: string;
+    source: string;
+    premortem_id: string;
+    failure_mode_id: string;
+  };
+}> {
+  return fetchAPI('/premortem/convert', {
+    method: 'POST',
+    body: JSON.stringify(data),
+  });
+}
+
+// ============================================
+// Cone of Plausibility / Scenario Operations
+// ============================================
+
+export async function generateScenarioTree(data: {
+  matrix_id: string;
+  title: string;
+  situation_summary: string;
+  max_depth?: number;
+}): Promise<ScenarioTree> {
+  return fetchAPI('/ai/scenarios', {
+    method: 'POST',
+    body: JSON.stringify(data),
+  });
+}
+
+export async function getScenarioTrees(matrixId: string): Promise<ScenarioTreesListResponse> {
+  return fetchAPI(`/matrix/${matrixId}/scenarios`);
+}
+
+export async function getScenarioTree(treeId: string): Promise<ScenarioTree> {
+  return fetchAPI(`/scenarios/${treeId}`);
+}
+
+export async function deleteScenarioTree(treeId: string): Promise<{ status: string; tree_id: string }> {
+  return fetchAPI(`/scenarios/${treeId}`, {
+    method: 'DELETE',
+  });
+}
+
+export async function addScenarioBranch(data: {
+  tree_id: string;
+  parent_node_id: string;
+  situation_summary?: string;
+}): Promise<{
+  tree_id: string;
+  parent_node_id: string;
+  new_nodes: {
+    id: string;
+    title: string;
+    description: string;
+    probability: number;
+    depth: number;
+  }[];
+  count: number;
+}> {
+  return fetchAPI('/scenarios/branch', {
+    method: 'POST',
+    body: JSON.stringify(data),
+  });
+}
+
+export async function updateScenarioNode(
+  treeId: string,
+  nodeId: string,
+  data: {
+    title?: string;
+    description?: string;
+    probability?: number;
+    status?: string;
+    notes?: string;
+  }
+): Promise<{ tree_id: string; node_id: string; updated: boolean }> {
+  return fetchAPI(`/scenarios/${treeId}/nodes/${nodeId}`, {
+    method: 'PUT',
+    body: JSON.stringify(data),
+  });
+}
+
+export async function convertScenarioToHypothesis(data: {
+  tree_id: string;
+  node_id: string;
+}): Promise<{
+  status: string;
+  tree_id: string;
+  node_id: string;
+  hypothesis_id: string;
+  hypothesis_title: string;
+}> {
+  return fetchAPI('/scenarios/convert', {
+    method: 'POST',
+    body: JSON.stringify(data),
+  });
+}

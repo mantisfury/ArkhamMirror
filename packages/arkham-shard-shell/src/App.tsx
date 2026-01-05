@@ -43,7 +43,7 @@ function StartPageRedirect() {
 
 // Page imports
 import { DashboardPage } from './pages/dashboard';
-import { ACHPage, ACHListPage, ACHNewPage } from './pages/ach';
+import { ACHPage, ACHListPage, ACHNewPage, ScenariosPage } from './pages/ach';
 import { IngestPage, IngestQueuePage } from './pages/ingest';
 import { OCRPage } from './pages/ocr';
 import { SearchPage } from './pages/search';
@@ -104,6 +104,8 @@ export function App() {
                   <Route path="/ach" element={<ACHPage />} />
                   <Route path="/ach/matrices" element={<ACHListPage />} />
                   <Route path="/ach/new" element={<ACHNewPage />} />
+                  <Route path="/ach/:matrixId" element={<ACHPage />} />
+                  <Route path="/ach/scenarios/:matrixId" element={<ScenariosPage />} />
 
                   {/* Ingest shard */}
                   <Route path="/ingest" element={<IngestPage />} />

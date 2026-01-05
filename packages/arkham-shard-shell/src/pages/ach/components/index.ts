@@ -16,6 +16,7 @@ export {
 } from './AIDialogs';
 export { SensitivitySection } from './sections/SensitivitySection';
 export { MilestonesSection } from './sections/MilestonesSection';
+export { PremortemSection } from './sections/PremortemSection';
 export { ScoresSection, ConsistencyChecksSection } from './sections/ScoresSection';
 export { LinkedDocumentsSection } from './sections/LinkedDocumentsSection';
 export { CorpusSearchSection } from './sections/CorpusSearchSection';

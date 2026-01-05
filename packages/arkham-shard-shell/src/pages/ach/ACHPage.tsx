@@ -13,7 +13,7 @@
  */
 
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useSearchParams, useNavigate } from 'react-router-dom';
 import { useToast } from '../../context/ToastContext';
 import { useConfirm } from '../../context/ConfirmContext';
 import { Icon } from '../../components/common/Icon';
@@ -49,10 +49,16 @@ import {
   ConsistencyChecksSection,
   SensitivitySection,
   MilestonesSection,
+  PremortemSection,
   LinkedDocumentsSection,
   CorpusSearchSection,
   MilestoneDialog,
 } from './components';
+
+import type {
+  PremortemAnalysis,
+  PremortemListItem,
+} from './types';
 
 // ============================================
 // Main Page Component
@@ -331,6 +337,7 @@ function CreateMatrixView() {
 function MatrixDetailView({ matrixId }: { matrixId: string }) {
   const [_searchParams, setSearchParams] = useSearchParams();
   void _searchParams;
+  const navigate = useNavigate();
   const { toast } = useToast();
   const _confirm = useConfirm();
   void _confirm;
@@ -401,6 +408,11 @@ function MatrixDetailView({ matrixId }: { matrixId: string }) {
   const [showMilestoneDialog, setShowMilestoneDialog] = useState(false);
   const [editingMilestone, setEditingMilestone] = useState<any | null>(null);
 
+  // Premortem
+  const [premortems, setPremortems] = useState<PremortemListItem[]>([]);
+  const [selectedPremortem, setSelectedPremortem] = useState<PremortemAnalysis | null>(null);
+  const [isPremortemLoading, setIsPremortemLoading] = useState(false);
+
   // Devil's Advocate hypothesis selection
   const [selectedChallengeHypothesis, setSelectedChallengeHypothesis] = useState<string>('');
 
@@ -440,6 +452,14 @@ function MatrixDetailView({ matrixId }: { matrixId: string }) {
       } catch (e) {
         console.error('Failed to load milestones from localStorage:', e);
         milestonesLoadedRef.current = true;
+      }
+
+      // Load premortems from database
+      try {
+        const premortemData = await api.getPremortems(matrixId);
+        setPremortems(premortemData.premortems);
+      } catch (e) {
+        console.error('Failed to load premortems:', e);
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load matrix');
@@ -847,6 +867,111 @@ function MatrixDetailView({ matrixId }: { matrixId: string }) {
     }
   };
 
+  // Premortem handlers
+  const handleRunPremortem = async (hypothesisId: string) => {
+    if (!matrix) return;
+    const hypothesis = matrix.hypotheses.find(h => h.id === hypothesisId);
+    if (!hypothesis) {
+      toast.error('Hypothesis not found');
+      return;
+    }
+
+    setIsPremortemLoading(true);
+    try {
+      const result = await api.runPremortem({
+        matrix_id: matrixId,
+        hypothesis_id: hypothesisId,
+      });
+      // Reload premortems
+      const premortemData = await api.getPremortems(matrixId);
+      setPremortems(premortemData.premortems);
+      // Select the new premortem
+      setSelectedPremortem(result);
+      toast.success(`Premortem analysis complete for "${hypothesis.title}"`);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to run premortem analysis');
+    } finally {
+      setIsPremortemLoading(false);
+    }
+  };
+
+  const handleSelectPremortem = async (premortemId: string) => {
+    try {
+      const premortem = await api.getPremortem(premortemId);
+      setSelectedPremortem(premortem);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to load premortem');
+    }
+  };
+
+  const handleDeletePremortem = async (premortemId: string) => {
+    if (!window.confirm('Delete this premortem analysis?')) return;
+    try {
+      await api.deletePremortem(premortemId);
+      setPremortems(prev => prev.filter(p => p.id !== premortemId));
+      if (selectedPremortem?.id === premortemId) {
+        setSelectedPremortem(null);
+      }
+      toast.success('Premortem deleted');
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to delete premortem');
+    }
+  };
+
+  const handleConvertFailureModeToHypothesis = async (premortemId: string, failureModeId: string) => {
+    if (!matrix) return;
+    try {
+      await api.convertFailureMode({
+        premortem_id: premortemId,
+        failure_mode_id: failureModeId,
+        convert_to: 'hypothesis',
+      });
+      toast.success('Failure mode converted to hypothesis');
+      // Refresh matrix and premortems
+      await fetchMatrix();
+      // Reload the selected premortem to show updated status
+      if (selectedPremortem) {
+        const updated = await api.getPremortem(selectedPremortem.id);
+        setSelectedPremortem(updated);
+      }
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to convert failure mode');
+    }
+  };
+
+  const handleConvertFailureModeToMilestone = async (premortemId: string, failureModeId: string) => {
+    if (!matrix || !selectedPremortem) return;
+    const failureMode = selectedPremortem.failure_modes.find(fm => fm.id === failureModeId);
+    if (!failureMode) return;
+
+    try {
+      await api.convertFailureMode({
+        premortem_id: premortemId,
+        failure_mode_id: failureModeId,
+        convert_to: 'milestone',
+      });
+      // Create a local milestone from the failure mode
+      const newMilestone = {
+        id: `milestone-${Date.now()}`,
+        description: `Watch for: ${failureMode.early_warning_indicator || failureMode.description}`,
+        hypothesis_id: selectedPremortem.hypothesis_id,
+        hypothesis_label: selectedPremortem.hypothesis_title,
+        expected_by: null,
+        observed: 0 as const,
+        observation_notes: `From premortem: ${failureMode.description}`,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      };
+      setMilestones(prev => [...prev, newMilestone]);
+      toast.success('Failure mode converted to milestone');
+      // Reload the selected premortem to show updated status
+      const updated = await api.getPremortem(selectedPremortem.id);
+      setSelectedPremortem(updated);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to convert failure mode');
+    }
+  };
+
   // Export handlers
   const handleExportMarkdown = async () => {
     try {
@@ -1050,53 +1175,69 @@ function MatrixDetailView({ matrixId }: { matrixId: string }) {
           onSaveNotes={() => toast.success('Notes saved')}
         />;
       case 8:
-        return <MilestonesSection
-          milestones={milestones}
-          hypotheses={matrix.hypotheses.map(h => ({ id: h.id, title: h.title }))}
-          aiAvailable={aiAvailable}
-          isAILoading={aiLoading}
-          selectedHypothesis={selectedMilestoneHypothesis}
-          onHypothesisSelect={setSelectedMilestoneHypothesis}
-          onAISuggest={async () => {
-            setAiLoading(true);
-            try {
-              const result = await api.suggestMilestones(matrixId);
-              setMilestoneSuggestions(result.suggestions);
-              setShowAIMilestones(true);
-            } catch (err) {
-              toast.error(err instanceof Error ? err.message : 'Failed to get suggestions');
-            } finally {
-              setAiLoading(false);
-            }
-          }}
-          onAddMilestone={() => {
-            setEditingMilestone(null);
-            setShowMilestoneDialog(true);
-          }}
-          onEditMilestone={(id) => {
-            const milestone = milestones.find(m => m.id === id);
-            if (milestone) {
-              setEditingMilestone(milestone);
-              setShowMilestoneDialog(true);
-            }
-          }}
-          onDeleteMilestone={(id) => {
-            if (window.confirm('Delete this milestone?')) {
-              setMilestones(prev => prev.filter(m => m.id !== id));
-              toast.success('Milestone deleted');
-            }
-          }}
-          onUpdateMilestoneStatus={(id, status) => {
-            setMilestones(prev => prev.map(m =>
-              m.id === id ? { ...m, observed: status, updated_at: new Date().toISOString() } : m
-            ));
-            const statusLabel = status === 1 ? 'OBSERVED' : status === -1 ? 'CONTRADICTED' : 'PENDING';
-            toast.success(`Milestone marked as ${statusLabel}`);
-          }}
-          onExportMarkdown={handleExportMarkdown}
-          onExportJSON={handleExportJSON}
-          onExportPDF={handleExportPDF}
-        />;
+        return (
+          <div className="step-8-content">
+            <MilestonesSection
+              milestones={milestones}
+              hypotheses={matrix.hypotheses.map(h => ({ id: h.id, title: h.title }))}
+              aiAvailable={aiAvailable}
+              isAILoading={aiLoading}
+              selectedHypothesis={selectedMilestoneHypothesis}
+              onHypothesisSelect={setSelectedMilestoneHypothesis}
+              onAISuggest={async () => {
+                setAiLoading(true);
+                try {
+                  const result = await api.suggestMilestones(matrixId);
+                  setMilestoneSuggestions(result.suggestions);
+                  setShowAIMilestones(true);
+                } catch (err) {
+                  toast.error(err instanceof Error ? err.message : 'Failed to get suggestions');
+                } finally {
+                  setAiLoading(false);
+                }
+              }}
+              onAddMilestone={() => {
+                setEditingMilestone(null);
+                setShowMilestoneDialog(true);
+              }}
+              onEditMilestone={(id) => {
+                const milestone = milestones.find(m => m.id === id);
+                if (milestone) {
+                  setEditingMilestone(milestone);
+                  setShowMilestoneDialog(true);
+                }
+              }}
+              onDeleteMilestone={(id) => {
+                if (window.confirm('Delete this milestone?')) {
+                  setMilestones(prev => prev.filter(m => m.id !== id));
+                  toast.success('Milestone deleted');
+                }
+              }}
+              onUpdateMilestoneStatus={(id, status) => {
+                setMilestones(prev => prev.map(m =>
+                  m.id === id ? { ...m, observed: status, updated_at: new Date().toISOString() } : m
+                ));
+                const statusLabel = status === 1 ? 'OBSERVED' : status === -1 ? 'CONTRADICTED' : 'PENDING';
+                toast.success(`Milestone marked as ${statusLabel}`);
+              }}
+              onExportMarkdown={handleExportMarkdown}
+              onExportJSON={handleExportJSON}
+              onExportPDF={handleExportPDF}
+            />
+            <PremortemSection
+              premortems={premortems}
+              selectedPremortem={selectedPremortem}
+              hypotheses={matrix.hypotheses.map(h => ({ id: h.id, title: h.title }))}
+              aiAvailable={aiAvailable}
+              isLoading={isPremortemLoading}
+              onRunPremortem={handleRunPremortem}
+              onSelectPremortem={handleSelectPremortem}
+              onDeletePremortem={handleDeletePremortem}
+              onConvertToHypothesis={handleConvertFailureModeToHypothesis}
+              onConvertToMilestone={handleConvertFailureModeToMilestone}
+            />
+          </div>
+        );
       default:
         return null;
     }
@@ -1124,6 +1265,14 @@ function MatrixDetailView({ matrixId }: { matrixId: string }) {
           <button className="btn btn-secondary" onClick={() => setShowAddEvidence(true)}>
             <Icon name="Plus" size={16} />
             Add Evidence
+          </button>
+          <button
+            className="btn btn-secondary"
+            onClick={() => navigate(`/ach/scenarios/${matrixId}`)}
+            title="Cone of Plausibility - Map future scenarios"
+          >
+            <Icon name="GitBranch" size={16} />
+            Scenarios
           </button>
           {aiAvailable && (
             <button

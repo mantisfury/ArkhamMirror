@@ -27,6 +27,10 @@ navigation:
       label: New Analysis
       route: /ach/new
       icon: Plus
+    - id: scenarios
+      label: Scenarios
+      route: /ach/scenarios
+      icon: GitBranch
 
 # Dependencies - Frame service names
 dependencies:
@@ -44,6 +48,8 @@ capabilities:
   - evidence_management
   - consistency_scoring
   - devils_advocate
+  - premortem_analysis
+  - scenario_planning
   - report_generation
   - data_export
 
@@ -59,6 +65,12 @@ events:
     - ach.evidence.removed
     - ach.rating.updated
     - ach.analysis.completed
+    - ach.premortem.created
+    - ach.premortem.deleted
+    - ach.scenario_tree.created
+    - ach.scenario_tree.updated
+    - ach.scenario_tree.deleted
+    - ach.scenario.converted
   subscribes:
     - llm.analysis.completed
     - document.processed      # Link new documents as evidence
