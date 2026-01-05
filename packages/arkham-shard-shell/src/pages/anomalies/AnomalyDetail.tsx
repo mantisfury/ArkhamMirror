@@ -5,7 +5,7 @@
  */
 
 import { useState, useEffect, useCallback } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useSearchParams, useNavigate } from 'react-router-dom';
 import { useToast } from '../../context/ToastContext';
 import { useConfirm } from '../../context/ConfirmContext';
 import { Icon } from '../../components/common/Icon';
@@ -13,6 +13,7 @@ import { LoadingSkeleton } from '../../components/common/LoadingSkeleton';
 
 import * as api from './api';
 import type { Anomaly, AnomalyStatus } from './types';
+import type { RelatedAnomaly } from './types';
 import {
   ANOMALY_TYPE_LABELS,
   ANOMALY_TYPE_ICONS,
@@ -29,6 +30,7 @@ import {
 export function AnomalyDetail({ anomalyId }: { anomalyId: string }) {
   const [_searchParams, setSearchParams] = useSearchParams();
   void _searchParams;
+  const navigate = useNavigate();
   const { toast } = useToast();
   const confirm = useConfirm();
 
@@ -38,6 +40,11 @@ export function AnomalyDetail({ anomalyId }: { anomalyId: string }) {
 
   // Note dialog
   const [showNoteDialog, setShowNoteDialog] = useState(false);
+
+  // Related anomalies dialog
+  const [showRelatedDialog, setShowRelatedDialog] = useState(false);
+  const [relatedAnomalies, setRelatedAnomalies] = useState<RelatedAnomaly[]>([]);
+  const [loadingRelated, setLoadingRelated] = useState(false);
 
   // Fetch anomaly data
   const fetchAnomaly = useCallback(async () => {
@@ -97,6 +104,32 @@ export function AnomalyDetail({ anomalyId }: { anomalyId: string }) {
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Failed to add note');
     }
+  };
+
+  const handleViewDocument = () => {
+    if (!anomaly) return;
+    navigate(`/documents?id=${anomaly.doc_id}`);
+  };
+
+  const handleFindSimilar = async () => {
+    if (!anomaly) return;
+    setLoadingRelated(true);
+    setShowRelatedDialog(true);
+    try {
+      const response = await api.getRelatedAnomalies(anomaly.id, 20);
+      setRelatedAnomalies(response.related);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to find related anomalies');
+      setRelatedAnomalies([]);
+    } finally {
+      setLoadingRelated(false);
+    }
+  };
+
+  const handleViewPatterns = () => {
+    if (!anomaly) return;
+    // Navigate to patterns page with document filter
+    navigate(`/patterns?doc_id=${anomaly.doc_id}`);
   };
 
   if (loading) {
@@ -271,7 +304,7 @@ export function AnomalyDetail({ anomalyId }: { anomalyId: string }) {
             <Icon name="FileText" size={20} />
             <div className="document-info">
               <span className="document-id">{anomaly.doc_id}</span>
-              <button className="btn btn-link">
+              <button className="btn btn-link" onClick={handleViewDocument}>
                 View Document
                 <Icon name="ExternalLink" size={14} />
               </button>
@@ -327,19 +360,19 @@ export function AnomalyDetail({ anomalyId }: { anomalyId: string }) {
         <div className="detail-card">
           <h3>Investigation Actions</h3>
           <div className="action-buttons">
-            <button className="btn btn-soft">
+            <button className="btn btn-soft" onClick={handleFindSimilar}>
               <Icon name="Search" size={16} />
               Find Similar Anomalies
             </button>
-            <button className="btn btn-soft">
+            <button className="btn btn-soft" onClick={handleViewPatterns}>
               <Icon name="BarChart3" size={16} />
               View Pattern Analysis
             </button>
-            <button className="btn btn-soft">
+            <button className="btn btn-soft" disabled title="Timeline shard not yet operational">
               <Icon name="Clock" size={16} />
               View Timeline
             </button>
-            <button className="btn btn-soft">
+            <button className="btn btn-soft" disabled title="Export shard not yet operational">
               <Icon name="FileText" size={16} />
               Export Report
             </button>
@@ -368,6 +401,19 @@ export function AnomalyDetail({ anomalyId }: { anomalyId: string }) {
         <AddNoteDialog
           onSubmit={handleAddNote}
           onCancel={() => setShowNoteDialog(false)}
+        />
+      )}
+
+      {/* Related Anomalies Dialog */}
+      {showRelatedDialog && (
+        <RelatedAnomaliesDialog
+          related={relatedAnomalies}
+          loading={loadingRelated}
+          onClose={() => setShowRelatedDialog(false)}
+          onSelect={(id) => {
+            setShowRelatedDialog(false);
+            setSearchParams({ id });
+          }}
         />
       )}
     </div>
@@ -424,6 +470,78 @@ function AddNoteDialog({ onSubmit, onCancel }: AddNoteDialogProps) {
             </button>
           </div>
         </form>
+      </div>
+    </div>
+  );
+}
+
+// ============================================
+// Related Anomalies Dialog
+// ============================================
+
+interface RelatedAnomaliesDialogProps {
+  related: RelatedAnomaly[];
+  loading: boolean;
+  onClose: () => void;
+  onSelect: (id: string) => void;
+}
+
+function RelatedAnomaliesDialog({ related, loading, onClose, onSelect }: RelatedAnomaliesDialogProps) {
+  return (
+    <div className="dialog-overlay" onClick={onClose}>
+      <div className="dialog dialog-lg" onClick={e => e.stopPropagation()}>
+        <div className="dialog-header">
+          <h2>Related Anomalies</h2>
+          <button className="btn btn-icon" onClick={onClose}>
+            <Icon name="X" size={20} />
+          </button>
+        </div>
+        <p className="dialog-description">
+          Anomalies from the same document or with similar patterns.
+        </p>
+        <div className="related-list" style={{ maxHeight: '400px', overflowY: 'auto' }}>
+          {loading ? (
+            <div style={{ padding: '2rem', textAlign: 'center' }}>
+              <Icon name="Loader2" size={24} className="spin" />
+              <p>Finding related anomalies...</p>
+            </div>
+          ) : related.length === 0 ? (
+            <div style={{ padding: '2rem', textAlign: 'center', color: 'var(--arkham-text-muted)' }}>
+              <Icon name="Search" size={32} />
+              <p>No related anomalies found</p>
+            </div>
+          ) : (
+            related.map((anomaly) => (
+              <div
+                key={anomaly.id}
+                className="anomaly-card"
+                style={{ cursor: 'pointer', margin: '0.5rem 0' }}
+                onClick={() => onSelect(anomaly.id)}
+              >
+                <div className="anomaly-header">
+                  <Icon name={ANOMALY_TYPE_ICONS[anomaly.anomaly_type] as any} size={16} />
+                  <span className={`badge badge-${SEVERITY_COLORS[anomaly.severity]}`}>
+                    {SEVERITY_LABELS[anomaly.severity]}
+                  </span>
+                  <span className="badge badge-gray">
+                    {anomaly.relation === 'same_document' ? 'Same Document' : 'Same Type'}
+                  </span>
+                </div>
+                <p className="anomaly-explanation" style={{ fontSize: '0.875rem', margin: '0.5rem 0' }}>
+                  {anomaly.explanation}
+                </p>
+                <div className="anomaly-meta" style={{ fontSize: '0.75rem', color: 'var(--arkham-text-muted)' }}>
+                  Score: {anomaly.score.toFixed(1)} • Confidence: {(anomaly.confidence * 100).toFixed(0)}%
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+        <div className="dialog-actions">
+          <button className="btn btn-secondary" onClick={onClose}>
+            Close
+          </button>
+        </div>
       </div>
     </div>
   );

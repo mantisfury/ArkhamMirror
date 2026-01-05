@@ -12,6 +12,7 @@ import { LoadingSkeleton } from '../../components/common/LoadingSkeleton';
 import { AnomalyDetail } from './AnomalyDetail';
 
 import * as api from './api';
+import './AnomaliesPage.css';
 import type {
   Anomaly,
   DetectionConfig,
@@ -61,6 +62,10 @@ function AnomaliesListView() {
   const [error, setError] = useState<string | null>(null);
   const [offset, setOffset] = useState(0);
   const [hasMore, setHasMore] = useState(false);
+
+  // Bulk selection state
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [bulkActionLoading, setBulkActionLoading] = useState(false);
 
   // Filters
   const [typeFilter, setTypeFilter] = useState<string>('');
@@ -132,6 +137,62 @@ function AnomaliesListView() {
     setSeverityFilter('');
     setMinSeverity(0);
     setMaxSeverity(10);
+  };
+
+  // Bulk selection handlers
+  const toggleSelection = (anomalyId: string, event: React.MouseEvent) => {
+    event.stopPropagation();
+    setSelectedIds(prev => {
+      const next = new Set(prev);
+      if (next.has(anomalyId)) {
+        next.delete(anomalyId);
+      } else {
+        next.add(anomalyId);
+      }
+      return next;
+    });
+  };
+
+  const toggleSelectAll = () => {
+    if (selectedIds.size === filteredAnomalies.length) {
+      setSelectedIds(new Set());
+    } else {
+      setSelectedIds(new Set(filteredAnomalies.map(a => a.id)));
+    }
+  };
+
+  const clearSelection = () => {
+    setSelectedIds(new Set());
+  };
+
+  const handleBulkAction = async (status: string) => {
+    if (selectedIds.size === 0) return;
+
+    setBulkActionLoading(true);
+    try {
+      const result = await api.bulkUpdateStatus(
+        Array.from(selectedIds),
+        status,
+        '',
+        'user'
+      );
+
+      if (result.success) {
+        toast.success(`Updated ${result.updated_count} anomalies to "${status}"`);
+        if (result.failed_count > 0) {
+          toast.warning(`Failed to update ${result.failed_count} anomalies`);
+        }
+        setSelectedIds(new Set());
+        fetchAnomalies();
+        fetchStats();
+      } else {
+        toast.error('Failed to update anomalies');
+      }
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to update anomalies');
+    } finally {
+      setBulkActionLoading(false);
+    }
   };
 
   if (loading && anomalies.length === 0) {
@@ -291,6 +352,55 @@ function AnomaliesListView() {
         </button>
       </div>
 
+      {/* Bulk Actions Toolbar */}
+      {selectedIds.size > 0 && (
+        <div className="bulk-actions-toolbar">
+          <div className="bulk-selection-info">
+            <Icon name="CheckSquare" size={16} />
+            <span>{selectedIds.size} selected</span>
+          </div>
+          <div className="bulk-action-buttons">
+            <button
+              className="btn btn-sm btn-success"
+              onClick={() => handleBulkAction('confirmed')}
+              disabled={bulkActionLoading}
+            >
+              <Icon name="CheckCircle" size={14} />
+              Confirm Selected
+            </button>
+            <button
+              className="btn btn-sm btn-secondary"
+              onClick={() => handleBulkAction('dismissed')}
+              disabled={bulkActionLoading}
+            >
+              <Icon name="XCircle" size={14} />
+              Dismiss Selected
+            </button>
+            <button
+              className="btn btn-sm btn-warning"
+              onClick={() => handleBulkAction('false_positive')}
+              disabled={bulkActionLoading}
+            >
+              <Icon name="AlertTriangle" size={14} />
+              Mark as False Positive
+            </button>
+            <button
+              className="btn btn-sm btn-ghost"
+              onClick={clearSelection}
+              disabled={bulkActionLoading}
+            >
+              <Icon name="X" size={14} />
+              Clear Selection
+            </button>
+          </div>
+          {bulkActionLoading && (
+            <div className="bulk-loading">
+              <Icon name="Loader2" size={16} className="spin" />
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Anomaly List */}
       {filteredAnomalies.length === 0 ? (
         <div className="anomalies-empty">
@@ -304,13 +414,32 @@ function AnomaliesListView() {
         </div>
       ) : (
         <div className="anomalies-list">
+          {/* Select All Header */}
+          <div className="anomalies-list-header">
+            <label className="select-all-checkbox" onClick={(e) => e.stopPropagation()}>
+              <input
+                type="checkbox"
+                checked={selectedIds.size === filteredAnomalies.length && filteredAnomalies.length > 0}
+                onChange={toggleSelectAll}
+              />
+              <span>Select All ({filteredAnomalies.length})</span>
+            </label>
+          </div>
+
           {filteredAnomalies.map(anomaly => (
             <div
               key={anomaly.id}
-              className="anomaly-card"
+              className={`anomaly-card ${selectedIds.has(anomaly.id) ? 'selected' : ''}`}
               onClick={() => handleOpenAnomaly(anomaly.id)}
             >
               <div className="anomaly-header">
+                <div className="anomaly-checkbox" onClick={(e) => toggleSelection(anomaly.id, e)}>
+                  <input
+                    type="checkbox"
+                    checked={selectedIds.has(anomaly.id)}
+                    onChange={() => {}}
+                  />
+                </div>
                 <div className="anomaly-type">
                   <Icon name={ANOMALY_TYPE_ICONS[anomaly.anomaly_type] as any} size={20} />
                   <span>{ANOMALY_TYPE_LABELS[anomaly.anomaly_type]}</span>

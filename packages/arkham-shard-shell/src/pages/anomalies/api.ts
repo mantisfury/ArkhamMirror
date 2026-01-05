@@ -12,6 +12,8 @@ import type {
   StatsResponse,
   PatternRequest,
   PatternsResponse,
+  BulkStatusResponse,
+  RelatedAnomaliesResponse,
 } from './types';
 
 const API_PREFIX = '/api/anomalies';
@@ -129,6 +131,16 @@ export async function getOutliers(
   return fetchAPI<AnomalyListResponse>(`/outliers${query ? `?${query}` : ''}`);
 }
 
+export async function getRelatedAnomalies(
+  anomalyId: string,
+  limit?: number
+): Promise<RelatedAnomaliesResponse> {
+  const params = new URLSearchParams();
+  if (limit !== undefined) params.set('limit', limit.toString());
+  const query = params.toString();
+  return fetchAPI<RelatedAnomaliesResponse>(`/${anomalyId}/related${query ? `?${query}` : ''}`);
+}
+
 export async function detectPatterns(request: PatternRequest): Promise<PatternsResponse> {
   return fetchAPI<PatternsResponse>('/patterns', {
     method: 'POST',
@@ -138,4 +150,25 @@ export async function detectPatterns(request: PatternRequest): Promise<PatternsR
 
 export async function getStats(): Promise<StatsResponse> {
   return fetchAPI<StatsResponse>('/stats');
+}
+
+// ============================================
+// Bulk Operations
+// ============================================
+
+export async function bulkUpdateStatus(
+  anomalyIds: string[],
+  status: string,
+  notes?: string,
+  reviewedBy?: string
+): Promise<BulkStatusResponse> {
+  return fetchAPI<BulkStatusResponse>('/bulk-status', {
+    method: 'POST',
+    body: JSON.stringify({
+      anomaly_ids: anomalyIds,
+      status,
+      notes: notes || '',
+      reviewed_by: reviewedBy,
+    }),
+  });
 }

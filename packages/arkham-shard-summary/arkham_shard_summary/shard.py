@@ -729,23 +729,517 @@ Length: {length_map.get(request.target_length, "medium-length")}
         source_ids: List[str],
     ) -> str:
         """
-        Fetch source content for summarization.
+        Fetch source content for summarization from various database sources.
 
         Args:
-            source_type: Type of source
-            source_ids: IDs of sources
+            source_type: Type of source (document, documents, entity, project, claim_set, timeline, analysis)
+            source_ids: IDs of sources to fetch
 
         Returns:
-            Combined text from all sources
+            Combined text from all sources, separated by dividers
         """
-        # This would fetch from the appropriate Frame service
-        # For now, return mock content
-        if source_type == SourceType.DOCUMENT:
-            return f"Mock document content for ID: {source_ids[0]}"
-        elif source_type == SourceType.DOCUMENTS:
-            return f"Mock content for {len(source_ids)} documents"
-        else:
-            return f"Mock content for {source_type.value}"
+        if not self._db:
+            logger.warning("Database not available for fetching source content")
+            return ""
+
+        if not source_ids:
+            return ""
+
+        contents = []
+
+        try:
+            if source_type == SourceType.DOCUMENT:
+                # Single document - fetch from arkham_frame.documents table
+                for doc_id in source_ids:
+                    content = await self._fetch_document_content(doc_id)
+                    if content:
+                        contents.append(content)
+
+            elif source_type == SourceType.DOCUMENTS:
+                # Multiple documents - fetch each one
+                for doc_id in source_ids:
+                    content = await self._fetch_document_content(doc_id)
+                    if content:
+                        contents.append(content)
+
+            elif source_type == SourceType.ENTITY:
+                # Entities from arkham_entities table
+                for entity_id in source_ids:
+                    content = await self._fetch_entity_content(entity_id)
+                    if content:
+                        contents.append(content)
+
+            elif source_type == SourceType.PROJECT:
+                # Projects from arkham_projects table
+                for project_id in source_ids:
+                    content = await self._fetch_project_content(project_id)
+                    if content:
+                        contents.append(content)
+
+            elif source_type == SourceType.CLAIM_SET:
+                # Claims from arkham_claims table
+                for claim_id in source_ids:
+                    content = await self._fetch_claim_content(claim_id)
+                    if content:
+                        contents.append(content)
+
+            elif source_type == SourceType.TIMELINE:
+                # Timeline events from arkham_timeline_events table
+                for event_id in source_ids:
+                    content = await self._fetch_timeline_content(event_id)
+                    if content:
+                        contents.append(content)
+
+            elif source_type == SourceType.ANALYSIS:
+                # Analysis results (ACH matrices, etc.) - try multiple sources
+                for analysis_id in source_ids:
+                    content = await self._fetch_analysis_content(analysis_id)
+                    if content:
+                        contents.append(content)
+
+            if not contents:
+                logger.warning(f"No content found for {source_type.value} with IDs: {source_ids}")
+                return ""
+
+            return "\n\n---\n\n".join(contents)
+
+        except Exception as e:
+            logger.error(f"Error fetching source content for {source_type.value}: {e}", exc_info=True)
+            return ""
+
+    async def _fetch_document_content(self, doc_id: str) -> Optional[str]:
+        """
+        Fetch content for a single document.
+
+        Tries multiple table structures to find the document content.
+
+        Args:
+            doc_id: Document ID
+
+        Returns:
+            Formatted document content or None
+        """
+        if not self._db:
+            return None
+
+        # Try arkham_frame.documents first (canonical location)
+        try:
+            row = await self._db.fetch_one(
+                """
+                SELECT id, filename, metadata
+                FROM arkham_frame.documents
+                WHERE id = :id
+                """,
+                {"id": doc_id}
+            )
+            if row:
+                filename = row.get("filename", "Document")
+                # Content might be in metadata or we need to fetch chunks
+                metadata = self._parse_jsonb(row.get("metadata"), {})
+                content = metadata.get("content", "")
+
+                if content:
+                    return f"# {filename}\n\n{content}"
+
+                # Try to get content from chunks table
+                chunk_content = await self._fetch_document_chunks(doc_id)
+                if chunk_content:
+                    return f"# {filename}\n\n{chunk_content}"
+
+        except Exception as e:
+            logger.debug(f"Could not fetch from arkham_frame.documents: {e}")
+
+        # Try arkham_documents table (older schema)
+        try:
+            row = await self._db.fetch_one(
+                """
+                SELECT id, file_name, content
+                FROM arkham_documents
+                WHERE id = :id
+                """,
+                {"id": doc_id}
+            )
+            if row:
+                filename = row.get("file_name") or "Document"
+                content = row.get("content", "")
+                if content:
+                    return f"# {filename}\n\n{content}"
+        except Exception as e:
+            logger.debug(f"Could not fetch from arkham_documents: {e}")
+
+        return None
+
+    async def _fetch_document_chunks(self, doc_id: str) -> Optional[str]:
+        """
+        Fetch document content from chunks table.
+
+        Args:
+            doc_id: Document ID
+
+        Returns:
+            Combined chunk content or None
+        """
+        if not self._db:
+            return None
+
+        try:
+            # Try to get chunks
+            rows = await self._db.fetch_all(
+                """
+                SELECT content, chunk_index
+                FROM arkham_chunks
+                WHERE document_id = :doc_id
+                ORDER BY chunk_index
+                """,
+                {"doc_id": doc_id}
+            )
+            if rows:
+                chunks = [row.get("content", "") for row in rows]
+                return "\n\n".join(chunks)
+        except Exception as e:
+            logger.debug(f"Could not fetch chunks: {e}")
+
+        return None
+
+    async def _fetch_entity_content(self, entity_id: str) -> Optional[str]:
+        """
+        Fetch content for an entity.
+
+        Args:
+            entity_id: Entity ID
+
+        Returns:
+            Formatted entity content or None
+        """
+        if not self._db:
+            return None
+
+        try:
+            row = await self._db.fetch_one(
+                """
+                SELECT id, name, entity_type, description, aliases, document_ids, mention_count
+                FROM arkham_entities
+                WHERE id = :id
+                """,
+                {"id": entity_id}
+            )
+            if row:
+                name = row.get("name", "Unknown")
+                entity_type = row.get("entity_type", "Unknown")
+                description = row.get("description", "")
+                aliases = self._parse_jsonb(row.get("aliases"), [])
+                mention_count = row.get("mention_count", 0)
+                document_ids = self._parse_jsonb(row.get("document_ids"), [])
+
+                content_parts = [f"## Entity: {name}"]
+                content_parts.append(f"**Type:** {entity_type}")
+
+                if aliases:
+                    content_parts.append(f"**Also known as:** {', '.join(aliases)}")
+
+                content_parts.append(f"**Mentions:** {mention_count}")
+                content_parts.append(f"**Referenced in:** {len(document_ids)} document(s)")
+
+                if description:
+                    content_parts.append(f"\n**Description:**\n{description}")
+
+                return "\n".join(content_parts)
+
+        except Exception as e:
+            logger.debug(f"Could not fetch entity: {e}")
+
+        return None
+
+    async def _fetch_project_content(self, project_id: str) -> Optional[str]:
+        """
+        Fetch content for a project, including its documents.
+
+        Args:
+            project_id: Project ID
+
+        Returns:
+            Formatted project content or None
+        """
+        if not self._db:
+            return None
+
+        try:
+            # Fetch project metadata
+            row = await self._db.fetch_one(
+                """
+                SELECT id, name, description, status, document_count, member_count, settings
+                FROM arkham_projects
+                WHERE id = :id
+                """,
+                {"id": project_id}
+            )
+            if row:
+                name = row.get("name", "Unknown Project")
+                description = row.get("description", "")
+                status = row.get("status", "active")
+                doc_count = row.get("document_count", 0)
+                member_count = row.get("member_count", 0)
+
+                content_parts = [f"# Project: {name}"]
+                content_parts.append(f"**Status:** {status}")
+                content_parts.append(f"**Documents:** {doc_count}")
+                content_parts.append(f"**Members:** {member_count}")
+
+                if description:
+                    content_parts.append(f"\n**Description:**\n{description}")
+
+                # Fetch project documents and include their content
+                doc_rows = await self._db.fetch_all(
+                    """
+                    SELECT document_id
+                    FROM arkham_project_documents
+                    WHERE project_id = :project_id
+                    LIMIT 10
+                    """,
+                    {"project_id": project_id}
+                )
+
+                if doc_rows:
+                    content_parts.append("\n## Project Documents\n")
+                    for doc_row in doc_rows:
+                        doc_content = await self._fetch_document_content(doc_row["document_id"])
+                        if doc_content:
+                            content_parts.append(doc_content)
+
+                return "\n".join(content_parts)
+
+        except Exception as e:
+            logger.debug(f"Could not fetch project: {e}")
+
+        return None
+
+    async def _fetch_claim_content(self, claim_id: str) -> Optional[str]:
+        """
+        Fetch content for a claim and its evidence.
+
+        Args:
+            claim_id: Claim ID
+
+        Returns:
+            Formatted claim content or None
+        """
+        if not self._db:
+            return None
+
+        try:
+            row = await self._db.fetch_one(
+                """
+                SELECT id, text, claim_type, status, confidence, source_context,
+                       evidence_count, supporting_count, refuting_count
+                FROM arkham_claims
+                WHERE id = :id
+                """,
+                {"id": claim_id}
+            )
+            if row:
+                claim_text = row.get("text", "")
+                claim_type = row.get("claim_type", "factual")
+                status = row.get("status", "unverified")
+                confidence = row.get("confidence", 1.0)
+                source_context = row.get("source_context", "")
+                evidence_count = row.get("evidence_count", 0)
+                supporting = row.get("supporting_count", 0)
+                refuting = row.get("refuting_count", 0)
+
+                content_parts = [f"## Claim ({claim_type})"]
+                content_parts.append(f"**Statement:** {claim_text}")
+                content_parts.append(f"**Status:** {status}")
+                content_parts.append(f"**Confidence:** {confidence * 100:.0f}%")
+                content_parts.append(f"**Evidence:** {evidence_count} total ({supporting} supporting, {refuting} refuting)")
+
+                if source_context:
+                    content_parts.append(f"\n**Context:**\n{source_context}")
+
+                # Fetch evidence for this claim
+                evidence_rows = await self._db.fetch_all(
+                    """
+                    SELECT evidence_type, relationship, strength, excerpt, notes
+                    FROM arkham_claim_evidence
+                    WHERE claim_id = :claim_id
+                    LIMIT 10
+                    """,
+                    {"claim_id": claim_id}
+                )
+
+                if evidence_rows:
+                    content_parts.append("\n### Evidence\n")
+                    for ev in evidence_rows:
+                        ev_type = ev.get("evidence_type", "unknown")
+                        relationship = ev.get("relationship", "neutral")
+                        strength = ev.get("strength", "moderate")
+                        excerpt = ev.get("excerpt", "")
+
+                        content_parts.append(f"- **{relationship.capitalize()}** ({ev_type}, {strength})")
+                        if excerpt:
+                            content_parts.append(f"  > {excerpt[:200]}...")
+
+                return "\n".join(content_parts)
+
+        except Exception as e:
+            logger.debug(f"Could not fetch claim: {e}")
+
+        return None
+
+    async def _fetch_timeline_content(self, event_id: str) -> Optional[str]:
+        """
+        Fetch content for a timeline event.
+
+        Args:
+            event_id: Timeline event ID
+
+        Returns:
+            Formatted timeline event content or None
+        """
+        if not self._db:
+            return None
+
+        try:
+            row = await self._db.fetch_one(
+                """
+                SELECT id, text, event_type, date_start, date_end, precision, confidence, entities
+                FROM arkham_timeline_events
+                WHERE id = :id
+                """,
+                {"id": event_id}
+            )
+            if row:
+                text = row.get("text", "")
+                event_type = row.get("event_type", "event")
+                date_start = row.get("date_start", "Unknown date")
+                date_end = row.get("date_end")
+                precision = row.get("precision", "unknown")
+                confidence = row.get("confidence", 1.0)
+                entities = self._parse_jsonb(row.get("entities"), [])
+
+                # Format date
+                date_str = str(date_start)
+                if date_end and date_end != date_start:
+                    date_str = f"{date_start} to {date_end}"
+
+                content_parts = [f"## Event: {text[:100]}"]
+                content_parts.append(f"**Type:** {event_type}")
+                content_parts.append(f"**Date:** {date_str} ({precision} precision)")
+                content_parts.append(f"**Confidence:** {confidence * 100:.0f}%")
+
+                if entities:
+                    entity_names = [e.get("name", str(e)) if isinstance(e, dict) else str(e) for e in entities]
+                    content_parts.append(f"**Entities involved:** {', '.join(entity_names[:5])}")
+
+                content_parts.append(f"\n**Details:**\n{text}")
+
+                return "\n".join(content_parts)
+
+        except Exception as e:
+            logger.debug(f"Could not fetch timeline event: {e}")
+
+        return None
+
+    async def _fetch_analysis_content(self, analysis_id: str) -> Optional[str]:
+        """
+        Fetch content from analysis results (ACH matrices, patterns, etc.).
+
+        Args:
+            analysis_id: Analysis ID
+
+        Returns:
+            Formatted analysis content or None
+        """
+        if not self._db:
+            return None
+
+        # Try to fetch from various analysis tables
+
+        # Try ACH matrices (note: ACH uses in-memory storage, but we'll try database)
+        # ACH shard might store matrices in a table we can query
+
+        # Try patterns
+        try:
+            row = await self._db.fetch_one(
+                """
+                SELECT id, name, pattern_type, description, confidence, document_ids
+                FROM arkham_patterns
+                WHERE id = :id
+                """,
+                {"id": analysis_id}
+            )
+            if row:
+                name = row.get("name", "Pattern")
+                pattern_type = row.get("pattern_type", "unknown")
+                description = row.get("description", "")
+                confidence = row.get("confidence", 1.0)
+
+                content_parts = [f"## Pattern: {name}"]
+                content_parts.append(f"**Type:** {pattern_type}")
+                content_parts.append(f"**Confidence:** {confidence * 100:.0f}%")
+                if description:
+                    content_parts.append(f"\n**Description:**\n{description}")
+
+                return "\n".join(content_parts)
+
+        except Exception as e:
+            logger.debug(f"Could not fetch pattern: {e}")
+
+        # Try anomalies
+        try:
+            row = await self._db.fetch_one(
+                """
+                SELECT id, anomaly_type, description, severity, confidence
+                FROM arkham_anomalies
+                WHERE id = :id
+                """,
+                {"id": analysis_id}
+            )
+            if row:
+                anomaly_type = row.get("anomaly_type", "unknown")
+                description = row.get("description", "")
+                severity = row.get("severity", "medium")
+                confidence = row.get("confidence", 1.0)
+
+                content_parts = [f"## Anomaly ({anomaly_type})"]
+                content_parts.append(f"**Severity:** {severity}")
+                content_parts.append(f"**Confidence:** {confidence * 100:.0f}%")
+                if description:
+                    content_parts.append(f"\n**Description:**\n{description}")
+
+                return "\n".join(content_parts)
+
+        except Exception as e:
+            logger.debug(f"Could not fetch anomaly: {e}")
+
+        # Try contradictions
+        try:
+            row = await self._db.fetch_one(
+                """
+                SELECT id, contradiction_type, description, severity, resolution_status
+                FROM arkham_contradictions
+                WHERE id = :id
+                """,
+                {"id": analysis_id}
+            )
+            if row:
+                contradiction_type = row.get("contradiction_type", "unknown")
+                description = row.get("description", "")
+                severity = row.get("severity", "medium")
+                resolution = row.get("resolution_status", "unresolved")
+
+                content_parts = [f"## Contradiction ({contradiction_type})"]
+                content_parts.append(f"**Severity:** {severity}")
+                content_parts.append(f"**Status:** {resolution}")
+                if description:
+                    content_parts.append(f"\n**Description:**\n{description}")
+
+                return "\n".join(content_parts)
+
+        except Exception as e:
+            logger.debug(f"Could not fetch contradiction: {e}")
+
+        logger.debug(f"No analysis content found for ID: {analysis_id}")
+        return None
 
     async def _store_summary(self, summary: Summary) -> None:
         """Store summary in database or memory."""
@@ -866,29 +1360,195 @@ Length: {length_map.get(request.target_length, "medium-length")}
         """
         Handle document processed event.
 
-        Auto-generate summary for newly processed documents.
+        Auto-generate summary for newly processed documents when auto-summarization is enabled.
 
         Args:
-            event: Event data
+            event: Event data containing doc_id/document_id
         """
         doc_id = event.get("doc_id") or event.get("document_id")
         if not doc_id:
+            logger.debug("Document processed event missing document ID")
             return
 
-        logger.debug(f"Document processed: {doc_id} - would auto-generate summary")
+        logger.info(f"Document processed: {doc_id} - checking auto-summarization settings")
 
-        # In production, would check if auto-summarization is enabled
-        # and enqueue a background job
+        # Check if auto-summarization is enabled
+        auto_summarize = await self._get_auto_summarize_setting()
+        if not auto_summarize:
+            logger.debug(f"Auto-summarization disabled, skipping {doc_id}")
+            return
+
+        # Check if summary already exists for this document
+        existing = await self._check_existing_summary(doc_id, SourceType.DOCUMENT)
+        if existing:
+            logger.debug(f"Summary already exists for document {doc_id}")
+            return
+
+        # Generate summary in background
+        try:
+            await self._auto_generate_summary(doc_id, SourceType.DOCUMENT)
+        except Exception as e:
+            logger.error(f"Auto-summarization failed for document {doc_id}: {e}")
 
     async def _on_document_created(self, event: dict) -> None:
         """
         Handle document created event.
 
+        Only triggers auto-summarization if document has content and auto-summarization is enabled.
+
         Args:
-            event: Event data
+            event: Event data containing doc_id/document_id
         """
         doc_id = event.get("doc_id") or event.get("document_id")
         if not doc_id:
+            logger.debug("Document created event missing document ID")
             return
 
-        logger.debug(f"Document created: {doc_id} - would auto-generate summary")
+        logger.info(f"Document created: {doc_id} - checking auto-summarization settings")
+
+        # Check if auto-summarization is enabled
+        auto_summarize = await self._get_auto_summarize_setting()
+        if not auto_summarize:
+            logger.debug(f"Auto-summarization disabled, skipping {doc_id}")
+            return
+
+        # For created events, we might want to wait for processing
+        # Check if document has content
+        content = await self._fetch_document_content(doc_id)
+        if not content or len(content.strip()) < 100:
+            logger.debug(f"Document {doc_id} has no content yet, skipping auto-summarization")
+            return
+
+        # Check if summary already exists
+        existing = await self._check_existing_summary(doc_id, SourceType.DOCUMENT)
+        if existing:
+            logger.debug(f"Summary already exists for document {doc_id}")
+            return
+
+        # Generate summary
+        try:
+            await self._auto_generate_summary(doc_id, SourceType.DOCUMENT)
+        except Exception as e:
+            logger.error(f"Auto-summarization failed for document {doc_id}: {e}")
+
+    async def _get_auto_summarize_setting(self) -> bool:
+        """
+        Check if auto-summarization is enabled in settings.
+
+        Returns:
+            True if auto-summarization is enabled, False otherwise
+        """
+        # Check for setting in database
+        if self._db:
+            try:
+                row = await self._db.fetch_one(
+                    """
+                    SELECT value FROM arkham_settings
+                    WHERE key = 'summary.auto_summarize'
+                    """
+                )
+                if row:
+                    value = row.get("value", "false")
+                    return value.lower() in ("true", "1", "yes", "enabled")
+            except Exception:
+                pass  # Table might not exist
+
+        # Default to disabled
+        return False
+
+    async def _check_existing_summary(self, source_id: str, source_type: SourceType) -> bool:
+        """
+        Check if a summary already exists for a source.
+
+        Args:
+            source_id: ID of the source
+            source_type: Type of source
+
+        Returns:
+            True if summary exists, False otherwise
+        """
+        if not self._db:
+            # Check in-memory cache
+            for summary in self._summaries.values():
+                if source_id in summary.source_ids and summary.source_type == source_type:
+                    return True
+            return False
+
+        try:
+            import json
+            row = await self._db.fetch_one(
+                """
+                SELECT id FROM arkham_summaries
+                WHERE source_type = :source_type
+                AND source_ids @> :source_id
+                LIMIT 1
+                """,
+                {
+                    "source_type": source_type.value,
+                    "source_id": json.dumps([source_id])
+                }
+            )
+            return row is not None
+        except Exception as e:
+            logger.debug(f"Error checking existing summary: {e}")
+            return False
+
+    async def _auto_generate_summary(
+        self,
+        source_id: str,
+        source_type: SourceType,
+        summary_type: SummaryType = SummaryType.BRIEF,
+        target_length: SummaryLength = SummaryLength.SHORT,
+    ) -> Optional[SummaryResult]:
+        """
+        Auto-generate a summary for a source.
+
+        Uses brief summary type and short length by default for auto-generated summaries.
+
+        Args:
+            source_id: ID of the source to summarize
+            source_type: Type of source
+            summary_type: Type of summary to generate (default: brief)
+            target_length: Target length (default: short)
+
+        Returns:
+            SummaryResult or None if generation failed
+        """
+        logger.info(f"Auto-generating {summary_type.value} summary for {source_type.value}: {source_id}")
+
+        request = SummaryRequest(
+            source_type=source_type,
+            source_ids=[source_id],
+            summary_type=summary_type,
+            target_length=target_length,
+            include_key_points=True,
+            include_title=True,
+            tags=["auto-generated"],
+        )
+
+        try:
+            result = await self.generate_summary(request)
+
+            if result.status == SummaryStatus.COMPLETED:
+                logger.info(f"Auto-generated summary {result.summary_id} for {source_id}")
+
+                # Emit event for auto-generated summary
+                if self._events:
+                    await self._events.emit(
+                        "summary.auto.generated",
+                        {
+                            "summary_id": result.summary_id,
+                            "source_type": source_type.value,
+                            "source_id": source_id,
+                            "word_count": result.word_count,
+                        },
+                        source=self.name,
+                    )
+            else:
+                logger.warning(f"Auto-summary generation failed for {source_id}: {result.error_message}")
+
+            return result
+
+        except Exception as e:
+            logger.error(f"Error auto-generating summary for {source_id}: {e}", exc_info=True)
+            return None

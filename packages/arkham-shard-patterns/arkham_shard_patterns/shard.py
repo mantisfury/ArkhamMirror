@@ -558,11 +558,12 @@ class PatternsShard(ArkhamShard):
         try:
             # Get text to analyze
             text = request.text or ""
-            if request.document_ids and hasattr(self.frame, "documents"):
+            if request.document_ids and self._db:
                 for doc_id in request.document_ids:
-                    doc = await self.frame.documents.get(doc_id)
-                    if doc and hasattr(doc, "content"):
-                        text += "\n\n" + doc.content
+                    # Fetch document content from chunks (same as anomalies shard)
+                    doc_content = await self._fetch_document_content(doc_id)
+                    if doc_content:
+                        text += "\n\n" + doc_content
 
             if not text:
                 errors.append("No text to analyze")
@@ -1243,15 +1244,25 @@ class PatternsShard(ArkhamShard):
                         content = getattr(doc, "content", None) or getattr(doc, "text", None)
                         title = getattr(doc, "name", None) or getattr(doc, "title", None)
 
-                # Fallback: direct DB query
+                # Fallback: direct DB query using correct schema
                 if not content and self._db:
-                    row = await self._db.fetch_one(
-                        "SELECT name, content FROM arkham_documents WHERE id = :id",
+                    # Get title from documents table
+                    doc_row = await self._db.fetch_one(
+                        "SELECT filename FROM arkham_frame.documents WHERE id = :id",
                         {"id": source_id}
                     )
-                    if row:
-                        content = row.get("content")
-                        title = row.get("name")
+                    if doc_row:
+                        title = doc_row.get("filename")
+
+                    # Get content from chunks table
+                    chunk_rows = await self._db.fetch_all(
+                        """SELECT text FROM arkham_frame.chunks
+                           WHERE document_id = :id
+                           ORDER BY chunk_index""",
+                        {"id": source_id}
+                    )
+                    if chunk_rows:
+                        content = "\n".join(row.get("text", "") for row in chunk_rows if row.get("text"))
 
             elif source_type == SourceType.ENTITY:
                 # Try entities shard
@@ -1314,20 +1325,57 @@ class PatternsShard(ArkhamShard):
                         content = f"{title} {row.get('description', '')}"
 
             elif source_type == SourceType.CHUNK:
-                # Direct DB query for chunks
+                # Direct DB query for chunks using correct schema
                 if self._db:
                     row = await self._db.fetch_one(
-                        "SELECT content, document_id FROM arkham_document_chunks WHERE id = :id",
+                        "SELECT text, document_id FROM arkham_frame.chunks WHERE id = :id",
                         {"id": source_id}
                     )
                     if row:
-                        content = row.get("content")
+                        content = row.get("text")
                         title = f"Chunk from {row.get('document_id', 'unknown')}"
 
         except Exception as e:
             logger.debug(f"Failed to fetch source content for {source_type}:{source_id}: {e}")
 
         return content, title
+
+    async def _fetch_document_content(self, doc_id: str) -> Optional[str]:
+        """
+        Fetch document content from the database.
+
+        Content is stored in arkham_frame.chunks table, joined from document.
+        """
+        if not self._db:
+            return None
+
+        try:
+            # Get content from chunks table (where text is stored)
+            chunk_rows = await self._db.fetch_all(
+                """SELECT text FROM arkham_frame.chunks
+                   WHERE document_id = :doc_id
+                   ORDER BY chunk_index""",
+                {"doc_id": doc_id}
+            )
+
+            if chunk_rows:
+                # Combine all chunks
+                text = "\n".join(row.get("text", "") for row in chunk_rows if row.get("text"))
+                return text
+
+            # Fallback: try content column if it exists
+            doc_row = await self._db.fetch_one(
+                """SELECT content FROM arkham_frame.documents WHERE id = :doc_id""",
+                {"doc_id": doc_id}
+            )
+            if doc_row and doc_row.get("content"):
+                return doc_row.get("content")
+
+            return None
+
+        except Exception as e:
+            logger.debug(f"Failed to fetch document content for {doc_id}: {e}")
+            return None
 
     async def _detect_patterns_llm(
         self,
@@ -1408,8 +1456,10 @@ Return ONLY the JSON array, no other text:
 ```"""
 
         try:
-            response = await self._llm.complete(prompt)
-            patterns_data = self._parse_llm_patterns(response)
+            llm_response = await self._llm.generate(prompt)
+            # Extract text from LLMResponse object
+            response_text = llm_response.text if hasattr(llm_response, 'text') else str(llm_response)
+            patterns_data = self._parse_llm_patterns(response_text)
 
             patterns = []
             for data in patterns_data:

@@ -523,3 +523,433 @@ async def get_statistics(request: Request):
     shard = get_shard(request)
     stats = await shard.get_statistics()
     return stats
+
+
+# === Source Browser Endpoints ===
+
+
+class SourceItem(BaseModel):
+    """Source item for picker."""
+    id: str
+    name: str
+    type: str
+    preview: str = ""
+    created_at: Optional[str] = None
+    metadata: dict = {}
+
+
+class SourceListResponse(BaseModel):
+    """Source list response."""
+    items: List[SourceItem]
+    total: int
+    page: int
+    page_size: int
+
+
+@router.get("/sources/documents", response_model=SourceListResponse)
+async def browse_documents(
+    request: Request,
+    page: int = Query(1, ge=1, description="Page number"),
+    page_size: int = Query(20, ge=1, le=100, description="Items per page"),
+    q: Optional[str] = Query(None, description="Search query"),
+    project_id: Optional[str] = Query(None, description="Filter by project"),
+):
+    """
+    Browse available documents for summarization.
+
+    Returns list of documents that can be selected for summary generation.
+    """
+    shard = get_shard(request)
+    db = shard._db
+
+    if not db:
+        return {"items": [], "total": 0, "page": page, "page_size": page_size}
+
+    # Build query for documents
+    offset = (page - 1) * page_size
+    items = []
+    total = 0
+
+    try:
+        # Try arkham_frame.documents first
+        count_query = "SELECT COUNT(*) as count FROM arkham_frame.documents WHERE 1=1"
+        query = """
+            SELECT id, filename, mime_type, file_size, created_at, status, metadata
+            FROM arkham_frame.documents
+            WHERE 1=1
+        """
+        params = {}
+
+        if q:
+            query += " AND filename ILIKE :q"
+            count_query += " AND filename ILIKE :q"
+            params["q"] = f"%{q}%"
+
+        if project_id:
+            query += " AND project_id = :project_id"
+            count_query += " AND project_id = :project_id"
+            params["project_id"] = project_id
+
+        # Get total count
+        count_row = await db.fetch_one(count_query, params)
+        total = count_row["count"] if count_row else 0
+
+        # Get items
+        query += f" ORDER BY created_at DESC LIMIT {page_size} OFFSET {offset}"
+        rows = await db.fetch_all(query, params)
+
+        for row in rows:
+            items.append(SourceItem(
+                id=row["id"],
+                name=row.get("filename", "Untitled"),
+                type=row.get("mime_type", "document"),
+                preview=f"Size: {row.get('file_size', 0)} bytes | Status: {row.get('status', 'unknown')}",
+                created_at=row["created_at"].isoformat() if row.get("created_at") else None,
+                metadata={
+                    "file_size": row.get("file_size", 0),
+                    "status": row.get("status", "unknown"),
+                }
+            ))
+
+    except Exception as e:
+        # Try arkham_documents as fallback
+        try:
+            count_query = "SELECT COUNT(*) as count FROM arkham_documents WHERE 1=1"
+            query = """
+                SELECT id, file_name, file_type, file_size, created_at
+                FROM arkham_documents
+                WHERE 1=1
+            """
+            params = {}
+
+            if q:
+                query += " AND file_name ILIKE :q"
+                count_query += " AND file_name ILIKE :q"
+                params["q"] = f"%{q}%"
+
+            count_row = await db.fetch_one(count_query, params)
+            total = count_row["count"] if count_row else 0
+
+            query += f" ORDER BY created_at DESC LIMIT {page_size} OFFSET {offset}"
+            rows = await db.fetch_all(query, params)
+
+            for row in rows:
+                items.append(SourceItem(
+                    id=row["id"],
+                    name=row.get("file_name", "Untitled"),
+                    type=row.get("file_type", "document"),
+                    preview=f"Size: {row.get('file_size', 0)} bytes",
+                    created_at=row["created_at"].isoformat() if row.get("created_at") else None,
+                    metadata={
+                        "file_size": row.get("file_size", 0),
+                    }
+                ))
+        except Exception:
+            pass
+
+    return {"items": items, "total": total, "page": page, "page_size": page_size}
+
+
+@router.get("/sources/entities", response_model=SourceListResponse)
+async def browse_entities(
+    request: Request,
+    page: int = Query(1, ge=1, description="Page number"),
+    page_size: int = Query(20, ge=1, le=100, description="Items per page"),
+    q: Optional[str] = Query(None, description="Search query"),
+    entity_type: Optional[str] = Query(None, description="Filter by entity type"),
+):
+    """
+    Browse available entities for summarization.
+    """
+    shard = get_shard(request)
+    db = shard._db
+
+    if not db:
+        return {"items": [], "total": 0, "page": page, "page_size": page_size}
+
+    offset = (page - 1) * page_size
+    items = []
+    total = 0
+
+    try:
+        count_query = "SELECT COUNT(*) as count FROM arkham_entities WHERE 1=1"
+        query = """
+            SELECT id, name, entity_type, mention_count, created_at
+            FROM arkham_entities
+            WHERE 1=1
+        """
+        params = {}
+
+        if q:
+            query += " AND name ILIKE :q"
+            count_query += " AND name ILIKE :q"
+            params["q"] = f"%{q}%"
+
+        if entity_type:
+            query += " AND entity_type = :entity_type"
+            count_query += " AND entity_type = :entity_type"
+            params["entity_type"] = entity_type
+
+        count_row = await db.fetch_one(count_query, params)
+        total = count_row["count"] if count_row else 0
+
+        query += f" ORDER BY mention_count DESC LIMIT {page_size} OFFSET {offset}"
+        rows = await db.fetch_all(query, params)
+
+        for row in rows:
+            items.append(SourceItem(
+                id=row["id"],
+                name=row.get("name", "Unknown"),
+                type=row.get("entity_type", "entity"),
+                preview=f"Mentions: {row.get('mention_count', 0)}",
+                created_at=row["created_at"].isoformat() if row.get("created_at") else None,
+                metadata={
+                    "entity_type": row.get("entity_type"),
+                    "mention_count": row.get("mention_count", 0),
+                }
+            ))
+    except Exception:
+        pass
+
+    return {"items": items, "total": total, "page": page, "page_size": page_size}
+
+
+@router.get("/sources/projects", response_model=SourceListResponse)
+async def browse_projects(
+    request: Request,
+    page: int = Query(1, ge=1, description="Page number"),
+    page_size: int = Query(20, ge=1, le=100, description="Items per page"),
+    q: Optional[str] = Query(None, description="Search query"),
+):
+    """
+    Browse available projects for summarization.
+    """
+    shard = get_shard(request)
+    db = shard._db
+
+    if not db:
+        return {"items": [], "total": 0, "page": page, "page_size": page_size}
+
+    offset = (page - 1) * page_size
+    items = []
+    total = 0
+
+    try:
+        count_query = "SELECT COUNT(*) as count FROM arkham_projects WHERE 1=1"
+        query = """
+            SELECT id, name, description, status, document_count, created_at
+            FROM arkham_projects
+            WHERE 1=1
+        """
+        params = {}
+
+        if q:
+            query += " AND (name ILIKE :q OR description ILIKE :q)"
+            count_query += " AND (name ILIKE :q OR description ILIKE :q)"
+            params["q"] = f"%{q}%"
+
+        count_row = await db.fetch_one(count_query, params)
+        total = count_row["count"] if count_row else 0
+
+        query += f" ORDER BY created_at DESC LIMIT {page_size} OFFSET {offset}"
+        rows = await db.fetch_all(query, params)
+
+        for row in rows:
+            desc = row.get("description", "")
+            preview = desc[:100] + "..." if len(desc) > 100 else desc
+            items.append(SourceItem(
+                id=row["id"],
+                name=row.get("name", "Untitled"),
+                type="project",
+                preview=preview or f"Documents: {row.get('document_count', 0)}",
+                created_at=row["created_at"] if row.get("created_at") else None,
+                metadata={
+                    "status": row.get("status"),
+                    "document_count": row.get("document_count", 0),
+                }
+            ))
+    except Exception:
+        pass
+
+    return {"items": items, "total": total, "page": page, "page_size": page_size}
+
+
+@router.get("/sources/claims", response_model=SourceListResponse)
+async def browse_claims(
+    request: Request,
+    page: int = Query(1, ge=1, description="Page number"),
+    page_size: int = Query(20, ge=1, le=100, description="Items per page"),
+    q: Optional[str] = Query(None, description="Search query"),
+    status: Optional[str] = Query(None, description="Filter by status"),
+):
+    """
+    Browse available claims for summarization.
+    """
+    shard = get_shard(request)
+    db = shard._db
+
+    if not db:
+        return {"items": [], "total": 0, "page": page, "page_size": page_size}
+
+    offset = (page - 1) * page_size
+    items = []
+    total = 0
+
+    try:
+        count_query = "SELECT COUNT(*) as count FROM arkham_claims WHERE 1=1"
+        query = """
+            SELECT id, text, claim_type, status, confidence, created_at
+            FROM arkham_claims
+            WHERE 1=1
+        """
+        params = {}
+
+        if q:
+            query += " AND text ILIKE :q"
+            count_query += " AND text ILIKE :q"
+            params["q"] = f"%{q}%"
+
+        if status:
+            query += " AND status = :status"
+            count_query += " AND status = :status"
+            params["status"] = status
+
+        count_row = await db.fetch_one(count_query, params)
+        total = count_row["count"] if count_row else 0
+
+        query += f" ORDER BY created_at DESC LIMIT {page_size} OFFSET {offset}"
+        rows = await db.fetch_all(query, params)
+
+        for row in rows:
+            text = row.get("text", "")
+            preview = text[:100] + "..." if len(text) > 100 else text
+            items.append(SourceItem(
+                id=row["id"],
+                name=preview,
+                type=row.get("claim_type", "claim"),
+                preview=f"Status: {row.get('status', 'unknown')} | Confidence: {row.get('confidence', 1.0) * 100:.0f}%",
+                created_at=row["created_at"] if row.get("created_at") else None,
+                metadata={
+                    "claim_type": row.get("claim_type"),
+                    "status": row.get("status"),
+                    "confidence": row.get("confidence", 1.0),
+                }
+            ))
+    except Exception:
+        pass
+
+    return {"items": items, "total": total, "page": page, "page_size": page_size}
+
+
+@router.get("/sources/timeline", response_model=SourceListResponse)
+async def browse_timeline_events(
+    request: Request,
+    page: int = Query(1, ge=1, description="Page number"),
+    page_size: int = Query(20, ge=1, le=100, description="Items per page"),
+    q: Optional[str] = Query(None, description="Search query"),
+    event_type: Optional[str] = Query(None, description="Filter by event type"),
+):
+    """
+    Browse available timeline events for summarization.
+    """
+    shard = get_shard(request)
+    db = shard._db
+
+    if not db:
+        return {"items": [], "total": 0, "page": page, "page_size": page_size}
+
+    offset = (page - 1) * page_size
+    items = []
+    total = 0
+
+    try:
+        count_query = "SELECT COUNT(*) as count FROM arkham_timeline_events WHERE 1=1"
+        query = """
+            SELECT id, text, event_type, date_start, confidence, created_at
+            FROM arkham_timeline_events
+            WHERE 1=1
+        """
+        params = {}
+
+        if q:
+            query += " AND text ILIKE :q"
+            count_query += " AND text ILIKE :q"
+            params["q"] = f"%{q}%"
+
+        if event_type:
+            query += " AND event_type = :event_type"
+            count_query += " AND event_type = :event_type"
+            params["event_type"] = event_type
+
+        count_row = await db.fetch_one(count_query, params)
+        total = count_row["count"] if count_row else 0
+
+        query += f" ORDER BY date_start DESC LIMIT {page_size} OFFSET {offset}"
+        rows = await db.fetch_all(query, params)
+
+        for row in rows:
+            text = row.get("text", "")
+            preview = text[:80] + "..." if len(text) > 80 else text
+            date_str = str(row.get("date_start", "Unknown date"))
+            items.append(SourceItem(
+                id=row["id"],
+                name=preview,
+                type=row.get("event_type", "event"),
+                preview=f"Date: {date_str}",
+                created_at=row["created_at"].isoformat() if row.get("created_at") else None,
+                metadata={
+                    "event_type": row.get("event_type"),
+                    "date_start": date_str,
+                    "confidence": row.get("confidence", 1.0),
+                }
+            ))
+    except Exception:
+        pass
+
+    return {"items": items, "total": total, "page": page, "page_size": page_size}
+
+
+@router.post("/quick-summary/{doc_id}")
+async def quick_summary(
+    doc_id: str,
+    request: Request,
+    summary_type: str = Query("brief", description="Summary type"),
+    target_length: str = Query("short", description="Target length"),
+):
+    """
+    Generate a quick summary for a single document.
+
+    This is a convenience endpoint for quick one-click summarization.
+    """
+    shard = get_shard(request)
+
+    try:
+        summary_type_enum = SummaryType(summary_type)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"Invalid summary_type: {summary_type}")
+
+    try:
+        target_length_enum = SummaryLength(target_length)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"Invalid target_length: {target_length}")
+
+    # Generate summary
+    summary_request = SummaryRequest(
+        source_type=SourceType.DOCUMENT,
+        source_ids=[doc_id],
+        summary_type=summary_type_enum,
+        target_length=target_length_enum,
+        include_key_points=True,
+        include_title=True,
+        tags=["quick-summary"],
+    )
+
+    result = await shard.generate_summary(summary_request)
+
+    if result.status == SummaryStatus.FAILED:
+        raise HTTPException(
+            status_code=500,
+            detail=result.error_message or "Summary generation failed",
+        )
+
+    return result

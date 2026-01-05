@@ -118,6 +118,23 @@ export interface PatternsResponse {
   patterns: AnomalyPattern[];
 }
 
+export interface BulkStatusResponse {
+  success: boolean;
+  updated_count: number;
+  failed_count: number;
+  failed_ids: string[];
+}
+
+export interface RelatedAnomaly extends Anomaly {
+  relation: 'same_document' | 'same_type';
+}
+
+export interface RelatedAnomaliesResponse {
+  source_id: string;
+  related: RelatedAnomaly[];
+  total: number;
+}
+
 // Display helpers
 export const ANOMALY_TYPE_LABELS: Record<AnomalyType, string> = {
   content: 'Content',

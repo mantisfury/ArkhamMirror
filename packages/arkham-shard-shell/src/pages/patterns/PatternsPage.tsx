@@ -11,6 +11,7 @@
  */
 
 import { useState, useEffect, useCallback } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { Icon } from '../../components/common/Icon';
 import { useToast } from '../../context/ToastContext';
 import { useFetch } from '../../hooks/useFetch';
@@ -122,6 +123,7 @@ const STATUS_LABELS: Record<string, string> = {
 type TabType = 'all' | 'recurring' | 'behavioral' | 'temporal' | 'analyze';
 
 export function PatternsPage() {
+  const [searchParams, setSearchParams] = useSearchParams();
   const { toast } = useToast();
 
   // State
@@ -149,6 +151,32 @@ export function PatternsPage() {
   const [analyzeMinConfidence, setAnalyzeMinConfidence] = useState(0.5);
   const [analyzing, setAnalyzing] = useState(false);
   const [analysisResult, setAnalysisResult] = useState<AnalysisResult | null>(null);
+
+  // Auto-fetch document content for analysis if doc_id param is passed
+  useEffect(() => {
+    const docId = searchParams.get('doc_id');
+    if (docId) {
+      // Fetch document content and open analyze modal
+      const fetchDocContent = async () => {
+        try {
+          const response = await fetch(`/api/documents/${docId}/content`);
+          if (response.ok) {
+            const data = await response.json();
+            setAnalyzeText(data.content || '');
+            setShowAnalyzeModal(true);
+            toast.info('Document content loaded for analysis');
+          } else {
+            toast.error('Failed to fetch document content');
+          }
+        } catch (err) {
+          toast.error('Failed to fetch document content');
+        }
+      };
+      fetchDocContent();
+      // Clear the URL param
+      setSearchParams({}, { replace: true });
+    }
+  }, [searchParams, setSearchParams, toast]);
 
   // Build filter params based on active tab
   const getFilterParams = useCallback(() => {

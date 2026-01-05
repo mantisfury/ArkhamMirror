@@ -518,6 +518,202 @@ async def add_note(anomaly_id: str, request: NoteRequest):
         raise HTTPException(status_code=500, detail=f"Add note failed: {str(e)}")
 
 
+@router.post("/bulk-status")
+async def bulk_update_status(
+    anomaly_ids: List[str],
+    status: str,
+    notes: str = "",
+    reviewed_by: Optional[str] = None,
+):
+    """
+    Bulk update status for multiple anomalies.
+
+    Allows analysts to quickly triage multiple anomalies at once.
+    """
+    if not _store:
+        raise HTTPException(status_code=503, detail="Anomaly service not initialized")
+
+    try:
+        # Parse status
+        try:
+            new_status = AnomalyStatus(status.lower())
+        except ValueError:
+            raise HTTPException(status_code=400, detail=f"Invalid status: {status}")
+
+        updated_count = 0
+        failed_ids = []
+
+        for anomaly_id in anomaly_ids:
+            try:
+                anomaly = await _store.update_status(
+                    anomaly_id=anomaly_id,
+                    status=new_status,
+                    reviewed_by=reviewed_by,
+                    notes=notes,
+                )
+                if anomaly:
+                    updated_count += 1
+                else:
+                    failed_ids.append(anomaly_id)
+            except Exception as update_err:
+                logger.warning(f"Failed to update {anomaly_id}: {update_err}")
+                failed_ids.append(anomaly_id)
+
+        # Emit bulk event
+        if _event_bus and updated_count > 0:
+            await _event_bus.emit(
+                f"anomalies.bulk_{new_status.value}",
+                {
+                    "count": updated_count,
+                    "anomaly_ids": [aid for aid in anomaly_ids if aid not in failed_ids],
+                    "reviewed_by": reviewed_by,
+                },
+                source="anomalies-shard",
+            )
+
+        return {
+            "success": True,
+            "updated_count": updated_count,
+            "failed_count": len(failed_ids),
+            "failed_ids": failed_ids,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Bulk status update failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Bulk update failed: {str(e)}")
+
+
+@router.get("/{anomaly_id}/related")
+async def get_related_anomalies(anomaly_id: str, limit: int = 10):
+    """
+    Get anomalies related to the specified anomaly.
+
+    Finds anomalies from the same document or with similar patterns.
+    """
+    if not _store:
+        raise HTTPException(status_code=503, detail="Anomaly service not initialized")
+
+    try:
+        # Get the source anomaly
+        anomaly = await _store.get_anomaly(anomaly_id)
+        if not anomaly:
+            raise HTTPException(status_code=404, detail=f"Anomaly {anomaly_id} not found")
+
+        # Get anomalies for the same document
+        same_doc_anomalies, _ = await _store.list_anomalies(
+            offset=0,
+            limit=limit,
+            doc_id=anomaly.doc_id,
+        )
+
+        # Get anomalies of the same type
+        same_type_anomalies, _ = await _store.list_anomalies(
+            offset=0,
+            limit=limit,
+            anomaly_type=anomaly.anomaly_type,
+        )
+
+        # Combine and deduplicate
+        seen_ids = {anomaly_id}
+        related = []
+
+        for a in same_doc_anomalies:
+            if a.id not in seen_ids:
+                seen_ids.add(a.id)
+                related.append({
+                    **_anomaly_to_dict(a),
+                    "relation": "same_document",
+                })
+
+        for a in same_type_anomalies:
+            if a.id not in seen_ids and len(related) < limit:
+                seen_ids.add(a.id)
+                related.append({
+                    **_anomaly_to_dict(a),
+                    "relation": "same_type",
+                })
+
+        return {
+            "related": related[:limit],
+            "total": len(related),
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get related anomalies: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Get related failed: {str(e)}")
+
+
+@router.get("/{anomaly_id}/notes")
+async def get_notes(anomaly_id: str):
+    """
+    Get all analyst notes for an anomaly.
+    """
+    if not _store:
+        raise HTTPException(status_code=503, detail="Anomaly service not initialized")
+
+    try:
+        notes = await _store.get_notes(anomaly_id)
+        return {
+            "notes": [
+                {
+                    "id": note.id,
+                    "author": note.author,
+                    "content": note.content,
+                    "created_at": note.created_at.isoformat(),
+                }
+                for note in notes
+            ],
+            "total": len(notes),
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to get notes: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Get notes failed: {str(e)}")
+
+
+@router.get("/document/{doc_id}/preview")
+async def get_document_preview(doc_id: str):
+    """
+    Get a preview of document content for anomaly context.
+    """
+    if not _db:
+        raise HTTPException(status_code=503, detail="Database service not initialized")
+
+    try:
+        row = await _db.fetch_one(
+            """SELECT id, file_name, file_type, file_size, content, created_at
+               FROM arkham_documents WHERE id = :doc_id""",
+            {"doc_id": doc_id}
+        )
+
+        if not row:
+            raise HTTPException(status_code=404, detail=f"Document {doc_id} not found")
+
+        content = row.get("content") or ""
+        # Return first 2000 chars as preview
+        preview = content[:2000] + ("..." if len(content) > 2000 else "")
+
+        return {
+            "id": row["id"],
+            "file_name": row.get("file_name"),
+            "file_type": row.get("file_type"),
+            "file_size": row.get("file_size"),
+            "preview": preview,
+            "full_length": len(content),
+            "created_at": row.get("created_at"),
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get document preview: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Preview failed: {str(e)}")
+
+
 # --- Helper Functions ---
 
 
@@ -581,9 +777,9 @@ async def _detect_document_anomalies_internal(
         return anomalies
 
     try:
-        # Fetch document data from database
+        # Fetch document metadata from database
         doc_row = await _db.fetch_one(
-            "SELECT id, content, file_name, file_size, file_type, created_at, metadata FROM arkham_documents WHERE id = :doc_id",
+            "SELECT id, filename, file_size, mime_type, created_at, metadata FROM arkham_frame.documents WHERE id = :doc_id",
             {"doc_id": doc_id}
         )
 
@@ -591,19 +787,29 @@ async def _detect_document_anomalies_internal(
             logger.warning(f"Document {doc_id} not found in database")
             return anomalies
 
-        text = doc_row.get("content") or ""
         metadata = {}
         if doc_row.get("metadata"):
             import json
             try:
-                metadata = json.loads(doc_row["metadata"])
+                if isinstance(doc_row["metadata"], str):
+                    metadata = json.loads(doc_row["metadata"])
+                else:
+                    metadata = dict(doc_row["metadata"])
             except (json.JSONDecodeError, TypeError):
                 metadata = {}
 
         # Add file info to metadata
-        metadata["file_name"] = doc_row.get("file_name")
+        metadata["file_name"] = doc_row.get("filename")
         metadata["file_size"] = doc_row.get("file_size")
-        metadata["file_type"] = doc_row.get("file_type")
+        metadata["file_type"] = doc_row.get("mime_type")
+
+        # Fetch content from chunks
+        chunk_rows = await _db.fetch_all(
+            "SELECT text FROM arkham_frame.chunks WHERE document_id = :doc_id ORDER BY chunk_index",
+            {"doc_id": doc_id}
+        )
+
+        text = "\n".join(row.get("text", "") for row in chunk_rows if row.get("text")) if chunk_rows else ""
 
         # Run red flag detection (always runs, no corpus stats needed)
         if config.detect_red_flags:
@@ -661,13 +867,13 @@ async def _get_corpus_stats() -> Dict[str, Any]:
         return {}
 
     try:
-        # Get aggregate text stats from documents table
+        # Get aggregate text stats from chunks table
         rows = await _db.fetch_all(
             """SELECT
-                AVG(LENGTH(content)) as avg_char_count,
-                AVG(LENGTH(content) - LENGTH(REPLACE(content, ' ', '')) + 1) as avg_word_count
-               FROM arkham_documents
-               WHERE content IS NOT NULL AND LENGTH(content) > 0
+                AVG(LENGTH(text)) as avg_char_count,
+                AVG(LENGTH(text) - LENGTH(REPLACE(text, ' ', '')) + 1) as avg_word_count
+               FROM arkham_frame.chunks
+               WHERE text IS NOT NULL AND LENGTH(text) > 0
                LIMIT 1000"""
         )
 
@@ -712,7 +918,7 @@ async def _get_corpus_metadata_stats() -> Dict[str, Any]:
                 AVG(file_size) as avg_size,
                 MIN(file_size) as min_size,
                 MAX(file_size) as max_size
-               FROM arkham_documents
+               FROM arkham_frame.documents
                WHERE file_size IS NOT NULL"""
         )
 

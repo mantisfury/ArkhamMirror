@@ -4,7 +4,8 @@
  * Provides UI for browsing, searching, and viewing documents.
  */
 
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { Icon } from '../../components/common/Icon';
 import { useToast } from '../../context/ToastContext';
 import { useFetch } from '../../hooks/useFetch';
@@ -71,11 +72,22 @@ function formatDate(dateString: string): string {
 }
 
 export function DocumentsPage() {
+  const [searchParams, setSearchParams] = useSearchParams();
   const { toast } = useToast();
   const [selectedDoc, setSelectedDoc] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<string>('');
   const [viewMode, setViewMode] = useState<'list' | 'grid'>('list');
+
+  // Auto-select document from URL param
+  useEffect(() => {
+    const docId = searchParams.get('id');
+    if (docId && docId !== selectedDoc) {
+      setSelectedDoc(docId);
+      // Clear the URL param after selecting
+      setSearchParams({}, { replace: true });
+    }
+  }, [searchParams, selectedDoc, setSearchParams]);
 
   // Fetch documents with pagination
   const { items: documents, total, loading, error, refetch } = usePaginatedFetch<Document>(

@@ -82,7 +82,7 @@ async def initialize(self, frame) -> None:
 
 ## Current State Overview
 
-### Fully Operational Shards (16 total)
+### Fully Operational Shards (17 total)
 These shards are functional with complete backend/frontend integration:
 
 | Shard | Status | Notes |
@@ -103,12 +103,12 @@ These shards are functional with complete backend/frontend integration:
 | projects | Operational | Project CRUD, scoping |
 | provenance | Operational | Evidence chains, artifact tracking, lineage graphs |
 | patterns | Operational | Cross-document pattern detection, statistical correlation |
+| anomalies | Operational | Hybrid detection (sync+async), bulk triage, 6 detection strategies |
 
-### Shards Requiring Work (9 total)
+### Shards Requiring Work (8 total)
 
 | Shard | Category | Backend % | Frontend % | Priority | Critical Gap |
 |-------|----------|-----------|------------|----------|--------------|
-| anomalies | Analysis | 60% | 50% | Medium | Event handlers only log, don't trigger detection |
 | summary | Analysis | 70% | 40% | Medium | `_fetch_source_content()` returns mock data |
 | graph | Visualize | 75% | 60% | High | No graph visualization library, no DB persistence |
 | timeline | Visualize | 85% | 50% | Medium | Event handlers stubbed |
@@ -160,40 +160,29 @@ The patterns shard is now fully implemented with:
 
 ---
 
-### 1.3 Anomalies Shard
+### 1.3 Anomalies Shard - COMPLETED (2026-01-04)
 
-**File Locations:**
-- Backend: `packages/arkham-shard-anomalies/arkham_shard_anomalies/`
-  - `shard.py` - Main class
-  - `detector.py` - Detection algorithms (actually implemented!)
-  - `storage.py` - Data persistence
-- Frontend: `packages/arkham-shard-shell/src/pages/anomalies/`
+**Status: Fully Operational**
 
-**Current State:**
-- Database schema complete (3 tables)
-- `detector.py` has 6 real detection strategies:
-  - `detect_content_anomalies()` - z-score outlier detection
-  - `detect_red_flags()` - money/date/sensitive keyword patterns
+The anomalies shard is now fully implemented with:
+- 3 database tables: anomalies, notes, patterns
+- 6 detection strategies in `detector.py`:
+  - `detect_content_anomalies()` - z-score outlier detection via vector similarity
+  - `detect_red_flags()` - money/date/sensitive keyword patterns (sync)
   - `detect_statistical_anomalies()` - word count, sentence length
   - `detect_metadata_anomalies()` - file size, creation date
-  - `detect_temporal_anomalies()` - date reference checking
-  - `detect_structural_anomalies()` - document format analysis
-
-**Known Stub Locations:**
-```python
-# shard.py - Event handlers only log, don't trigger detection:
-async def _on_embedding_created(self, event_data):
-    logger.info("Would trigger anomaly detection...")  # Does nothing
-
-async def _on_document_indexed(self, event_data):
-    logger.info("Would trigger anomaly detection...")  # Does nothing
-```
-
-**Implementation Priority:**
-1. Wire event handlers to call `check_document()`
-2. Verify vector service integration in detector.py
-3. Add background job queueing for bulk detection
-4. Enhance frontend with anomaly triage workflow
+- Hybrid detection approach:
+  - Quick red flag detection runs synchronously for immediate results
+  - Deep analysis (statistical, metadata, content) runs via background workers or sync fallback
+- Event handlers wired to `embed.document.completed` and `documents.metadata.updated`
+- Complete frontend with:
+  - Stats dashboard
+  - Filtering by type/status/severity/score
+  - Bulk selection with checkboxes
+  - Bulk triage actions (confirm/dismiss/false positive)
+  - Detailed anomaly view with status management
+  - Analyst notes
+  - Investigation actions
 
 ---
 
@@ -672,7 +661,7 @@ const { items, loading, hasMore, loadMore } = usePaginatedFetch<ItemType>('/api/
 ### Sprint 2: Visualization & Summaries
 4. **Timeline** - Event handlers need wiring
 5. **Summary** - Source fetching needs implementation
-6. **Anomalies** - Event handlers need wiring
+6. ~~**Anomalies**~~ - COMPLETED (2026-01-04)
 
 ### Sprint 3: Export Infrastructure
 7. **Templates** - Switch from in-memory to DB
@@ -747,3 +736,4 @@ npm install vis-network        # Alternative
 *Generated: 2026-01-03*
 *Last Updated: 2026-01-04*
 *Context: Full codebase analysis by 5 parallel agents*
+*Anomalies shard completed: 2026-01-04*

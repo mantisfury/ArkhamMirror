@@ -2,14 +2,14 @@
 
 import json
 import logging
-from typing import Any, Dict
+from typing import Any, Dict, Optional, Tuple
 
 from arkham_frame.shard_interface import ArkhamShard
 
 from .api import init_api, router
 from .detector import AnomalyDetector
 from .storage import AnomalyStore
-from .models import DetectionConfig
+from .models import DetectionConfig, Anomaly
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +47,7 @@ class AnomaliesShard(ArkhamShard):
         self._event_bus = None
         self._vector_service = None
         self._db_service = None
+        self._workers = None
         self._config = DetectionConfig()
 
     async def initialize(self, frame) -> None:
@@ -75,6 +76,7 @@ class AnomaliesShard(ArkhamShard):
 
         # Get optional services
         self._event_bus = frame.get_service("events")
+        self._workers = frame.get_service("workers")
 
         # Create database schema
         await self._create_schema()
@@ -219,33 +221,393 @@ class AnomaliesShard(ArkhamShard):
         """
         Handle embedding created event.
 
-        Triggers automatic anomaly detection for new embeddings.
+        Triggers automatic anomaly detection for new embeddings using
+        a hybrid approach:
+        - Quick sync checks (red flags, basic stats) happen immediately
+        - Deep analysis (content anomalies, vector-based) queued as background job
 
         Args:
             event: Event data containing doc_id and embedding
         """
         doc_id = event.get("doc_id")
+        if not doc_id:
+            return
+
         logger.debug(f"Embedding created for document: {doc_id}")
 
-        # In a real implementation, this would trigger background detection
-        # For now, just log
-        logger.debug(f"Would trigger anomaly detection for {doc_id}")
+        try:
+            # Fetch document content
+            text, metadata = await self._fetch_document_content(doc_id)
+            if not text:
+                logger.debug(f"No text content found for document {doc_id}")
+                return
+
+            # Run quick red flag detection (sync) - fast, no corpus comparison needed
+            if self.detector and self.store:
+                quick_anomalies = self.detector.detect_red_flags(doc_id, text, metadata)
+                for anomaly in quick_anomalies:
+                    await self.store.create_anomaly(anomaly)
+
+                if quick_anomalies:
+                    logger.info(f"Detected {len(quick_anomalies)} red flag anomalies for {doc_id}")
+
+                    # Emit event for quick detections
+                    if self._event_bus:
+                        await self._event_bus.emit(
+                            "anomalies.detected",
+                            {
+                                "doc_id": doc_id,
+                                "count": len(quick_anomalies),
+                                "types": [a.anomaly_type.value for a in quick_anomalies],
+                                "detection_phase": "quick",
+                            },
+                            source="anomalies-shard",
+                        )
+
+            # Queue deep analysis if workers available
+            if self._workers:
+                try:
+                    await self._workers.enqueue("anomaly-detection", {
+                        "doc_id": doc_id,
+                        "detection_types": ["content", "statistical", "metadata"],
+                    })
+                    logger.debug(f"Queued deep analysis for {doc_id}")
+                except Exception as worker_err:
+                    logger.warning(f"Failed to queue deep analysis: {worker_err}")
+                    # Fall back to sync deep analysis
+                    await self._run_deep_analysis(doc_id, text, metadata)
+            else:
+                # No workers available - run deep analysis synchronously
+                await self._run_deep_analysis(doc_id, text, metadata)
+
+        except Exception as e:
+            logger.error(f"Event handler error for {doc_id}: {e}", exc_info=True)
 
     async def _on_document_indexed(self, event: dict) -> None:
         """
         Handle document indexed event.
 
-        Could trigger metadata and statistical anomaly detection.
+        Triggers metadata and statistical anomaly detection using
+        a hybrid approach similar to embedding events.
 
         Args:
             event: Event data containing doc_id
         """
         doc_id = event.get("doc_id")
+        if not doc_id:
+            return
+
         logger.debug(f"Document indexed: {doc_id}")
 
-        # In a real implementation, this would trigger background detection
-        # For now, just log
-        logger.debug(f"Would trigger metadata detection for {doc_id}")
+        try:
+            # Fetch document content
+            text, metadata = await self._fetch_document_content(doc_id)
+            if not text:
+                logger.debug(f"No text content found for document {doc_id}")
+                return
+
+            # Run quick red flag detection (sync)
+            if self.detector and self.store:
+                quick_anomalies = self.detector.detect_red_flags(doc_id, text, metadata)
+                for anomaly in quick_anomalies:
+                    await self.store.create_anomaly(anomaly)
+
+                if quick_anomalies:
+                    logger.info(f"Detected {len(quick_anomalies)} red flag anomalies for {doc_id}")
+
+                    if self._event_bus:
+                        await self._event_bus.emit(
+                            "anomalies.detected",
+                            {
+                                "doc_id": doc_id,
+                                "count": len(quick_anomalies),
+                                "types": [a.anomaly_type.value for a in quick_anomalies],
+                                "detection_phase": "quick",
+                            },
+                            source="anomalies-shard",
+                        )
+
+            # Queue deep analysis for metadata-focused detection
+            if self._workers:
+                try:
+                    await self._workers.enqueue("anomaly-detection", {
+                        "doc_id": doc_id,
+                        "detection_types": ["metadata", "statistical"],
+                    })
+                    logger.debug(f"Queued metadata analysis for {doc_id}")
+                except Exception as worker_err:
+                    logger.warning(f"Failed to queue metadata analysis: {worker_err}")
+                    await self._run_deep_analysis(doc_id, text, metadata)
+            else:
+                await self._run_deep_analysis(doc_id, text, metadata)
+
+        except Exception as e:
+            logger.error(f"Event handler error for {doc_id}: {e}", exc_info=True)
+
+    async def _fetch_document_content(self, doc_id: str) -> Tuple[Optional[str], Dict[str, Any]]:
+        """
+        Fetch document text and metadata from the database.
+
+        Content is stored in chunks, not in the documents table.
+
+        Args:
+            doc_id: Document ID
+
+        Returns:
+            Tuple of (text, metadata) or (None, {}) if not found
+        """
+        if not self._db_service:
+            return None, {}
+
+        try:
+            # Get document metadata
+            doc_row = await self._db_service.fetch_one(
+                """SELECT id, filename, file_size, mime_type, created_at, metadata
+                   FROM arkham_frame.documents WHERE id = :doc_id""",
+                {"doc_id": doc_id}
+            )
+
+            if not doc_row:
+                return None, {}
+
+            metadata = {}
+
+            # Parse stored metadata JSON
+            if doc_row.get("metadata"):
+                try:
+                    if isinstance(doc_row["metadata"], str):
+                        metadata = json.loads(doc_row["metadata"])
+                    else:
+                        metadata = dict(doc_row["metadata"])
+                except (json.JSONDecodeError, TypeError):
+                    metadata = {}
+
+            # Add file info to metadata
+            metadata["file_name"] = doc_row.get("filename")
+            metadata["file_size"] = doc_row.get("file_size")
+            metadata["file_type"] = doc_row.get("mime_type")
+            metadata["created_at"] = doc_row.get("created_at")
+
+            # Get content from chunks
+            chunk_rows = await self._db_service.fetch_all(
+                """SELECT text FROM arkham_frame.chunks
+                   WHERE document_id = :doc_id
+                   ORDER BY chunk_index""",
+                {"doc_id": doc_id}
+            )
+
+            if not chunk_rows:
+                return None, metadata
+
+            # Concatenate all chunk texts
+            text = "\n".join(row.get("text", "") for row in chunk_rows if row.get("text"))
+
+            return text, metadata
+
+        except Exception as e:
+            logger.error(f"Failed to fetch document {doc_id}: {e}")
+            return None, {}
+
+    async def _run_deep_analysis(self, doc_id: str, text: str, metadata: Dict[str, Any]) -> list[Anomaly]:
+        """
+        Run deep analysis detection strategies that require corpus comparison.
+
+        This includes:
+        - Content anomalies (vector distance)
+        - Statistical anomalies (corpus-relative)
+        - Metadata anomalies (corpus-relative)
+
+        Args:
+            doc_id: Document ID
+            text: Document text content
+            metadata: Document metadata
+
+        Returns:
+            List of detected anomalies
+        """
+        if not self.detector or not self.store:
+            return []
+
+        all_anomalies: list[Anomaly] = []
+
+        try:
+            # Statistical anomalies - needs corpus stats
+            corpus_stats = await self._get_corpus_stats()
+            if corpus_stats:
+                stat_anomalies = self.detector.detect_statistical_anomalies(
+                    doc_id, text, corpus_stats
+                )
+                all_anomalies.extend(stat_anomalies)
+
+            # Metadata anomalies - needs corpus metadata stats
+            corpus_metadata_stats = await self._get_corpus_metadata_stats()
+            if corpus_metadata_stats:
+                meta_anomalies = self.detector.detect_metadata_anomalies(
+                    doc_id, metadata, corpus_metadata_stats
+                )
+                all_anomalies.extend(meta_anomalies)
+
+            # Content anomalies - needs vector service
+            if self._vector_service:
+                content_anomalies = await self._detect_content_anomalies(doc_id, text)
+                all_anomalies.extend(content_anomalies)
+
+            # Store all detected anomalies
+            for anomaly in all_anomalies:
+                await self.store.create_anomaly(anomaly)
+
+            if all_anomalies:
+                logger.info(f"Deep analysis found {len(all_anomalies)} anomalies for {doc_id}")
+
+                # Emit event for deep detections
+                if self._event_bus:
+                    await self._event_bus.emit(
+                        "anomalies.detected",
+                        {
+                            "doc_id": doc_id,
+                            "count": len(all_anomalies),
+                            "types": list(set(a.anomaly_type.value for a in all_anomalies)),
+                            "detection_phase": "deep",
+                        },
+                        source="anomalies-shard",
+                    )
+
+        except Exception as e:
+            logger.error(f"Deep analysis failed for {doc_id}: {e}", exc_info=True)
+
+        return all_anomalies
+
+    async def _get_corpus_stats(self) -> Dict[str, Any]:
+        """
+        Calculate corpus-wide text statistics for comparison.
+
+        Returns:
+            Dictionary of corpus statistics by metric
+        """
+        if not self._db_service:
+            return {}
+
+        try:
+            rows = await self._db_service.fetch_all(
+                """SELECT
+                    AVG(LENGTH(text)) as avg_char_count,
+                    AVG(LENGTH(text) - LENGTH(REPLACE(text, ' ', '')) + 1) as avg_word_count
+                   FROM arkham_frame.chunks
+                   WHERE text IS NOT NULL AND LENGTH(text) > 0
+                   LIMIT 1000"""
+            )
+
+            if not rows or not rows[0]:
+                return {}
+
+            row = rows[0]
+
+            # Build corpus stats structure
+            corpus_stats = {
+                'char_count': {
+                    'mean': float(row.get('avg_char_count') or 0),
+                    'std': float(row.get('avg_char_count', 0) or 0) * 0.5,
+                },
+                'word_count': {
+                    'mean': float(row.get('avg_word_count') or 0),
+                    'std': float(row.get('avg_word_count', 0) or 0) * 0.5,
+                },
+            }
+
+            return corpus_stats
+
+        except Exception as e:
+            logger.debug(f"Failed to get corpus stats: {e}")
+            return {}
+
+    async def _get_corpus_metadata_stats(self) -> Dict[str, Any]:
+        """
+        Calculate corpus-wide metadata statistics for comparison.
+
+        Returns:
+            Dictionary of metadata statistics
+        """
+        if not self._db_service:
+            return {}
+
+        try:
+            row = await self._db_service.fetch_one(
+                """SELECT
+                    AVG(file_size) as avg_size,
+                    MIN(file_size) as min_size,
+                    MAX(file_size) as max_size
+                   FROM arkham_frame.documents
+                   WHERE file_size IS NOT NULL"""
+            )
+
+            if not row:
+                return {}
+
+            avg_size = float(row.get('avg_size') or 0)
+            min_size = float(row.get('min_size') or 0)
+            max_size = float(row.get('max_size') or 0)
+
+            estimated_std = (max_size - min_size) / 4 if max_size > min_size else avg_size * 0.5
+
+            return {
+                'file_size': {
+                    'mean': avg_size,
+                    'std': estimated_std,
+                }
+            }
+
+        except Exception as e:
+            logger.debug(f"Failed to get corpus metadata stats: {e}")
+            return {}
+
+    async def _detect_content_anomalies(self, doc_id: str, text: str) -> list[Anomaly]:
+        """
+        Detect content anomalies using vector embeddings.
+
+        Args:
+            doc_id: Document ID
+            text: Document text
+
+        Returns:
+            List of content anomalies
+        """
+        import uuid
+        from datetime import datetime
+        from .models import AnomalyType, SeverityLevel
+
+        if not self._vector_service or not self.detector:
+            return []
+
+        try:
+            # Check if vector search is available
+            if hasattr(self._vector_service, 'search'):
+                # Search for similar documents
+                results = await self._vector_service.search(
+                    collection="documents",
+                    query=text[:1000],  # Use first 1000 chars as query
+                    limit=10,
+                )
+
+                # If this document is very different from results, it might be anomalous
+                if results and len(results) > 0:
+                    avg_score = sum(r.get('score', 0) for r in results) / len(results)
+                    if avg_score < 0.3:  # Low similarity to corpus
+                        return [Anomaly(
+                            id=str(uuid.uuid4()),
+                            doc_id=doc_id,
+                            anomaly_type=AnomalyType.CONTENT,
+                            score=1.0 - avg_score,
+                            severity=SeverityLevel.MEDIUM,
+                            confidence=0.7,
+                            explanation=f"Document is semantically distant from corpus (avg similarity: {avg_score:.2f})",
+                            details={'avg_similarity': avg_score, 'compared_to': len(results)},
+                        )]
+
+            return []
+
+        except Exception as e:
+            logger.debug(f"Content anomaly detection failed: {e}")
+            return []
 
     # --- Public API for other shards ---
 
@@ -253,9 +615,13 @@ class AnomaliesShard(ArkhamShard):
         self,
         doc_ids: list[str] | None = None,
         config: DetectionConfig | None = None,
-    ) -> list:
+    ) -> list[Anomaly]:
         """
         Public method for other shards to trigger anomaly detection.
+
+        Uses hybrid detection approach:
+        - Quick red flag detection runs synchronously for all documents
+        - Deep analysis (statistical, metadata, content) runs after
 
         Args:
             doc_ids: List of document IDs to check (None = all documents)
@@ -267,15 +633,65 @@ class AnomaliesShard(ArkhamShard):
         if not self.detector or not self.store:
             raise RuntimeError("Anomalies Shard not initialized")
 
-        logger.info(f"Detecting anomalies for {len(doc_ids) if doc_ids else 'all'} documents")
+        # Use provided config or default
+        detection_config = config or self._config
 
-        # In a real implementation, this would:
-        # 1. Fetch documents from database
-        # 2. Run detector on each document
-        # 3. Store results
-        # 4. Emit events
+        # Get doc_ids if not provided
+        if not doc_ids and self._db_service:
+            rows = await self._db_service.fetch_all(
+                "SELECT id FROM arkham_documents LIMIT 1000"
+            )
+            doc_ids = [row["id"] for row in rows] if rows else []
 
-        return []
+        if not doc_ids:
+            logger.warning("No documents to analyze")
+            return []
+
+        logger.info(f"Detecting anomalies for {len(doc_ids)} documents")
+
+        all_anomalies: list[Anomaly] = []
+
+        for doc_id in doc_ids:
+            try:
+                # Fetch document content
+                text, metadata = await self._fetch_document_content(doc_id)
+                if not text:
+                    continue
+
+                # Quick red flag detection
+                if detection_config.detect_red_flags:
+                    red_flags = self.detector.detect_red_flags(doc_id, text, metadata)
+                    for anomaly in red_flags:
+                        await self.store.create_anomaly(anomaly)
+                    all_anomalies.extend(red_flags)
+
+                # Deep analysis
+                if any([
+                    detection_config.detect_statistical,
+                    detection_config.detect_metadata,
+                    detection_config.detect_content
+                ]):
+                    deep_anomalies = await self._run_deep_analysis(doc_id, text, metadata)
+                    # Deep analysis already stores anomalies, just collect them
+                    all_anomalies.extend(deep_anomalies)
+
+            except Exception as e:
+                logger.warning(f"Failed to analyze document {doc_id}: {e}")
+
+        # Emit summary event
+        if self._event_bus and all_anomalies:
+            await self._event_bus.emit(
+                "anomalies.batch_detection_completed",
+                {
+                    "doc_count": len(doc_ids),
+                    "anomaly_count": len(all_anomalies),
+                    "types": list(set(a.anomaly_type.value for a in all_anomalies)),
+                },
+                source="anomalies-shard",
+            )
+
+        logger.info(f"Detection completed: {len(all_anomalies)} anomalies found")
+        return all_anomalies
 
     async def get_anomalies_for_document(self, doc_id: str) -> list:
         """
