@@ -2,13 +2,19 @@
  * GraphPage - Entity relationship graph visualization
  *
  * Provides interactive visualization of entity relationships and connections.
- * Features graph exploration, filtering, and analysis capabilities.
+ * Uses react-force-graph for physics-based graph rendering with advanced controls.
  */
 
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useMemo, useRef, useEffect } from 'react';
+import ForceGraph2D from 'react-force-graph-2d';
+import type { ForceGraphMethods } from 'react-force-graph-2d';
 import { Icon } from '../../components/common/Icon';
 import { useToast } from '../../context/ToastContext';
 import { useFetch } from '../../hooks/useFetch';
+import { useGraphSettings } from './hooks/useGraphSettings';
+import { useUrlParams } from './hooks/useUrlParams';
+import { GraphControls, DataSourcesPanel } from './components';
+import { fetchScores, type EntityScore } from './api';
 import './GraphPage.css';
 
 // Types
@@ -17,14 +23,23 @@ interface GraphNode {
   label: string;
   type: string;
   degree: number;
+  entity_type?: string;
+  document_count?: number;
   metadata?: Record<string, unknown>;
+  // Force graph properties
+  x?: number;
+  y?: number;
+  fx?: number | null;
+  fy?: number | null;
 }
 
 interface GraphEdge {
-  source: string;
-  target: string;
+  source: string | GraphNode;
+  target: string | GraphNode;
   weight: number;
   type?: string;
+  relationship_type?: string;
+  co_occurrence_count?: number;
   metadata?: Record<string, unknown>;
 }
 
@@ -44,13 +59,93 @@ interface GraphStats {
   avg_clustering?: number;
 }
 
+interface PathResult {
+  path_found: boolean;
+  path_length: number;
+  path: string[];
+  edges: GraphEdge[];
+  total_weight: number;
+}
+
+// Entity type colors
+const ENTITY_TYPE_COLORS: Record<string, string> = {
+  // Standard NER types
+  person: '#4299e1',
+  organization: '#48bb78',
+  location: '#ed8936',
+  event: '#9f7aea',
+  document: '#f56565',
+  date: '#38b2ac',
+  cardinal: '#a0aec0',  // Numbers
+  money: '#68d391',     // Currency
+  percent: '#fc8181',   // Percentages
+  time: '#63b3ed',      // Times
+  quantity: '#b794f4',  // Quantities
+  ordinal: '#f6ad55',   // Ordinal numbers
+  gpe: '#ed8936',       // Geo-political entities (like location)
+  norp: '#9f7aea',      // Nationalities, religious, political groups
+  fac: '#f687b3',       // Facilities
+  product: '#4fd1c5',   // Products
+  law: '#fc8181',       // Laws
+  work_of_art: '#fbb6ce', // Works of art
+  language: '#90cdf4',  // Languages
+
+  // Cross-shard node types
+  claim: '#f59e0b',       // Claims shard - amber
+  evidence: '#3b82f6',    // ACH evidence - blue
+  hypothesis: '#8b5cf6',  // ACH hypothesis - purple
+  artifact: '#10b981',    // Provenance artifact - emerald
+  timeline_event: '#ec4899', // Timeline event - pink
+
+  // Fallback
+  other: '#718096',
+  unknown: '#718096',
+};
+
+type TabId = 'graph' | 'controls' | 'sources';
+
 export function GraphPage() {
   const { toast } = useToast();
+  const graphRef = useRef<ForceGraphMethods | null>(null);
+  const graphSettings = useGraphSettings();
+
+  // State
+  const [activeTab, setActiveTab] = useState<TabId>('graph');
+  const [urlCopied, setUrlCopied] = useState(false);
   const [projectId, _setProjectId] = useState<string>('default');
   const [selectedNode, setSelectedNode] = useState<GraphNode | null>(null);
-  const [filterEntityType, setFilterEntityType] = useState<string>('');
-  const [minWeight, setMinWeight] = useState<number>(0);
+  const [highlightedPath, setHighlightedPath] = useState<Set<string>>(new Set());
   const [building, setBuilding] = useState(false);
+  const [pathMode, setPathMode] = useState(false);
+  const [pathStart, setPathStart] = useState<GraphNode | null>(null);
+  const [containerSize, setContainerSize] = useState({ width: 800, height: 600 });
+  const [zoomLevel, setZoomLevel] = useState(1);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+
+  // Scoring state
+  const [scores, setScores] = useState<Map<string, EntityScore>>(new Map());
+  const [scoresLoading, setScoresLoading] = useState(false);
+  const [scoresError, setScoresError] = useState<string | null>(null);
+
+  // Container ref for responsive sizing
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  // Resize observer for responsive graph
+  useEffect(() => {
+    const updateSize = () => {
+      if (containerRef.current) {
+        const rect = containerRef.current.getBoundingClientRect();
+        setContainerSize({
+          width: rect.width,
+          height: rect.height,
+        });
+      }
+    };
+
+    updateSize();
+    window.addEventListener('resize', updateSize);
+    return () => window.removeEventListener('resize', updateSize);
+  }, []);
 
   // Fetch graph data
   const { data: graphData, loading, error, refetch } = useFetch<GraphData>(
@@ -58,20 +153,247 @@ export function GraphPage() {
   );
 
   // Fetch statistics
-  const { data: stats, loading: _statsLoading, refetch: refetchStats } = useFetch<GraphStats>(
+  const { data: stats, refetch: refetchStats } = useFetch<GraphStats>(
     `/api/graph/stats?project_id=${projectId}`
   );
 
+  // Extract settings for easier access
+  const { settings, normalizedWeights, updateFilters, updateScoring } = graphSettings;
+  const { filters, labels, nodeSize, layout, scoring } = settings;
+
+  // URL params for shareable views
+  const { copyShareableUrl } = useUrlParams(
+    settings,
+    updateFilters,
+    updateScoring,
+    activeTab,
+    selectedNode?.id || undefined,
+    (tab: string) => {
+      if (tab === 'graph' || tab === 'controls' || tab === 'sources') {
+        setActiveTab(tab);
+      }
+    },
+    (nodeId) => {
+      // Look up and select the node by ID
+      if (nodeId && graphData) {
+        const node = graphData.nodes.find(n => n.id === nodeId);
+        if (node) setSelectedNode(node);
+      } else {
+        setSelectedNode(null);
+      }
+    }
+  );
+
+  // Handle share button click
+  const handleShare = async () => {
+    const success = await copyShareableUrl();
+    if (success) {
+      setUrlCopied(true);
+      toast.success('Graph URL copied to clipboard');
+      setTimeout(() => setUrlCopied(false), 2000);
+    } else {
+      toast.error('Failed to copy URL');
+    }
+  };
+
+  // Fetch scores when scoring is enabled
+  const loadScores = useCallback(async () => {
+    if (!scoring.enabled || !graphData) return;
+
+    setScoresLoading(true);
+    setScoresError(null);
+
+    try {
+      const response = await fetchScores({
+        project_id: projectId,
+        centrality_type: scoring.centralityType,
+        centrality_weight: normalizedWeights.centrality,
+        frequency_weight: normalizedWeights.frequency,
+        recency_weight: normalizedWeights.recency,
+        credibility_weight: normalizedWeights.credibility,
+        corroboration_weight: normalizedWeights.corroboration,
+        recency_half_life_days: scoring.recencyHalfLifeDays,
+        limit: 500,
+      });
+
+      // Build score map by entity_id
+      const scoreMap = new Map<string, EntityScore>();
+      response.scores.forEach(score => {
+        scoreMap.set(score.entity_id, score);
+      });
+      setScores(scoreMap);
+      toast.success(`Calculated scores for ${response.entity_count} entities`);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to calculate scores';
+      setScoresError(message);
+      toast.error(message);
+    } finally {
+      setScoresLoading(false);
+    }
+  }, [scoring, projectId, normalizedWeights, graphData, toast]);
+
+  // Auto-fetch scores when scoring is enabled or settings change
+  useEffect(() => {
+    if (scoring.enabled && graphData && graphData.nodes.length > 0) {
+      loadScores();
+    }
+  }, [scoring.enabled, scoring.centralityType, graphData?.nodes.length]);
+
+  // Transform data for force graph - properly memoized
+  const forceGraphData = useMemo(() => {
+    if (!graphData) return { nodes: [], links: [] };
+
+    // Map nodes with type normalization
+    let nodes = graphData.nodes.map(node => ({
+      ...node,
+      type: node.entity_type || node.type || 'unknown',
+    }));
+
+    // Apply entity type filter
+    if (filters.entityTypes.length > 0 && !filters.entityTypes.includes('__none__')) {
+      nodes = nodes.filter(n => filters.entityTypes.includes(n.type));
+    } else if (filters.entityTypes.includes('__none__')) {
+      nodes = [];
+    }
+
+    // Apply degree filter
+    nodes = nodes.filter(n => {
+      const degree = n.degree || 0;
+      return degree >= filters.minDegree && degree <= filters.maxDegree;
+    });
+
+    // Apply search filter
+    if (filters.searchQuery) {
+      const query = filters.searchQuery.toLowerCase();
+      nodes = nodes.filter(n =>
+        n.label?.toLowerCase().includes(query) ||
+        n.id.toLowerCase().includes(query)
+      );
+    }
+
+    // Apply document source filter
+    if (filters.documentSources.length > 0) {
+      nodes = nodes.filter(n => {
+        // Check if node has any matching document source
+        const nodeDocs = n.metadata?.document_ids as string[] | undefined;
+        return nodeDocs?.some(doc => filters.documentSources.includes(doc));
+      });
+    }
+
+    // Apply max nodes limit - sort by importance and take top N
+    if (filters.maxNodes > 0 && nodes.length > filters.maxNodes) {
+      // Sort by importance (degree + document count)
+      nodes.sort((a, b) => {
+        const scoreA = (a.degree || 0) * 2 + (a.document_count || 0);
+        const scoreB = (b.degree || 0) * 2 + (b.document_count || 0);
+        return scoreB - scoreA;
+      });
+      nodes = nodes.slice(0, filters.maxNodes);
+    }
+
+    const nodeIds = new Set(nodes.map(n => n.id));
+
+    // Filter and transform edges to links
+    const links = graphData.edges
+      .filter(edge => {
+        const sourceId = typeof edge.source === 'string' ? edge.source : edge.source.id;
+        const targetId = typeof edge.target === 'string' ? edge.target : edge.target.id;
+        return nodeIds.has(sourceId) && nodeIds.has(targetId) && edge.weight >= filters.minEdgeWeight;
+      })
+      .map(edge => ({
+        source: typeof edge.source === 'string' ? edge.source : edge.source.id,
+        target: typeof edge.target === 'string' ? edge.target : edge.target.id,
+        weight: edge.weight,
+        type: edge.relationship_type || edge.type || 'related',
+        co_occurrence_count: edge.co_occurrence_count || 0,
+      }));
+
+    return { nodes, links };
+  }, [graphData, filters]);
+
+  // Calculate node importance scores for label visibility
+  const nodeImportance = useMemo(() => {
+    const nodes = forceGraphData.nodes;
+    if (nodes.length === 0) return new Map<string, number>();
+
+    // Calculate max degree for normalization
+    const maxDegree = Math.max(...nodes.map(n => n.degree || 1));
+
+    // Create importance map
+    const importance = new Map<string, number>();
+    nodes.forEach(node => {
+      const degree = node.degree || 0;
+      const docCount = node.document_count || 1;
+      // Simple importance: weighted combination of degree and document count
+      const score = (degree / maxDegree) * 0.7 + (Math.min(docCount, 10) / 10) * 0.3;
+      importance.set(node.id, score);
+    });
+
+    return importance;
+  }, [forceGraphData.nodes]);
+
+  // Get top N% of nodes by importance
+  const topNodes = useMemo(() => {
+    if (labels.mode !== 'top') return new Set<string>();
+
+    const entries = Array.from(nodeImportance.entries());
+    entries.sort((a, b) => b[1] - a[1]);
+
+    const topCount = Math.max(1, Math.ceil(entries.length * (labels.topPercent / 100)));
+    return new Set(entries.slice(0, topCount).map(([id]) => id));
+  }, [nodeImportance, labels.mode, labels.topPercent]);
+
+  // Level-of-detail settings based on node count for performance
+  const lodSettings = useMemo(() => {
+    const nodeCount = forceGraphData.nodes.length;
+    return {
+      // Disable directional particles for large graphs
+      showDirectionalParticles: nodeCount < 200,
+      // Reduce particle count for medium graphs
+      particleCount: nodeCount < 100 ? 2 : nodeCount < 300 ? 1 : 0,
+      // Simplify link rendering for very large graphs
+      simplifyLinks: nodeCount >= 500,
+      // Skip text backgrounds for large graphs
+      showTextBackgrounds: nodeCount < 300,
+      // Reduce cooldown ticks for large graphs
+      cooldownTicks: nodeCount < 200 ? 100 : nodeCount < 500 ? 50 : 30,
+      // Reduce physics precision for very large graphs
+      warmupTicks: nodeCount < 200 ? 0 : nodeCount < 500 ? 100 : 200,
+    };
+  }, [forceGraphData.nodes.length]);
+
+  // Build graph with data sources
   const buildGraph = async () => {
     setBuilding(true);
     try {
+      const { dataSources } = settings;
+      // Determine if any documents are selected
+      const hasDocuments = dataSources.selectedDocumentIds.length > 0 || dataSources.documentEntities;
+
       const response = await fetch('/api/graph/build', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           project_id: projectId,
           min_co_occurrence: 1,
-          include_temporal: false,
+          // Primary data sources
+          include_document_entities: hasDocuments,
+          include_cooccurrences: dataSources.entityCooccurrences,
+          // Specific documents to include (empty = all)
+          document_ids: dataSources.selectedDocumentIds.length > 0
+            ? dataSources.selectedDocumentIds
+            : null,
+          // Cross-shard node sources
+          include_temporal: dataSources.timelineEvents,
+          include_claims: dataSources.claims,
+          include_ach_evidence: dataSources.achEvidence,
+          include_ach_hypotheses: dataSources.achHypotheses,
+          include_provenance_artifacts: dataSources.provenanceArtifacts,
+          // Cross-shard edge sources
+          include_contradictions: dataSources.contradictions,
+          include_patterns: dataSources.patterns,
+          // Weight modifiers
+          apply_credibility_weights: dataSources.credibilityRatings,
         }),
       });
 
@@ -81,7 +403,14 @@ export function GraphPage() {
       }
 
       const result = await response.json();
-      toast.success(`Graph built: ${result.node_count} nodes, ${result.edge_count} edges`);
+
+      // Build detailed success message
+      let message = `Graph built: ${result.node_count} nodes, ${result.edge_count} edges`;
+      if (result.cross_shard_nodes_added > 0 || result.cross_shard_edges_added > 0) {
+        message += ` (+${result.cross_shard_nodes_added} cross-shard nodes, +${result.cross_shard_edges_added} edges)`;
+      }
+      toast.success(message);
+
       refetch();
       refetchStats();
     } catch (err) {
@@ -91,7 +420,8 @@ export function GraphPage() {
     }
   };
 
-  const _findPath = async (sourceId: string, targetId: string) => {
+  // Find path between two nodes
+  const findPath = async (sourceId: string, targetId: string) => {
     try {
       const response = await fetch('/api/graph/path', {
         method: 'POST',
@@ -109,18 +439,21 @@ export function GraphPage() {
         throw new Error(error.detail || 'Failed to find path');
       }
 
-      const result = await response.json();
+      const result: PathResult = await response.json();
       if (result.path_found) {
         toast.success(`Path found: ${result.path_length} hops`);
+        // Highlight the path
+        setHighlightedPath(new Set(result.path));
       } else {
         toast.info('No path found between entities');
+        setHighlightedPath(new Set());
       }
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Failed to find path');
     }
   };
-  void _findPath;
 
+  // Export graph
   const exportGraph = async (format: string) => {
     try {
       const response = await fetch('/api/graph/export', {
@@ -157,38 +490,242 @@ export function GraphPage() {
     }
   };
 
-  const handleNodeClick = (node: GraphNode) => {
-    setSelectedNode(node);
-  };
+  // Handle node click
+  const handleNodeClick = useCallback((node: GraphNode) => {
+    if (pathMode) {
+      if (!pathStart) {
+        setPathStart(node);
+        toast.info(`Start: ${node.label}. Click another node to find path.`);
+      } else {
+        findPath(pathStart.id, node.id);
+        setPathStart(null);
+        setPathMode(false);
+      }
+    } else {
+      setSelectedNode(node);
+      // Zoom to node
+      graphRef.current?.centerAt(node.x, node.y, 500);
+      graphRef.current?.zoom(2, 500);
+    }
+  }, [pathMode, pathStart, projectId]);
 
+  // Handle node right-click (context menu)
+  const handleNodeRightClick = useCallback((node: GraphNode) => {
+    // Could show context menu here
+    setSelectedNode(node);
+  }, []);
+
+  // Get connected nodes
   const getConnectedNodes = useCallback((nodeId: string): GraphNode[] => {
     if (!graphData) return [];
 
     const connectedIds = new Set<string>();
     graphData.edges.forEach(edge => {
-      if (edge.source === nodeId) connectedIds.add(edge.target);
-      if (edge.target === nodeId) connectedIds.add(edge.source);
+      const sourceId = typeof edge.source === 'string' ? edge.source : edge.source.id;
+      const targetId = typeof edge.target === 'string' ? edge.target : edge.target.id;
+      if (sourceId === nodeId) connectedIds.add(targetId);
+      if (targetId === nodeId) connectedIds.add(sourceId);
     });
 
     return graphData.nodes.filter(node => connectedIds.has(node.id));
   }, [graphData]);
 
   // Get unique entity types for filter
-  const entityTypes = graphData
-    ? Array.from(new Set(graphData.nodes.map(n => n.type)))
-    : [];
+  const entityTypes = useMemo(() => {
+    if (!graphData) return [];
+    return Array.from(new Set(graphData.nodes.map(n => n.entity_type || n.type || 'unknown')));
+  }, [graphData]);
 
-  // Filter nodes and edges
-  const filteredData = graphData
-    ? {
-        nodes: graphData.nodes.filter(
-          node => !filterEntityType || node.type === filterEntityType
-        ),
-        edges: graphData.edges.filter(
-          edge => edge.weight >= minWeight
-        ),
+  // Calculate node radius based on settings
+  const getNodeRadius = useCallback((node: GraphNode): number => {
+    const { minRadius, maxRadius, sizeBy } = nodeSize;
+
+    if (sizeBy === 'uniform') {
+      return (minRadius + maxRadius) / 2;
+    }
+
+    let value = 0;
+    let maxValue = 1;
+
+    switch (sizeBy) {
+      case 'degree':
+        value = node.degree || 0;
+        maxValue = Math.max(...forceGraphData.nodes.map(n => n.degree || 1));
+        break;
+      case 'document_count':
+        value = node.document_count || 0;
+        maxValue = Math.max(...forceGraphData.nodes.map(n => n.document_count || 1));
+        break;
+      case 'composite':
+        // Use composite score if available
+        if (scoring.enabled && scores.size > 0) {
+          const entityScore = scores.get(node.id);
+          value = entityScore?.composite_score || 0;
+          maxValue = Math.max(...Array.from(scores.values()).map(s => s.composite_score || 1));
+        } else {
+          // Fall back to degree if scores not available
+          value = node.degree || 0;
+          maxValue = Math.max(...forceGraphData.nodes.map(n => n.degree || 1));
+        }
+        break;
+      case 'pagerank':
+        // Use centrality score if available
+        if (scoring.enabled && scores.size > 0) {
+          const entityScore = scores.get(node.id);
+          value = entityScore?.centrality_score || 0;
+          maxValue = 1; // Already normalized
+        } else {
+          value = node.degree || 0;
+          maxValue = Math.max(...forceGraphData.nodes.map(n => n.degree || 1));
+        }
+        break;
+      case 'betweenness':
+        // Use centrality score if available (with betweenness type)
+        if (scoring.enabled && scores.size > 0 && scoring.centralityType === 'betweenness') {
+          const entityScore = scores.get(node.id);
+          value = entityScore?.centrality_score || 0;
+          maxValue = 1;
+        } else {
+          value = node.degree || 0;
+          maxValue = Math.max(...forceGraphData.nodes.map(n => n.degree || 1));
+        }
+        break;
+      default:
+        // Default to degree
+        value = node.degree || 0;
+        maxValue = Math.max(...forceGraphData.nodes.map(n => n.degree || 1));
+    }
+
+    const normalized = maxValue > 0 ? value / maxValue : 0;
+    return minRadius + normalized * (maxRadius - minRadius);
+  }, [nodeSize, forceGraphData.nodes, scoring.enabled, scores]);
+
+  // Determine if label should be shown for a node
+  const shouldShowLabel = useCallback((node: GraphNode, globalScale: number): boolean => {
+    const isSelected = selectedNode?.id === node.id;
+    const isInPath = highlightedPath.has(node.id);
+    const isPathStart = pathStart?.id === node.id;
+
+    // Always show for selected/highlighted nodes
+    if (isSelected || isInPath || isPathStart) return true;
+
+    switch (labels.mode) {
+      case 'all':
+        return true;
+      case 'top':
+        return topNodes.has(node.id);
+      case 'zoom':
+        return globalScale >= labels.zoomThreshold;
+      case 'selected':
+        // Show for selected node and its neighbors
+        if (!selectedNode) return false;
+        if (node.id === selectedNode.id) return true;
+        // Check if node is a neighbor of selected
+        return forceGraphData.links.some(link => {
+          const sourceId = typeof link.source === 'string' ? link.source : (link.source as GraphNode).id;
+          const targetId = typeof link.target === 'string' ? link.target : (link.target as GraphNode).id;
+          return (sourceId === selectedNode.id && targetId === node.id) ||
+                 (targetId === selectedNode.id && sourceId === node.id);
+        });
+      default:
+        return false;
+    }
+  }, [labels, selectedNode, highlightedPath, pathStart, topNodes, forceGraphData.links]);
+
+  // Node canvas rendering
+  const nodeCanvasObject = useCallback((node: GraphNode, ctx: CanvasRenderingContext2D, globalScale: number) => {
+    const label = node.label || node.id;
+    const fontSize = Math.max(labels.fontSize / globalScale, 4);
+    const nodeColor = ENTITY_TYPE_COLORS[node.type?.toLowerCase() || 'unknown'] || ENTITY_TYPE_COLORS.unknown;
+
+    // Node size from settings
+    const radius = getNodeRadius(node);
+
+    // Highlight if selected or in path
+    const isSelected = selectedNode?.id === node.id;
+    const isInPath = highlightedPath.has(node.id);
+    const isPathStart = pathStart?.id === node.id;
+
+    // Draw node circle
+    ctx.beginPath();
+    ctx.arc(node.x!, node.y!, radius, 0, 2 * Math.PI);
+
+    // Fill
+    ctx.fillStyle = isPathStart ? '#f6e05e' : isInPath ? '#68d391' : isSelected ? '#f56565' : nodeColor;
+    ctx.fill();
+
+    // Border
+    if (isSelected || isInPath || isPathStart) {
+      ctx.strokeStyle = isPathStart ? '#d69e2e' : isInPath ? '#38a169' : '#c53030';
+      ctx.lineWidth = 2 / globalScale;
+      ctx.stroke();
+    }
+
+    // Draw label based on visibility settings
+    if (shouldShowLabel(node, globalScale)) {
+      ctx.font = `${fontSize}px Inter, sans-serif`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'top';
+
+      // Background for text (skip for large graphs for performance)
+      if (lodSettings.showTextBackgrounds) {
+        const textWidth = ctx.measureText(label).width;
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.8)';
+        ctx.fillRect(
+          node.x! - textWidth / 2 - 2,
+          node.y! + radius + 2,
+          textWidth + 4,
+          fontSize + 2
+        );
       }
-    : null;
+
+      ctx.fillStyle = '#1a202c';
+      ctx.fillText(label, node.x!, node.y! + radius + 3);
+    }
+  }, [selectedNode, highlightedPath, pathStart, labels.fontSize, getNodeRadius, shouldShowLabel, lodSettings.showTextBackgrounds]);
+
+  // Link rendering
+  const linkColor = useCallback((link: GraphEdge): string => {
+    const sourceId = typeof link.source === 'string' ? link.source : (link.source as GraphNode).id;
+    const targetId = typeof link.target === 'string' ? link.target : (link.target as GraphNode).id;
+
+    if (highlightedPath.has(sourceId) && highlightedPath.has(targetId)) {
+      return '#68d391'; // Green for path
+    }
+    return 'rgba(156, 163, 175, 0.6)'; // Gray
+  }, [highlightedPath]);
+
+  const linkWidth = useCallback((link: GraphEdge): number => {
+    const sourceId = typeof link.source === 'string' ? link.source : (link.source as GraphNode).id;
+    const targetId = typeof link.target === 'string' ? link.target : (link.target as GraphNode).id;
+
+    if (highlightedPath.has(sourceId) && highlightedPath.has(targetId)) {
+      return 3;
+    }
+    return Math.max(0.5, link.weight * 2);
+  }, [highlightedPath]);
+
+  // Reset view
+  const resetView = () => {
+    graphRef.current?.zoomToFit(400, 50);
+    setSelectedNode(null);
+    setHighlightedPath(new Set());
+    setPathStart(null);
+    setPathMode(false);
+  };
+
+  // Toggle path mode
+  const togglePathMode = () => {
+    if (pathMode) {
+      setPathMode(false);
+      setPathStart(null);
+      setHighlightedPath(new Set());
+    } else {
+      setPathMode(true);
+      setSelectedNode(null);
+      toast.info('Click on a starting node');
+    }
+  };
 
   return (
     <div className="graph-page">
@@ -220,12 +757,37 @@ export function GraphPage() {
             )}
           </button>
           <button
+            className={`btn ${pathMode ? 'btn-primary' : 'btn-secondary'}`}
+            onClick={togglePathMode}
+            disabled={!graphData}
+          >
+            <Icon name="Route" size={16} />
+            {pathMode ? 'Cancel Path' : 'Find Path'}
+          </button>
+          <button
+            className="btn btn-secondary"
+            onClick={resetView}
+            disabled={!graphData}
+          >
+            <Icon name="Maximize" size={16} />
+            Reset View
+          </button>
+          <button
             className="btn btn-secondary"
             onClick={() => exportGraph('json')}
             disabled={!graphData}
           >
             <Icon name="Download" size={16} />
             Export
+          </button>
+          <button
+            className={`btn ${urlCopied ? 'btn-primary' : 'btn-secondary'}`}
+            onClick={handleShare}
+            disabled={!graphData}
+            title="Copy shareable URL to clipboard"
+          >
+            <Icon name={urlCopied ? 'Check' : 'Share2'} size={16} />
+            {urlCopied ? 'Copied!' : 'Share'}
           </button>
         </div>
       </header>
@@ -236,12 +798,12 @@ export function GraphPage() {
           <div className="stat-item">
             <Icon name="Circle" size={16} />
             <span className="stat-label">Nodes:</span>
-            <span className="stat-value">{stats.node_count}</span>
+            <span className="stat-value">{forceGraphData.nodes.length} / {stats.node_count}</span>
           </div>
           <div className="stat-item">
             <Icon name="Minus" size={16} />
             <span className="stat-label">Edges:</span>
-            <span className="stat-value">{stats.edge_count}</span>
+            <span className="stat-value">{forceGraphData.links.length} / {stats.edge_count}</span>
           </div>
           <div className="stat-item">
             <Icon name="GitBranch" size={16} />
@@ -253,78 +815,172 @@ export function GraphPage() {
             <span className="stat-label">Density:</span>
             <span className="stat-value">{(stats.density * 100).toFixed(2)}%</span>
           </div>
+          <div className="stat-item">
+            <Icon name="ZoomIn" size={16} />
+            <span className="stat-label">Zoom:</span>
+            <span className="stat-value">{zoomLevel.toFixed(1)}x</span>
+          </div>
         </div>
       )}
 
+      {/* Tab Navigation */}
+      <div className="graph-tabs">
+        <button
+          className={`graph-tab ${activeTab === 'graph' ? 'active' : ''}`}
+          onClick={() => setActiveTab('graph')}
+        >
+          <Icon name="Network" size={16} />
+          Graph View
+        </button>
+        <button
+          className={`graph-tab ${activeTab === 'controls' ? 'active' : ''}`}
+          onClick={() => setActiveTab('controls')}
+        >
+          <Icon name="Sliders" size={16} />
+          Controls
+        </button>
+        <button
+          className={`graph-tab ${activeTab === 'sources' ? 'active' : ''}`}
+          onClick={() => setActiveTab('sources')}
+        >
+          <Icon name="Database" size={16} />
+          Data Sources
+        </button>
+      </div>
+
       <div className="graph-layout">
-        {/* Filters Sidebar */}
-        <aside className="graph-sidebar">
-          <div className="sidebar-section">
-            <h3>Filters</h3>
+        {/* Sidebar - content changes based on tab */}
+        <aside className={`graph-sidebar ${activeTab !== 'graph' ? 'wide' : ''} ${sidebarCollapsed ? 'collapsed' : ''}`}>
+          {/* Collapse toggle button */}
+          <button
+            className="sidebar-collapse-toggle"
+            onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
+            title={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+          >
+            <Icon name={sidebarCollapsed ? 'ChevronRight' : 'ChevronLeft'} size={16} />
+          </button>
 
-            <div className="filter-group">
-              <label>Entity Type</label>
-              <select
-                value={filterEntityType}
-                onChange={e => setFilterEntityType(e.target.value)}
-                className="filter-select"
-              >
-                <option value="">All Types</option>
-                {entityTypes.map(type => (
-                  <option key={type} value={type}>
-                    {type}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            <div className="filter-group">
-              <label>Min Edge Weight</label>
-              <input
-                type="range"
-                min="0"
-                max="10"
-                value={minWeight}
-                onChange={e => setMinWeight(Number(e.target.value))}
-                className="filter-slider"
-              />
-              <span className="filter-value">{minWeight}</span>
-            </div>
-          </div>
-
-          {selectedNode && (
-            <div className="sidebar-section">
-              <h3>Node Details</h3>
-              <div className="node-details">
-                <div className="detail-item">
-                  <span className="detail-label">ID:</span>
-                  <span className="detail-value">{selectedNode.id}</span>
-                </div>
-                <div className="detail-item">
-                  <span className="detail-label">Label:</span>
-                  <span className="detail-value">{selectedNode.label}</span>
-                </div>
-                <div className="detail-item">
-                  <span className="detail-label">Type:</span>
-                  <span className="detail-value">{selectedNode.type}</span>
-                </div>
-                <div className="detail-item">
-                  <span className="detail-label">Degree:</span>
-                  <span className="detail-value">{selectedNode.degree}</span>
-                </div>
-                <div className="detail-item">
-                  <span className="detail-label">Connections:</span>
-                  <span className="detail-value">
-                    {getConnectedNodes(selectedNode.id).length}
-                  </span>
+          {/* Sidebar content - hidden when collapsed */}
+          <div className="sidebar-content">
+          {activeTab === 'controls' ? (
+            <GraphControls
+              graphSettings={graphSettings}
+              availableEntityTypes={entityTypes}
+              onRecalculateScores={loadScores}
+              scoresLoading={scoresLoading}
+              scoresError={scoresError}
+            />
+          ) : activeTab === 'sources' ? (
+            <DataSourcesPanel
+              settings={graphSettings.settings.dataSources}
+              onChange={graphSettings.updateDataSources}
+              onRefresh={() => {
+                // Rebuild graph with new data sources
+                buildGraph();
+              }}
+              isLoading={building}
+            />
+          ) : (
+            <>
+              {/* Entity Legend */}
+              <div className="sidebar-section">
+                <h3>Entity Types</h3>
+                <div className="legend-items">
+                  {entityTypes.filter(t => !['claim', 'evidence', 'hypothesis', 'artifact', 'timeline_event'].includes(t?.toLowerCase())).map(type => (
+                    <div key={type} className="legend-item">
+                      <div
+                        className="legend-color"
+                        style={{ backgroundColor: ENTITY_TYPE_COLORS[type?.toLowerCase() || 'unknown'] || ENTITY_TYPE_COLORS.unknown }}
+                      />
+                      <span className="legend-label">{type}</span>
+                    </div>
+                  ))}
                 </div>
               </div>
-            </div>
+
+              {/* Cross-Shard Legend - only show if any cross-shard types are present */}
+              {entityTypes.some(t => ['claim', 'evidence', 'hypothesis', 'artifact', 'timeline_event'].includes(t?.toLowerCase())) && (
+                <div className="sidebar-section">
+                  <h3>Cross-Shard Data</h3>
+                  <div className="legend-items">
+                    {[
+                      { type: 'claim', label: 'Claims', shard: 'Claims' },
+                      { type: 'evidence', label: 'Evidence', shard: 'ACH' },
+                      { type: 'hypothesis', label: 'Hypotheses', shard: 'ACH' },
+                      { type: 'artifact', label: 'Artifacts', shard: 'Provenance' },
+                      { type: 'timeline_event', label: 'Events', shard: 'Timeline' },
+                    ]
+                      .filter(({ type }) => entityTypes.some(t => t?.toLowerCase() === type))
+                      .map(({ type, label, shard }) => (
+                        <div key={type} className="legend-item">
+                          <div
+                            className="legend-color"
+                            style={{ backgroundColor: ENTITY_TYPE_COLORS[type] }}
+                          />
+                          <span className="legend-label">{label}</span>
+                          <span className="legend-hint" style={{ fontSize: '0.7rem', color: 'var(--text-secondary)', marginLeft: 'auto' }}>{shard}</span>
+                        </div>
+                      ))}
+                  </div>
+                </div>
+              )}
+
+              {pathMode && (
+                <div className="sidebar-section path-mode-info">
+                  <h3>Path Finding</h3>
+                  <p>{pathStart ? `Start: ${pathStart.label}` : 'Click a start node'}</p>
+                  <p>Then click a destination node</p>
+                </div>
+              )}
+
+              {selectedNode && (
+                <div className="sidebar-section">
+                  <h3>Node Details</h3>
+                  <div className="node-details">
+                    <div className="detail-item">
+                      <span className="detail-label">ID:</span>
+                      <span className="detail-value">{selectedNode.id}</span>
+                    </div>
+                    <div className="detail-item">
+                      <span className="detail-label">Label:</span>
+                      <span className="detail-value">{selectedNode.label}</span>
+                    </div>
+                    <div className="detail-item">
+                      <span className="detail-label">Type:</span>
+                      <span className="detail-value">{selectedNode.type}</span>
+                    </div>
+                    <div className="detail-item">
+                      <span className="detail-label">Degree:</span>
+                      <span className="detail-value">{selectedNode.degree}</span>
+                    </div>
+                    <div className="detail-item">
+                      <span className="detail-label">Documents:</span>
+                      <span className="detail-value">{selectedNode.document_count || 0}</span>
+                    </div>
+                    <div className="detail-item">
+                      <span className="detail-label">Connections:</span>
+                      <span className="detail-value">
+                        {getConnectedNodes(selectedNode.id).length}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Quick tip */}
+              <div className="sidebar-section">
+                <h3>Tips</h3>
+                <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', margin: 0 }}>
+                  Click the <strong>Controls</strong> tab to adjust label visibility, node sizing, physics, and filtering.
+                </p>
+              </div>
+            </>
           )}
+          </div>
         </aside>
 
         {/* Graph Visualization Area */}
-        <main className="graph-content">
+        <main className="graph-content" ref={containerRef}>
           {loading ? (
             <div className="graph-loading">
               <Icon name="Loader2" size={48} className="spin" />
@@ -338,40 +994,69 @@ export function GraphPage() {
                 Retry
               </button>
             </div>
-          ) : filteredData && filteredData.nodes.length > 0 ? (
+          ) : forceGraphData.nodes.length > 0 ? (
             <div className="graph-visualization">
-              {/* Placeholder for actual graph visualization */}
-              <div className="graph-placeholder">
-                <Icon name="Network" size={64} />
-                <h3>Graph Visualization</h3>
-                <p>
-                  {filteredData.nodes.length} nodes, {filteredData.edges.length} edges
-                </p>
-                <p className="graph-note">
-                  Interactive graph visualization would render here using a library like D3.js,
-                  vis.js, or react-force-graph. Nodes can be dragged, zoomed, and clicked for details.
-                </p>
-                <div className="graph-sample-nodes">
-                  <h4>Sample Nodes:</h4>
-                  <div className="node-list">
-                    {filteredData.nodes.slice(0, 10).map(node => (
-                      <div
-                        key={node.id}
-                        className={`node-item ${selectedNode?.id === node.id ? 'selected' : ''}`}
-                        onClick={() => handleNodeClick(node)}
-                      >
-                        <div className={`node-icon node-type-${node.type.toLowerCase()}`}>
-                          <Icon name="Circle" size={12} />
-                        </div>
-                        <div className="node-info">
-                          <span className="node-label">{node.label}</span>
-                          <span className="node-meta">{node.type} • {node.degree} connections</span>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              </div>
+              <ForceGraph2D
+                graphData={forceGraphData}
+                width={containerSize.width}
+                height={containerSize.height}
+                nodeId="id"
+                nodeLabel={node => `${node.label} (${node.type})`}
+                nodeCanvasObject={nodeCanvasObject}
+                nodePointerAreaPaint={(node, color, ctx) => {
+                  ctx.fillStyle = color;
+                  ctx.beginPath();
+                  const radius = getNodeRadius(node as GraphNode);
+                  ctx.arc(node.x!, node.y!, radius + 4, 0, 2 * Math.PI);
+                  ctx.fill();
+                }}
+                // Physics settings from controls
+                d3AlphaDecay={layout.alphaDecay}
+                d3VelocityDecay={0.4}
+                onZoom={({ k }) => setZoomLevel(k)}
+                // Apply layout physics settings
+                ref={(fg: ForceGraphMethods | null) => {
+                  if (fg) {
+                    // Store ref for other operations
+                    (graphRef as any).current = fg;
+                    // Apply force simulation settings
+                    fg.d3Force('charge')?.strength(layout.chargeStrength);
+                    fg.d3Force('link')
+                      ?.distance(layout.linkDistance)
+                      ?.strength(layout.linkStrength);
+                    fg.d3Force('center')?.strength(layout.centerStrength);
+                    // Add collision force for minimum separation
+                    const d3 = (fg as any).d3Force;
+                    if (d3 && layout.collisionPadding > 0) {
+                      // Create collision force if needed
+                      const collision = d3('collision');
+                      if (collision) {
+                        collision.radius((node: GraphNode) => getNodeRadius(node) + layout.collisionPadding);
+                      }
+                    }
+                  }
+                }}
+                linkColor={linkColor}
+                linkWidth={lodSettings.simplifyLinks ? 1 : linkWidth}
+                // Performance: reduce/disable particles for large graphs
+                linkDirectionalParticles={lodSettings.particleCount}
+                linkDirectionalParticleWidth={1.5}
+                onNodeClick={handleNodeClick}
+                onNodeRightClick={handleNodeRightClick}
+                onBackgroundClick={() => {
+                  if (!pathMode) {
+                    setSelectedNode(null);
+                    setHighlightedPath(new Set());
+                  }
+                }}
+                enableNodeDrag={true}
+                enableZoomInteraction={true}
+                enablePanInteraction={true}
+                // Performance: reduce simulation time for large graphs
+                cooldownTicks={lodSettings.cooldownTicks}
+                warmupTicks={lodSettings.warmupTicks}
+                onEngineStop={() => graphRef.current?.zoomToFit(400, 50)}
+              />
             </div>
           ) : (
             <div className="graph-empty">

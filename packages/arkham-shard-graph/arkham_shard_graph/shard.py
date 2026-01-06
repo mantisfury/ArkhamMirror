@@ -2,6 +2,7 @@
 
 import json
 import logging
+from datetime import datetime
 from typing import Any
 
 from arkham_frame.shard_interface import ArkhamShard
@@ -13,6 +14,62 @@ from .exporter import GraphExporter
 from .storage import GraphStorage
 
 logger = logging.getLogger(__name__)
+
+# Database schema SQL
+GRAPH_SCHEMA_SQL = """
+-- Graph shard schema
+CREATE SCHEMA IF NOT EXISTS arkham_graph;
+
+-- Main graphs table (one per project)
+CREATE TABLE IF NOT EXISTS arkham_graph.graphs (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL UNIQUE,
+    node_count INTEGER DEFAULT 0,
+    edge_count INTEGER DEFAULT 0,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    metadata JSONB DEFAULT '{}'
+);
+
+-- Graph nodes
+CREATE TABLE IF NOT EXISTS arkham_graph.nodes (
+    id TEXT PRIMARY KEY,
+    graph_id TEXT NOT NULL REFERENCES arkham_graph.graphs(id) ON DELETE CASCADE,
+    entity_id TEXT NOT NULL,
+    entity_type TEXT,
+    label TEXT,
+    document_count INTEGER DEFAULT 0,
+    degree INTEGER DEFAULT 0,
+    properties JSONB DEFAULT '{}',
+    centrality_score REAL,
+    community_id TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Graph edges
+CREATE TABLE IF NOT EXISTS arkham_graph.edges (
+    id TEXT PRIMARY KEY,
+    graph_id TEXT NOT NULL REFERENCES arkham_graph.graphs(id) ON DELETE CASCADE,
+    source_id TEXT NOT NULL,
+    target_id TEXT NOT NULL,
+    relationship_type TEXT,
+    weight REAL DEFAULT 1.0,
+    co_occurrence_count INTEGER DEFAULT 0,
+    document_ids JSONB DEFAULT '[]',
+    properties JSONB DEFAULT '{}',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Indexes for efficient queries
+CREATE INDEX IF NOT EXISTS idx_graph_graphs_project ON arkham_graph.graphs(project_id);
+CREATE INDEX IF NOT EXISTS idx_graph_nodes_graph ON arkham_graph.nodes(graph_id);
+CREATE INDEX IF NOT EXISTS idx_graph_nodes_entity ON arkham_graph.nodes(entity_id);
+CREATE INDEX IF NOT EXISTS idx_graph_nodes_type ON arkham_graph.nodes(entity_type);
+CREATE INDEX IF NOT EXISTS idx_graph_edges_graph ON arkham_graph.edges(graph_id);
+CREATE INDEX IF NOT EXISTS idx_graph_edges_source ON arkham_graph.edges(source_id);
+CREATE INDEX IF NOT EXISTS idx_graph_edges_target ON arkham_graph.edges(target_id);
+CREATE INDEX IF NOT EXISTS idx_graph_edges_type ON arkham_graph.edges(relationship_type);
+"""
 
 
 class GraphShard(ArkhamShard):
@@ -74,11 +131,15 @@ class GraphShard(ArkhamShard):
 
         if not self._db_service:
             logger.warning("Database service not available - using in-memory storage only")
+        else:
+            # Create database schema
+            await self._create_schema()
 
         # Create components
         self.builder = GraphBuilder(
             entities_service=self._entities_service,
             documents_service=self._documents_service,
+            db_service=self._db_service,
         )
 
         self.algorithms = GraphAlgorithms()
@@ -139,33 +200,33 @@ class GraphShard(ArkhamShard):
         if not self._event_bus:
             return
 
-        # Subscribe to entity events
+        # Subscribe to entity events (using correct naming convention)
         await self._event_bus.subscribe(
-            "entities.created",
+            "entities.entity.created",
             self._on_entity_created,
         )
 
         await self._event_bus.subscribe(
-            "entities.merged",
+            "entities.entity.merged",
             self._on_entities_merged,
         )
 
         # Subscribe to document events
         await self._event_bus.subscribe(
-            "documents.deleted",
+            "documents.document.deleted",
             self._on_document_deleted,
         )
 
-        logger.info("Subscribed to events: entities.created, entities.merged, documents.deleted")
+        logger.info("Subscribed to events: entities.entity.created, entities.entity.merged, documents.document.deleted")
 
     async def _unsubscribe_from_events(self) -> None:
         """Unsubscribe from events."""
         if not self._event_bus:
             return
 
-        await self._event_bus.unsubscribe("entities.created", self._on_entity_created)
-        await self._event_bus.unsubscribe("entities.merged", self._on_entities_merged)
-        await self._event_bus.unsubscribe("documents.deleted", self._on_document_deleted)
+        await self._event_bus.unsubscribe("entities.entity.created", self._on_entity_created)
+        await self._event_bus.unsubscribe("entities.entity.merged", self._on_entities_merged)
+        await self._event_bus.unsubscribe("documents.document.deleted", self._on_document_deleted)
 
         logger.info("Unsubscribed from events")
 
@@ -480,6 +541,21 @@ class GraphShard(ArkhamShard):
         stats = self.algorithms.calculate_statistics(graph)
 
         return stats
+
+    # === Database Schema ===
+
+    async def _create_schema(self) -> None:
+        """Create database schema for graph persistence."""
+        if not self._db_service:
+            logger.warning("No database service - skipping schema creation")
+            return
+
+        try:
+            await self._db_service.execute(GRAPH_SCHEMA_SQL)
+            logger.info("Graph database schema created/verified")
+        except Exception as e:
+            logger.error(f"Failed to create graph schema: {e}", exc_info=True)
+            raise
 
     # === Private Helpers ===
 

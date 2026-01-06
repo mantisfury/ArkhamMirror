@@ -23,6 +23,9 @@ class CentralityMetric(Enum):
     DEGREE = "degree"
     BETWEENNESS = "betweenness"
     PAGERANK = "pagerank"
+    EIGENVECTOR = "eigenvector"
+    HITS = "hits"
+    CLOSENESS = "closeness"
     ALL = "all"
 
 
@@ -246,7 +249,20 @@ class BuildGraphRequest(BaseModel):
     document_ids: list[str] | None = None
     entity_types: list[str] | None = None
     min_co_occurrence: int = 1
-    include_temporal: bool = False
+    # Primary data sources (base graph)
+    include_document_entities: bool = True  # Include entities from documents
+    include_cooccurrences: bool = True      # Include co-occurrence edges
+    # Cross-shard node sources
+    include_temporal: bool = False          # Timeline events
+    include_claims: bool = False
+    include_ach_evidence: bool = False
+    include_ach_hypotheses: bool = False
+    include_provenance_artifacts: bool = False
+    # Cross-shard edge sources
+    include_contradictions: bool = False
+    include_patterns: bool = False
+    # Weight modifiers
+    apply_credibility_weights: bool = False
 
 
 class PathRequest(BaseModel):
@@ -339,3 +355,46 @@ class GraphResponse(BaseModel):
     nodes: list[dict[str, Any]]
     edges: list[dict[str, Any]]
     metadata: dict[str, Any]
+
+
+# --- Scoring Models ---
+
+
+class ScoreConfigRequest(BaseModel):
+    """Request for composite scoring configuration."""
+    project_id: str
+    centrality_type: str = "pagerank"  # pagerank, betweenness, eigenvector, hits, closeness, degree
+    centrality_weight: float = 0.25
+    frequency_weight: float = 0.20
+    recency_weight: float = 0.20
+    credibility_weight: float = 0.20
+    corroboration_weight: float = 0.15
+    recency_half_life_days: int | None = 30
+    entity_type_weights: dict[str, float] | None = None
+    limit: int = 100
+
+
+class EntityScoreResponse(BaseModel):
+    """Individual entity score."""
+    entity_id: str
+    label: str
+    entity_type: str
+    composite_score: float
+    centrality_score: float
+    frequency_score: float
+    recency_score: float
+    credibility_score: float
+    corroboration_score: float
+    rank: int
+    degree: int
+    document_count: int
+    source_count: int
+
+
+class ScoreResponse(BaseModel):
+    """Response for composite scoring."""
+    project_id: str
+    scores: list[EntityScoreResponse]
+    config: dict[str, Any]
+    calculation_time_ms: float
+    entity_count: int

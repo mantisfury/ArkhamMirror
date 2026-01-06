@@ -14,19 +14,22 @@ class GraphBuilder:
     """
     Builds entity relationship graphs from document data.
 
-    Uses co-occurrence analysis to establish entity relationships.
+    Uses co-occurrence analysis and explicit relationships to establish
+    entity connections.
     """
 
-    def __init__(self, entities_service=None, documents_service=None):
+    def __init__(self, entities_service=None, documents_service=None, db_service=None):
         """
         Initialize graph builder.
 
         Args:
             entities_service: Service for entity data
             documents_service: Service for document data
+            db_service: Database service for direct queries
         """
         self.entities_service = entities_service
         self.documents_service = documents_service
+        self.db_service = db_service
 
     async def build_graph(
         self,
@@ -35,6 +38,8 @@ class GraphBuilder:
         entity_types: list[str] | None = None,
         min_co_occurrence: int = 1,
         include_temporal: bool = False,
+        include_document_entities: bool = True,
+        include_cooccurrences: bool = True,
     ) -> Graph:
         """
         Build entity relationship graph.
@@ -45,26 +50,48 @@ class GraphBuilder:
             entity_types: Optional filter for entity types
             min_co_occurrence: Minimum co-occurrence count for edges
             include_temporal: Include temporal relationships
+            include_document_entities: Include entities from documents (default True)
+            include_cooccurrences: Include co-occurrence edges (default True)
 
         Returns:
             Constructed Graph object
         """
-        logger.info(f"Building graph for project {project_id}")
+        logger.info(f"Building graph for project {project_id} (entities={include_document_entities}, cooccurrences={include_cooccurrences})")
 
-        # Get entities from project
-        entities = await self._get_entities(project_id, entity_types)
-        logger.info(f"Found {len(entities)} entities")
+        entities = []
+        co_occurrences: dict[tuple[str, str], dict[str, Any]] = {}
 
-        # Get co-occurrence data
-        co_occurrences = await self._get_co_occurrences(
-            project_id, entities, document_ids, min_co_occurrence
-        )
-        logger.info(f"Found {len(co_occurrences)} entity pairs")
+        # Get entities from project (if enabled)
+        if include_document_entities:
+            entities = await self._get_entities(project_id, entity_types, document_ids)
+            logger.info(f"Found {len(entities)} entities")
 
-        # Build nodes
+            # Get co-occurrence data from document mentions (if enabled)
+            if include_cooccurrences and entities:
+                co_occurrences = await self._get_co_occurrences(
+                    project_id, entities, document_ids, min_co_occurrence
+                )
+                logger.info(f"Found {len(co_occurrences)} entity pairs from co-occurrence")
+
+                # Also get explicit relationships
+                relationships = await self._get_explicit_relationships(project_id, entities)
+                logger.info(f"Found {len(relationships)} explicit relationships")
+
+                # Merge relationships into co-occurrences
+                for key, rel_data in relationships.items():
+                    if key in co_occurrences:
+                        # Enhance existing co-occurrence with relationship type
+                        co_occurrences[key]["relationship_type"] = rel_data["relationship_type"]
+                        co_occurrences[key]["count"] = max(co_occurrences[key]["count"], rel_data.get("count", 1))
+                    else:
+                        co_occurrences[key] = rel_data
+        else:
+            logger.info("Document entities disabled - building graph from cross-shard sources only")
+
+        # Build nodes (may be empty if entities disabled)
         nodes = self._build_nodes(entities)
 
-        # Build edges
+        # Build edges (may be empty if co-occurrences disabled)
         edges = self._build_edges(co_occurrences, min_co_occurrence)
 
         # Update node degrees
@@ -78,8 +105,12 @@ class GraphBuilder:
             metadata={
                 "min_co_occurrence": min_co_occurrence,
                 "include_temporal": include_temporal,
+                "include_document_entities": include_document_entities,
+                "include_cooccurrences": include_cooccurrences,
                 "entity_types": entity_types or [],
                 "document_ids": document_ids or [],
+                "entity_count": len(entities),
+                "relationship_count": len(co_occurrences),
             },
         )
 
@@ -90,39 +121,92 @@ class GraphBuilder:
         return graph
 
     async def _get_entities(
-        self, project_id: str, entity_types: list[str] | None
+        self, project_id: str, entity_types: list[str] | None, document_ids: list[str] | None = None
     ) -> list[dict[str, Any]]:
         """
-        Get entities for the graph.
+        Get entities for the graph from database.
 
         Args:
             project_id: Project ID
             entity_types: Optional entity type filter
+            document_ids: Optional document filter
 
         Returns:
             List of entity dictionaries
         """
-        # TODO: Implement actual entity fetching via service
-        # For now, return mock data
+        # Try database first
+        if self.db_service:
+            try:
+                # Build query with optional filters
+                # Use entities shard's arkham_entities table (aggregated entities with document_ids)
+                query = """
+                    SELECT
+                        id,
+                        name as label,
+                        entity_type,
+                        metadata,
+                        mention_count as document_count,
+                        document_ids
+                    FROM arkham_entities
+                    WHERE canonical_id IS NULL  -- Only non-merged entities
+                      AND mention_count > 0
+                """
+                params: dict[str, Any] = {}
 
-        # In real implementation:
-        # if self.entities_service:
-        #     entities = await self.entities_service.get_by_project(
-        #         project_id, entity_types=entity_types
-        #     )
-        #     return entities
+                # Filter by entity types
+                if entity_types:
+                    query += " AND entity_type = ANY(:entity_types)"
+                    params["entity_types"] = entity_types
 
-        # Mock implementation
-        return [
-            {
-                "id": f"ent{i}",
-                "label": f"Entity {i}",
-                "entity_type": entity_types[i % len(entity_types)] if entity_types else "person",
-                "document_count": i + 1,
-                "properties": {},
-            }
-            for i in range(10)
-        ]
+                # Filter by documents (if specified) - uses JSONB containment
+                if document_ids:
+                    query += " AND document_ids ?| :document_ids"
+                    params["document_ids"] = document_ids
+
+                query += " ORDER BY mention_count DESC"
+                query += " LIMIT 500"  # Reasonable limit for visualization
+
+                rows = await self.db_service.fetch_all(query, params)
+
+                entities = []
+                for row in rows:
+                    entities.append({
+                        "id": str(row["id"]),
+                        "label": row["label"],
+                        "entity_type": row["entity_type"],
+                        "document_count": row["document_count"] or 0,
+                        "properties": row.get("metadata") or {},
+                    })
+
+                if entities:
+                    return entities
+
+            except Exception as e:
+                logger.warning(f"Failed to get entities from database: {e}")
+
+        # Fall back to entities service
+        if self.entities_service:
+            try:
+                entities = await self.entities_service.list_entities(
+                    entity_types=entity_types,
+                    limit=500,
+                )
+                return [
+                    {
+                        "id": str(e.get("id", "")),
+                        "label": e.get("name", "Unknown"),
+                        "entity_type": e.get("entity_type", "unknown"),
+                        "document_count": e.get("document_count", 0),
+                        "properties": e.get("metadata", {}),
+                    }
+                    for e in entities
+                ]
+            except Exception as e:
+                logger.warning(f"Failed to get entities from service: {e}")
+
+        # Return empty list if no data source available
+        logger.warning("No entities data source available")
+        return []
 
     async def _get_co_occurrences(
         self,
@@ -132,7 +216,7 @@ class GraphBuilder:
         min_count: int,
     ) -> dict[tuple[str, str], dict[str, Any]]:
         """
-        Calculate entity co-occurrences.
+        Calculate entity co-occurrences from document mentions.
 
         Args:
             project_id: Project ID
@@ -143,38 +227,149 @@ class GraphBuilder:
         Returns:
             Dictionary mapping entity pairs to co-occurrence data
         """
-        # TODO: Implement actual co-occurrence analysis
-        # For now, return mock data
-
-        # In real implementation:
-        # if self.documents_service:
-        #     co_occurrences = await self.documents_service.get_entity_co_occurrences(
-        #         project_id, document_ids=document_ids
-        #     )
-        #     return {
-        #         (pair[0], pair[1]): data
-        #         for pair, data in co_occurrences.items()
-        #         if data["count"] >= min_count
-        #     }
-
-        # Mock implementation
-        co_occurrences = {}
+        co_occurrences: dict[tuple[str, str], dict[str, Any]] = {}
         entity_ids = [e["id"] for e in entities]
 
-        for i in range(len(entity_ids)):
-            for j in range(i + 1, min(i + 4, len(entity_ids))):
-                ent_a = entity_ids[i]
-                ent_b = entity_ids[j]
-                count = (i + j) % 5 + 1
+        if not entity_ids:
+            return co_occurrences
 
-                if count >= min_count:
+        # Try database first
+        if self.db_service:
+            try:
+                # Query co-occurrences: entities that appear in the same document
+                # Use arkham_entity_mentions table from entities shard
+                query = """
+                    SELECT
+                        m1.entity_id as entity_a,
+                        m2.entity_id as entity_b,
+                        COUNT(DISTINCT m1.document_id) as co_occurrence_count,
+                        ARRAY_AGG(DISTINCT m1.document_id::text) as document_ids
+                    FROM arkham_entity_mentions m1
+                    JOIN arkham_entity_mentions m2
+                        ON m1.document_id = m2.document_id
+                        AND m1.entity_id < m2.entity_id  -- Avoid duplicates
+                    WHERE m1.entity_id = ANY(:entity_ids)
+                      AND m2.entity_id = ANY(:entity_ids)
+                """
+                params: dict[str, Any] = {"entity_ids": entity_ids}
+
+                if document_ids:
+                    query += " AND m1.document_id = ANY(:document_ids)"
+                    params["document_ids"] = document_ids
+
+                query += """
+                    GROUP BY m1.entity_id, m2.entity_id
+                    HAVING COUNT(DISTINCT m1.document_id) >= :min_count
+                    ORDER BY co_occurrence_count DESC
+                    LIMIT 1000
+                """
+                params["min_count"] = min_count
+
+                rows = await self.db_service.fetch_all(query, params)
+
+                for row in rows:
+                    ent_a = str(row["entity_a"])
+                    ent_b = str(row["entity_b"])
+
+                    # Ensure consistent ordering
+                    if ent_a > ent_b:
+                        ent_a, ent_b = ent_b, ent_a
+
+                    doc_ids = row["document_ids"] or []
+                    if isinstance(doc_ids, str):
+                        doc_ids = [doc_ids]
+
                     co_occurrences[(ent_a, ent_b)] = {
-                        "count": count,
-                        "document_ids": [f"doc{k}" for k in range(count)],
+                        "count": row["co_occurrence_count"],
+                        "document_ids": doc_ids,
+                        "relationship_type": RelationshipType.MENTIONED_WITH.value,
+                    }
+
+                if co_occurrences:
+                    return co_occurrences
+
+            except Exception as e:
+                logger.warning(f"Failed to get co-occurrences from database: {e}")
+
+        # Fall back to simple heuristic if no DB
+        # Connect entities of the same document count (rough approximation)
+        logger.debug("Using fallback co-occurrence calculation")
+        for i in range(len(entities)):
+            for j in range(i + 1, min(i + 5, len(entities))):  # Connect nearby entities
+                ent_a = entities[i]["id"]
+                ent_b = entities[j]["id"]
+
+                # Simple heuristic based on document overlap
+                shared_docs = min(
+                    entities[i].get("document_count", 0),
+                    entities[j].get("document_count", 0)
+                )
+
+                if shared_docs >= min_count:
+                    co_occurrences[(ent_a, ent_b)] = {
+                        "count": shared_docs,
+                        "document_ids": [],
                         "relationship_type": RelationshipType.MENTIONED_WITH.value,
                     }
 
         return co_occurrences
+
+    async def _get_explicit_relationships(
+        self,
+        project_id: str,
+        entities: list[dict[str, Any]],
+    ) -> dict[tuple[str, str], dict[str, Any]]:
+        """
+        Get explicit relationships between entities.
+
+        Args:
+            project_id: Project ID
+            entities: List of entities
+
+        Returns:
+            Dictionary mapping entity pairs to relationship data
+        """
+        relationships: dict[tuple[str, str], dict[str, Any]] = {}
+        entity_ids = [e["id"] for e in entities]
+
+        if not entity_ids or not self.db_service:
+            return relationships
+
+        try:
+            # Use arkham_frame.entity_relationships
+            query = """
+                SELECT
+                    source_id,
+                    target_id,
+                    relationship_type,
+                    confidence,
+                    metadata
+                FROM arkham_frame.entity_relationships
+                WHERE source_id = ANY(:entity_ids)
+                  AND target_id = ANY(:entity_ids)
+            """
+            rows = await self.db_service.fetch_all(query, {"entity_ids": entity_ids})
+
+            for row in rows:
+                source = str(row["source_id"])
+                target = str(row["target_id"])
+
+                # Ensure consistent ordering
+                if source > target:
+                    source, target = target, source
+
+                relationships[(source, target)] = {
+                    "count": 1,
+                    "document_ids": [],
+                    "relationship_type": row["relationship_type"] or RelationshipType.RELATED_TO.value,
+                    "confidence": row.get("confidence", 1.0),
+                    "properties": row.get("metadata") or {},
+                }
+
+        except Exception as e:
+            logger.warning(f"Failed to get explicit relationships: {e}")
+
+        return relationships
 
     def _build_nodes(self, entities: list[dict[str, Any]]) -> list[GraphNode]:
         """

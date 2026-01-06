@@ -33,12 +33,13 @@ events:
   publishes:
     - graph.graph.built
     - graph.graph.updated
+    - graph.graph.exported
     - graph.communities.detected
     - graph.path.found
   subscribes:
-    - entity.entity.created
-    - entity.entity.merged
-    - document.document.deleted
+    - entities.entity.created
+    - entities.entity.merged
+    - documents.document.deleted
 
 state:
   strategy: url

@@ -13,6 +13,7 @@ from .models import (
     CentralityMetric,
     ExportFormat,
 )
+from .scoring import CompositeScorer, ScoreConfig, EntityScore
 
 __version__ = "0.1.0"
 __all__ = [
@@ -27,4 +28,7 @@ __all__ = [
     "RelationshipType",
     "CentralityMetric",
     "ExportFormat",
+    "CompositeScorer",
+    "ScoreConfig",
+    "EntityScore",
 ]

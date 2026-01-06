@@ -210,12 +210,26 @@ class TimelineShard(ArkhamShard):
 
         Automatically extract timeline when documents are indexed.
         """
-        doc_id = event.get("doc_id")
-        logger.debug(f"Document indexed: {doc_id}")
+        doc_id = event.get("doc_id") or event.get("document_id") or event.get("id")
+        if not doc_id:
+            logger.warning("Document indexed event missing document ID")
+            return
+
+        logger.info(f"Document indexed, extracting timeline: {doc_id}")
 
         # Extract timeline in background
         try:
-            await self.extract_timeline(doc_id)
+            events = await self.extract_timeline(doc_id)
+            if events:
+                logger.info(f"Extracted {len(events)} timeline events from {doc_id}")
+                # Emit event
+                event_bus = self.frame.get_service("events")
+                if event_bus:
+                    await event_bus.emit(
+                        "timeline.timeline.extracted",
+                        {"document_id": doc_id, "event_count": len(events)},
+                        source="timeline-shard"
+                    )
         except Exception as e:
             logger.error(f"Failed to extract timeline for {doc_id}: {e}")
 
@@ -225,16 +239,21 @@ class TimelineShard(ArkhamShard):
 
         Clean up timeline events when documents are deleted.
         """
-        doc_id = event.get("doc_id")
-        logger.debug(f"Document deleted: {doc_id}")
+        doc_id = event.get("doc_id") or event.get("document_id") or event.get("id")
+        if not doc_id:
+            logger.warning("Document deleted event missing document ID")
+            return
+
+        logger.info(f"Document deleted, cleaning up timeline: {doc_id}")
 
         if self.database_service:
             try:
                 # Delete timeline events for this document
-                # await self.database_service.execute(
-                #     f"DELETE FROM timeline_events WHERE document_id = '{doc_id}'"
-                # )
-                logger.debug(f"Cleaned up timeline for {doc_id}")
+                await self.database_service.execute(
+                    "DELETE FROM arkham_timeline_events WHERE document_id = :doc_id",
+                    {"doc_id": doc_id}
+                )
+                logger.info(f"Cleaned up timeline events for {doc_id}")
             except Exception as e:
                 logger.error(f"Failed to clean up timeline for {doc_id}: {e}")
 
@@ -267,23 +286,42 @@ class TimelineShard(ArkhamShard):
         Returns:
             List of extracted timeline events
         """
-        if not self.documents_service:
-            logger.error("Documents service not available")
+        if not self.database_service:
+            logger.error("Database service not available")
             return []
 
         if context is None:
             context = ExtractionContext(reference_date=datetime.now())
 
-        # Get document text
+        # Get document text from chunks (preferred) or documents table
+        doc_text = ""
         try:
-            doc = await self.documents_service.get_document(document_id)
-            text = doc.get("text", "")
+            # First try to get text from chunks table
+            rows = await self.database_service.fetch_all(
+                """
+                SELECT text FROM arkham_frame.chunks
+                WHERE document_id = :document_id
+                ORDER BY chunk_index
+                """,
+                {"document_id": document_id}
+            )
+            if rows:
+                doc_text = " ".join(row["text"] for row in rows if row.get("text"))
+                logger.debug(f"Got {len(rows)} chunks for document {document_id}")
+            else:
+                logger.warning(f"No chunks found for document {document_id}")
         except Exception as e:
-            logger.error(f"Failed to get document {document_id}: {e}")
+            logger.error(f"Failed to get text for document {document_id}: {e}")
             return []
 
+        if not doc_text:
+            logger.warning(f"No text found for document {document_id}")
+            return []
+
+        logger.info(f"Extracting timeline from {len(doc_text)} chars for document {document_id}")
+
         # Extract events
-        events = self.extractor.extract_events(text, document_id, context)
+        events = self.extractor.extract_events(doc_text, document_id, context)
 
         # Store events if database available
         if self.database_service and events:

@@ -299,11 +299,95 @@ async def extract_timeline(request: ExtractionRequest):
     )
 
 
-# NOTE: Static routes (/range, /stats) MUST be defined BEFORE the parametric /{document_id} route
-# Otherwise FastAPI will match "range" or "stats" as a document_id
+@router.post("/extract/{document_id}", response_model=ExtractionResponse)
+async def extract_document_timeline(request: Request, document_id: str):
+    """
+    Extract timeline events from an existing document.
+
+    This triggers timeline extraction for a specific document ID.
+    """
+    shard = get_shard(request)
+    start_time = time.time()
+
+    try:
+        events = await shard.extract_timeline(document_id)
+    except Exception as e:
+        logger.error(f"Extraction failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Extraction failed: {str(e)}")
+
+    duration_ms = (time.time() - start_time) * 1000
+
+    # Emit event
+    if _event_bus:
+        await _event_bus.emit(
+            "timeline.timeline.extracted",
+            {
+                "document_id": document_id,
+                "event_count": len(events),
+                "duration_ms": duration_ms,
+            },
+            source="timeline-shard",
+        )
+
+    return ExtractionResponse(
+        events=[_event_to_dict(e) for e in events],
+        count=len(events),
+        duration_ms=duration_ms,
+    )
+
+
+@router.get("/documents")
+async def list_documents(
+    request: Request,
+    limit: int = Query(50, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+):
+    """
+    List available documents for timeline extraction.
+    """
+    shard = get_shard(request)
+
+    if not shard.database_service:
+        raise HTTPException(status_code=503, detail="Database service not available")
+
+    try:
+        # Get documents with their timeline event counts
+        rows = await shard.database_service.fetch_all(
+            """
+            SELECT d.id, d.filename, d.created_at,
+                   COUNT(te.id) as event_count
+            FROM arkham_frame.documents d
+            LEFT JOIN arkham_timeline_events te ON d.id = te.document_id
+            GROUP BY d.id, d.filename, d.created_at
+            ORDER BY d.created_at DESC
+            LIMIT :limit OFFSET :offset
+            """,
+            {"limit": limit, "offset": offset}
+        )
+
+        documents = [
+            {
+                "id": row["id"],
+                "filename": row.get("filename") or row["id"],
+                "title": None,
+                "created_at": row["created_at"].isoformat() if row.get("created_at") else None,
+                "event_count": row["event_count"],
+            }
+            for row in rows
+        ]
+
+        return {"documents": documents, "count": len(documents)}
+    except Exception as e:
+        logger.error(f"Failed to list documents: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to list documents: {str(e)}")
+
+
+# NOTE: Using /document/{document_id} instead of /{document_id} to avoid route conflicts
+# with static routes like /range, /stats, /documents
 
 @router.get("/range", response_model=RangeResponse)
 async def get_events_in_range(
+    request: Request,
     start_date: str,
     end_date: str,
     document_ids: Optional[str] = None,
@@ -317,31 +401,43 @@ async def get_events_in_range(
 
     Supports filtering by documents, entities, and event types.
     """
-    if not _database_service:
+    shard = get_shard(request)
+
+    if not shard.database_service:
         raise HTTPException(status_code=503, detail="Database service not available")
 
     # Parse comma-separated parameters
     doc_id_list = document_ids.split(",") if document_ids else None
-    entity_id_list = entity_ids.split(",") if entity_ids else None
     event_type_list = event_types.split(",") if event_types else None
 
-    # Build query (placeholder)
-    query = f"SELECT * FROM timeline_events WHERE date_start >= '{start_date}' AND date_start <= '{end_date}'"
+    # Build parameterized query
+    query = "SELECT * FROM arkham_timeline_events WHERE date_start >= :start_date AND date_start <= :end_date"
+    params = {"start_date": start_date, "end_date": end_date}
 
     if doc_id_list:
-        doc_ids_str = "','".join(doc_id_list)
-        query += f" AND document_id IN ('{doc_ids_str}')"
+        query += " AND document_id = ANY(:doc_ids)"
+        params["doc_ids"] = doc_id_list
 
     if event_type_list:
-        types_str = "','".join(event_type_list)
-        query += f" AND event_type IN ('{types_str}')"
+        query += " AND event_type = ANY(:event_types)"
+        params["event_types"] = event_type_list
 
-    query += f" ORDER BY date_start LIMIT {limit} OFFSET {offset}"
+    # Get total count
+    count_query = query.replace("SELECT *", "SELECT COUNT(*) as count")
+    try:
+        count_result = await shard.database_service.fetch_one(count_query, params)
+        total = count_result["count"] if count_result else 0
+    except Exception as e:
+        logger.error(f"Count query failed: {e}", exc_info=True)
+        total = 0
+
+    query += " ORDER BY date_start LIMIT :limit OFFSET :offset"
+    params["limit"] = limit
+    params["offset"] = offset
 
     try:
-        # Placeholder
-        events = []  # await _database_service.execute(query)
-        total = 0  # await _database_service.count(...)
+        rows = await shard.database_service.fetch_all(query, params)
+        events = [shard._row_to_event(row) for row in rows]
     except Exception as e:
         logger.error(f"Query failed: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Query failed: {str(e)}")
@@ -356,6 +452,7 @@ async def get_events_in_range(
 
 @router.get("/stats", response_model=StatsResponse)
 async def get_timeline_stats(
+    request: Request,
     document_ids: Optional[str] = None,
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
@@ -365,25 +462,30 @@ async def get_timeline_stats(
 
     Optionally filtered by documents and date range.
     """
-    if not _database_service:
+    shard = get_shard(request)
+
+    if not shard.database_service:
         raise HTTPException(status_code=503, detail="Database service not available")
 
-    # Build query (placeholder)
-    query = "SELECT * FROM timeline_events WHERE 1=1"
+    # Build parameterized query
+    query = "SELECT * FROM arkham_timeline_events WHERE 1=1"
+    params = {}
 
     if document_ids:
         doc_id_list = document_ids.split(",")
-        doc_ids_str = "','".join(doc_id_list)
-        query += f" AND document_id IN ('{doc_ids_str}')"
+        query += " AND document_id = ANY(:doc_ids)"
+        params["doc_ids"] = doc_id_list
 
     if start_date:
-        query += f" AND date_start >= '{start_date}'"
+        query += " AND date_start >= :start_date"
+        params["start_date"] = start_date
     if end_date:
-        query += f" AND date_start <= '{end_date}'"
+        query += " AND date_start <= :end_date"
+        params["end_date"] = end_date
 
     try:
-        # Placeholder
-        events = []  # await _database_service.execute(query)
+        rows = await shard.database_service.fetch_all(query, params)
+        events = [shard._row_to_event(row) for row in rows]
     except Exception as e:
         logger.error(f"Query failed: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Query failed: {str(e)}")
@@ -394,7 +496,6 @@ async def get_timeline_stats(
 
     date_range = None
     if events:
-        from datetime import datetime
         dates = [e.date_start for e in events]
         date_range = {
             "earliest": min(dates).isoformat(),
@@ -419,6 +520,16 @@ async def get_timeline_stats(
 
     avg_confidence = total_confidence / total_events if total_events > 0 else 0.0
 
+    # Get conflict count
+    conflicts_count = 0
+    try:
+        conflict_result = await shard.database_service.fetch_one(
+            "SELECT COUNT(*) as count FROM arkham_timeline_conflicts"
+        )
+        conflicts_count = conflict_result["count"] if conflict_result else 0
+    except Exception:
+        pass
+
     return StatsResponse(
         total_events=total_events,
         total_documents=total_documents,
@@ -426,12 +537,13 @@ async def get_timeline_stats(
         by_precision=by_precision,
         by_type=by_type,
         avg_confidence=round(avg_confidence, 2),
-        conflicts_detected=0,  # Would need to query conflicts table
+        conflicts_detected=conflicts_count,
     )
 
 
-@router.get("/{document_id}", response_model=DocumentTimelineResponse)
+@router.get("/document/{document_id}", response_model=DocumentTimelineResponse)
 async def get_document_timeline(
+    request: Request,
     document_id: str,
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
@@ -443,27 +555,33 @@ async def get_document_timeline(
 
     Supports filtering by date range, event type, and confidence.
     """
-    if not _database_service:
+    shard = get_shard(request)
+
+    if not shard.database_service:
         raise HTTPException(status_code=503, detail="Database service not available")
 
-    # Build query
-    query = f"SELECT * FROM timeline_events WHERE document_id = '{document_id}'"
+    # Build parameterized query
+    query = "SELECT * FROM arkham_timeline_events WHERE document_id = :document_id"
+    params = {"document_id": document_id}
 
     if start_date:
-        query += f" AND date_start >= '{start_date}'"
+        query += " AND date_start >= :start_date"
+        params["start_date"] = start_date
     if end_date:
-        query += f" AND date_start <= '{end_date}'"
+        query += " AND date_start <= :end_date"
+        params["end_date"] = end_date
     if event_type:
-        query += f" AND event_type = '{event_type}'"
+        query += " AND event_type = :event_type"
+        params["event_type"] = event_type
     if min_confidence > 0:
-        query += f" AND confidence >= {min_confidence}"
+        query += " AND confidence >= :min_confidence"
+        params["min_confidence"] = min_confidence
 
     query += " ORDER BY date_start"
 
     try:
-        # This is a placeholder - actual implementation would use proper ORM
-        # events = await _database_service.execute(query)
-        events = []  # Placeholder
+        rows = await shard.database_service.fetch_all(query, params)
+        events = [shard._row_to_event(row) for row in rows]
     except Exception as e:
         logger.error(f"Database query failed: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Query failed: {str(e)}")
@@ -471,7 +589,6 @@ async def get_document_timeline(
     # Calculate date range
     date_range = None
     if events:
-        from datetime import datetime
         dates = [e.date_start for e in events]
         date_range = {
             "earliest": min(dates).isoformat(),
@@ -487,25 +604,28 @@ async def get_document_timeline(
 
 
 @router.post("/merge", response_model=MergeResponse)
-async def merge_timelines(request: MergeRequest):
+async def merge_timelines(http_request: Request, request: MergeRequest):
     """
     Merge timelines from multiple documents.
 
     Supports various merge strategies and deduplication.
     """
-    if not _merger:
+    shard = get_shard(http_request)
+
+    if not shard.merger:
         raise HTTPException(status_code=503, detail="Timeline service not initialized")
 
-    if not _database_service:
+    if not shard.database_service:
         raise HTTPException(status_code=503, detail="Database service not available")
 
     # Get events for all documents
     all_events = []
     for doc_id in request.document_ids:
-        # Query events for this document
-        # Placeholder - actual implementation would use ORM
-        doc_events = []  # await _database_service.query(...)
-        all_events.extend(doc_events)
+        try:
+            events = await shard._get_events_for_document(doc_id)
+            all_events.extend(events)
+        except Exception as e:
+            logger.error(f"Failed to get events for {doc_id}: {e}")
 
     # Apply date range filter if provided
     if request.date_range:
@@ -531,7 +651,7 @@ async def merge_timelines(request: MergeRequest):
 
     # Merge
     try:
-        result = _merger.merge(
+        result = shard.merger.merge(
             all_events,
             strategy=strategy,
             priority_docs=request.priority_docs,
@@ -543,7 +663,7 @@ async def merge_timelines(request: MergeRequest):
     # Emit event
     if _event_bus:
         await _event_bus.emit(
-            "timeline.merged",
+            "timeline.timeline.merged",
             {
                 "document_ids": request.document_ids,
                 "event_count": result.count,
@@ -565,24 +685,28 @@ async def merge_timelines(request: MergeRequest):
 
 
 @router.post("/conflicts", response_model=ConflictsResponse)
-async def detect_conflicts(request: ConflictsRequest):
+async def detect_conflicts(http_request: Request, request: ConflictsRequest):
     """
     Find temporal conflicts across documents.
 
     Detects contradictions, inconsistencies, gaps, and overlaps.
     """
-    if not _conflict_detector:
+    shard = get_shard(http_request)
+
+    if not shard.conflict_detector:
         raise HTTPException(status_code=503, detail="Timeline service not initialized")
 
-    if not _database_service:
+    if not shard.database_service:
         raise HTTPException(status_code=503, detail="Database service not available")
 
     # Get events for all documents
     all_events = []
     for doc_id in request.document_ids:
-        # Placeholder
-        doc_events = []  # await _database_service.query(...)
-        all_events.extend(doc_events)
+        try:
+            events = await shard._get_events_for_document(doc_id)
+            all_events.extend(events)
+        except Exception as e:
+            logger.error(f"Failed to get events for {doc_id}: {e}")
 
     # Parse conflict types
     conflict_types = None
@@ -593,11 +717,11 @@ async def detect_conflicts(request: ConflictsRequest):
             raise HTTPException(status_code=400, detail=f"Invalid conflict type: {e}")
 
     # Update detector tolerance
-    if request.tolerance_days != _conflict_detector.tolerance_days:
+    if request.tolerance_days != shard.conflict_detector.tolerance_days:
         from .conflicts import ConflictDetector
         temp_detector = ConflictDetector(tolerance_days=request.tolerance_days)
     else:
-        temp_detector = _conflict_detector
+        temp_detector = shard.conflict_detector
 
     # Detect conflicts
     try:
@@ -605,6 +729,13 @@ async def detect_conflicts(request: ConflictsRequest):
     except Exception as e:
         logger.error(f"Conflict detection failed: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Conflict detection failed: {str(e)}")
+
+    # Store conflicts
+    if conflicts:
+        try:
+            await shard._store_conflicts(conflicts)
+        except Exception as e:
+            logger.error(f"Failed to store conflicts: {e}")
 
     # Count by type
     by_type = {}
@@ -615,7 +746,7 @@ async def detect_conflicts(request: ConflictsRequest):
     # Emit event
     if _event_bus:
         await _event_bus.emit(
-            "timeline.conflicts.detected",
+            "timeline.conflict.detected",
             {
                 "document_ids": request.document_ids,
                 "conflict_count": len(conflicts),
@@ -633,6 +764,7 @@ async def detect_conflicts(request: ConflictsRequest):
 
 @router.get("/entity/{entity_id}", response_model=EntityTimelineResponse)
 async def get_entity_timeline(
+    request: Request,
     entity_id: str,
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
@@ -643,22 +775,27 @@ async def get_entity_timeline(
 
     Optionally includes events from related entities.
     """
-    if not _database_service:
+    shard = get_shard(request)
+
+    if not shard.database_service:
         raise HTTPException(status_code=503, detail="Database service not available")
 
-    # Query events mentioning this entity
-    query = f"SELECT * FROM timeline_events WHERE '{entity_id}' = ANY(entities)"
+    # Query events mentioning this entity (using JSONB containment)
+    query = "SELECT * FROM arkham_timeline_events WHERE entities::jsonb @> :entity_array::jsonb"
+    params = {"entity_array": f'["{entity_id}"]'}
 
     if start_date:
-        query += f" AND date_start >= '{start_date}'"
+        query += " AND date_start >= :start_date"
+        params["start_date"] = start_date
     if end_date:
-        query += f" AND date_start <= '{end_date}'"
+        query += " AND date_start <= :end_date"
+        params["end_date"] = end_date
 
     query += " ORDER BY date_start"
 
     try:
-        # Placeholder
-        events = []  # await _database_service.execute(query)
+        rows = await shard.database_service.fetch_all(query, params)
+        events = [shard._row_to_event(row) for row in rows]
     except Exception as e:
         logger.error(f"Query failed: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Query failed: {str(e)}")
@@ -666,7 +803,6 @@ async def get_entity_timeline(
     # Calculate date range
     date_range = None
     if events:
-        from datetime import datetime
         dates = [e.date_start for e in events]
         date_range = {
             "earliest": min(dates).isoformat(),
