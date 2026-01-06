@@ -5,12 +5,23 @@ Investigation packet management for ArkhamFrame - bundle and share
 documents, entities, and analyses.
 """
 
+import hashlib
+import io
+import json
 import logging
+import os
+import tempfile
+import zipfile
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
+import httpx
+
 from arkham_frame import ArkhamShard
+
+# Base URL for internal API calls
+INTERNAL_API_BASE = "http://127.0.0.1:8100"
 
 from .models import (
     ContentType,
@@ -54,6 +65,7 @@ class PacketsShard(ArkhamShard):
         self._events = None
         self._storage = None
         self._initialized = False
+        self._packets_dir = None
 
     async def initialize(self, frame) -> None:
         """Initialize shard with frame services."""
@@ -69,6 +81,10 @@ class PacketsShard(ArkhamShard):
         self._storage = frame.get_service("storage")
         if not self._storage:
             logger.info("Storage service not available - export features limited")
+
+        # Setup packets output directory
+        self._packets_dir = os.path.join(tempfile.gettempdir(), "arkham_packets")
+        os.makedirs(self._packets_dir, exist_ok=True)
 
         # Create database schema
         await self._create_schema()
@@ -325,7 +341,12 @@ class PacketsShard(ArkhamShard):
         if not packet:
             return None
 
+        # Calculate checksum before finalizing
+        contents = await self.get_packet_contents(packet_id)
+        checksum = await self._calculate_checksum(packet, contents)
+
         packet.status = PacketStatus.FINALIZED
+        packet.checksum = checksum
         packet.updated_at = datetime.utcnow()
         await self._save_packet(packet, update=True)
 
@@ -336,11 +357,41 @@ class PacketsShard(ArkhamShard):
         if self._events:
             await self._events.emit(
                 "packets.packet.finalized",
-                {"packet_id": packet_id, "version": packet.version},
+                {"packet_id": packet_id, "version": packet.version, "checksum": checksum},
                 source=self.name,
             )
 
         return packet
+
+    async def _calculate_checksum(
+        self,
+        packet: Packet,
+        contents: List[PacketContent],
+    ) -> str:
+        """Calculate SHA256 checksum for packet integrity."""
+        hasher = hashlib.sha256()
+
+        # Hash packet metadata
+        packet_data = json.dumps({
+            "id": packet.id,
+            "name": packet.name,
+            "description": packet.description,
+            "version": packet.version,
+            "created_at": packet.created_at.isoformat(),
+        }, sort_keys=True).encode('utf-8')
+        hasher.update(packet_data)
+
+        # Hash contents
+        for content in sorted(contents, key=lambda c: c.content_id):
+            content_data = json.dumps({
+                "content_type": content.content_type.value,
+                "content_id": content.content_id,
+                "content_title": content.content_title,
+                "order": content.order,
+            }, sort_keys=True).encode('utf-8')
+            hasher.update(content_data)
+
+        return hasher.hexdigest()
 
     async def archive_packet(self, packet_id: str) -> Optional[Packet]:
         """Archive a packet."""
@@ -513,24 +564,39 @@ class PacketsShard(ArkhamShard):
         packet_id: str,
         format: ExportFormat = ExportFormat.ZIP,
     ) -> PacketExportResult:
-        """Export a packet to a file."""
+        """Export a packet to a file bundle."""
         packet = await self.get_packet(packet_id)
         if not packet:
             raise ValueError(f"Packet {packet_id} not found")
 
         contents = await self.get_packet_contents(packet_id)
+        errors: List[str] = []
 
-        # Stub implementation - would actually bundle contents
-        file_path = f"/exports/{packet_id}.{format.value}"
-        file_size = 1024  # Placeholder
+        # Create output file
+        filename = f"packet_{packet_id[:8]}.{format.value}"
+        file_path = os.path.join(self._packets_dir, filename)
+
+        if format == ExportFormat.ZIP:
+            file_size, contents_exported = await self._export_to_zip(
+                packet, contents, file_path, errors
+            )
+        elif format == ExportFormat.JSON:
+            file_size, contents_exported = await self._export_to_json(
+                packet, contents, file_path, errors
+            )
+        else:
+            # Fallback to ZIP
+            file_size, contents_exported = await self._export_to_zip(
+                packet, contents, file_path, errors
+            )
 
         result = PacketExportResult(
             packet_id=packet_id,
             export_format=format,
             file_path=file_path,
             file_size_bytes=file_size,
-            contents_exported=len(contents),
-            errors=[],
+            contents_exported=contents_exported,
+            errors=errors,
         )
 
         # Emit event
@@ -541,27 +607,204 @@ class PacketsShard(ArkhamShard):
                     "packet_id": packet_id,
                     "format": format.value,
                     "file_path": file_path,
+                    "file_size": file_size,
+                    "contents_exported": contents_exported,
                 },
                 source=self.name,
             )
 
         return result
 
+    async def _export_to_zip(
+        self,
+        packet: Packet,
+        contents: List[PacketContent],
+        file_path: str,
+        errors: List[str],
+    ) -> tuple[int, int]:
+        """Export packet to ZIP file with manifest and content data."""
+        contents_exported = 0
+
+        with zipfile.ZipFile(file_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+            # Create manifest
+            manifest = {
+                "packet": {
+                    "id": packet.id,
+                    "name": packet.name,
+                    "description": packet.description,
+                    "status": packet.status.value,
+                    "visibility": packet.visibility.value,
+                    "version": packet.version,
+                    "created_by": packet.created_by,
+                    "created_at": packet.created_at.isoformat(),
+                    "updated_at": packet.updated_at.isoformat(),
+                    "checksum": packet.checksum,
+                    "metadata": packet.metadata,
+                },
+                "contents": [],
+                "exported_at": datetime.utcnow().isoformat(),
+                "export_version": "1.0",
+            }
+
+            # Fetch and bundle each content item
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                for content in contents:
+                    content_data = await self._fetch_content_data(
+                        client, content.content_type, content.content_id
+                    )
+
+                    if content_data:
+                        # Add to manifest
+                        content_entry = {
+                            "id": content.id,
+                            "content_type": content.content_type.value,
+                            "content_id": content.content_id,
+                            "content_title": content.content_title,
+                            "order": content.order,
+                            "added_at": content.added_at.isoformat(),
+                            "added_by": content.added_by,
+                            "filename": f"contents/{content.content_type.value}_{content.content_id}.json",
+                        }
+                        manifest["contents"].append(content_entry)
+
+                        # Add content file to ZIP
+                        content_json = json.dumps(content_data, indent=2, default=str)
+                        zf.writestr(content_entry["filename"], content_json)
+                        contents_exported += 1
+                    else:
+                        errors.append(f"Failed to fetch {content.content_type.value}:{content.content_id}")
+
+            # Write manifest
+            manifest_json = json.dumps(manifest, indent=2, default=str)
+            zf.writestr("manifest.json", manifest_json)
+
+        file_size = os.path.getsize(file_path) if os.path.exists(file_path) else 0
+        return file_size, contents_exported
+
+    async def _export_to_json(
+        self,
+        packet: Packet,
+        contents: List[PacketContent],
+        file_path: str,
+        errors: List[str],
+    ) -> tuple[int, int]:
+        """Export packet to single JSON file."""
+        contents_exported = 0
+
+        export_data = {
+            "packet": {
+                "id": packet.id,
+                "name": packet.name,
+                "description": packet.description,
+                "status": packet.status.value,
+                "visibility": packet.visibility.value,
+                "version": packet.version,
+                "created_by": packet.created_by,
+                "created_at": packet.created_at.isoformat(),
+                "updated_at": packet.updated_at.isoformat(),
+                "checksum": packet.checksum,
+                "metadata": packet.metadata,
+            },
+            "contents": [],
+            "exported_at": datetime.utcnow().isoformat(),
+            "export_version": "1.0",
+        }
+
+        # Fetch each content item
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            for content in contents:
+                content_data = await self._fetch_content_data(
+                    client, content.content_type, content.content_id
+                )
+
+                content_entry = {
+                    "id": content.id,
+                    "content_type": content.content_type.value,
+                    "content_id": content.content_id,
+                    "content_title": content.content_title,
+                    "order": content.order,
+                    "added_at": content.added_at.isoformat(),
+                    "added_by": content.added_by,
+                    "data": content_data,
+                }
+                export_data["contents"].append(content_entry)
+
+                if content_data:
+                    contents_exported += 1
+                else:
+                    errors.append(f"Failed to fetch {content.content_type.value}:{content.content_id}")
+
+        with open(file_path, 'w', encoding='utf-8') as f:
+            json.dump(export_data, f, indent=2, default=str)
+
+        file_size = os.path.getsize(file_path) if os.path.exists(file_path) else 0
+        return file_size, contents_exported
+
+    async def _fetch_content_data(
+        self,
+        client: httpx.AsyncClient,
+        content_type: ContentType,
+        content_id: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Fetch content data from appropriate shard API."""
+        try:
+            endpoint_map = {
+                ContentType.DOCUMENT: f"/api/documents/{content_id}",
+                ContentType.ENTITY: f"/api/entities/{content_id}",
+                ContentType.CLAIM: f"/api/claims/{content_id}",
+                ContentType.ACH_MATRIX: f"/api/ach/matrix/{content_id}",
+                ContentType.TIMELINE: f"/api/timeline/events?id={content_id}",
+                ContentType.CONTRADICTION: f"/api/contradictions/{content_id}",
+                ContentType.PATTERN: f"/api/patterns/{content_id}",
+                ContentType.REPORT: f"/api/reports/{content_id}",
+                ContentType.GRAPH: f"/api/graph/{content_id}",
+            }
+
+            endpoint = endpoint_map.get(content_type)
+            if not endpoint:
+                logger.warning(f"Unknown content type: {content_type}")
+                return None
+
+            response = await client.get(f"{INTERNAL_API_BASE}{endpoint}")
+            if response.status_code == 200:
+                return response.json()
+            else:
+                logger.warning(f"Failed to fetch {content_type.value}:{content_id}: {response.status_code}")
+                return None
+
+        except Exception as e:
+            logger.error(f"Error fetching {content_type.value}:{content_id}: {e}")
+            return None
+
     async def import_packet(
         self,
         file_path: str,
         merge_mode: str = "replace",
     ) -> PacketImportResult:
-        """Import a packet from a file."""
-        # Stub implementation
-        packet_id = str(uuid4())
+        """Import a packet from a file bundle."""
+        errors: List[str] = []
+        contents_imported = 0
+        packet_id = None
+
+        # Determine format from file extension
+        if file_path.endswith('.zip'):
+            packet_id, contents_imported = await self._import_from_zip(
+                file_path, merge_mode, errors
+            )
+        elif file_path.endswith('.json'):
+            packet_id, contents_imported = await self._import_from_json(
+                file_path, merge_mode, errors
+            )
+        else:
+            errors.append(f"Unsupported file format: {file_path}")
+            packet_id = str(uuid4())
 
         result = PacketImportResult(
-            packet_id=packet_id,
+            packet_id=packet_id or str(uuid4()),
             import_source=file_path,
-            contents_imported=0,
+            contents_imported=contents_imported,
             merge_mode=merge_mode,
-            errors=[],
+            errors=errors,
         )
 
         # Emit event
@@ -569,13 +812,125 @@ class PacketsShard(ArkhamShard):
             await self._events.emit(
                 "packets.packet.imported",
                 {
-                    "packet_id": packet_id,
+                    "packet_id": result.packet_id,
                     "import_source": file_path,
+                    "contents_imported": contents_imported,
+                    "merge_mode": merge_mode,
                 },
                 source=self.name,
             )
 
         return result
+
+    async def _import_from_zip(
+        self,
+        file_path: str,
+        merge_mode: str,
+        errors: List[str],
+    ) -> tuple[Optional[str], int]:
+        """Import packet from ZIP file."""
+        contents_imported = 0
+
+        try:
+            with zipfile.ZipFile(file_path, 'r') as zf:
+                # Read manifest
+                if 'manifest.json' not in zf.namelist():
+                    errors.append("Missing manifest.json in ZIP file")
+                    return None, 0
+
+                manifest_data = zf.read('manifest.json')
+                manifest = json.loads(manifest_data)
+
+                packet_data = manifest.get("packet", {})
+
+                # Create or update packet based on merge mode
+                if merge_mode == "replace":
+                    # Generate new ID for imported packet
+                    packet_id = str(uuid4())
+                else:
+                    # Use original ID (merge mode)
+                    packet_id = packet_data.get("id", str(uuid4()))
+
+                # Create packet
+                packet = await self.create_packet(
+                    name=packet_data.get("name", "Imported Packet"),
+                    description=packet_data.get("description", ""),
+                    created_by=packet_data.get("created_by", "import"),
+                    metadata=packet_data.get("metadata", {}),
+                )
+                packet_id = packet.id
+
+                # Import contents
+                for content_entry in manifest.get("contents", []):
+                    try:
+                        content_type = ContentType(content_entry.get("content_type", "document"))
+
+                        # Note: We just recreate the content entries, not the actual data
+                        # The data would need to be imported via the respective shards
+                        await self.add_content(
+                            packet_id=packet_id,
+                            content_type=content_type,
+                            content_id=content_entry.get("content_id", str(uuid4())),
+                            content_title=content_entry.get("content_title", "Imported"),
+                            added_by="import",
+                            order=content_entry.get("order", 0),
+                        )
+                        contents_imported += 1
+                    except Exception as e:
+                        errors.append(f"Failed to import content: {e}")
+
+                return packet_id, contents_imported
+
+        except Exception as e:
+            errors.append(f"Failed to read ZIP file: {e}")
+            return None, 0
+
+    async def _import_from_json(
+        self,
+        file_path: str,
+        merge_mode: str,
+        errors: List[str],
+    ) -> tuple[Optional[str], int]:
+        """Import packet from JSON file."""
+        contents_imported = 0
+
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                export_data = json.load(f)
+
+            packet_data = export_data.get("packet", {})
+
+            # Create packet
+            packet = await self.create_packet(
+                name=packet_data.get("name", "Imported Packet"),
+                description=packet_data.get("description", ""),
+                created_by=packet_data.get("created_by", "import"),
+                metadata=packet_data.get("metadata", {}),
+            )
+            packet_id = packet.id
+
+            # Import contents
+            for content_entry in export_data.get("contents", []):
+                try:
+                    content_type = ContentType(content_entry.get("content_type", "document"))
+
+                    await self.add_content(
+                        packet_id=packet_id,
+                        content_type=content_type,
+                        content_id=content_entry.get("content_id", str(uuid4())),
+                        content_title=content_entry.get("content_title", "Imported"),
+                        added_by="import",
+                        order=content_entry.get("order", 0),
+                    )
+                    contents_imported += 1
+                except Exception as e:
+                    errors.append(f"Failed to import content: {e}")
+
+            return packet_id, contents_imported
+
+        except Exception as e:
+            errors.append(f"Failed to read JSON file: {e}")
+            return None, 0
 
     async def get_packet_versions(self, packet_id: str) -> List[PacketVersion]:
         """Get version history for a packet."""
