@@ -82,7 +82,7 @@ async def initialize(self, frame) -> None:
 
 ## Current State Overview
 
-### Fully Operational Shards (18 total)
+### Fully Operational Shards (19 total)
 These shards are functional with complete backend/frontend integration:
 
 | Shard | Status | Notes |
@@ -105,18 +105,22 @@ These shards are functional with complete backend/frontend integration:
 | patterns | Operational | Cross-document pattern detection, statistical correlation |
 | anomalies | Operational | Hybrid detection (sync+async), bulk triage, 6 detection strategies |
 | summary | Operational | LLM-powered summarization, source browser, statistics dashboard |
+| graph | Operational | Advanced controls, cross-shard integration, composite scoring, collapsible UI |
+| timeline | Operational | Event extraction, conflict detection, interactive visualization |
 
-### Shards Requiring Work (7 total)
+### Shards Requiring Work (5 total)
 
 | Shard | Category | Backend % | Frontend % | Priority | Critical Gap |
 |-------|----------|-----------|------------|----------|--------------|
-| graph | Visualize | 75% | 60% | High | No graph visualization library, no DB persistence |
-| timeline | Visualize | 85% | 50% | Medium | Event handlers stubbed |
 | export | Export | 70% | 90% | High | `_generate_export_file()` creates placeholder files |
 | templates | Export | 90% | 95% | Medium | Using in-memory cache, no DB persistence |
 | reports | Export | 95% | 95% | Low | Content generation stub, PDF needs library |
 | letters | Export | 85% | 85% | Low | PDF/DOCX generation stubbed |
 | packets | Export | 95% | 90% | Low | Export/import placeholders, checksum not calculated |
+
+> **Note:** Graph shard now has advanced controls, cross-shard data integration, composite scoring, and collapsible UI (2026-01-06).
+
+> **Note:** Timeline shard is now fully operational with event extraction, conflict detection, and interactive visualization (2026-01-06).
 
 > **Note:** Reports and Packets are more complete than other shards - they have full CRUD, events, and UI. Only file generation features are stubbed.
 
@@ -255,103 +259,101 @@ The summary shard is now fully implemented with:
 
 ## Phase 2: Visualization Shards
 
-### 2.1 Graph Shard
+### 2.1 Graph Shard - COMPLETED (2026-01-06)
+
+**Status: Fully Operational**
+
+The graph shard is now fully implemented with advanced visualization controls and cross-shard data integration.
 
 **File Locations:**
 - Backend: `packages/arkham-shard-graph/arkham_shard_graph/`
   - `shard.py` - Main class
   - `builder.py` - Graph construction from entities
   - `algorithms.py` - BFS, PageRank, Louvain community detection
+  - `scoring.py` - Composite scoring engine (NEW)
   - `storage.py` - In-memory + optional DB persistence
   - `exporter.py` - JSON, GraphML, GEXF export
 - Frontend: `packages/arkham-shard-shell/src/pages/graph/`
+  - `components/` - GraphControls, DataSourcesPanel, FilterControls, etc.
+  - `hooks/` - useGraphSettings, useUrlParams, useDebounce
 
-**Current State:**
-- Backend algorithms implemented (shortest path, centrality, communities)
-- No database persistence (in-memory only)
-- Frontend is placeholder - no actual graph rendering
+**Completed Implementation:**
+- [x] Backend algorithms (shortest path, centrality, communities)
+- [x] Database persistence (arkham_graph schema: graphs, nodes, edges)
+- [x] Cache + DB hybrid storage strategy
+- [x] react-force-graph visualization with ForceGraph2D
+- [x] Interactive features: click, drag, zoom, pan
+- [x] Path finding with visual highlighting
+- [x] Entity type color coding and legend
 
-**Known Issues:**
-```python
-# shard.py - Wrong event names (should be graph.graph.built):
-await self.events.emit("graph.built", {...})  # Wrong!
+**New Features (2026-01-06):**
+- [x] **Advanced Controls Panel** - Labels, layout physics, node sizing, filtering
+- [x] **Composite Scoring Engine** - Configurable weights for centrality, frequency, recency, credibility
+- [x] **Cross-Shard Data Integration** - Pull nodes/edges from Timeline, Claims, ACH, Provenance, Patterns
+- [x] **Per-Document Entity Selection** - Choose specific documents to include in graph
+- [x] **Collapsible Sidebar** - Collapse button to maximize graph view
+- [x] **Accordion Categories** - Collapsible sections in Data Sources panel
+- [x] **URL Parameters** - Shareable graph views with settings encoded in URL
+- [x] **Smart Weighting** - 5 centrality algorithms (PageRank, betweenness, eigenvector, HITS, closeness)
 
-# storage.py - Persistence not implemented:
-def _persist_graph(self, graph):
-    pass  # TODO: Save to database
-```
+**Key API Endpoints:**
+- `POST /api/graph/build` - Build graph with data source selection
+- `POST /api/graph/scores` - Calculate composite scores
+- `GET /api/graph/sources/status` - Check cross-shard source availability
+- `POST /api/graph/path` - Find shortest path between entities
+- `GET /api/graph/centrality` - Calculate centrality metrics
 
-**Frontend Gap:**
-```tsx
-// GraphPage.tsx - Line ~343-374: Placeholder instead of actual graph
-<div className="graph-placeholder">
-  <p className="graph-note">
-    Interactive graph visualization would render here using a library like D3.js,
-    vis.js, or react-force-graph.
-  </p>
-</div>
-```
-
-**Implementation Priority:**
-1. Add database table `arkham_graphs` for persistence
-2. Fix event names to match manifest
-3. **Install graph library:** `npm install react-force-graph` (recommended)
-4. Implement actual graph rendering in GraphPage.tsx
-5. Add interactive features (click, drag, zoom)
-
-**Graph Library Recommendation:**
-```tsx
-// Install: npm install react-force-graph
-import ForceGraph2D from 'react-force-graph-2d';
-
-// Usage:
-<ForceGraph2D
-  graphData={{ nodes: graphData.nodes, links: graphData.edges }}
-  nodeLabel="label"
-  nodeColor={node => getColorByType(node.type)}
-  onNodeClick={handleNodeClick}
-/>
+**Data Source Settings:**
+```typescript
+interface DataSourceSettings {
+  documentEntities: boolean;       // Include entities from documents
+  selectedDocumentIds: string[];   // Specific documents (empty = all)
+  entityCooccurrences: boolean;    // Co-occurrence edges
+  // Cross-shard sources
+  timelineEvents: boolean;
+  claims: boolean;
+  achEvidence: boolean;
+  achHypotheses: boolean;
+  provenanceArtifacts: boolean;
+  contradictions: boolean;
+  patterns: boolean;
+  credibilityRatings: boolean;
+}
 ```
 
 ---
 
-### 2.2 Timeline Shard
+### 2.2 Timeline Shard - COMPLETED (2026-01-06)
+
+**Status: Fully Operational**
+
+The timeline shard is now fully implemented with event extraction and interactive visualization.
 
 **File Locations:**
 - Backend: `packages/arkham-shard-timeline/arkham_shard_timeline/`
+  - `shard.py` - Main class with event handlers
+  - `api.py` - Full CRUD API with extraction endpoints
   - `extraction.py` - DateExtractor with regex patterns
   - `merging.py` - Timeline merge strategies
   - `conflicts.py` - Temporal conflict detection
 - Frontend: `packages/arkham-shard-shell/src/pages/timeline/`
 
-**Current State:**
-- Database schema complete (events, conflicts tables)
-- Date extraction logic implemented
-- Event handlers stubbed
+**Completed Implementation:**
+- [x] Database schema (events, conflicts tables)
+- [x] Date extraction from text via regex patterns
+- [x] Event CRUD operations
+- [x] Conflict detection between overlapping events
+- [x] Interactive timeline visualization
+- [x] Event filtering by date range and type
+- [x] Event detail panel with edit/delete
+- [x] Bulk extraction from documents
 
-**Known Stub Locations:**
-```python
-# shard.py - Event handlers don't extract:
-async def _on_document_indexed(self, event_data):
-    # TODO: Extract timeline from document
-    pass
-
-async def _on_document_deleted(self, event_data):
-    # Cleanup code is commented out
-    pass
-```
-
-**Event Name Mismatch:**
-```python
-# shard.py subscribes to:
-"document.document.indexed"  # But frame may emit "documents.indexed"
-```
-
-**Implementation Priority:**
-1. Wire `_on_document_indexed()` to extract timeline
-2. Verify event names match frame emissions
-3. Enhance frontend with actual timeline visualization
-4. Add date range picker (currently native inputs)
+**Key API Endpoints:**
+- `GET /api/timeline/events` - List events with filtering
+- `POST /api/timeline/events` - Create event
+- `POST /api/timeline/extract` - Extract events from text
+- `GET /api/timeline/conflicts` - List temporal conflicts
+- `GET /api/timeline/stats` - Timeline statistics
 
 ---
 
@@ -747,8 +749,8 @@ npm install vis-network        # Alternative
 | patterns | 1055 lines | 336 lines | 236 lines | - |
 | anomalies | 375 lines | 825 lines | 206 lines | detector.py, storage.py |
 | summary | ~500 lines | ~400 lines | ~200 lines | - |
-| graph | ~600 lines | ~300 lines | ~150 lines | builder.py, algorithms.py, storage.py, exporter.py |
-| timeline | ~500 lines | ~400 lines | ~150 lines | extraction.py, merging.py, conflicts.py |
+| graph | ~600 lines | ~800 lines | ~400 lines | builder.py, algorithms.py, scoring.py, storage.py, exporter.py |
+| timeline | ~500 lines | ~500 lines | ~150 lines | extraction.py, merging.py, conflicts.py |
 | export | 666 lines | 409 lines | 173 lines | - |
 | templates | 934 lines | 671 lines | 313 lines | - |
 | reports | ~300 lines | ~250 lines | ~150 lines | - |
@@ -763,8 +765,8 @@ npm install vis-network        # Alternative
 | patterns | PatternsPage.tsx | - | PatternsPage.css |
 | anomalies | AnomaliesPage.tsx | AnomalyDetail.tsx | AnomaliesPage.css |
 | summary | SummaryPage.tsx (561 lines) | - | SummaryPage.css |
-| graph | GraphPage.tsx (391 lines) | - | GraphPage.css |
-| timeline | TimelinePage.tsx (262 lines) | - | TimelinePage.css |
+| graph | GraphPage.tsx (1064 lines) | GraphControls, DataSourcesPanel, FilterControls, hooks/ | GraphPage.css (1500+ lines) |
+| timeline | TimelinePage.tsx (537 lines) | - | TimelinePage.css (327 lines) |
 | export | ExportPage.tsx (571 lines) | - | ExportPage.css |
 | templates | TemplatesPage.tsx (686 lines) | TemplateEditor, TemplatePreview, TemplateVersions | TemplatesPage.css |
 | reports | ReportsPage.tsx (480 lines) | - | ReportsPage.css |
@@ -774,8 +776,10 @@ npm install vis-network        # Alternative
 ---
 
 *Generated: 2026-01-03*
-*Last Updated: 2026-01-05*
+*Last Updated: 2026-01-06*
 *Context: Full codebase analysis by 5 parallel agents*
 *Anomalies shard completed: 2026-01-04*
 *Contradictions shard completed: 2026-01-04*
 *Summary shard completed: 2026-01-05*
+*Graph shard advanced features completed: 2026-01-06*
+*Timeline shard completed: 2026-01-06*
