@@ -21,3 +21,5 @@ export { AnnotationPanel, useAnnotations } from './AnnotationPanel';
 export type { Annotation, AnnotationType, AnnotationPanelProps } from './AnnotationPanel';
 export { ArgumentationView, ArgumentationControls } from './ArgumentationView';
 export type { ArgumentationData, ArgumentNode, ArgumentEdge, ArgumentStatus, ACHMatrixInfo, ArgumentationViewProps } from './ArgumentationView';
+export { CausalGraphView, CausalGraphControls } from './CausalGraphView';
+export type { CausalGraphData, CausalNode, CausalEdge, CausalPath, ConfounderInfo, InterventionResult, CausalGraphViewProps } from './CausalGraphView';

@@ -2736,3 +2736,345 @@ async def list_ach_matrices_for_graph(
     except Exception as e:
         logger.error(f"Error listing ACH matrices: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# =============================================================================
+# CAUSAL GRAPH ENDPOINTS
+# =============================================================================
+
+_causal_engine: "CausalGraphEngine | None" = None
+
+
+def _get_causal_engine():
+    """Get or create CausalGraphEngine instance."""
+    global _causal_engine
+    if _causal_engine is None:
+        from .causal import CausalGraphEngine
+        _causal_engine = CausalGraphEngine()
+    return _causal_engine
+
+
+class InterventionRequest(BaseModel):
+    """Request for causal intervention analysis."""
+    intervention_node: str
+    intervention_value: str = "true"
+    target_node: str
+    adjustment_set: list[str] | None = None
+
+
+@router.post("/causal/{project_id}")
+async def build_causal_graph(
+    project_id: str,
+    document_ids: list[str] | None = Body(None),
+    causal_edge_types: list[str] | None = Body(None),
+) -> dict[str, Any]:
+    """
+    Build a causal graph from existing graph data.
+
+    Converts the entity graph into a causal DAG format, validating
+    structure and identifying potential issues.
+
+    Args:
+        project_id: Project to build causal graph for
+        document_ids: Optional filter to specific documents
+        causal_edge_types: Edge types to treat as causal
+
+    Returns:
+        CausalGraph with validation results
+    """
+    if not _db_service:
+        raise HTTPException(status_code=503, detail="Database service not available")
+
+    try:
+        # Fetch existing graph
+        graph = await _get_or_build_graph(project_id, document_ids)
+
+        if not graph:
+            return {
+                "success": False,
+                "error": "No graph data available",
+            }
+
+        # Build causal graph
+        engine = _get_causal_engine()
+        causal_graph = engine.build_causal_graph(graph, causal_edge_types)
+
+        return {
+            "success": True,
+            "causal_graph": engine.to_dict(causal_graph),
+        }
+
+    except Exception as e:
+        logger.error(f"Error building causal graph: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/causal/{project_id}/validate")
+async def validate_causal_dag(
+    project_id: str,
+    document_ids: str | None = Query(None, description="Comma-separated document IDs"),
+) -> dict[str, Any]:
+    """
+    Validate that the graph is a valid DAG (no cycles).
+
+    Args:
+        project_id: Project to validate
+        document_ids: Optional filter to specific documents
+
+    Returns:
+        Validation result with any cycles found
+    """
+    if not _db_service:
+        raise HTTPException(status_code=503, detail="Database service not available")
+
+    try:
+        doc_ids = document_ids.split(",") if document_ids else None
+        graph = await _get_or_build_graph(project_id, doc_ids)
+
+        if not graph:
+            return {
+                "success": False,
+                "error": "No graph data available",
+            }
+
+        engine = _get_causal_engine()
+        causal_graph = engine.build_causal_graph(graph)
+        is_valid, cycles = engine.validate_dag(causal_graph)
+
+        return {
+            "success": True,
+            "is_valid_dag": is_valid,
+            "cycles": cycles,
+            "node_count": len(causal_graph.nodes),
+            "edge_count": len(causal_graph.edges),
+        }
+
+    except Exception as e:
+        logger.error(f"Error validating DAG: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/causal/{project_id}/paths")
+async def find_causal_paths(
+    project_id: str,
+    cause: str = Query(..., description="Source node ID"),
+    effect: str = Query(..., description="Target node ID"),
+    max_length: int = Query(10, description="Maximum path length"),
+) -> dict[str, Any]:
+    """
+    Find all causal paths between two variables.
+
+    Args:
+        project_id: Project to search
+        cause: Source node (cause)
+        effect: Target node (effect)
+        max_length: Maximum path length
+
+    Returns:
+        List of causal paths
+    """
+    if not _db_service:
+        raise HTTPException(status_code=503, detail="Database service not available")
+
+    try:
+        graph = await _get_or_build_graph(project_id)
+
+        if not graph:
+            return {
+                "success": False,
+                "error": "No graph data available",
+            }
+
+        engine = _get_causal_engine()
+        causal_graph = engine.build_causal_graph(graph)
+        paths = engine.find_causal_paths(causal_graph, cause, effect, max_length)
+
+        return {
+            "success": True,
+            "cause": cause,
+            "effect": effect,
+            "paths": [
+                {
+                    "nodes": p.nodes,
+                    "path_type": p.path_type,
+                    "total_strength": p.total_strength,
+                    "length": len(p.nodes),
+                }
+                for p in paths
+            ],
+            "path_count": len(paths),
+        }
+
+    except Exception as e:
+        logger.error(f"Error finding causal paths: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/causal/{project_id}/confounders")
+async def identify_confounders(
+    project_id: str,
+    treatment: str = Query(..., description="Treatment node ID"),
+    outcome: str = Query(..., description="Outcome node ID"),
+) -> dict[str, Any]:
+    """
+    Identify confounding variables between treatment and outcome.
+
+    Args:
+        project_id: Project to analyze
+        treatment: Treatment variable node ID
+        outcome: Outcome variable node ID
+
+    Returns:
+        List of confounding variables with paths
+    """
+    if not _db_service:
+        raise HTTPException(status_code=503, detail="Database service not available")
+
+    try:
+        graph = await _get_or_build_graph(project_id)
+
+        if not graph:
+            return {
+                "success": False,
+                "error": "No graph data available",
+            }
+
+        engine = _get_causal_engine()
+        causal_graph = engine.build_causal_graph(graph)
+        confounders = engine.identify_confounders(causal_graph, treatment, outcome)
+
+        return {
+            "success": True,
+            "treatment": treatment,
+            "outcome": outcome,
+            "confounders": [
+                {
+                    "id": c.id,
+                    "label": c.label,
+                    "affects_treatment": c.affects_treatment,
+                    "affects_outcome": c.affects_outcome,
+                    "path_to_treatment": c.path_to_treatment,
+                    "path_to_outcome": c.path_to_outcome,
+                }
+                for c in confounders
+            ],
+            "confounder_count": len(confounders),
+        }
+
+    except Exception as e:
+        logger.error(f"Error identifying confounders: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/causal/{project_id}/intervention")
+async def calculate_intervention(
+    project_id: str,
+    request: InterventionRequest,
+) -> dict[str, Any]:
+    """
+    Calculate the effect of a causal intervention (do-calculus).
+
+    Estimates what would happen if we intervene to set a variable
+    to a specific value, adjusting for confounders.
+
+    Args:
+        project_id: Project to analyze
+        request: Intervention parameters
+
+    Returns:
+        InterventionResult with estimated effect
+    """
+    if not _db_service:
+        raise HTTPException(status_code=503, detail="Database service not available")
+
+    try:
+        graph = await _get_or_build_graph(project_id)
+
+        if not graph:
+            return {
+                "success": False,
+                "error": "No graph data available",
+            }
+
+        engine = _get_causal_engine()
+        causal_graph = engine.build_causal_graph(graph)
+
+        result = engine.calculate_intervention_effect(
+            causal_graph,
+            request.intervention_node,
+            request.intervention_value,
+            request.target_node,
+            request.adjustment_set,
+        )
+
+        return {
+            "success": True,
+            "intervention": {
+                "node": result.intervention_node,
+                "value": result.intervention_value,
+            },
+            "target": result.target_node,
+            "estimated_effect": result.estimated_effect,
+            "confidence_interval": result.confidence_interval,
+            "confounders_adjusted": result.confounders_adjusted,
+            "causal_paths": [
+                {
+                    "nodes": p.nodes,
+                    "strength": p.total_strength,
+                }
+                for p in result.causal_paths
+            ],
+            "explanation": result.explanation,
+        }
+
+    except Exception as e:
+        logger.error(f"Error calculating intervention: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/causal/{project_id}/ordering")
+async def get_causal_ordering(
+    project_id: str,
+) -> dict[str, Any]:
+    """
+    Get topological ordering of variables (causes before effects).
+
+    Args:
+        project_id: Project to analyze
+
+    Returns:
+        Ordered list of node IDs
+    """
+    if not _db_service:
+        raise HTTPException(status_code=503, detail="Database service not available")
+
+    try:
+        graph = await _get_or_build_graph(project_id)
+
+        if not graph:
+            return {
+                "success": False,
+                "error": "No graph data available",
+            }
+
+        engine = _get_causal_engine()
+        causal_graph = engine.build_causal_graph(graph)
+
+        if not causal_graph.is_valid_dag:
+            return {
+                "success": False,
+                "error": "Graph contains cycles - cannot compute ordering",
+                "cycles": causal_graph.cycles,
+            }
+
+        ordering = engine.get_causal_ordering(causal_graph)
+
+        return {
+            "success": True,
+            "ordering": ordering,
+            "node_count": len(ordering),
+        }
+
+    except Exception as e:
+        logger.error(f"Error getting causal ordering: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
