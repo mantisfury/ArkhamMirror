@@ -5,12 +5,21 @@ Analytical report generation for ArkhamFrame - creates summary reports,
 entity profiles, timeline reports, and custom analytical outputs.
 """
 
+import io
+import json
 import logging
+import os
+import tempfile
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
+import httpx
+
 from arkham_frame import ArkhamShard
+
+# Base URL for internal API calls
+INTERNAL_API_BASE = "http://127.0.0.1:8100"
 
 from .models import (
     GeneratedSection,
@@ -53,6 +62,7 @@ class ReportsShard(ArkhamShard):
         self._storage = None
         self._workers = None
         self._initialized = False
+        self._reports_dir = None
 
     async def initialize(self, frame) -> None:
         """Initialize shard with frame services."""
@@ -62,6 +72,10 @@ class ReportsShard(ArkhamShard):
         self._llm = getattr(frame, "llm", None)
         self._storage = getattr(frame, "storage", None)
         self._workers = getattr(frame, "workers", None)
+
+        # Setup reports output directory
+        self._reports_dir = os.path.join(tempfile.gettempdir(), "arkham_reports")
+        os.makedirs(self._reports_dir, exist_ok=True)
 
         # Create database schema
         await self._create_schema()
@@ -557,8 +571,8 @@ class ReportsShard(ArkhamShard):
             report.status = ReportStatus.GENERATING
             await self._save_report(report, update=True)
 
-            # Stub: simulate generation
-            await self._stub_generate_content(report)
+            # Generate content by fetching real data
+            await self._generate_content(report)
 
             # Update status to completed
             report.status = ReportStatus.COMPLETED
@@ -610,21 +624,745 @@ class ReportsShard(ArkhamShard):
                 errors=[str(e)],
             )
 
-    async def _stub_generate_content(self, report: Report) -> None:
-        """Stub implementation of report content generation."""
-        # Stub: create placeholder content
-        content = f"# {report.title}\n\nGenerated: {datetime.utcnow().isoformat()}\n\nReport type: {report.report_type.value}\n\n(Report content would be generated here based on parameters)"
+    async def _generate_content(self, report: Report) -> None:
+        """Generate report content by fetching real data from other shards."""
+        # Fetch data based on report type
+        data = await self._fetch_report_data(report)
 
-        # Stub: save to storage if available
-        if self._storage:
-            file_name = f"report_{report.id}.{report.output_format.value}"
-            file_path = await self._storage.save(file_name, content.encode('utf-8'))
-            report.file_path = file_path
-            report.file_size = len(content.encode('utf-8'))
+        # Generate output based on format
+        file_ext = report.output_format.value
+        filename = f"report_{report.id}.{file_ext}"
+        file_path = os.path.join(self._reports_dir, filename)
+
+        if report.output_format == ReportFormat.PDF:
+            await self._generate_pdf(file_path, report, data)
+        elif report.output_format == ReportFormat.HTML:
+            await self._generate_html(file_path, report, data)
+        elif report.output_format == ReportFormat.MARKDOWN:
+            await self._generate_markdown(file_path, report, data)
+        elif report.output_format == ReportFormat.JSON:
+            await self._generate_json(file_path, report, data)
         else:
-            # No storage, just set stub path
-            report.file_path = f"/tmp/report_{report.id}.{report.output_format.value}"
-            report.file_size = len(content.encode('utf-8'))
+            # Fallback to markdown
+            await self._generate_markdown(file_path, report, data)
+
+        report.file_path = file_path
+        report.file_size = os.path.getsize(file_path) if os.path.exists(file_path) else 0
+
+    async def _fetch_report_data(self, report: Report) -> Dict[str, Any]:
+        """Fetch data from shards based on report type."""
+        data: Dict[str, Any] = {
+            "title": report.title,
+            "report_type": report.report_type.value,
+            "generated_at": datetime.utcnow().isoformat(),
+            "parameters": report.parameters,
+        }
+
+        try:
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                if report.report_type == ReportType.SUMMARY:
+                    data["content"] = await self._fetch_summary_data(client, report.parameters)
+                elif report.report_type == ReportType.ENTITY_PROFILE:
+                    data["content"] = await self._fetch_entity_profile_data(client, report.parameters)
+                elif report.report_type == ReportType.TIMELINE:
+                    data["content"] = await self._fetch_timeline_data(client, report.parameters)
+                elif report.report_type == ReportType.CONTRADICTION:
+                    data["content"] = await self._fetch_contradiction_data(client, report.parameters)
+                elif report.report_type == ReportType.ACH_ANALYSIS:
+                    data["content"] = await self._fetch_ach_data(client, report.parameters)
+                elif report.report_type == ReportType.CUSTOM:
+                    data["content"] = await self._fetch_custom_data(client, report.parameters)
+                else:
+                    data["content"] = {"message": "Unknown report type"}
+        except Exception as e:
+            logger.error(f"Failed to fetch report data: {e}")
+            data["content"] = {"error": str(e)}
+
+        return data
+
+    async def _fetch_summary_data(self, client: httpx.AsyncClient, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Fetch system summary data from multiple shards."""
+        summary = {
+            "documents": {"total": 0, "by_status": {}},
+            "entities": {"total": 0, "by_type": {}},
+            "claims": {"total": 0, "verified": 0, "unverified": 0},
+            "contradictions": {"total": 0, "confirmed": 0},
+            "anomalies": {"total": 0, "by_severity": {}},
+            "timeline_events": {"total": 0},
+        }
+
+        # Documents
+        try:
+            resp = await client.get(f"{INTERNAL_API_BASE}/api/documents/count")
+            if resp.status_code == 200:
+                summary["documents"]["total"] = resp.json().get("count", 0)
+        except Exception as e:
+            logger.warning(f"Failed to fetch documents count: {e}")
+
+        # Entities
+        try:
+            resp = await client.get(f"{INTERNAL_API_BASE}/api/entities/stats")
+            if resp.status_code == 200:
+                stats = resp.json()
+                summary["entities"]["total"] = stats.get("total", 0)
+                summary["entities"]["by_type"] = stats.get("by_type", {})
+        except Exception as e:
+            logger.warning(f"Failed to fetch entities stats: {e}")
+
+        # Claims
+        try:
+            resp = await client.get(f"{INTERNAL_API_BASE}/api/claims/stats")
+            if resp.status_code == 200:
+                stats = resp.json()
+                summary["claims"]["total"] = stats.get("total", 0)
+                summary["claims"]["verified"] = stats.get("verified", 0)
+                summary["claims"]["unverified"] = stats.get("unverified", 0)
+        except Exception as e:
+            logger.warning(f"Failed to fetch claims stats: {e}")
+
+        # Contradictions
+        try:
+            resp = await client.get(f"{INTERNAL_API_BASE}/api/contradictions/stats")
+            if resp.status_code == 200:
+                stats = resp.json()
+                summary["contradictions"]["total"] = stats.get("total", 0)
+                summary["contradictions"]["confirmed"] = stats.get("by_status", {}).get("confirmed", 0)
+        except Exception as e:
+            logger.warning(f"Failed to fetch contradictions stats: {e}")
+
+        # Anomalies
+        try:
+            resp = await client.get(f"{INTERNAL_API_BASE}/api/anomalies/stats")
+            if resp.status_code == 200:
+                stats = resp.json()
+                summary["anomalies"]["total"] = stats.get("total", 0)
+                summary["anomalies"]["by_severity"] = stats.get("by_severity", {})
+        except Exception as e:
+            logger.warning(f"Failed to fetch anomalies stats: {e}")
+
+        # Timeline
+        try:
+            resp = await client.get(f"{INTERNAL_API_BASE}/api/timeline/stats")
+            if resp.status_code == 200:
+                stats = resp.json()
+                summary["timeline_events"]["total"] = stats.get("total_events", 0)
+        except Exception as e:
+            logger.warning(f"Failed to fetch timeline stats: {e}")
+
+        return summary
+
+    async def _fetch_entity_profile_data(self, client: httpx.AsyncClient, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Fetch entity profile data."""
+        entity_id = params.get("entity_id")
+        if not entity_id:
+            return {"error": "entity_id parameter required"}
+
+        profile = {"entity": None, "relationships": [], "mentions": [], "claims": []}
+
+        # Get entity details
+        try:
+            resp = await client.get(f"{INTERNAL_API_BASE}/api/entities/{entity_id}")
+            if resp.status_code == 200:
+                profile["entity"] = resp.json()
+        except Exception as e:
+            logger.warning(f"Failed to fetch entity: {e}")
+            return {"error": str(e)}
+
+        # Get relationships
+        try:
+            resp = await client.get(f"{INTERNAL_API_BASE}/api/entities/{entity_id}/relationships")
+            if resp.status_code == 200:
+                profile["relationships"] = resp.json()
+        except Exception as e:
+            logger.warning(f"Failed to fetch relationships: {e}")
+
+        # Get claims mentioning entity
+        try:
+            resp = await client.get(f"{INTERNAL_API_BASE}/api/claims/", params={"entity_id": entity_id, "limit": 20})
+            if resp.status_code == 200:
+                profile["claims"] = resp.json().get("items", [])
+        except Exception as e:
+            logger.warning(f"Failed to fetch claims: {e}")
+
+        return profile
+
+    async def _fetch_timeline_data(self, client: httpx.AsyncClient, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Fetch timeline report data."""
+        timeline = {"events": [], "conflicts": [], "stats": {}}
+
+        fetch_params = {"limit": params.get("limit", 100), "offset": 0}
+        if params.get("start_date"):
+            fetch_params["start_date"] = params["start_date"]
+        if params.get("end_date"):
+            fetch_params["end_date"] = params["end_date"]
+
+        # Get events
+        try:
+            resp = await client.get(f"{INTERNAL_API_BASE}/api/timeline/events", params=fetch_params)
+            if resp.status_code == 200:
+                data = resp.json()
+                timeline["events"] = data.get("events", [])
+        except Exception as e:
+            logger.warning(f"Failed to fetch timeline events: {e}")
+
+        # Get conflicts
+        try:
+            resp = await client.get(f"{INTERNAL_API_BASE}/api/timeline/conflicts")
+            if resp.status_code == 200:
+                timeline["conflicts"] = resp.json().get("conflicts", [])
+        except Exception as e:
+            logger.warning(f"Failed to fetch timeline conflicts: {e}")
+
+        # Get stats
+        try:
+            resp = await client.get(f"{INTERNAL_API_BASE}/api/timeline/stats")
+            if resp.status_code == 200:
+                timeline["stats"] = resp.json()
+        except Exception as e:
+            logger.warning(f"Failed to fetch timeline stats: {e}")
+
+        return timeline
+
+    async def _fetch_contradiction_data(self, client: httpx.AsyncClient, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Fetch contradiction analysis data."""
+        contradictions_data = {"contradictions": [], "stats": {}, "chains": []}
+
+        # Get stats
+        try:
+            resp = await client.get(f"{INTERNAL_API_BASE}/api/contradictions/stats")
+            if resp.status_code == 200:
+                contradictions_data["stats"] = resp.json()
+        except Exception as e:
+            logger.warning(f"Failed to fetch contradiction stats: {e}")
+
+        # Get contradictions
+        try:
+            limit = params.get("limit", 50)
+            status = params.get("status")
+            req_params = {"limit": limit}
+            if status:
+                req_params["status"] = status
+
+            resp = await client.get(f"{INTERNAL_API_BASE}/api/contradictions/", params=req_params)
+            if resp.status_code == 200:
+                contradictions_data["contradictions"] = resp.json().get("items", [])
+        except Exception as e:
+            logger.warning(f"Failed to fetch contradictions: {e}")
+
+        return contradictions_data
+
+    async def _fetch_ach_data(self, client: httpx.AsyncClient, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Fetch ACH matrix data."""
+        matrix_id = params.get("matrix_id")
+        if not matrix_id:
+            # Get all matrices
+            try:
+                resp = await client.get(f"{INTERNAL_API_BASE}/api/ach/matrices")
+                if resp.status_code == 200:
+                    return {"matrices": resp.json().get("matrices", [])}
+            except Exception as e:
+                logger.warning(f"Failed to fetch ACH matrices: {e}")
+                return {"error": str(e)}
+            return {"matrices": []}
+
+        # Get specific matrix with full details
+        ach_data = {"matrix": None, "hypotheses": [], "evidence": [], "ratings": []}
+
+        try:
+            resp = await client.get(f"{INTERNAL_API_BASE}/api/ach/matrix/{matrix_id}")
+            if resp.status_code == 200:
+                ach_data["matrix"] = resp.json()
+
+            # Get hypotheses
+            resp = await client.get(f"{INTERNAL_API_BASE}/api/ach/matrix/{matrix_id}/hypotheses")
+            if resp.status_code == 200:
+                ach_data["hypotheses"] = resp.json().get("hypotheses", [])
+
+            # Get evidence
+            resp = await client.get(f"{INTERNAL_API_BASE}/api/ach/matrix/{matrix_id}/evidence")
+            if resp.status_code == 200:
+                ach_data["evidence"] = resp.json().get("evidence", [])
+
+            # Get ratings
+            resp = await client.get(f"{INTERNAL_API_BASE}/api/ach/matrix/{matrix_id}/ratings")
+            if resp.status_code == 200:
+                ach_data["ratings"] = resp.json().get("ratings", [])
+
+        except Exception as e:
+            logger.warning(f"Failed to fetch ACH matrix {matrix_id}: {e}")
+            ach_data["error"] = str(e)
+
+        return ach_data
+
+    async def _fetch_custom_data(self, client: httpx.AsyncClient, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Fetch custom data based on parameters."""
+        custom_data = {}
+
+        # Allow custom endpoints to be specified
+        endpoints = params.get("endpoints", [])
+        for endpoint_config in endpoints:
+            endpoint = endpoint_config.get("url", "")
+            key = endpoint_config.get("key", endpoint)
+            try:
+                resp = await client.get(f"{INTERNAL_API_BASE}{endpoint}")
+                if resp.status_code == 200:
+                    custom_data[key] = resp.json()
+            except Exception as e:
+                logger.warning(f"Failed to fetch custom endpoint {endpoint}: {e}")
+                custom_data[key] = {"error": str(e)}
+
+        return custom_data
+
+    # === Format Generators ===
+
+    async def _generate_pdf(self, file_path: str, report: Report, data: Dict[str, Any]) -> None:
+        """Generate PDF report using reportlab."""
+        try:
+            from reportlab.lib import colors
+            from reportlab.lib.pagesizes import letter
+            from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+            from reportlab.lib.units import inch
+            from reportlab.platypus import (
+                SimpleDocTemplate,
+                Paragraph,
+                Spacer,
+                Table,
+                TableStyle,
+                PageBreak,
+            )
+        except ImportError:
+            logger.error("reportlab not installed - falling back to text")
+            await self._generate_markdown(file_path.replace(".pdf", ".md"), report, data)
+            return
+
+        doc = SimpleDocTemplate(file_path, pagesize=letter)
+        styles = getSampleStyleSheet()
+        story = []
+
+        # Title
+        title_style = ParagraphStyle(
+            "CustomTitle",
+            parent=styles["Heading1"],
+            fontSize=20,
+            spaceAfter=20,
+            textColor=colors.darkblue,
+        )
+        story.append(Paragraph(report.title, title_style))
+        story.append(Spacer(1, 12))
+
+        # Report metadata
+        info_style = styles["Normal"]
+        story.append(Paragraph(f"<b>Report Type:</b> {report.report_type.value.replace('_', ' ').title()}", info_style))
+        story.append(Paragraph(f"<b>Generated:</b> {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}", info_style))
+        story.append(Paragraph(f"<b>Report ID:</b> {report.id[:8]}...", info_style))
+        story.append(Spacer(1, 20))
+
+        # Content based on report type
+        content = data.get("content", {})
+
+        if report.report_type == ReportType.SUMMARY:
+            self._add_summary_to_pdf(story, content, styles)
+        elif report.report_type == ReportType.ENTITY_PROFILE:
+            self._add_entity_profile_to_pdf(story, content, styles)
+        elif report.report_type == ReportType.TIMELINE:
+            self._add_timeline_to_pdf(story, content, styles)
+        elif report.report_type == ReportType.CONTRADICTION:
+            self._add_contradictions_to_pdf(story, content, styles)
+        elif report.report_type == ReportType.ACH_ANALYSIS:
+            self._add_ach_to_pdf(story, content, styles)
+        else:
+            self._add_generic_to_pdf(story, content, styles)
+
+        doc.build(story)
+
+    def _add_summary_to_pdf(self, story, content, styles):
+        """Add summary content to PDF."""
+        from reportlab.platypus import Paragraph, Spacer, Table, TableStyle
+        from reportlab.lib import colors
+
+        heading_style = styles["Heading2"]
+        normal_style = styles["Normal"]
+
+        story.append(Paragraph("System Summary", heading_style))
+        story.append(Spacer(1, 10))
+
+        # Documents
+        docs = content.get("documents", {})
+        story.append(Paragraph(f"<b>Documents:</b> {docs.get('total', 0)} total", normal_style))
+
+        # Entities
+        entities = content.get("entities", {})
+        story.append(Paragraph(f"<b>Entities:</b> {entities.get('total', 0)} total", normal_style))
+        by_type = entities.get("by_type", {})
+        if by_type:
+            for etype, count in list(by_type.items())[:5]:
+                story.append(Paragraph(f"  - {etype}: {count}", normal_style))
+
+        # Claims
+        claims = content.get("claims", {})
+        story.append(Paragraph(
+            f"<b>Claims:</b> {claims.get('total', 0)} total "
+            f"({claims.get('verified', 0)} verified)",
+            normal_style
+        ))
+
+        # Contradictions
+        contradictions = content.get("contradictions", {})
+        story.append(Paragraph(
+            f"<b>Contradictions:</b> {contradictions.get('total', 0)} total "
+            f"({contradictions.get('confirmed', 0)} confirmed)",
+            normal_style
+        ))
+
+        # Anomalies
+        anomalies = content.get("anomalies", {})
+        story.append(Paragraph(f"<b>Anomalies:</b> {anomalies.get('total', 0)} total", normal_style))
+
+        # Timeline
+        timeline = content.get("timeline_events", {})
+        story.append(Paragraph(f"<b>Timeline Events:</b> {timeline.get('total', 0)}", normal_style))
+
+        story.append(Spacer(1, 20))
+
+    def _add_entity_profile_to_pdf(self, story, content, styles):
+        """Add entity profile to PDF."""
+        from reportlab.platypus import Paragraph, Spacer
+
+        heading_style = styles["Heading2"]
+        normal_style = styles["Normal"]
+
+        entity = content.get("entity", {})
+        if not entity:
+            story.append(Paragraph("Entity not found", normal_style))
+            return
+
+        story.append(Paragraph(f"Entity Profile: {entity.get('name', 'Unknown')}", heading_style))
+        story.append(Spacer(1, 10))
+
+        story.append(Paragraph(f"<b>Type:</b> {entity.get('entity_type', 'N/A')}", normal_style))
+        story.append(Paragraph(f"<b>ID:</b> {entity.get('id', 'N/A')}", normal_style))
+
+        # Relationships
+        relationships = content.get("relationships", [])
+        if relationships:
+            story.append(Spacer(1, 10))
+            story.append(Paragraph(f"<b>Relationships ({len(relationships)}):</b>", normal_style))
+            for rel in relationships[:10]:
+                story.append(Paragraph(
+                    f"  - {rel.get('relationship_type', 'related to')} {rel.get('target_name', 'Unknown')}",
+                    normal_style
+                ))
+
+        # Claims
+        claims = content.get("claims", [])
+        if claims:
+            story.append(Spacer(1, 10))
+            story.append(Paragraph(f"<b>Related Claims ({len(claims)}):</b>", normal_style))
+            for claim in claims[:5]:
+                text = claim.get("text", "")[:100]
+                story.append(Paragraph(f"  - {text}...", normal_style))
+
+        story.append(Spacer(1, 20))
+
+    def _add_timeline_to_pdf(self, story, content, styles):
+        """Add timeline content to PDF."""
+        from reportlab.platypus import Paragraph, Spacer
+
+        heading_style = styles["Heading2"]
+        normal_style = styles["Normal"]
+
+        story.append(Paragraph("Timeline Report", heading_style))
+        story.append(Spacer(1, 10))
+
+        stats = content.get("stats", {})
+        story.append(Paragraph(f"<b>Total Events:</b> {stats.get('total_events', 0)}", normal_style))
+        story.append(Spacer(1, 10))
+
+        events = content.get("events", [])
+        if events:
+            story.append(Paragraph("<b>Events:</b>", normal_style))
+            for event in events[:50]:
+                date = event.get("date_start", "Unknown date")
+                text = event.get("text", "")[:150]
+                story.append(Paragraph(f"<b>{date}:</b> {text}", normal_style))
+                story.append(Spacer(1, 4))
+
+        conflicts = content.get("conflicts", [])
+        if conflicts:
+            story.append(Spacer(1, 10))
+            story.append(Paragraph(f"<b>Temporal Conflicts ({len(conflicts)}):</b>", normal_style))
+            for conflict in conflicts[:10]:
+                story.append(Paragraph(f"  - {conflict.get('description', 'Conflict')}", normal_style))
+
+        story.append(Spacer(1, 20))
+
+    def _add_contradictions_to_pdf(self, story, content, styles):
+        """Add contradictions to PDF."""
+        from reportlab.platypus import Paragraph, Spacer
+
+        heading_style = styles["Heading2"]
+        normal_style = styles["Normal"]
+
+        story.append(Paragraph("Contradiction Analysis", heading_style))
+        story.append(Spacer(1, 10))
+
+        stats = content.get("stats", {})
+        story.append(Paragraph(f"<b>Total Contradictions:</b> {stats.get('total', 0)}", normal_style))
+
+        contradictions = content.get("contradictions", [])
+        if contradictions:
+            story.append(Spacer(1, 10))
+            for i, c in enumerate(contradictions[:20]):
+                story.append(Paragraph(f"<b>Contradiction {i+1}:</b>", normal_style))
+                story.append(Paragraph(f"  Status: {c.get('status', 'N/A')}", normal_style))
+                story.append(Paragraph(f"  Severity: {c.get('severity', 'N/A')}", normal_style))
+                story.append(Paragraph(f"  Type: {c.get('contradiction_type', 'N/A')}", normal_style))
+                story.append(Spacer(1, 6))
+
+        story.append(Spacer(1, 20))
+
+    def _add_ach_to_pdf(self, story, content, styles):
+        """Add ACH matrix content to PDF."""
+        from reportlab.platypus import Paragraph, Spacer, Table, TableStyle
+        from reportlab.lib import colors
+
+        heading_style = styles["Heading2"]
+        normal_style = styles["Normal"]
+
+        # Check if single matrix or list
+        if "matrix" in content:
+            matrix = content.get("matrix", {})
+            story.append(Paragraph(f"ACH Matrix: {matrix.get('title', 'Untitled')}", heading_style))
+            story.append(Spacer(1, 10))
+
+            story.append(Paragraph(f"<b>Description:</b> {matrix.get('description', 'N/A')}", normal_style))
+            story.append(Paragraph(f"<b>Status:</b> {matrix.get('status', 'N/A')}", normal_style))
+
+            hypotheses = content.get("hypotheses", [])
+            if hypotheses:
+                story.append(Spacer(1, 10))
+                story.append(Paragraph(f"<b>Hypotheses ({len(hypotheses)}):</b>", normal_style))
+                for h in hypotheses:
+                    story.append(Paragraph(f"  - {h.get('title', 'Untitled')}", normal_style))
+
+            evidence = content.get("evidence", [])
+            if evidence:
+                story.append(Spacer(1, 10))
+                story.append(Paragraph(f"<b>Evidence Items ({len(evidence)}):</b>", normal_style))
+                for e in evidence[:10]:
+                    story.append(Paragraph(f"  - {e.get('description', 'No description')[:100]}", normal_style))
+
+        else:
+            matrices = content.get("matrices", [])
+            story.append(Paragraph(f"ACH Matrices ({len(matrices)})", heading_style))
+            story.append(Spacer(1, 10))
+
+            for m in matrices:
+                story.append(Paragraph(f"<b>{m.get('title', 'Untitled')}</b>", normal_style))
+                story.append(Paragraph(f"  Status: {m.get('status', 'N/A')}", normal_style))
+                story.append(Spacer(1, 6))
+
+        story.append(Spacer(1, 20))
+
+    def _add_generic_to_pdf(self, story, content, styles):
+        """Add generic content to PDF."""
+        from reportlab.platypus import Paragraph, Spacer
+
+        normal_style = styles["Normal"]
+
+        story.append(Paragraph("<b>Report Content:</b>", normal_style))
+        story.append(Spacer(1, 10))
+
+        # Render content as key-value pairs
+        def render_dict(d, indent=0):
+            for key, value in d.items():
+                prefix = "&nbsp;" * (indent * 4)
+                if isinstance(value, dict):
+                    story.append(Paragraph(f"{prefix}<b>{key}:</b>", normal_style))
+                    render_dict(value, indent + 1)
+                elif isinstance(value, list):
+                    story.append(Paragraph(f"{prefix}<b>{key}:</b> [{len(value)} items]", normal_style))
+                else:
+                    story.append(Paragraph(f"{prefix}<b>{key}:</b> {value}", normal_style))
+
+        if isinstance(content, dict):
+            render_dict(content)
+        else:
+            story.append(Paragraph(str(content), normal_style))
+
+        story.append(Spacer(1, 20))
+
+    async def _generate_html(self, file_path: str, report: Report, data: Dict[str, Any]) -> None:
+        """Generate HTML report."""
+        content = data.get("content", {})
+
+        html = f"""<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>{report.title}</title>
+    <style>
+        body {{ font-family: Arial, sans-serif; margin: 40px; line-height: 1.6; }}
+        h1 {{ color: #2c3e50; border-bottom: 2px solid #3498db; padding-bottom: 10px; }}
+        h2 {{ color: #34495e; margin-top: 30px; }}
+        .meta {{ color: #7f8c8d; font-size: 0.9em; margin-bottom: 20px; }}
+        .section {{ margin: 20px 0; padding: 15px; background: #f9f9f9; border-radius: 5px; }}
+        .stat {{ display: inline-block; margin: 10px 20px 10px 0; }}
+        .stat-value {{ font-size: 24px; font-weight: bold; color: #2980b9; }}
+        .stat-label {{ font-size: 12px; color: #7f8c8d; }}
+        table {{ border-collapse: collapse; width: 100%; margin: 15px 0; }}
+        th, td {{ border: 1px solid #ddd; padding: 8px; text-align: left; }}
+        th {{ background-color: #3498db; color: white; }}
+        tr:nth-child(even) {{ background-color: #f2f2f2; }}
+    </style>
+</head>
+<body>
+    <h1>{report.title}</h1>
+    <div class="meta">
+        <p><strong>Report Type:</strong> {report.report_type.value.replace('_', ' ').title()}</p>
+        <p><strong>Generated:</strong> {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}</p>
+        <p><strong>Report ID:</strong> {report.id}</p>
+    </div>
+"""
+
+        # Add content based on report type
+        if report.report_type == ReportType.SUMMARY:
+            html += self._generate_summary_html(content)
+        elif report.report_type == ReportType.ENTITY_PROFILE:
+            html += self._generate_entity_profile_html(content)
+        elif report.report_type == ReportType.TIMELINE:
+            html += self._generate_timeline_html(content)
+        else:
+            html += f"<div class='section'><pre>{json.dumps(content, indent=2, default=str)}</pre></div>"
+
+        html += """
+</body>
+</html>"""
+
+        with open(file_path, "w", encoding="utf-8") as f:
+            f.write(html)
+
+    def _generate_summary_html(self, content: Dict[str, Any]) -> str:
+        """Generate summary HTML content."""
+        docs = content.get("documents", {})
+        entities = content.get("entities", {})
+        claims = content.get("claims", {})
+        contradictions = content.get("contradictions", {})
+        anomalies = content.get("anomalies", {})
+        timeline = content.get("timeline_events", {})
+
+        return f"""
+    <h2>System Overview</h2>
+    <div class="section">
+        <div class="stat"><div class="stat-value">{docs.get('total', 0)}</div><div class="stat-label">Documents</div></div>
+        <div class="stat"><div class="stat-value">{entities.get('total', 0)}</div><div class="stat-label">Entities</div></div>
+        <div class="stat"><div class="stat-value">{claims.get('total', 0)}</div><div class="stat-label">Claims</div></div>
+        <div class="stat"><div class="stat-value">{contradictions.get('total', 0)}</div><div class="stat-label">Contradictions</div></div>
+        <div class="stat"><div class="stat-value">{anomalies.get('total', 0)}</div><div class="stat-label">Anomalies</div></div>
+        <div class="stat"><div class="stat-value">{timeline.get('total', 0)}</div><div class="stat-label">Timeline Events</div></div>
+    </div>
+"""
+
+    def _generate_entity_profile_html(self, content: Dict[str, Any]) -> str:
+        """Generate entity profile HTML content."""
+        entity = content.get("entity", {})
+        relationships = content.get("relationships", [])
+        claims = content.get("claims", [])
+
+        html = f"""
+    <h2>Entity: {entity.get('name', 'Unknown')}</h2>
+    <div class="section">
+        <p><strong>Type:</strong> {entity.get('entity_type', 'N/A')}</p>
+        <p><strong>ID:</strong> {entity.get('id', 'N/A')}</p>
+    </div>
+"""
+
+        if relationships:
+            html += "<h2>Relationships</h2><div class='section'><ul>"
+            for rel in relationships[:20]:
+                html += f"<li>{rel.get('relationship_type', 'related to')} {rel.get('target_name', 'Unknown')}</li>"
+            html += "</ul></div>"
+
+        if claims:
+            html += "<h2>Related Claims</h2><div class='section'><ul>"
+            for claim in claims[:10]:
+                html += f"<li>{claim.get('text', '')[:150]}...</li>"
+            html += "</ul></div>"
+
+        return html
+
+    def _generate_timeline_html(self, content: Dict[str, Any]) -> str:
+        """Generate timeline HTML content."""
+        events = content.get("events", [])
+        stats = content.get("stats", {})
+
+        html = f"""
+    <h2>Timeline Summary</h2>
+    <div class="section">
+        <p><strong>Total Events:</strong> {stats.get('total_events', 0)}</p>
+    </div>
+    <h2>Events</h2>
+    <table>
+        <tr><th>Date</th><th>Event</th><th>Type</th></tr>
+"""
+        for event in events[:100]:
+            html += f"<tr><td>{event.get('date_start', 'N/A')}</td><td>{event.get('text', '')[:200]}</td><td>{event.get('event_type', 'N/A')}</td></tr>"
+
+        html += "</table>"
+        return html
+
+    async def _generate_markdown(self, file_path: str, report: Report, data: Dict[str, Any]) -> None:
+        """Generate Markdown report."""
+        content = data.get("content", {})
+
+        md = f"""# {report.title}
+
+**Report Type:** {report.report_type.value.replace('_', ' ').title()}
+**Generated:** {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}
+**Report ID:** {report.id}
+
+---
+
+"""
+
+        # Add content based on report type
+        if report.report_type == ReportType.SUMMARY:
+            docs = content.get("documents", {})
+            entities = content.get("entities", {})
+            claims = content.get("claims", {})
+            md += f"""## System Summary
+
+| Metric | Count |
+|--------|-------|
+| Documents | {docs.get('total', 0)} |
+| Entities | {entities.get('total', 0)} |
+| Claims | {claims.get('total', 0)} |
+| Contradictions | {content.get('contradictions', {}).get('total', 0)} |
+| Anomalies | {content.get('anomalies', {}).get('total', 0)} |
+| Timeline Events | {content.get('timeline_events', {}).get('total', 0)} |
+
+"""
+        else:
+            md += f"## Content\n\n```json\n{json.dumps(content, indent=2, default=str)}\n```\n"
+
+        with open(file_path, "w", encoding="utf-8") as f:
+            f.write(md)
+
+    async def _generate_json(self, file_path: str, report: Report, data: Dict[str, Any]) -> None:
+        """Generate JSON report."""
+        output = {
+            "report_info": {
+                "id": report.id,
+                "title": report.title,
+                "report_type": report.report_type.value,
+                "generated_at": datetime.utcnow().isoformat(),
+                "parameters": report.parameters,
+            },
+            "content": data.get("content", {}),
+        }
+
+        with open(file_path, "w", encoding="utf-8") as f:
+            json.dump(output, f, indent=2, default=str)
 
     async def _save_report(self, report: Report, update: bool = False) -> None:
         """Save a report to the database."""

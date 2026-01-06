@@ -710,79 +710,392 @@ class LettersShard(ArkhamShard):
         return result
 
     async def _generate_export(self, letter: Letter, export_format: ExportFormat) -> bytes:
-        """Generate export file content (stub implementation)."""
-        # Build letter text
+        """Generate export file content."""
+        # Build letter components
+        letter_data = self._build_letter_data(letter)
+        full_text = self._format_letter_text(letter_data)
+
+        # Export based on format
+        if export_format == ExportFormat.TXT:
+            return full_text.encode('utf-8')
+        elif export_format == ExportFormat.MARKDOWN:
+            return self._generate_markdown(letter, letter_data)
+        elif export_format == ExportFormat.HTML:
+            return self._generate_html(letter, letter_data)
+        elif export_format == ExportFormat.PDF:
+            return self._generate_pdf(letter, letter_data)
+        elif export_format == ExportFormat.DOCX:
+            return self._generate_docx(letter, letter_data)
+        else:
+            return full_text.encode('utf-8')
+
+    def _build_letter_data(self, letter: Letter) -> Dict[str, Any]:
+        """Build structured letter data for rendering."""
+        return {
+            "sender_name": letter.sender_name or "",
+            "sender_address": letter.sender_address or "",
+            "sender_email": letter.sender_email or "",
+            "recipient_name": letter.recipient_name or "",
+            "recipient_address": letter.recipient_address or "",
+            "recipient_email": letter.recipient_email or "",
+            "date": datetime.utcnow().strftime("%B %d, %Y"),
+            "subject": letter.subject or "",
+            "re_line": letter.re_line or "",
+            "reference_number": letter.reference_number or "",
+            "content": letter.content or "",
+            "title": letter.title,
+            "letter_type": letter.letter_type.value,
+        }
+
+    def _format_letter_text(self, data: Dict[str, Any]) -> str:
+        """Format letter as plain text."""
         lines = []
 
         # Header
-        if letter.sender_name:
-            lines.append(letter.sender_name)
-        if letter.sender_address:
-            lines.append(letter.sender_address)
-        if letter.sender_email:
-            lines.append(letter.sender_email)
+        if data["sender_name"]:
+            lines.append(data["sender_name"])
+        if data["sender_address"]:
+            lines.append(data["sender_address"])
+        if data["sender_email"]:
+            lines.append(data["sender_email"])
 
-        lines.append("")  # Blank line
-        lines.append(datetime.utcnow().strftime("%B %d, %Y"))
+        lines.append("")
+        lines.append(data["date"])
         lines.append("")
 
         # Recipient
-        if letter.recipient_name:
-            lines.append(letter.recipient_name)
-        if letter.recipient_address:
-            lines.append(letter.recipient_address)
+        if data["recipient_name"]:
+            lines.append(data["recipient_name"])
+        if data["recipient_address"]:
+            lines.append(data["recipient_address"])
 
         lines.append("")
 
         # Subject/RE
-        if letter.subject:
-            lines.append(f"Subject: {letter.subject}")
-        if letter.re_line:
-            lines.append(f"RE: {letter.re_line}")
-        if letter.reference_number:
-            lines.append(f"Reference: {letter.reference_number}")
+        if data["subject"]:
+            lines.append(f"Subject: {data['subject']}")
+        if data["re_line"]:
+            lines.append(f"RE: {data['re_line']}")
+        if data["reference_number"]:
+            lines.append(f"Reference: {data['reference_number']}")
 
-        if letter.subject or letter.re_line or letter.reference_number:
+        if data["subject"] or data["re_line"] or data["reference_number"]:
             lines.append("")
 
         # Salutation
-        if letter.recipient_name:
-            lines.append(f"Dear {letter.recipient_name}:")
+        if data["recipient_name"]:
+            lines.append(f"Dear {data['recipient_name']}:")
         else:
             lines.append("Dear Sir/Madam:")
 
         lines.append("")
 
         # Body
-        lines.append(letter.content)
+        lines.append(data["content"])
 
         lines.append("")
 
         # Closing
         lines.append("Sincerely,")
         lines.append("")
-        if letter.sender_name:
-            lines.append(letter.sender_name)
+        if data["sender_name"]:
+            lines.append(data["sender_name"])
 
-        full_text = "\n".join(lines)
+        return "\n".join(lines)
 
-        # Export based on format
-        if export_format == ExportFormat.TXT:
-            return full_text.encode('utf-8')
-        elif export_format == ExportFormat.MARKDOWN:
-            return full_text.encode('utf-8')
-        elif export_format == ExportFormat.HTML:
-            # Wrap in basic HTML
-            html = f"<html><body><pre>{full_text}</pre></body></html>"
-            return html.encode('utf-8')
-        elif export_format == ExportFormat.PDF:
-            # Stub: would use PDF library
-            return f"PDF Stub: {full_text}".encode('utf-8')
-        elif export_format == ExportFormat.DOCX:
-            # Stub: would use python-docx
-            return f"DOCX Stub: {full_text}".encode('utf-8')
+    def _generate_markdown(self, letter: Letter, data: Dict[str, Any]) -> bytes:
+        """Generate Markdown formatted letter."""
+        md = f"""# {data['title']}
+
+**Date:** {data['date']}
+**Type:** {data['letter_type'].replace('_', ' ').title()}
+
+---
+
+"""
+        if data["sender_name"]:
+            md += f"**From:** {data['sender_name']}\n"
+        if data["sender_address"]:
+            md += f"{data['sender_address']}\n"
+
+        md += "\n"
+
+        if data["recipient_name"]:
+            md += f"**To:** {data['recipient_name']}\n"
+        if data["recipient_address"]:
+            md += f"{data['recipient_address']}\n"
+
+        md += "\n---\n\n"
+
+        if data["subject"]:
+            md += f"**Subject:** {data['subject']}\n\n"
+        if data["re_line"]:
+            md += f"**RE:** {data['re_line']}\n\n"
+        if data["reference_number"]:
+            md += f"**Reference:** {data['reference_number']}\n\n"
+
+        if data["recipient_name"]:
+            md += f"Dear {data['recipient_name']},\n\n"
         else:
-            return full_text.encode('utf-8')
+            md += "Dear Sir/Madam,\n\n"
+
+        md += data["content"]
+        md += "\n\nSincerely,\n\n"
+        if data["sender_name"]:
+            md += data["sender_name"]
+
+        return md.encode('utf-8')
+
+    def _generate_html(self, letter: Letter, data: Dict[str, Any]) -> bytes:
+        """Generate HTML formatted letter."""
+        html = f"""<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>{data['title']}</title>
+    <style>
+        body {{ font-family: 'Times New Roman', serif; max-width: 800px; margin: 40px auto; padding: 20px; }}
+        .header {{ margin-bottom: 30px; }}
+        .date {{ margin: 20px 0; }}
+        .recipient {{ margin-bottom: 20px; }}
+        .subject {{ font-weight: bold; margin-bottom: 20px; }}
+        .salutation {{ margin-bottom: 15px; }}
+        .body {{ line-height: 1.6; margin-bottom: 30px; white-space: pre-wrap; }}
+        .closing {{ margin-top: 30px; }}
+        .signature {{ margin-top: 40px; }}
+    </style>
+</head>
+<body>
+    <div class="header">
+"""
+        if data["sender_name"]:
+            html += f"        <div>{data['sender_name']}</div>\n"
+        if data["sender_address"]:
+            html += f"        <div>{data['sender_address']}</div>\n"
+        if data["sender_email"]:
+            html += f"        <div>{data['sender_email']}</div>\n"
+
+        html += f"""    </div>
+    <div class="date">{data['date']}</div>
+    <div class="recipient">
+"""
+        if data["recipient_name"]:
+            html += f"        <div>{data['recipient_name']}</div>\n"
+        if data["recipient_address"]:
+            html += f"        <div>{data['recipient_address']}</div>\n"
+
+        html += "    </div>\n"
+
+        if data["subject"]:
+            html += f"    <div class='subject'>Subject: {data['subject']}</div>\n"
+        if data["re_line"]:
+            html += f"    <div class='subject'>RE: {data['re_line']}</div>\n"
+        if data["reference_number"]:
+            html += f"    <div>Reference: {data['reference_number']}</div>\n"
+
+        salutation = f"Dear {data['recipient_name']}:" if data["recipient_name"] else "Dear Sir/Madam:"
+        html += f"""    <div class="salutation">{salutation}</div>
+    <div class="body">{data['content']}</div>
+    <div class="closing">Sincerely,</div>
+"""
+        if data["sender_name"]:
+            html += f"    <div class='signature'>{data['sender_name']}</div>\n"
+
+        html += "</body>\n</html>"
+
+        return html.encode('utf-8')
+
+    def _generate_pdf(self, letter: Letter, data: Dict[str, Any]) -> bytes:
+        """Generate PDF formatted letter using reportlab."""
+        try:
+            from reportlab.lib import colors
+            from reportlab.lib.pagesizes import letter as LETTER_SIZE
+            from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+            from reportlab.lib.units import inch
+            from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
+            from io import BytesIO
+        except ImportError:
+            logger.error("reportlab not installed - returning text fallback")
+            return self._format_letter_text(data).encode('utf-8')
+
+        buffer = BytesIO()
+        doc = SimpleDocTemplate(buffer, pagesize=LETTER_SIZE,
+                                leftMargin=1*inch, rightMargin=1*inch,
+                                topMargin=1*inch, bottomMargin=1*inch)
+        styles = getSampleStyleSheet()
+        story = []
+
+        # Define styles
+        normal_style = ParagraphStyle(
+            'LetterNormal',
+            parent=styles['Normal'],
+            fontName='Times-Roman',
+            fontSize=12,
+            leading=16,
+        )
+        bold_style = ParagraphStyle(
+            'LetterBold',
+            parent=normal_style,
+            fontName='Times-Bold',
+        )
+
+        # Sender header
+        if data["sender_name"]:
+            story.append(Paragraph(data["sender_name"], bold_style))
+        if data["sender_address"]:
+            for line in data["sender_address"].split('\n'):
+                story.append(Paragraph(line, normal_style))
+        if data["sender_email"]:
+            story.append(Paragraph(data["sender_email"], normal_style))
+
+        story.append(Spacer(1, 24))
+
+        # Date
+        story.append(Paragraph(data["date"], normal_style))
+        story.append(Spacer(1, 24))
+
+        # Recipient
+        if data["recipient_name"]:
+            story.append(Paragraph(data["recipient_name"], normal_style))
+        if data["recipient_address"]:
+            for line in data["recipient_address"].split('\n'):
+                story.append(Paragraph(line, normal_style))
+
+        story.append(Spacer(1, 24))
+
+        # Subject/RE
+        if data["subject"]:
+            story.append(Paragraph(f"<b>Subject:</b> {data['subject']}", normal_style))
+        if data["re_line"]:
+            story.append(Paragraph(f"<b>RE:</b> {data['re_line']}", normal_style))
+        if data["reference_number"]:
+            story.append(Paragraph(f"<b>Reference:</b> {data['reference_number']}", normal_style))
+
+        if data["subject"] or data["re_line"] or data["reference_number"]:
+            story.append(Spacer(1, 18))
+
+        # Salutation
+        salutation = f"Dear {data['recipient_name']}:" if data["recipient_name"] else "Dear Sir/Madam:"
+        story.append(Paragraph(salutation, normal_style))
+        story.append(Spacer(1, 12))
+
+        # Body - handle paragraphs
+        for para in data["content"].split('\n\n'):
+            if para.strip():
+                story.append(Paragraph(para.replace('\n', '<br/>'), normal_style))
+                story.append(Spacer(1, 12))
+
+        # Closing
+        story.append(Spacer(1, 24))
+        story.append(Paragraph("Sincerely,", normal_style))
+        story.append(Spacer(1, 36))
+        if data["sender_name"]:
+            story.append(Paragraph(data["sender_name"], normal_style))
+
+        doc.build(story)
+        return buffer.getvalue()
+
+    def _generate_docx(self, letter: Letter, data: Dict[str, Any]) -> bytes:
+        """Generate DOCX formatted letter using python-docx."""
+        try:
+            from docx import Document
+            from docx.shared import Pt, Inches
+            from docx.enum.text import WD_ALIGN_PARAGRAPH
+            from io import BytesIO
+        except ImportError:
+            logger.error("python-docx not installed - returning text fallback")
+            return self._format_letter_text(data).encode('utf-8')
+
+        document = Document()
+
+        # Set margins
+        for section in document.sections:
+            section.left_margin = Inches(1)
+            section.right_margin = Inches(1)
+            section.top_margin = Inches(1)
+            section.bottom_margin = Inches(1)
+
+        # Sender header
+        if data["sender_name"]:
+            p = document.add_paragraph()
+            run = p.add_run(data["sender_name"])
+            run.bold = True
+            run.font.size = Pt(12)
+
+        if data["sender_address"]:
+            for line in data["sender_address"].split('\n'):
+                p = document.add_paragraph(line)
+                p.paragraph_format.space_after = Pt(0)
+
+        if data["sender_email"]:
+            p = document.add_paragraph(data["sender_email"])
+            p.paragraph_format.space_after = Pt(0)
+
+        # Blank line
+        document.add_paragraph()
+
+        # Date
+        document.add_paragraph(data["date"])
+
+        # Blank line
+        document.add_paragraph()
+
+        # Recipient
+        if data["recipient_name"]:
+            document.add_paragraph(data["recipient_name"])
+        if data["recipient_address"]:
+            for line in data["recipient_address"].split('\n'):
+                p = document.add_paragraph(line)
+                p.paragraph_format.space_after = Pt(0)
+
+        # Blank line
+        document.add_paragraph()
+
+        # Subject/RE
+        if data["subject"]:
+            p = document.add_paragraph()
+            p.add_run("Subject: ").bold = True
+            p.add_run(data["subject"])
+
+        if data["re_line"]:
+            p = document.add_paragraph()
+            p.add_run("RE: ").bold = True
+            p.add_run(data["re_line"])
+
+        if data["reference_number"]:
+            p = document.add_paragraph()
+            p.add_run("Reference: ").bold = True
+            p.add_run(data["reference_number"])
+
+        if data["subject"] or data["re_line"] or data["reference_number"]:
+            document.add_paragraph()
+
+        # Salutation
+        salutation = f"Dear {data['recipient_name']}:" if data["recipient_name"] else "Dear Sir/Madam:"
+        document.add_paragraph(salutation)
+
+        # Blank line
+        document.add_paragraph()
+
+        # Body
+        for para in data["content"].split('\n\n'):
+            if para.strip():
+                p = document.add_paragraph(para.strip())
+                p.paragraph_format.space_after = Pt(12)
+
+        # Closing
+        document.add_paragraph()
+        document.add_paragraph("Sincerely,")
+        document.add_paragraph()
+        document.add_paragraph()
+
+        if data["sender_name"]:
+            document.add_paragraph(data["sender_name"])
+
+        # Save to buffer
+        buffer = BytesIO()
+        document.save(buffer)
+        return buffer.getvalue()
 
     async def _save_letter(self, letter: Letter, update: bool = False) -> None:
         """Save a letter to the database."""
