@@ -10,3 +10,6 @@ export { NodeSizeControls } from './NodeSizeControls';
 export { FilterControls } from './FilterControls';
 export { ScoringControls } from './ScoringControls';
 export { DataSourcesPanel } from './DataSourcesPanel';
+export { EgoMetricsPanel } from './EgoMetricsPanel';
+export { AssociationMatrix, MatrixControls } from './AssociationMatrix';
+export { TimeSlider } from './TimeSlider';

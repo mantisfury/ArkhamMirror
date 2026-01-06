@@ -13,7 +13,7 @@ import { useToast } from '../../context/ToastContext';
 import { useFetch } from '../../hooks/useFetch';
 import { useGraphSettings } from './hooks/useGraphSettings';
 import { useUrlParams } from './hooks/useUrlParams';
-import { GraphControls, DataSourcesPanel, LayoutModeControls } from './components';
+import { GraphControls, DataSourcesPanel, LayoutModeControls, AssociationMatrix, MatrixControls } from './components';
 import { EgoMetricsPanel } from './components/EgoMetricsPanel';
 import { fetchScores, type EntityScore } from './api';
 import { getRelationshipStyle, extractRelationshipTypes } from './constants/relationshipStyles';
@@ -104,7 +104,7 @@ const ENTITY_TYPE_COLORS: Record<string, string> = {
   unknown: '#718096',
 };
 
-type TabId = 'graph' | 'controls' | 'sources';
+type TabId = 'graph' | 'matrix' | 'controls' | 'sources';
 
 export function GraphPage() {
   const { toast } = useToast();
@@ -136,6 +136,15 @@ export function GraphPage() {
   // Ego network focus mode state
   const [egoFocusEntity, setEgoFocusEntity] = useState<string | null>(null);
   const [showEgoPanel, setShowEgoPanel] = useState(false);
+
+  // Matrix view state
+  const [matrixSortBy, setMatrixSortBy] = useState<'alphabetical' | 'degree' | 'cluster' | 'type'>('degree');
+  const [matrixColorScale, setMatrixColorScale] = useState<'linear' | 'log' | 'sqrt'>('sqrt');
+  const [matrixCellSize, setMatrixCellSize] = useState(20);
+  const [matrixShowLabels, setMatrixShowLabels] = useState(true);
+  const [matrixRowType, setMatrixRowType] = useState('');
+  const [matrixColType, setMatrixColType] = useState('');
+  const [matrixBipartiteMode, setMatrixBipartiteMode] = useState(false);
 
   // Container ref for responsive sizing
   const containerRef = useRef<HTMLDivElement>(null);
@@ -179,8 +188,8 @@ export function GraphPage() {
     activeTab,
     selectedNode?.id || undefined,
     (tab: string) => {
-      if (tab === 'graph' || tab === 'controls' || tab === 'sources') {
-        setActiveTab(tab);
+      if (tab === 'graph' || tab === 'matrix' || tab === 'controls' || tab === 'sources') {
+        setActiveTab(tab as TabId);
       }
     },
     (nodeId) => {
@@ -998,6 +1007,13 @@ export function GraphPage() {
           Graph View
         </button>
         <button
+          className={`graph-tab ${activeTab === 'matrix' ? 'active' : ''}`}
+          onClick={() => setActiveTab('matrix')}
+        >
+          <Icon name="Grid3X3" size={16} />
+          Matrix View
+        </button>
+        <button
           className={`graph-tab ${activeTab === 'controls' ? 'active' : ''}`}
           onClick={() => setActiveTab('controls')}
         >
@@ -1015,7 +1031,7 @@ export function GraphPage() {
 
       <div className="graph-layout">
         {/* Sidebar - content changes based on tab */}
-        <aside className={`graph-sidebar ${activeTab !== 'graph' ? 'wide' : ''} ${sidebarCollapsed ? 'collapsed' : ''}`}>
+        <aside className={`graph-sidebar ${(activeTab !== 'graph' && activeTab !== 'matrix') ? 'wide' : ''} ${sidebarCollapsed ? 'collapsed' : ''}`}>
           {/* Collapse toggle button */}
           <button
             className="sidebar-collapse-toggle"
@@ -1027,7 +1043,25 @@ export function GraphPage() {
 
           {/* Sidebar content - hidden when collapsed */}
           <div className="sidebar-content">
-          {activeTab === 'controls' ? (
+          {activeTab === 'matrix' ? (
+            <MatrixControls
+              sortBy={matrixSortBy}
+              onSortByChange={setMatrixSortBy}
+              colorScale={matrixColorScale}
+              onColorScaleChange={setMatrixColorScale}
+              cellSize={matrixCellSize}
+              onCellSizeChange={setMatrixCellSize}
+              showLabels={matrixShowLabels}
+              onShowLabelsChange={setMatrixShowLabels}
+              entityTypes={entityTypes}
+              rowEntityType={matrixRowType}
+              onRowEntityTypeChange={setMatrixRowType}
+              colEntityType={matrixColType}
+              onColEntityTypeChange={setMatrixColType}
+              bipartiteMode={matrixBipartiteMode}
+              onBipartiteModeChange={setMatrixBipartiteMode}
+            />
+          ) : activeTab === 'controls' ? (
             <>
               <LayoutModeControls
                 settings={layout}
@@ -1178,12 +1212,70 @@ export function GraphPage() {
             </div>
           )}
 
-          {loading ? (
+          {/* Matrix View */}
+          {activeTab === 'matrix' && (
+            <div className="matrix-view-container">
+              {loading ? (
+                <div className="graph-loading">
+                  <Icon name="Loader2" size={48} className="spin" />
+                  <span>Loading data...</span>
+                </div>
+              ) : error ? (
+                <div className="graph-error">
+                  <Icon name="AlertCircle" size={48} />
+                  <span>Failed to load data</span>
+                  <button className="btn btn-secondary" onClick={() => refetch()}>
+                    Retry
+                  </button>
+                </div>
+              ) : forceGraphData.nodes.length > 0 ? (
+                <AssociationMatrix
+                  nodes={forceGraphData.nodes}
+                  edges={forceGraphData.links}
+                  sortBy={matrixSortBy}
+                  colorScale={matrixColorScale}
+                  cellSize={matrixCellSize}
+                  showLabels={matrixShowLabels}
+                  rowEntityType={matrixRowType}
+                  colEntityType={matrixColType}
+                  bipartiteMode={matrixBipartiteMode}
+                  bipartiteRowType={matrixRowType}
+                  bipartiteColType={matrixColType}
+                  onCellClick={(rowId, colId) => {
+                    // Highlight both nodes in graph view
+                    setHighlightedPath(new Set([rowId, colId]));
+                    toast.info(`Connection: ${rowId} - ${colId}`);
+                  }}
+                  onNodeClick={(nodeId) => {
+                    const node = forceGraphData.nodes.find(n => n.id === nodeId);
+                    if (node) {
+                      setSelectedNode(node);
+                      setActiveTab('graph');
+                    }
+                  }}
+                  highlightedNodes={highlightedPath}
+                />
+              ) : (
+                <div className="matrix-empty">
+                  <Icon name="Grid3X3" size={64} />
+                  <h3>No Data</h3>
+                  <p>Build a graph to view the association matrix</p>
+                  <button className="btn btn-primary" onClick={buildGraph}>
+                    <Icon name="GitBranch" size={16} />
+                    Build Graph
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Graph View */}
+          {activeTab !== 'matrix' && loading ? (
             <div className="graph-loading">
               <Icon name="Loader2" size={48} className="spin" />
               <span>Loading graph...</span>
             </div>
-          ) : error ? (
+          ) : activeTab !== 'matrix' && error ? (
             <div className="graph-error">
               <Icon name="AlertCircle" size={48} />
               <span>Failed to load graph</span>
@@ -1191,7 +1283,7 @@ export function GraphPage() {
                 Retry
               </button>
             </div>
-          ) : forceGraphData.nodes.length > 0 ? (
+          ) : activeTab !== 'matrix' && forceGraphData.nodes.length > 0 ? (
             <div className="graph-visualization">
               <ForceGraph2D
                 graphData={forceGraphData}
@@ -1262,7 +1354,7 @@ export function GraphPage() {
                 onEngineStop={() => graphRef.current?.zoomToFit(400, 50)}
               />
             </div>
-          ) : (
+          ) : activeTab !== 'matrix' ? (
             <div className="graph-empty">
               <Icon name="Network" size={64} />
               <h3>No Graph Data</h3>
@@ -1272,7 +1364,7 @@ export function GraphPage() {
                 Build Graph
               </button>
             </div>
-          )}
+          ) : null}
         </main>
       </div>
     </div>
