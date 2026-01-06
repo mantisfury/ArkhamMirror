@@ -5,6 +5,8 @@ Data export for ArkhamFrame - export documents, entities, claims, and
 analysis results in various formats.
 """
 
+import csv
+import io
 import json
 import logging
 import os
@@ -12,6 +14,8 @@ import tempfile
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
+
+import httpx
 
 from arkham_frame import ArkhamShard
 
@@ -30,13 +34,16 @@ from .models import (
 
 logger = logging.getLogger(__name__)
 
+# Base URL for internal API calls
+INTERNAL_API_BASE = "http://127.0.0.1:8100"
+
 
 class ExportShard(ArkhamShard):
     """
     Export Shard - Export data in various formats.
 
     This shard provides:
-    - Multi-format export (JSON, CSV, PDF, DOCX)
+    - Multi-format export (JSON, CSV, PDF, XLSX)
     - Export job management with status tracking
     - Multiple export targets (documents, entities, claims, etc.)
     - File management with expiration
@@ -45,7 +52,7 @@ class ExportShard(ArkhamShard):
 
     name = "export"
     version = "0.1.0"
-    description = "Data export in multiple formats (JSON, CSV, PDF, DOCX)"
+    description = "Data export in multiple formats (JSON, CSV, PDF, XLSX)"
 
     def __init__(self):
         super().__init__()  # Auto-loads manifest from shard.yaml
@@ -378,7 +385,7 @@ class ExportShard(ArkhamShard):
                 description="Portable Document Format - formatted documents",
                 file_extension=".pdf",
                 mime_type="application/pdf",
-                placeholder=True,
+                placeholder=False,  # Now implemented
             ),
             FormatInfo(
                 format=ExportFormat.DOCX,
@@ -386,7 +393,7 @@ class ExportShard(ArkhamShard):
                 description="Microsoft Word Document",
                 file_extension=".docx",
                 mime_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                placeholder=True,
+                placeholder=True,  # Not yet implemented
             ),
             FormatInfo(
                 format=ExportFormat.XLSX,
@@ -394,7 +401,7 @@ class ExportShard(ArkhamShard):
                 description="Microsoft Excel Spreadsheet",
                 file_extension=".xlsx",
                 mime_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                placeholder=True,
+                placeholder=False,  # Now implemented
             ),
         ]
 
@@ -405,25 +412,25 @@ class ExportShard(ArkhamShard):
                 target=ExportTarget.DOCUMENTS,
                 name="Documents",
                 description="Export document records with text and metadata",
-                available_formats=[ExportFormat.JSON, ExportFormat.CSV],
+                available_formats=[ExportFormat.JSON, ExportFormat.CSV, ExportFormat.XLSX],
             ),
             TargetInfo(
                 target=ExportTarget.ENTITIES,
                 name="Entities",
                 description="Export extracted entities with relationships",
-                available_formats=[ExportFormat.JSON, ExportFormat.CSV],
+                available_formats=[ExportFormat.JSON, ExportFormat.CSV, ExportFormat.XLSX],
             ),
             TargetInfo(
                 target=ExportTarget.CLAIMS,
                 name="Claims",
                 description="Export claims with evidence and verification status",
-                available_formats=[ExportFormat.JSON, ExportFormat.CSV, ExportFormat.PDF],
+                available_formats=[ExportFormat.JSON, ExportFormat.CSV, ExportFormat.PDF, ExportFormat.XLSX],
             ),
             TargetInfo(
                 target=ExportTarget.TIMELINE,
                 name="Timeline",
                 description="Export timeline events in chronological order",
-                available_formats=[ExportFormat.JSON, ExportFormat.CSV],
+                available_formats=[ExportFormat.JSON, ExportFormat.CSV, ExportFormat.XLSX],
             ),
             TargetInfo(
                 target=ExportTarget.GRAPH,
@@ -435,14 +442,14 @@ class ExportShard(ArkhamShard):
                 target=ExportTarget.MATRIX,
                 name="ACH Matrix",
                 description="Export ACH matrix with hypotheses and evidence",
-                available_formats=[ExportFormat.JSON, ExportFormat.CSV, ExportFormat.PDF],
+                available_formats=[ExportFormat.JSON, ExportFormat.CSV, ExportFormat.PDF, ExportFormat.XLSX],
             ),
         ]
 
     # === Private Helper Methods ===
 
     async def _process_job(self, job: ExportJob) -> ExportResult:
-        """Process an export job (stub implementation)."""
+        """Process an export job."""
         import time
         start_time = time.time()
 
@@ -459,7 +466,7 @@ class ExportShard(ArkhamShard):
                     source=self.name,
                 )
 
-            # Generate stub export file
+            # Generate export file with real data
             file_path, record_count = await self._generate_export_file(job)
 
             # Update job
@@ -529,30 +536,650 @@ class ExportShard(ArkhamShard):
             )
 
     async def _generate_export_file(self, job: ExportJob) -> tuple[Optional[str], int]:
-        """Generate export file (stub implementation)."""
-        # Stub: Create empty/placeholder files
+        """Generate export file with real data."""
+        # Fetch data based on target
+        data = await self._fetch_data(job.target, job.filters, job.options)
+        record_count = len(data) if isinstance(data, list) else 1
+
+        # Generate file based on format
         filename = f"{job.id}_{job.target.value}.{self._get_file_extension(job.format)}"
         file_path = os.path.join(self._export_dir, filename)
 
         if job.format == ExportFormat.JSON:
-            data = {"target": job.target.value, "records": [], "metadata": {"job_id": job.id}}
-            with open(file_path, "w") as f:
-                json.dump(data, f, indent=2)
-            return file_path, 0
-
+            await self._generate_json(file_path, data, job)
         elif job.format == ExportFormat.CSV:
-            with open(file_path, "w") as f:
-                f.write("id,name,type,created_at\n")
-                f.write("# No data - placeholder export\n")
-            return file_path, 0
-
-        elif job.format in [ExportFormat.PDF, ExportFormat.DOCX, ExportFormat.XLSX]:
-            # Placeholder for PDF/DOCX/XLSX
+            await self._generate_csv(file_path, data, job)
+        elif job.format == ExportFormat.PDF:
+            await self._generate_pdf(file_path, data, job)
+        elif job.format == ExportFormat.XLSX:
+            await self._generate_xlsx(file_path, data, job)
+        elif job.format == ExportFormat.DOCX:
+            # DOCX not yet implemented
             with open(file_path, "wb") as f:
-                f.write(b"Placeholder export file - not yet implemented")
+                f.write(b"DOCX export not yet implemented")
             return file_path, 0
 
-        return None, 0
+        return file_path, record_count
+
+    async def _fetch_data(
+        self,
+        target: ExportTarget,
+        filters: Dict[str, Any],
+        options: Optional[ExportOptions],
+    ) -> List[Dict[str, Any]]:
+        """Fetch data from appropriate shard API."""
+        try:
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                if target == ExportTarget.DOCUMENTS:
+                    return await self._fetch_documents(client, filters, options)
+                elif target == ExportTarget.ENTITIES:
+                    return await self._fetch_entities(client, filters, options)
+                elif target == ExportTarget.CLAIMS:
+                    return await self._fetch_claims(client, filters, options)
+                elif target == ExportTarget.TIMELINE:
+                    return await self._fetch_timeline(client, filters, options)
+                elif target == ExportTarget.GRAPH:
+                    return await self._fetch_graph(client, filters, options)
+                elif target == ExportTarget.MATRIX:
+                    return await self._fetch_ach_matrices(client, filters, options)
+                else:
+                    logger.warning(f"Unknown export target: {target}")
+                    return []
+        except Exception as e:
+            logger.error(f"Failed to fetch data for {target}: {e}")
+            raise
+
+    async def _fetch_documents(
+        self,
+        client: httpx.AsyncClient,
+        filters: Dict[str, Any],
+        options: Optional[ExportOptions],
+    ) -> List[Dict[str, Any]]:
+        """Fetch documents from the documents shard."""
+        documents = []
+        page = 1
+        page_size = 100
+        max_records = options.max_records if options else None
+
+        while True:
+            params = {"page": page, "page_size": page_size}
+            if filters.get("project_id"):
+                params["project_id"] = filters["project_id"]
+            if filters.get("status"):
+                params["status"] = filters["status"]
+
+            response = await client.get(f"{INTERNAL_API_BASE}/api/documents/items", params=params)
+            if response.status_code != 200:
+                logger.error(f"Documents API error: {response.status_code}")
+                break
+
+            data = response.json()
+            items = data.get("items", [])
+            if not items:
+                break
+
+            documents.extend(items)
+
+            # Check if we've reached max records
+            if max_records and len(documents) >= max_records:
+                documents = documents[:max_records]
+                break
+
+            # Check if there are more pages
+            if len(items) < page_size:
+                break
+
+            page += 1
+
+        return documents
+
+    async def _fetch_entities(
+        self,
+        client: httpx.AsyncClient,
+        filters: Dict[str, Any],
+        options: Optional[ExportOptions],
+    ) -> List[Dict[str, Any]]:
+        """Fetch entities from the entities shard."""
+        entities = []
+        page = 1
+        page_size = 100
+        max_records = options.max_records if options else None
+
+        while True:
+            params = {"page": page, "page_size": page_size}
+            if filters.get("entity_type"):
+                params["filter"] = filters["entity_type"]
+            if options and options.entity_types:
+                params["filter"] = options.entity_types[0]  # API only supports one type
+
+            response = await client.get(f"{INTERNAL_API_BASE}/api/entities/items", params=params)
+            if response.status_code != 200:
+                logger.error(f"Entities API error: {response.status_code}")
+                break
+
+            data = response.json()
+            items = data.get("items", [])
+            if not items:
+                break
+
+            entities.extend(items)
+
+            if max_records and len(entities) >= max_records:
+                entities = entities[:max_records]
+                break
+
+            if len(items) < page_size:
+                break
+
+            page += 1
+
+        # Optionally fetch relationships for each entity
+        if options and options.include_relationships:
+            for entity in entities:
+                try:
+                    rel_response = await client.get(
+                        f"{INTERNAL_API_BASE}/api/entities/{entity['id']}/relationships"
+                    )
+                    if rel_response.status_code == 200:
+                        entity["relationships"] = rel_response.json()
+                except Exception as e:
+                    logger.warning(f"Failed to fetch relationships for entity {entity['id']}: {e}")
+
+        return entities
+
+    async def _fetch_claims(
+        self,
+        client: httpx.AsyncClient,
+        filters: Dict[str, Any],
+        options: Optional[ExportOptions],
+    ) -> List[Dict[str, Any]]:
+        """Fetch claims from the claims shard."""
+        claims = []
+        page = 1
+        page_size = 100
+        max_records = options.max_records if options else None
+
+        while True:
+            params = {"page": page, "page_size": page_size}
+            if filters.get("status"):
+                params["status"] = filters["status"]
+            if filters.get("document_id"):
+                params["document_id"] = filters["document_id"]
+
+            response = await client.get(f"{INTERNAL_API_BASE}/api/claims/", params=params)
+            if response.status_code != 200:
+                logger.error(f"Claims API error: {response.status_code}")
+                break
+
+            data = response.json()
+            items = data.get("items", [])
+            if not items:
+                break
+
+            claims.extend(items)
+
+            if max_records and len(claims) >= max_records:
+                claims = claims[:max_records]
+                break
+
+            if len(items) < page_size:
+                break
+
+            page += 1
+
+        # Fetch evidence for each claim if needed
+        if options and options.include_relationships:
+            for claim in claims:
+                try:
+                    ev_response = await client.get(
+                        f"{INTERNAL_API_BASE}/api/claims/{claim['id']}/evidence"
+                    )
+                    if ev_response.status_code == 200:
+                        claim["evidence"] = ev_response.json()
+                except Exception as e:
+                    logger.warning(f"Failed to fetch evidence for claim {claim['id']}: {e}")
+
+        return claims
+
+    async def _fetch_timeline(
+        self,
+        client: httpx.AsyncClient,
+        filters: Dict[str, Any],
+        options: Optional[ExportOptions],
+    ) -> List[Dict[str, Any]]:
+        """Fetch timeline events from the timeline shard."""
+        params = {"limit": 1000, "offset": 0}
+
+        if options:
+            if options.date_range_start:
+                params["start_date"] = options.date_range_start.isoformat()
+            if options.date_range_end:
+                params["end_date"] = options.date_range_end.isoformat()
+
+        max_records = options.max_records if options else None
+        if max_records:
+            params["limit"] = min(max_records, 1000)
+
+        response = await client.get(f"{INTERNAL_API_BASE}/api/timeline/events", params=params)
+        if response.status_code != 200:
+            logger.error(f"Timeline API error: {response.status_code}")
+            return []
+
+        data = response.json()
+        events = data.get("events", [])
+
+        return events
+
+    async def _fetch_graph(
+        self,
+        client: httpx.AsyncClient,
+        filters: Dict[str, Any],
+        options: Optional[ExportOptions],
+    ) -> Dict[str, Any]:
+        """Fetch graph data from the graph shard."""
+        project_id = filters.get("project_id", "default")
+
+        response = await client.get(f"{INTERNAL_API_BASE}/api/graph/{project_id}")
+        if response.status_code != 200:
+            logger.error(f"Graph API error: {response.status_code}")
+            return {"nodes": [], "edges": []}
+
+        return response.json()
+
+    async def _fetch_ach_matrices(
+        self,
+        client: httpx.AsyncClient,
+        filters: Dict[str, Any],
+        options: Optional[ExportOptions],
+    ) -> List[Dict[str, Any]]:
+        """Fetch ACH matrices from the ACH shard."""
+        params = {}
+        if filters.get("project_id"):
+            params["project_id"] = filters["project_id"]
+
+        response = await client.get(f"{INTERNAL_API_BASE}/api/ach/matrices", params=params)
+        if response.status_code != 200:
+            logger.error(f"ACH API error: {response.status_code}")
+            return []
+
+        data = response.json()
+        matrices = data.get("matrices", [])
+
+        # Fetch full details for each matrix
+        detailed_matrices = []
+        for matrix_summary in matrices:
+            try:
+                detail_response = await client.get(
+                    f"{INTERNAL_API_BASE}/api/ach/matrix/{matrix_summary['id']}"
+                )
+                if detail_response.status_code == 200:
+                    detailed_matrices.append(detail_response.json())
+                else:
+                    detailed_matrices.append(matrix_summary)
+            except Exception as e:
+                logger.warning(f"Failed to fetch ACH matrix {matrix_summary['id']}: {e}")
+                detailed_matrices.append(matrix_summary)
+
+        return detailed_matrices
+
+    # === Format Generators ===
+
+    async def _generate_json(
+        self,
+        file_path: str,
+        data: Any,
+        job: ExportJob,
+    ) -> None:
+        """Generate JSON export file."""
+        output = {
+            "export_info": {
+                "job_id": job.id,
+                "target": job.target.value,
+                "exported_at": datetime.utcnow().isoformat(),
+                "record_count": len(data) if isinstance(data, list) else 1,
+            },
+            "data": data,
+        }
+
+        if job.options and job.options.include_metadata:
+            output["metadata"] = {
+                "filters": job.filters,
+                "options": {
+                    "include_metadata": job.options.include_metadata,
+                    "include_relationships": job.options.include_relationships,
+                },
+            }
+
+        with open(file_path, "w", encoding="utf-8") as f:
+            json.dump(output, f, indent=2, default=str, ensure_ascii=False)
+
+    async def _generate_csv(
+        self,
+        file_path: str,
+        data: Any,
+        job: ExportJob,
+    ) -> None:
+        """Generate CSV export file."""
+        if not isinstance(data, list) or not data:
+            # Write empty CSV with header comment
+            with open(file_path, "w", encoding="utf-8") as f:
+                f.write("# No data to export\n")
+            return
+
+        # Flatten nested structures if needed
+        flat_data = self._flatten_for_csv(data)
+
+        # Get all unique keys across all records
+        all_keys = set()
+        for record in flat_data:
+            all_keys.update(record.keys())
+        fieldnames = sorted(all_keys)
+
+        with open(file_path, "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
+            writer.writeheader()
+            writer.writerows(flat_data)
+
+    def _flatten_for_csv(self, data: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Flatten nested structures for CSV export."""
+        flattened = []
+        for record in data:
+            flat_record = {}
+            for key, value in record.items():
+                if isinstance(value, (list, dict)):
+                    # Convert complex types to JSON strings
+                    flat_record[key] = json.dumps(value, default=str)
+                else:
+                    flat_record[key] = value
+            flattened.append(flat_record)
+        return flattened
+
+    async def _generate_pdf(
+        self,
+        file_path: str,
+        data: Any,
+        job: ExportJob,
+    ) -> None:
+        """Generate PDF export file using reportlab."""
+        try:
+            from reportlab.lib import colors
+            from reportlab.lib.pagesizes import letter
+            from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+            from reportlab.lib.units import inch
+            from reportlab.platypus import (
+                SimpleDocTemplate,
+                Paragraph,
+                Spacer,
+                Table,
+                TableStyle,
+                PageBreak,
+            )
+        except ImportError:
+            logger.error("reportlab not installed")
+            with open(file_path, "wb") as f:
+                f.write(b"PDF generation requires reportlab library")
+            return
+
+        doc = SimpleDocTemplate(file_path, pagesize=letter)
+        styles = getSampleStyleSheet()
+        story = []
+
+        # Title
+        title_style = ParagraphStyle(
+            "CustomTitle",
+            parent=styles["Heading1"],
+            fontSize=18,
+            spaceAfter=20,
+        )
+        story.append(Paragraph(f"Export: {job.target.value.title()}", title_style))
+        story.append(Spacer(1, 12))
+
+        # Export info
+        info_style = styles["Normal"]
+        story.append(Paragraph(f"<b>Export Date:</b> {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}", info_style))
+        story.append(Paragraph(f"<b>Job ID:</b> {job.id[:8]}...", info_style))
+        record_count = len(data) if isinstance(data, list) else 1
+        story.append(Paragraph(f"<b>Records:</b> {record_count}", info_style))
+        story.append(Spacer(1, 20))
+
+        # Content based on target type
+        if job.target == ExportTarget.CLAIMS:
+            self._add_claims_to_pdf(story, data, styles)
+        elif job.target == ExportTarget.MATRIX:
+            self._add_matrices_to_pdf(story, data, styles)
+        elif job.target == ExportTarget.DOCUMENTS:
+            self._add_documents_to_pdf(story, data, styles)
+        elif job.target == ExportTarget.ENTITIES:
+            self._add_entities_to_pdf(story, data, styles)
+        elif job.target == ExportTarget.TIMELINE:
+            self._add_timeline_to_pdf(story, data, styles)
+        else:
+            # Generic list export
+            self._add_generic_list_to_pdf(story, data, styles)
+
+        doc.build(story)
+
+    def _add_claims_to_pdf(self, story, data, styles):
+        """Add claims to PDF."""
+        from reportlab.platypus import Paragraph, Spacer, Table, TableStyle
+        from reportlab.lib import colors
+
+        heading_style = styles["Heading2"]
+        normal_style = styles["Normal"]
+
+        if not isinstance(data, list):
+            data = [data]
+
+        for i, claim in enumerate(data):
+            story.append(Paragraph(f"Claim {i + 1}", heading_style))
+            story.append(Spacer(1, 6))
+
+            # Claim text
+            claim_text = claim.get("text", "N/A")
+            story.append(Paragraph(f"<b>Text:</b> {claim_text[:500]}...", normal_style))
+
+            # Status and type
+            story.append(Paragraph(f"<b>Status:</b> {claim.get('status', 'N/A')}", normal_style))
+            story.append(Paragraph(f"<b>Type:</b> {claim.get('claim_type', 'N/A')}", normal_style))
+            story.append(Paragraph(f"<b>Confidence:</b> {claim.get('confidence', 0):.2f}", normal_style))
+
+            # Evidence counts
+            story.append(Paragraph(
+                f"<b>Evidence:</b> {claim.get('evidence_count', 0)} total "
+                f"({claim.get('supporting_count', 0)} supporting, {claim.get('refuting_count', 0)} refuting)",
+                normal_style
+            ))
+
+            story.append(Spacer(1, 12))
+
+    def _add_matrices_to_pdf(self, story, data, styles):
+        """Add ACH matrices to PDF."""
+        from reportlab.platypus import Paragraph, Spacer, Table, TableStyle
+        from reportlab.lib import colors
+
+        heading_style = styles["Heading2"]
+        normal_style = styles["Normal"]
+
+        if not isinstance(data, list):
+            data = [data]
+
+        for matrix in data:
+            story.append(Paragraph(f"Matrix: {matrix.get('title', 'Untitled')}", heading_style))
+            story.append(Spacer(1, 6))
+
+            story.append(Paragraph(f"<b>Description:</b> {matrix.get('description', 'N/A')}", normal_style))
+            story.append(Paragraph(f"<b>Status:</b> {matrix.get('status', 'N/A')}", normal_style))
+
+            # Hypotheses
+            hypotheses = matrix.get("hypotheses", [])
+            if hypotheses:
+                story.append(Spacer(1, 6))
+                story.append(Paragraph("<b>Hypotheses:</b>", normal_style))
+                for h in hypotheses:
+                    story.append(Paragraph(f"  - {h.get('title', 'Untitled')}", normal_style))
+
+            # Evidence
+            evidence = matrix.get("evidence", [])
+            if evidence:
+                story.append(Spacer(1, 6))
+                story.append(Paragraph(f"<b>Evidence Items:</b> {len(evidence)}", normal_style))
+
+            story.append(Spacer(1, 12))
+
+    def _add_documents_to_pdf(self, story, data, styles):
+        """Add documents to PDF."""
+        from reportlab.platypus import Paragraph, Spacer
+
+        heading_style = styles["Heading2"]
+        normal_style = styles["Normal"]
+
+        if not isinstance(data, list):
+            data = [data]
+
+        for i, doc in enumerate(data[:50]):  # Limit to 50 for PDF
+            story.append(Paragraph(f"Document {i + 1}: {doc.get('title', doc.get('filename', 'Untitled'))}", heading_style))
+            story.append(Spacer(1, 6))
+
+            story.append(Paragraph(f"<b>Filename:</b> {doc.get('filename', 'N/A')}", normal_style))
+            story.append(Paragraph(f"<b>Type:</b> {doc.get('file_type', 'N/A')}", normal_style))
+            story.append(Paragraph(f"<b>Status:</b> {doc.get('status', 'N/A')}", normal_style))
+            story.append(Paragraph(f"<b>Pages:</b> {doc.get('page_count', 0)}", normal_style))
+            story.append(Paragraph(f"<b>Entities:</b> {doc.get('entity_count', 0)}", normal_style))
+
+            story.append(Spacer(1, 12))
+
+    def _add_entities_to_pdf(self, story, data, styles):
+        """Add entities to PDF."""
+        from reportlab.platypus import Paragraph, Spacer
+
+        heading_style = styles["Heading2"]
+        normal_style = styles["Normal"]
+
+        if not isinstance(data, list):
+            data = [data]
+
+        # Group by entity type
+        by_type = {}
+        for entity in data:
+            etype = entity.get("entity_type", "UNKNOWN")
+            if etype not in by_type:
+                by_type[etype] = []
+            by_type[etype].append(entity)
+
+        for etype, entities in by_type.items():
+            story.append(Paragraph(f"{etype} ({len(entities)} entities)", heading_style))
+            story.append(Spacer(1, 6))
+
+            for entity in entities[:20]:  # Limit per type
+                story.append(Paragraph(f"  - {entity.get('name', 'N/A')}", normal_style))
+
+            if len(entities) > 20:
+                story.append(Paragraph(f"  ... and {len(entities) - 20} more", normal_style))
+
+            story.append(Spacer(1, 12))
+
+    def _add_timeline_to_pdf(self, story, data, styles):
+        """Add timeline events to PDF."""
+        from reportlab.platypus import Paragraph, Spacer
+
+        heading_style = styles["Heading2"]
+        normal_style = styles["Normal"]
+
+        story.append(Paragraph("Timeline Events", heading_style))
+        story.append(Spacer(1, 6))
+
+        if not isinstance(data, list):
+            data = [data]
+
+        for event in data[:100]:  # Limit for PDF
+            date_str = event.get("date_start", "Unknown date")
+            text = event.get("text", "No description")[:200]
+            story.append(Paragraph(f"<b>{date_str}:</b> {text}", normal_style))
+            story.append(Spacer(1, 6))
+
+    def _add_generic_list_to_pdf(self, story, data, styles):
+        """Add generic list data to PDF."""
+        from reportlab.platypus import Paragraph, Spacer
+
+        normal_style = styles["Normal"]
+
+        if not isinstance(data, list):
+            data = [data]
+
+        for i, item in enumerate(data[:100]):  # Limit
+            if isinstance(item, dict):
+                story.append(Paragraph(f"<b>Item {i + 1}:</b>", normal_style))
+                for key, value in item.items():
+                    if not isinstance(value, (list, dict)):
+                        story.append(Paragraph(f"  {key}: {value}", normal_style))
+                story.append(Spacer(1, 6))
+
+    async def _generate_xlsx(
+        self,
+        file_path: str,
+        data: Any,
+        job: ExportJob,
+    ) -> None:
+        """Generate XLSX export file using openpyxl."""
+        try:
+            from openpyxl import Workbook
+            from openpyxl.styles import Font, Alignment, PatternFill
+        except ImportError:
+            logger.error("openpyxl not installed")
+            with open(file_path, "wb") as f:
+                f.write(b"XLSX generation requires openpyxl library")
+            return
+
+        wb = Workbook()
+        ws = wb.active
+        ws.title = job.target.value.title()
+
+        # Style for headers
+        header_font = Font(bold=True)
+        header_fill = PatternFill(start_color="DDDDDD", end_color="DDDDDD", fill_type="solid")
+
+        if not isinstance(data, list):
+            data = [data]
+
+        if not data:
+            ws["A1"] = "No data to export"
+            wb.save(file_path)
+            return
+
+        # Flatten data for spreadsheet
+        flat_data = self._flatten_for_csv(data)
+
+        # Get all unique keys
+        all_keys = set()
+        for record in flat_data:
+            all_keys.update(record.keys())
+        fieldnames = sorted(all_keys)
+
+        # Write headers
+        for col, header in enumerate(fieldnames, 1):
+            cell = ws.cell(row=1, column=col, value=header)
+            cell.font = header_font
+            cell.fill = header_fill
+
+        # Write data
+        for row_idx, record in enumerate(flat_data, 2):
+            for col_idx, header in enumerate(fieldnames, 1):
+                value = record.get(header, "")
+                # Truncate very long strings
+                if isinstance(value, str) and len(value) > 32000:
+                    value = value[:32000] + "..."
+                ws.cell(row=row_idx, column=col_idx, value=value)
+
+        # Auto-adjust column widths (approximate)
+        for col_idx, header in enumerate(fieldnames, 1):
+            max_length = len(header)
+            for row in range(2, min(len(flat_data) + 2, 100)):
+                cell_value = ws.cell(row=row, column=col_idx).value
+                if cell_value:
+                    max_length = max(max_length, min(len(str(cell_value)), 50))
+            ws.column_dimensions[ws.cell(row=1, column=col_idx).column_letter].width = max_length + 2
+
+        wb.save(file_path)
 
     def _get_file_extension(self, format: ExportFormat) -> str:
         """Get file extension for format."""

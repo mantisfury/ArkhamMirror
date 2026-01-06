@@ -2,20 +2,22 @@
 Templates Shard - Main Implementation
 
 Provides template management, versioning, and rendering capabilities.
+Uses PostgreSQL for persistence following the ACH shard pattern.
 """
 
-import hashlib
+import json
 import logging
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
-from jinja2 import Environment, Template as Jinja2Template, TemplateSyntaxError, meta
+from jinja2 import Environment, TemplateSyntaxError, meta
 from arkham_frame import ArkhamShard
 
 from .models import (
     OutputFormat,
     PlaceholderWarning,
+    PlaceholderDataType,
     Template,
     TemplateCreate,
     TemplateFilter,
@@ -31,6 +33,20 @@ from .models import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _parse_json_field(value: Any, default: Any = None) -> Any:
+    """Parse a JSON field that may already be parsed by the database driver."""
+    if value is None:
+        return default if default is not None else []
+    if isinstance(value, (list, dict)):
+        return value  # Already parsed by PostgreSQL JSONB
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except json.JSONDecodeError:
+            return default if default is not None else []
+    return default if default is not None else []
 
 
 class TemplatesShard(ArkhamShard):
@@ -65,10 +81,6 @@ class TemplatesShard(ArkhamShard):
         self._event_bus = None
         self._storage = None
         self._jinja_env = None
-
-        # In-memory caches (production would use database)
-        self._templates: Dict[str, Template] = {}
-        self._versions: Dict[str, List[TemplateVersion]] = {}
         self._render_count = 0
 
     async def initialize(self, frame) -> None:
@@ -107,10 +119,6 @@ class TemplatesShard(ArkhamShard):
 
     async def shutdown(self) -> None:
         """Clean up resources."""
-        # Clear caches
-        self._templates.clear()
-        self._versions.clear()
-
         self._db = None
         self._event_bus = None
         self._storage = None
@@ -155,6 +163,8 @@ class TemplatesShard(ArkhamShard):
             detected = self._detect_placeholders(template_data.content)
             template_data.placeholders = detected
 
+        now = datetime.utcnow()
+
         # Create template
         template = Template(
             id=f"tpl_{uuid4().hex[:12]}",
@@ -166,12 +176,14 @@ class TemplatesShard(ArkhamShard):
             version=1,
             is_active=template_data.is_active,
             metadata=template_data.metadata,
+            created_at=now,
+            updated_at=now,
             created_by=created_by,
             updated_by=created_by,
         )
 
-        # Store in cache (production: database)
-        self._templates[template.id] = template
+        # Save to database
+        await self._save_template(template)
 
         # Create initial version
         await self._create_version_record(
@@ -205,8 +217,7 @@ class TemplatesShard(ArkhamShard):
         if not self._db:
             raise RuntimeError("Shard not initialized")
 
-        # Get from cache (production: database query)
-        return self._templates.get(template_id)
+        return await self._load_template(template_id)
 
     async def list_templates(
         self,
@@ -232,33 +243,57 @@ class TemplatesShard(ArkhamShard):
         if not self._db:
             raise RuntimeError("Shard not initialized")
 
-        # Get all templates (production: database query)
-        templates = list(self._templates.values())
+        # Build WHERE clause and parameters
+        where_clauses = []
+        params: Dict[str, Any] = {}
 
-        # Apply filters
         if filters:
             if filters.template_type:
-                templates = [t for t in templates if t.template_type == filters.template_type]
+                where_clauses.append("template_type = :template_type")
+                params["template_type"] = filters.template_type.value
             if filters.is_active is not None:
-                templates = [t for t in templates if t.is_active == filters.is_active]
+                where_clauses.append("is_active = :is_active")
+                params["is_active"] = filters.is_active
             if filters.name_contains:
-                search = filters.name_contains.lower()
-                templates = [t for t in templates if search in t.name.lower()]
+                where_clauses.append("LOWER(name) LIKE :name_contains")
+                params["name_contains"] = f"%{filters.name_contains.lower()}%"
             if filters.created_after:
-                templates = [t for t in templates if t.created_at >= filters.created_after]
+                where_clauses.append("created_at >= :created_after")
+                params["created_after"] = filters.created_after
             if filters.created_before:
-                templates = [t for t in templates if t.created_at <= filters.created_before]
+                where_clauses.append("created_at <= :created_before")
+                params["created_before"] = filters.created_before
 
-        total = len(templates)
+        where_sql = " AND ".join(where_clauses) if where_clauses else "1=1"
 
-        # Sort
-        reverse = (order == "desc")
-        templates.sort(key=lambda t: getattr(t, sort, t.created_at), reverse=reverse)
+        # Get total count
+        count_query = f"SELECT COUNT(*) as count FROM arkham_templates WHERE {where_sql}"
+        count_row = await self._db.fetch_one(count_query, params)
+        total = count_row["count"] if count_row else 0
+
+        # Validate sort field to prevent SQL injection
+        valid_sort_fields = {"created_at", "updated_at", "name", "template_type", "version"}
+        if sort not in valid_sort_fields:
+            sort = "created_at"
+
+        # Validate order
+        order_sql = "DESC" if order.lower() == "desc" else "ASC"
 
         # Paginate
-        start = (page - 1) * page_size
-        end = start + page_size
-        templates = templates[start:end]
+        offset = (page - 1) * page_size
+        params["limit"] = page_size
+        params["offset"] = offset
+
+        # Get templates
+        query = f"""
+            SELECT * FROM arkham_templates
+            WHERE {where_sql}
+            ORDER BY {sort} {order_sql}
+            LIMIT :limit OFFSET :offset
+        """
+
+        rows = await self._db.fetch_all(query, params)
+        templates = [self._row_to_template(row) for row in rows]
 
         return templates, total
 
@@ -284,7 +319,7 @@ class TemplatesShard(ArkhamShard):
         if not self._db:
             raise RuntimeError("Shard not initialized")
 
-        template = self._templates.get(template_id)
+        template = await self._load_template(template_id)
         if not template:
             return None
 
@@ -317,6 +352,9 @@ class TemplatesShard(ArkhamShard):
                 changes="Template updated"
             )
 
+        # Save to database
+        await self._save_template(template)
+
         # Publish event
         if self._event_bus:
             await self._event_bus.publish("templates.template.updated", {
@@ -347,15 +385,15 @@ class TemplatesShard(ArkhamShard):
         if not self._db:
             raise RuntimeError("Shard not initialized")
 
-        if template_id not in self._templates:
+        template = await self._load_template(template_id)
+        if not template:
             return False
 
-        template = self._templates[template_id]
-
-        # Remove from storage
-        del self._templates[template_id]
-        if template_id in self._versions:
-            del self._versions[template_id]
+        # Delete from database (CASCADE will handle versions)
+        await self._db.execute(
+            "DELETE FROM arkham_templates WHERE id = :id",
+            {"id": template_id}
+        )
 
         # Publish event
         if self._event_bus:
@@ -383,13 +421,18 @@ class TemplatesShard(ArkhamShard):
         Returns:
             Updated template or None if not found
         """
-        template = self._templates.get(template_id)
+        if not self._db:
+            raise RuntimeError("Shard not initialized")
+
+        template = await self._load_template(template_id)
         if not template:
             return None
 
         template.is_active = True
         template.updated_at = datetime.utcnow()
         template.updated_by = activated_by
+
+        await self._save_template(template)
 
         if self._event_bus:
             await self._event_bus.publish("templates.template.activated", {
@@ -416,13 +459,18 @@ class TemplatesShard(ArkhamShard):
         Returns:
             Updated template or None if not found
         """
-        template = self._templates.get(template_id)
+        if not self._db:
+            raise RuntimeError("Shard not initialized")
+
+        template = await self._load_template(template_id)
         if not template:
             return None
 
         template.is_active = False
         template.updated_at = datetime.utcnow()
         template.updated_by = deactivated_by
+
+        await self._save_template(template)
 
         if self._event_bus:
             await self._event_bus.publish("templates.template.deactivated", {
@@ -453,11 +501,16 @@ class TemplatesShard(ArkhamShard):
         Returns:
             Created version or None if template not found
         """
-        template = self._templates.get(template_id)
+        if not self._db:
+            raise RuntimeError("Shard not initialized")
+
+        template = await self._load_template(template_id)
         if not template:
             return None
 
         template.version += 1
+        await self._save_template(template)
+
         version = await self._create_version_record(
             template,
             created_by=created_by,
@@ -487,8 +540,16 @@ class TemplatesShard(ArkhamShard):
         if not self._db:
             raise RuntimeError("Shard not initialized")
 
-        versions = self._versions.get(template_id, [])
-        return sorted(versions, key=lambda v: v.version_number, reverse=True)
+        rows = await self._db.fetch_all(
+            """
+            SELECT * FROM arkham_template_versions
+            WHERE template_id = :template_id
+            ORDER BY version_number DESC
+            """,
+            {"template_id": template_id}
+        )
+
+        return [self._row_to_version(row) for row in rows]
 
     async def get_version(
         self,
@@ -505,11 +566,21 @@ class TemplatesShard(ArkhamShard):
         Returns:
             Version or None if not found
         """
-        versions = self._versions.get(template_id, [])
-        for version in versions:
-            if version.id == version_id:
-                return version
-        return None
+        if not self._db:
+            raise RuntimeError("Shard not initialized")
+
+        row = await self._db.fetch_one(
+            """
+            SELECT * FROM arkham_template_versions
+            WHERE id = :id AND template_id = :template_id
+            """,
+            {"id": version_id, "template_id": template_id}
+        )
+
+        if not row:
+            return None
+
+        return self._row_to_version(row)
 
     async def restore_version(
         self,
@@ -528,7 +599,10 @@ class TemplatesShard(ArkhamShard):
         Returns:
             Updated template or None if not found
         """
-        template = self._templates.get(template_id)
+        if not self._db:
+            raise RuntimeError("Shard not initialized")
+
+        template = await self._load_template(template_id)
         if not template:
             return None
 
@@ -542,6 +616,9 @@ class TemplatesShard(ArkhamShard):
         template.version += 1
         template.updated_at = datetime.utcnow()
         template.updated_by = restored_by
+
+        # Save updated template
+        await self._save_template(template)
 
         # Create new version record
         await self._create_version_record(
@@ -578,7 +655,10 @@ class TemplatesShard(ArkhamShard):
         Returns:
             Render result or None if template not found
         """
-        template = self._templates.get(template_id)
+        if not self._db:
+            raise RuntimeError("Shard not initialized")
+
+        template = await self._load_template(template_id)
         if not template:
             return None
 
@@ -637,7 +717,10 @@ class TemplatesShard(ArkhamShard):
         Returns:
             Render result or None if template not found
         """
-        template = self._templates.get(template_id)
+        if not self._db:
+            raise RuntimeError("Shard not initialized")
+
+        template = await self._load_template(template_id)
         if not template:
             return None
 
@@ -667,7 +750,10 @@ class TemplatesShard(ArkhamShard):
         Returns:
             List of validation warnings
         """
-        template = self._templates.get(template_id)
+        if not self._db:
+            raise RuntimeError("Shard not initialized")
+
+        template = await self._load_template(template_id)
         if not template:
             return [PlaceholderWarning(
                 placeholder="template",
@@ -686,25 +772,56 @@ class TemplatesShard(ArkhamShard):
         Returns:
             Template statistics
         """
-        templates = list(self._templates.values())
+        if not self._db:
+            raise RuntimeError("Shard not initialized")
+
+        # Count total and active/inactive
+        total_row = await self._db.fetch_one(
+            "SELECT COUNT(*) as count FROM arkham_templates",
+            {}
+        )
+        total_templates = total_row["count"] if total_row else 0
+
+        active_row = await self._db.fetch_one(
+            "SELECT COUNT(*) as count FROM arkham_templates WHERE is_active = TRUE",
+            {}
+        )
+        active_templates = active_row["count"] if active_row else 0
+        inactive_templates = total_templates - active_templates
 
         # Count by type
-        by_type = {}
-        for template_type in TemplateType:
-            count = len([t for t in templates if t.template_type == template_type])
-            if count > 0:
-                by_type[template_type.value] = count
+        type_rows = await self._db.fetch_all(
+            """
+            SELECT template_type, COUNT(*) as count
+            FROM arkham_templates
+            GROUP BY template_type
+            """,
+            {}
+        )
+        by_type = {row["template_type"]: row["count"] for row in type_rows}
 
         # Recent templates (last 5)
-        recent = sorted(templates, key=lambda t: t.created_at, reverse=True)[:5]
+        recent_rows = await self._db.fetch_all(
+            """
+            SELECT * FROM arkham_templates
+            ORDER BY created_at DESC
+            LIMIT 5
+            """,
+            {}
+        )
+        recent = [self._row_to_template(row) for row in recent_rows]
 
         # Total versions
-        total_versions = sum(len(versions) for versions in self._versions.values())
+        versions_row = await self._db.fetch_one(
+            "SELECT COUNT(*) as count FROM arkham_template_versions",
+            {}
+        )
+        total_versions = versions_row["count"] if versions_row else 0
 
         return TemplateStatistics(
-            total_templates=len(templates),
-            active_templates=len([t for t in templates if t.is_active]),
-            inactive_templates=len([t for t in templates if not t.is_active]),
+            total_templates=total_templates,
+            active_templates=active_templates,
+            inactive_templates=inactive_templates,
             by_type=by_type,
             total_versions=total_versions,
             total_renders=self._render_count,
@@ -721,10 +838,21 @@ class TemplatesShard(ArkhamShard):
         Returns:
             Template count
         """
-        templates = list(self._templates.values())
+        if not self._db:
+            raise RuntimeError("Shard not initialized")
+
         if active_only:
-            templates = [t for t in templates if t.is_active]
-        return len(templates)
+            row = await self._db.fetch_one(
+                "SELECT COUNT(*) as count FROM arkham_templates WHERE is_active = TRUE",
+                {}
+            )
+        else:
+            row = await self._db.fetch_one(
+                "SELECT COUNT(*) as count FROM arkham_templates",
+                {}
+            )
+
+        return row["count"] if row else 0
 
     async def get_template_types(self) -> List[TemplateTypeInfo]:
         """
@@ -733,11 +861,23 @@ class TemplatesShard(ArkhamShard):
         Returns:
             List of template type info
         """
-        templates = list(self._templates.values())
+        if not self._db:
+            raise RuntimeError("Shard not initialized")
+
+        # Get counts by type
+        type_rows = await self._db.fetch_all(
+            """
+            SELECT template_type, COUNT(*) as count
+            FROM arkham_templates
+            GROUP BY template_type
+            """,
+            {}
+        )
+        type_counts = {row["template_type"]: row["count"] for row in type_rows}
 
         type_info = []
         for template_type in TemplateType:
-            count = len([t for t in templates if t.template_type == template_type])
+            count = type_counts.get(template_type.value, 0)
             type_info.append(TemplateTypeInfo(
                 type=template_type,
                 name=template_type.value.title(),
@@ -803,6 +943,229 @@ class TemplatesShard(ArkhamShard):
 
         logger.info("Templates database schema created")
 
+    async def _save_template(self, template: Template) -> None:
+        """Save template to database."""
+        if not self._db:
+            raise RuntimeError("Database not available")
+
+        # Serialize placeholders to JSON
+        placeholders_json = json.dumps([
+            {
+                "name": p.name,
+                "description": p.description,
+                "data_type": p.data_type.value if hasattr(p.data_type, 'value') else p.data_type,
+                "default_value": p.default_value,
+                "required": p.required,
+                "example": p.example,
+            }
+            for p in template.placeholders
+        ])
+
+        # Check if template exists
+        existing = await self._db.fetch_one(
+            "SELECT id FROM arkham_templates WHERE id = :id",
+            {"id": template.id}
+        )
+
+        if existing:
+            # Update
+            await self._db.execute(
+                """
+                UPDATE arkham_templates SET
+                    name = :name,
+                    template_type = :template_type,
+                    description = :description,
+                    content = :content,
+                    placeholders = :placeholders,
+                    version = :version,
+                    is_active = :is_active,
+                    metadata = :metadata,
+                    updated_at = :updated_at,
+                    updated_by = :updated_by
+                WHERE id = :id
+                """,
+                {
+                    "id": template.id,
+                    "name": template.name,
+                    "template_type": template.template_type.value,
+                    "description": template.description,
+                    "content": template.content,
+                    "placeholders": placeholders_json,
+                    "version": template.version,
+                    "is_active": template.is_active,
+                    "metadata": json.dumps(template.metadata),
+                    "updated_at": template.updated_at,
+                    "updated_by": template.updated_by,
+                }
+            )
+        else:
+            # Insert
+            await self._db.execute(
+                """
+                INSERT INTO arkham_templates (
+                    id, name, template_type, description, content,
+                    placeholders, version, is_active, metadata,
+                    created_at, updated_at, created_by, updated_by
+                ) VALUES (
+                    :id, :name, :template_type, :description, :content,
+                    :placeholders, :version, :is_active, :metadata,
+                    :created_at, :updated_at, :created_by, :updated_by
+                )
+                """,
+                {
+                    "id": template.id,
+                    "name": template.name,
+                    "template_type": template.template_type.value,
+                    "description": template.description,
+                    "content": template.content,
+                    "placeholders": placeholders_json,
+                    "version": template.version,
+                    "is_active": template.is_active,
+                    "metadata": json.dumps(template.metadata),
+                    "created_at": template.created_at,
+                    "updated_at": template.updated_at,
+                    "created_by": template.created_by,
+                    "updated_by": template.updated_by,
+                }
+            )
+
+    async def _load_template(self, template_id: str) -> Optional[Template]:
+        """Load template from database."""
+        if not self._db:
+            return None
+
+        row = await self._db.fetch_one(
+            "SELECT * FROM arkham_templates WHERE id = :id",
+            {"id": template_id}
+        )
+
+        if not row:
+            return None
+
+        return self._row_to_template(row)
+
+    def _row_to_template(self, row: Dict[str, Any]) -> Template:
+        """Convert database row to Template model."""
+        # Parse placeholders
+        placeholders_data = _parse_json_field(row.get("placeholders"), [])
+        placeholders = [
+            TemplatePlaceholder(
+                name=p.get("name", ""),
+                description=p.get("description", ""),
+                data_type=PlaceholderDataType(p.get("data_type", "string")),
+                default_value=p.get("default_value"),
+                required=p.get("required", False),
+                example=p.get("example"),
+            )
+            for p in placeholders_data
+        ]
+
+        # Parse metadata
+        metadata = _parse_json_field(row.get("metadata"), {})
+
+        # Parse timestamps
+        created_at = row.get("created_at")
+        if isinstance(created_at, str):
+            created_at = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+        elif created_at is None:
+            created_at = datetime.utcnow()
+
+        updated_at = row.get("updated_at")
+        if isinstance(updated_at, str):
+            updated_at = datetime.fromisoformat(updated_at.replace("Z", "+00:00"))
+        elif updated_at is None:
+            updated_at = datetime.utcnow()
+
+        return Template(
+            id=row["id"],
+            name=row["name"],
+            template_type=TemplateType(row["template_type"]),
+            description=row.get("description", ""),
+            content=row["content"],
+            placeholders=placeholders,
+            version=row.get("version", 1),
+            is_active=row.get("is_active", True),
+            metadata=metadata,
+            created_at=created_at,
+            updated_at=updated_at,
+            created_by=row.get("created_by"),
+            updated_by=row.get("updated_by"),
+        )
+
+    def _row_to_version(self, row: Dict[str, Any]) -> TemplateVersion:
+        """Convert database row to TemplateVersion model."""
+        # Parse placeholders
+        placeholders_data = _parse_json_field(row.get("placeholders"), [])
+        placeholders = [
+            TemplatePlaceholder(
+                name=p.get("name", ""),
+                description=p.get("description", ""),
+                data_type=PlaceholderDataType(p.get("data_type", "string")),
+                default_value=p.get("default_value"),
+                required=p.get("required", False),
+                example=p.get("example"),
+            )
+            for p in placeholders_data
+        ]
+
+        # Parse timestamp
+        created_at = row.get("created_at")
+        if isinstance(created_at, str):
+            created_at = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+        elif created_at is None:
+            created_at = datetime.utcnow()
+
+        return TemplateVersion(
+            id=row["id"],
+            template_id=row["template_id"],
+            version_number=row.get("version_number", 1),
+            content=row["content"],
+            placeholders=placeholders,
+            created_at=created_at,
+            created_by=row.get("created_by"),
+            changes=row.get("changes", ""),
+        )
+
+    async def _save_version(self, version: TemplateVersion) -> None:
+        """Save template version to database."""
+        if not self._db:
+            raise RuntimeError("Database not available")
+
+        # Serialize placeholders to JSON
+        placeholders_json = json.dumps([
+            {
+                "name": p.name,
+                "description": p.description,
+                "data_type": p.data_type.value if hasattr(p.data_type, 'value') else p.data_type,
+                "default_value": p.default_value,
+                "required": p.required,
+                "example": p.example,
+            }
+            for p in version.placeholders
+        ])
+
+        await self._db.execute(
+            """
+            INSERT INTO arkham_template_versions (
+                id, template_id, version_number, content,
+                placeholders, created_at, created_by, changes
+            ) VALUES (
+                :id, :template_id, :version_number, :content,
+                :placeholders, :created_at, :created_by, :changes
+            )
+            """,
+            {
+                "id": version.id,
+                "template_id": version.template_id,
+                "version_number": version.version_number,
+                "content": version.content,
+                "placeholders": placeholders_json,
+                "created_at": version.created_at,
+                "created_by": version.created_by,
+                "changes": version.changes,
+            }
+        )
+
     async def _create_version_record(
         self,
         template: Template,
@@ -820,10 +1183,8 @@ class TemplatesShard(ArkhamShard):
             changes=changes,
         )
 
-        # Store in cache
-        if template.id not in self._versions:
-            self._versions[template.id] = []
-        self._versions[template.id].append(version)
+        # Save to database
+        await self._save_version(version)
 
         return version
 
