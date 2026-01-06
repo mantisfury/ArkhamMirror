@@ -1,19 +1,21 @@
 /**
- * LayoutControls - Physics and layout controls for the force graph
+ * LayoutControls - Physics controls for the force-directed graph simulation
  *
  * Uses debounced sliders for smooth visual feedback with batched state updates.
+ * These controls only apply when using the force-directed layout.
  */
 
 import { Icon } from '../../../components/common/Icon';
-import type { LayoutSettings } from '../hooks/useGraphSettings';
+import type { PhysicsSettings } from '../hooks/useGraphSettings';
 import { useDebouncedSlider } from '../hooks/useDebounce';
 
 interface LayoutControlsProps {
-  settings: LayoutSettings;
-  onChange: (updates: Partial<LayoutSettings>) => void;
+  settings: PhysicsSettings;
+  onChange: (updates: Partial<PhysicsSettings>) => void;
+  disabled?: boolean;  // Disable when using non-force layouts
 }
 
-export function LayoutControls({ settings, onChange }: LayoutControlsProps) {
+export function LayoutControls({ settings, onChange, disabled = false }: LayoutControlsProps) {
   // Debounced sliders for performance (100ms delay)
   const [chargeStrength, setChargeStrength] = useDebouncedSlider(
     settings.chargeStrength,
@@ -47,10 +49,11 @@ export function LayoutControls({ settings, onChange }: LayoutControlsProps) {
   );
 
   return (
-    <div className="control-section">
+    <div className={`control-section ${disabled ? 'disabled' : ''}`}>
       <div className="control-header">
         <Icon name="Move" size={16} />
-        <h4>Layout & Physics</h4>
+        <h4>Force Simulation</h4>
+        {disabled && <span className="control-badge">Force layout only</span>}
       </div>
 
       <div className="control-group">

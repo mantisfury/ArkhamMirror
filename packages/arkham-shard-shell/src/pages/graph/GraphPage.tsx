@@ -13,8 +13,10 @@ import { useToast } from '../../context/ToastContext';
 import { useFetch } from '../../hooks/useFetch';
 import { useGraphSettings } from './hooks/useGraphSettings';
 import { useUrlParams } from './hooks/useUrlParams';
-import { GraphControls, DataSourcesPanel } from './components';
+import { GraphControls, DataSourcesPanel, LayoutModeControls } from './components';
+import { EgoMetricsPanel } from './components/EgoMetricsPanel';
 import { fetchScores, type EntityScore } from './api';
+import { getRelationshipStyle, extractRelationshipTypes } from './constants/relationshipStyles';
 import './GraphPage.css';
 
 // Types
@@ -127,6 +129,14 @@ export function GraphPage() {
   const [scoresLoading, setScoresLoading] = useState(false);
   const [scoresError, setScoresError] = useState<string | null>(null);
 
+  // Layout calculation state
+  const [layoutPositions, setLayoutPositions] = useState<Map<string, { x: number; y: number }>>(new Map());
+  const [layoutCalculating, setLayoutCalculating] = useState(false);
+
+  // Ego network focus mode state
+  const [egoFocusEntity, setEgoFocusEntity] = useState<string | null>(null);
+  const [showEgoPanel, setShowEgoPanel] = useState(false);
+
   // Container ref for responsive sizing
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -158,8 +168,8 @@ export function GraphPage() {
   );
 
   // Extract settings for easier access
-  const { settings, normalizedWeights, updateFilters, updateScoring } = graphSettings;
-  const { filters, labels, nodeSize, layout, scoring } = settings;
+  const { settings, normalizedWeights, updateFilters, updateScoring, updateLayout } = graphSettings;
+  const { filters, labels, nodeSize, physics, layout, scoring } = settings;
 
   // URL params for shareable views
   const { copyShareableUrl } = useUrlParams(
@@ -298,13 +308,25 @@ export function GraphPage() {
       .filter(edge => {
         const sourceId = typeof edge.source === 'string' ? edge.source : edge.source.id;
         const targetId = typeof edge.target === 'string' ? edge.target : edge.target.id;
-        return nodeIds.has(sourceId) && nodeIds.has(targetId) && edge.weight >= filters.minEdgeWeight;
+
+        // Node and weight filter
+        if (!nodeIds.has(sourceId) || !nodeIds.has(targetId)) return false;
+        if (edge.weight < filters.minEdgeWeight) return false;
+
+        // Relationship type filter
+        if (filters.relationshipTypes.length > 0) {
+          const edgeType = (edge.relationship_type || edge.type || 'related').toLowerCase().replace(/-/g, '_');
+          if (!filters.relationshipTypes.includes(edgeType)) return false;
+        }
+
+        return true;
       })
       .map(edge => ({
         source: typeof edge.source === 'string' ? edge.source : edge.source.id,
         target: typeof edge.target === 'string' ? edge.target : edge.target.id,
         weight: edge.weight,
         type: edge.relationship_type || edge.type || 'related',
+        relationship_type: edge.relationship_type || edge.type || 'related',
         co_occurrence_count: edge.co_occurrence_count || 0,
       }));
 
@@ -420,6 +442,105 @@ export function GraphPage() {
     }
   };
 
+  // Calculate layout positions from server
+  const calculateLayout = async () => {
+    if (layout.layoutType === 'force') {
+      // Force layout is handled by frontend
+      setLayoutPositions(new Map());
+      return;
+    }
+
+    setLayoutCalculating(true);
+    try {
+      const response = await fetch('/api/graph/layout', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          project_id: projectId,
+          layout_type: layout.layoutType,
+          root_node_id: layout.rootNodeId,
+          direction: layout.direction,
+          layer_spacing: layout.layerSpacing,
+          node_spacing: layout.nodeSpacing,
+          radius: layout.radius,
+          radius_step: layout.radiusStep,
+          left_types: layout.leftTypes,
+          right_types: layout.rightTypes,
+          columns: layout.gridColumns,
+          cell_width: layout.cellWidth,
+          cell_height: layout.cellHeight,
+        }),
+      });
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.detail || 'Failed to calculate layout');
+      }
+
+      const result = await response.json();
+
+      // Convert positions to Map
+      const positions = new Map<string, { x: number; y: number }>();
+      for (const [nodeId, pos] of Object.entries(result.positions)) {
+        const { x, y } = pos as { x: number; y: number };
+        positions.set(nodeId, { x, y });
+      }
+
+      setLayoutPositions(positions);
+      toast.success(`${layout.layoutType} layout applied (${result.calculation_time_ms.toFixed(0)}ms)`);
+
+      // Apply positions to graph nodes
+      if (graphRef.current && positions.size > 0) {
+        // Get the current graph data
+        const fg = graphRef.current;
+
+        // Center offset to place graph in middle of viewport
+        const centerX = containerSize.width / 2;
+        const centerY = containerSize.height / 2;
+
+        // Apply fixed positions
+        forceGraphData.nodes.forEach((node) => {
+          const pos = positions.get(node.id);
+          if (pos) {
+            node.fx = pos.x + centerX;
+            node.fy = pos.y + centerY;
+          }
+        });
+
+        // Reheat to apply positions
+        fg.d3ReheatSimulation?.();
+
+        // Zoom to fit after applying
+        setTimeout(() => {
+          fg.zoomToFit?.(400, 50);
+        }, 100);
+      }
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to calculate layout');
+    } finally {
+      setLayoutCalculating(false);
+    }
+  };
+
+  // Clear fixed positions (return to force layout)
+  const clearLayoutPositions = useCallback(() => {
+    setLayoutPositions(new Map());
+    forceGraphData.nodes.forEach((node) => {
+      node.fx = null;
+      node.fy = null;
+    });
+    if (graphRef.current) {
+      graphRef.current.d3ReheatSimulation?.();
+    }
+  }, [forceGraphData.nodes]);
+
+  // Reset positions when switching to force layout
+  useEffect(() => {
+    if (layout.layoutType === 'force' && layoutPositions.size > 0) {
+      clearLayoutPositions();
+    }
+  }, [layout.layoutType, layoutPositions.size, clearLayoutPositions]);
+
   // Find path between two nodes
   const findPath = async (sourceId: string, targetId: string) => {
     try {
@@ -534,6 +655,12 @@ export function GraphPage() {
   const entityTypes = useMemo(() => {
     if (!graphData) return [];
     return Array.from(new Set(graphData.nodes.map(n => n.entity_type || n.type || 'unknown')));
+  }, [graphData]);
+
+  // Get unique relationship types for filter
+  const relationshipTypes = useMemo(() => {
+    if (!graphData) return [];
+    return extractRelationshipTypes(graphData.edges);
   }, [graphData]);
 
   // Calculate node radius based on settings
@@ -684,15 +811,22 @@ export function GraphPage() {
     }
   }, [selectedNode, highlightedPath, pathStart, labels.fontSize, getNodeRadius, shouldShowLabel, lodSettings.showTextBackgrounds]);
 
-  // Link rendering
+  // Link rendering - color based on relationship type
   const linkColor = useCallback((link: GraphEdge): string => {
     const sourceId = typeof link.source === 'string' ? link.source : (link.source as GraphNode).id;
     const targetId = typeof link.target === 'string' ? link.target : (link.target as GraphNode).id;
 
+    // Highlighted path takes precedence
     if (highlightedPath.has(sourceId) && highlightedPath.has(targetId)) {
       return '#68d391'; // Green for path
     }
-    return 'rgba(156, 163, 175, 0.6)'; // Gray
+
+    // Get relationship type style
+    const relType = link.relationship_type || link.type;
+    const style = getRelationshipStyle(relType);
+
+    // Apply opacity
+    return style.color + 'cc'; // Add 80% opacity
   }, [highlightedPath]);
 
   const linkWidth = useCallback((link: GraphEdge): number => {
@@ -702,7 +836,13 @@ export function GraphPage() {
     if (highlightedPath.has(sourceId) && highlightedPath.has(targetId)) {
       return 3;
     }
-    return Math.max(0.5, link.weight * 2);
+
+    // Get relationship type style for width multiplier
+    const relType = link.relationship_type || link.type;
+    const style = getRelationshipStyle(relType);
+    const widthMultiplier = style.width || 1;
+
+    return Math.max(0.5, link.weight * 2 * widthMultiplier);
   }, [highlightedPath]);
 
   // Reset view
@@ -726,6 +866,31 @@ export function GraphPage() {
       toast.info('Click on a starting node');
     }
   };
+
+  // Handle ego focus mode
+  const handleEgoFocus = useCallback((entityId: string) => {
+    setEgoFocusEntity(entityId);
+    setShowEgoPanel(true);
+    toast.info(`Focused on ${selectedNode?.label || entityId}`);
+  }, [selectedNode?.label]);
+
+  // Clear ego focus
+  const clearEgoFocus = useCallback(() => {
+    setEgoFocusEntity(null);
+    setShowEgoPanel(false);
+  }, []);
+
+  // Handle clicking an alter in the ego panel
+  const handleAlterClick = useCallback((alterId: string) => {
+    // Find the node and select it
+    const alterNode = forceGraphData.nodes.find(n => n.id === alterId);
+    if (alterNode) {
+      setSelectedNode(alterNode);
+      // Center on the alter
+      graphRef.current?.centerAt(alterNode.x, alterNode.y, 500);
+      graphRef.current?.zoom(2, 500);
+    }
+  }, [forceGraphData.nodes]);
 
   return (
     <div className="graph-page">
@@ -863,13 +1028,25 @@ export function GraphPage() {
           {/* Sidebar content - hidden when collapsed */}
           <div className="sidebar-content">
           {activeTab === 'controls' ? (
-            <GraphControls
-              graphSettings={graphSettings}
-              availableEntityTypes={entityTypes}
-              onRecalculateScores={loadScores}
-              scoresLoading={scoresLoading}
-              scoresError={scoresError}
-            />
+            <>
+              <LayoutModeControls
+                settings={layout}
+                onChange={updateLayout}
+                selectedNodeId={selectedNode?.id}
+                entityTypes={entityTypes}
+                onApplyLayout={calculateLayout}
+                isCalculating={layoutCalculating}
+              />
+              <GraphControls
+                graphSettings={graphSettings}
+                availableEntityTypes={entityTypes}
+                availableRelationshipTypes={relationshipTypes}
+                onRecalculateScores={loadScores}
+                scoresLoading={scoresLoading}
+                scoresError={scoresError}
+                isForceLayout={layout.layoutType === 'force'}
+              />
+            </>
           ) : activeTab === 'sources' ? (
             <DataSourcesPanel
               settings={graphSettings.settings.dataSources}
@@ -964,6 +1141,14 @@ export function GraphPage() {
                       </span>
                     </div>
                   </div>
+                  <button
+                    className={`btn btn-sm ${egoFocusEntity === selectedNode.id ? 'btn-primary' : 'btn-secondary'}`}
+                    onClick={() => handleEgoFocus(selectedNode.id)}
+                    style={{ marginTop: '0.75rem', width: '100%' }}
+                  >
+                    <Icon name="Target" size={14} />
+                    {egoFocusEntity === selectedNode.id ? 'Focused' : 'Focus (Ego Network)'}
+                  </button>
                 </div>
               )}
 
@@ -981,6 +1166,18 @@ export function GraphPage() {
 
         {/* Graph Visualization Area */}
         <main className="graph-content" ref={containerRef}>
+          {/* Ego Network Panel */}
+          {showEgoPanel && (
+            <div className="ego-panel-container">
+              <EgoMetricsPanel
+                entityId={egoFocusEntity}
+                entityName={selectedNode?.label}
+                onClose={clearEgoFocus}
+                onAlterClick={handleAlterClick}
+              />
+            </div>
+          )}
+
           {loading ? (
             <div className="graph-loading">
               <Icon name="Loader2" size={48} className="spin" />
@@ -1010,29 +1207,36 @@ export function GraphPage() {
                   ctx.arc(node.x!, node.y!, radius + 4, 0, 2 * Math.PI);
                   ctx.fill();
                 }}
-                // Physics settings from controls
-                d3AlphaDecay={layout.alphaDecay}
+                // Physics settings from controls (only apply for force layout)
+                d3AlphaDecay={layout.layoutType === 'force' ? physics.alphaDecay : 0.1}
                 d3VelocityDecay={0.4}
                 onZoom={({ k }) => setZoomLevel(k)}
-                // Apply layout physics settings
+                // Apply physics simulation settings
                 ref={(fg: ForceGraphMethods | null) => {
                   if (fg) {
                     // Store ref for other operations
                     (graphRef as any).current = fg;
-                    // Apply force simulation settings
-                    fg.d3Force('charge')?.strength(layout.chargeStrength);
-                    fg.d3Force('link')
-                      ?.distance(layout.linkDistance)
-                      ?.strength(layout.linkStrength);
-                    fg.d3Force('center')?.strength(layout.centerStrength);
-                    // Add collision force for minimum separation
-                    const d3 = (fg as any).d3Force;
-                    if (d3 && layout.collisionPadding > 0) {
-                      // Create collision force if needed
-                      const collision = d3('collision');
-                      if (collision) {
-                        collision.radius((node: GraphNode) => getNodeRadius(node) + layout.collisionPadding);
+                    // Apply force simulation settings (only for force layout)
+                    if (layout.layoutType === 'force') {
+                      fg.d3Force('charge')?.strength(physics.chargeStrength);
+                      fg.d3Force('link')
+                        ?.distance(physics.linkDistance)
+                        ?.strength(physics.linkStrength);
+                      fg.d3Force('center')?.strength(physics.centerStrength);
+                      // Add collision force for minimum separation
+                      const d3 = (fg as any).d3Force;
+                      if (d3 && physics.collisionPadding > 0) {
+                        // Create collision force if needed
+                        const collision = d3('collision');
+                        if (collision) {
+                          collision.radius((node: GraphNode) => getNodeRadius(node) + physics.collisionPadding);
+                        }
                       }
+                    } else {
+                      // For calculated layouts, minimize physics forces
+                      fg.d3Force('charge')?.strength(-10);
+                      fg.d3Force('link')?.strength(0);
+                      fg.d3Force('center')?.strength(0);
                     }
                   }
                 }}

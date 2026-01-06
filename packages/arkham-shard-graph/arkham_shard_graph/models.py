@@ -9,6 +9,7 @@ from pydantic import BaseModel
 
 class RelationshipType(Enum):
     """Types of entity relationships."""
+    # Basic relationships
     WORKS_FOR = "works_for"
     AFFILIATED_WITH = "affiliated_with"
     LOCATED_IN = "located_in"
@@ -16,6 +17,52 @@ class RelationshipType(Enum):
     RELATED_TO = "related_to"
     TEMPORAL = "temporal"
     HIERARCHICAL = "hierarchical"
+
+    # Organizational relationships
+    OWNS = "owns"
+    FOUNDED = "founded"
+    EMPLOYED_BY = "employed_by"
+    MEMBER_OF = "member_of"
+    REPORTS_TO = "reports_to"
+    SUBSIDIARY_OF = "subsidiary_of"
+    PARTNER_OF = "partner_of"
+
+    # Personal relationships
+    MARRIED_TO = "married_to"
+    CHILD_OF = "child_of"
+    PARENT_OF = "parent_of"
+    SIBLING_OF = "sibling_of"
+    RELATIVE_OF = "relative_of"
+    KNOWS = "knows"
+    FRIEND_OF = "friend_of"
+
+    # Interaction relationships
+    COMMUNICATED_WITH = "communicated_with"
+    MET_WITH = "met_with"
+    TRANSACTED_WITH = "transacted_with"
+    COLLABORATED_WITH = "collaborated_with"
+
+    # Spatial relationships
+    VISITED = "visited"
+    RESIDES_IN = "resides_in"
+    HEADQUARTERED_IN = "headquartered_in"
+    TRAVELED_TO = "traveled_to"
+
+    # Temporal relationships
+    PRECEDED_BY = "preceded_by"
+    FOLLOWED_BY = "followed_by"
+    CONCURRENT_WITH = "concurrent_with"
+
+    # Cross-shard relationship types
+    CONTRADICTS = "contradicts"
+    SUPPORTS = "supports"
+    PATTERN_MATCH = "pattern_match"
+    DERIVED_FROM = "derived_from"
+    EVIDENCE_FOR = "evidence_for"
+    EVIDENCE_AGAINST = "evidence_against"
+
+    # Co-occurrence (default for extracted relationships)
+    CO_OCCURRENCE = "co_occurrence"
 
 
 class CentralityMetric(Enum):

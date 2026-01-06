@@ -2,14 +2,21 @@
  * FilterControls - Filtering options for graph visualization
  */
 
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 import { Icon } from '../../../components/common/Icon';
 import type { FilterSettings } from '../hooks/useGraphSettings';
+import {
+  getRelationshipStyle,
+  RELATIONSHIP_CATEGORIES,
+  CATEGORY_ORDER,
+  type RelationshipCategory
+} from '../constants/relationshipStyles';
 
 interface FilterControlsProps {
   settings: FilterSettings;
   onChange: (updates: Partial<FilterSettings>) => void;
   availableEntityTypes: string[];
+  availableRelationshipTypes?: string[];
   availableDocumentSources?: { id: string; name: string }[];
 }
 
@@ -17,9 +24,11 @@ export function FilterControls({
   settings,
   onChange,
   availableEntityTypes,
+  availableRelationshipTypes = [],
   availableDocumentSources = []
 }: FilterControlsProps) {
   const [searchInput, setSearchInput] = useState(settings.searchQuery);
+  const [showRelTypes, setShowRelTypes] = useState(false);
 
   // Debounced search update
   const handleSearchChange = (value: string) => {
@@ -47,6 +56,65 @@ export function FilterControls({
 
   const clearAllTypes = () => {
     onChange({ entityTypes: ['__none__'] }); // Special value to show none
+  };
+
+  // Group available relationship types by category
+  const relationshipTypesByCategory = useMemo(() => {
+    const grouped = new Map<RelationshipCategory, string[]>();
+
+    for (const type of availableRelationshipTypes) {
+      const style = getRelationshipStyle(type);
+      const category = style.category as RelationshipCategory;
+      if (!grouped.has(category)) {
+        grouped.set(category, []);
+      }
+      grouped.get(category)!.push(type);
+    }
+
+    // Sort by category order
+    return CATEGORY_ORDER
+      .filter(cat => grouped.has(cat))
+      .map(cat => ({
+        category: cat,
+        types: grouped.get(cat)!
+      }));
+  }, [availableRelationshipTypes]);
+
+  const toggleRelationshipType = (type: string) => {
+    const current = new Set(settings.relationshipTypes);
+    if (current.has(type)) {
+      current.delete(type);
+    } else {
+      current.add(type);
+    }
+    onChange({ relationshipTypes: Array.from(current) });
+  };
+
+  const selectAllRelTypes = () => {
+    onChange({ relationshipTypes: [] }); // Empty means all
+  };
+
+  const clearAllRelTypes = () => {
+    onChange({ relationshipTypes: ['__none__'] }); // Special value to show none
+  };
+
+  const toggleRelCategory = (category: RelationshipCategory) => {
+    const categoryTypes = relationshipTypesByCategory.find(g => g.category === category)?.types || [];
+    const current = new Set(settings.relationshipTypes);
+
+    // Check if all types in this category are currently selected
+    const allSelected = settings.relationshipTypes.length === 0 ||
+      categoryTypes.every(t => current.has(t));
+
+    if (allSelected && settings.relationshipTypes.length > 0) {
+      // Deselect all in category
+      categoryTypes.forEach(t => current.delete(t));
+    } else {
+      // Select all in category
+      categoryTypes.forEach(t => current.add(t));
+    }
+
+    onChange({ relationshipTypes: Array.from(current) });
   };
 
   return (
@@ -101,6 +169,111 @@ export function FilterControls({
           ))}
         </div>
       </div>
+
+      {/* Relationship Types */}
+      {availableRelationshipTypes.length > 0 && (
+        <div className="control-group">
+          <div className="control-group-header">
+            <label>
+              Relationship Types
+              {settings.relationshipTypes.length > 0 && settings.relationshipTypes[0] !== '__none__' && (
+                <span className="filter-count">({settings.relationshipTypes.length})</span>
+              )}
+            </label>
+            <div className="control-group-actions">
+              <button className="mini-btn" onClick={selectAllRelTypes}>All</button>
+              <button className="mini-btn" onClick={clearAllRelTypes}>None</button>
+              <button
+                className="mini-btn"
+                onClick={() => setShowRelTypes(!showRelTypes)}
+                title={showRelTypes ? 'Collapse' : 'Expand'}
+              >
+                <Icon name={showRelTypes ? 'ChevronUp' : 'ChevronDown'} size={12} />
+              </button>
+            </div>
+          </div>
+
+          {/* Compact category chips */}
+          {!showRelTypes && (
+            <div className="rel-type-chips">
+              {relationshipTypesByCategory.map(({ category, types }) => {
+                const catMeta = RELATIONSHIP_CATEGORIES[category];
+                const activeCount = settings.relationshipTypes.length === 0
+                  ? types.length
+                  : types.filter(t => settings.relationshipTypes.includes(t)).length;
+                const isActive = activeCount > 0;
+
+                return (
+                  <button
+                    key={category}
+                    className={`rel-category-chip ${isActive ? 'active' : ''}`}
+                    onClick={() => toggleRelCategory(category)}
+                    style={{
+                      '--cat-color': catMeta.color,
+                      borderColor: isActive ? catMeta.color : undefined,
+                      backgroundColor: isActive ? `${catMeta.color}20` : undefined
+                    } as React.CSSProperties}
+                    title={`${catMeta.label}: ${activeCount}/${types.length} types`}
+                  >
+                    <span
+                      className="chip-dot"
+                      style={{ backgroundColor: catMeta.color }}
+                    />
+                    {catMeta.label}
+                    <span className="chip-count">{activeCount}/{types.length}</span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+
+          {/* Expanded view with all types */}
+          {showRelTypes && (
+            <div className="rel-type-categories">
+              {relationshipTypesByCategory.map(({ category, types }) => {
+                const catMeta = RELATIONSHIP_CATEGORIES[category];
+                return (
+                  <div key={category} className="rel-type-category">
+                    <button
+                      className="rel-category-header"
+                      onClick={() => toggleRelCategory(category)}
+                    >
+                      <span
+                        className="category-indicator"
+                        style={{ backgroundColor: catMeta.color }}
+                      />
+                      <span className="category-label">{catMeta.label}</span>
+                    </button>
+                    <div className="rel-type-list">
+                      {types.map(type => {
+                        const style = getRelationshipStyle(type);
+                        const isChecked = settings.relationshipTypes.length === 0 ||
+                          settings.relationshipTypes.includes(type);
+                        return (
+                          <label key={type} className="rel-type-item">
+                            <input
+                              type="checkbox"
+                              checked={isChecked}
+                              onChange={() => toggleRelationshipType(type)}
+                            />
+                            <span
+                              className="rel-type-color"
+                              style={{ backgroundColor: style.color }}
+                            />
+                            <span className="rel-type-label">{style.label}</span>
+                          </label>
+                        );
+                      })}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          <span className="control-hint">Filter edges by relationship type</span>
+        </div>
+      )}
 
       {/* Degree Range */}
       <div className="control-group">

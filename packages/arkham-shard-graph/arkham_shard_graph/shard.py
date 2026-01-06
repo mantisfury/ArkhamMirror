@@ -157,6 +157,7 @@ class GraphShard(ArkhamShard):
             exporter=self.exporter,
             storage=self.storage,
             event_bus=self._event_bus,
+            db_service=self._db_service,
         )
 
         # Subscribe to events

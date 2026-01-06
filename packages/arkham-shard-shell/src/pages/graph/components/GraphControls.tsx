@@ -14,21 +14,25 @@ import type { UseGraphSettingsReturn } from '../hooks/useGraphSettings';
 interface GraphControlsProps {
   graphSettings: UseGraphSettingsReturn;
   availableEntityTypes: string[];
+  availableRelationshipTypes?: string[];
   availableDocumentSources?: { id: string; name: string }[];
   onRecalculateScores?: () => void;
   scoresLoading?: boolean;
   scoresError?: string | null;
+  isForceLayout?: boolean;
 }
 
-type SectionId = 'labels' | 'layout' | 'nodeSize' | 'filters' | 'scoring';
+type SectionId = 'labels' | 'physics' | 'nodeSize' | 'filters' | 'scoring';
 
 export function GraphControls({
   graphSettings,
   availableEntityTypes,
+  availableRelationshipTypes = [],
   availableDocumentSources = [],
   onRecalculateScores,
   scoresLoading = false,
-  scoresError = null
+  scoresError = null,
+  isForceLayout = true
 }: GraphControlsProps) {
   const [expandedSections, setExpandedSections] = useState<Set<SectionId>>(
     new Set(['labels', 'filters'])
@@ -39,7 +43,7 @@ export function GraphControls({
   const {
     settings,
     updateLabels,
-    updateLayout,
+    updatePhysics,
     updateNodeSize,
     updateFilters,
     updateScoring,
@@ -197,22 +201,29 @@ export function GraphControls({
           )}
         </div>
 
-        {/* Layout Section */}
-        <div className={`section-wrapper ${expandedSections.has('layout') ? 'expanded' : ''}`}>
+        {/* Physics Section (Force Simulation) */}
+        <div className={`section-wrapper ${expandedSections.has('physics') ? 'expanded' : ''}`}>
           <button
             className="section-toggle"
-            onClick={() => toggleSection('layout')}
+            onClick={() => toggleSection('physics')}
           >
             <Icon name="Move" size={16} />
-            <span>Layout & Physics</span>
+            <span>Force Simulation</span>
+            {!isForceLayout && (
+              <span className="section-badge">Disabled</span>
+            )}
             <Icon
               name="ChevronDown"
               size={16}
-              className={`toggle-icon ${expandedSections.has('layout') ? 'rotated' : ''}`}
+              className={`toggle-icon ${expandedSections.has('physics') ? 'rotated' : ''}`}
             />
           </button>
-          {expandedSections.has('layout') && (
-            <LayoutControls settings={settings.layout} onChange={updateLayout} />
+          {expandedSections.has('physics') && (
+            <LayoutControls
+              settings={settings.physics}
+              onChange={updatePhysics}
+              disabled={!isForceLayout}
+            />
           )}
         </div>
 
@@ -235,6 +246,7 @@ export function GraphControls({
               settings={settings.filters}
               onChange={updateFilters}
               availableEntityTypes={availableEntityTypes}
+              availableRelationshipTypes={availableRelationshipTypes}
               availableDocumentSources={availableDocumentSources}
             />
           )}

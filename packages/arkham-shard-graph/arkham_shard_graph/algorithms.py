@@ -782,3 +782,390 @@ class GraphAlgorithms:
                     queue.append(neighbor)
 
         return distances
+
+    # === Ego Network Analysis ===
+
+    def extract_ego_network(
+        self,
+        graph: Graph,
+        ego_entity_id: str,
+        depth: int = 2,
+        include_alter_alter_ties: bool = True,
+    ) -> Graph:
+        """
+        Extract ego network centered on a specific entity.
+
+        The ego network includes:
+        - The ego (center node)
+        - Alters (nodes directly connected to ego)
+        - Optionally: alter-alter ties (edges between alters)
+        - At depth 2: alters of alters
+
+        Args:
+            graph: Source graph
+            ego_entity_id: ID of the ego (center) entity
+            depth: Network depth (1 = ego + alters, 2 = includes alters of alters)
+            include_alter_alter_ties: Include edges between alters
+
+        Returns:
+            New Graph containing the ego network
+        """
+        from .models import Graph as GraphModel, GraphNode, GraphEdge
+
+        # Find the ego node
+        ego_node = None
+        for node in graph.nodes:
+            if node.id == ego_entity_id or node.entity_id == ego_entity_id:
+                ego_node = node
+                break
+
+        if not ego_node:
+            logger.warning(f"Ego node {ego_entity_id} not found in graph")
+            return GraphModel(
+                project_id=graph.project_id,
+                nodes=[],
+                edges=[],
+                metadata={"ego_id": ego_entity_id, "error": "ego_not_found"},
+            )
+
+        adjacency = self._build_weighted_adjacency(graph.edges)
+
+        # Collect nodes at each depth
+        nodes_by_depth: dict[int, set[str]] = {0: {ego_node.id}}
+        all_node_ids: set[str] = {ego_node.id}
+
+        # BFS to find nodes at each depth
+        current_frontier = {ego_node.id}
+        for d in range(1, depth + 1):
+            next_frontier = set()
+            for node_id in current_frontier:
+                for neighbor_id, _ in adjacency.get(node_id, []):
+                    if neighbor_id not in all_node_ids:
+                        next_frontier.add(neighbor_id)
+                        all_node_ids.add(neighbor_id)
+
+            nodes_by_depth[d] = next_frontier
+            current_frontier = next_frontier
+
+        # Collect relevant nodes
+        node_map = {n.id: n for n in graph.nodes}
+        ego_nodes = []
+        for node_id in all_node_ids:
+            node = node_map.get(node_id)
+            if node:
+                # Clone node with ego network metadata
+                ego_nodes.append(GraphNode(
+                    id=node.id,
+                    entity_id=node.entity_id,
+                    label=node.label,
+                    entity_type=node.entity_type,
+                    document_count=node.document_count,
+                    degree=node.degree,
+                    properties={
+                        **node.properties,
+                        "ego_distance": next(
+                            d for d, nodes in nodes_by_depth.items() if node_id in nodes
+                        ),
+                        "is_ego": node_id == ego_node.id,
+                    },
+                ))
+
+        # Collect edges
+        ego_edges = []
+        edge_set = set()  # Track unique edges
+
+        for edge in graph.edges:
+            source_in = edge.source in all_node_ids
+            target_in = edge.target in all_node_ids
+
+            # Both endpoints must be in the ego network
+            if not (source_in and target_in):
+                continue
+
+            # Check if this is an alter-alter tie
+            source_is_ego = edge.source == ego_node.id
+            target_is_ego = edge.target == ego_node.id
+            is_ego_tie = source_is_ego or target_is_ego
+            is_alter_alter = not is_ego_tie
+
+            # Include alter-alter ties only if requested
+            if is_alter_alter and not include_alter_alter_ties:
+                continue
+
+            # Avoid duplicates
+            edge_key = tuple(sorted([edge.source, edge.target]))
+            if edge_key in edge_set:
+                continue
+            edge_set.add(edge_key)
+
+            ego_edges.append(GraphEdge(
+                source=edge.source,
+                target=edge.target,
+                relationship_type=edge.relationship_type,
+                weight=edge.weight,
+                co_occurrence_count=edge.co_occurrence_count,
+                document_ids=edge.document_ids,
+                properties={
+                    **edge.properties,
+                    "is_ego_tie": is_ego_tie,
+                },
+            ))
+
+        return GraphModel(
+            project_id=graph.project_id,
+            nodes=ego_nodes,
+            edges=ego_edges,
+            metadata={
+                "ego_id": ego_entity_id,
+                "ego_label": ego_node.label,
+                "depth": depth,
+                "include_alter_alter_ties": include_alter_alter_ties,
+                "node_count": len(ego_nodes),
+                "edge_count": len(ego_edges),
+                "nodes_by_depth": {d: len(nodes) for d, nodes in nodes_by_depth.items()},
+            },
+        )
+
+    def calculate_ego_metrics(
+        self,
+        graph: Graph,
+        ego_entity_id: str,
+    ) -> dict[str, Any]:
+        """
+        Calculate ego-centric network metrics.
+
+        Metrics include:
+        - Effective size: Ego's network size accounting for redundancy
+        - Efficiency: Effective size normalized by actual size
+        - Constraint: Degree to which ego's network is controlled by others
+        - Hierarchy: Concentration of constraint across contacts
+
+        Args:
+            graph: Graph to analyze (can be full graph or ego network)
+            ego_entity_id: ID of the ego entity
+
+        Returns:
+            Dictionary of ego network metrics
+        """
+        # Find ego node
+        ego_node_id = None
+        for node in graph.nodes:
+            if node.id == ego_entity_id or node.entity_id == ego_entity_id:
+                ego_node_id = node.id
+                break
+
+        if not ego_node_id:
+            return {
+                "error": "ego_not_found",
+                "ego_id": ego_entity_id,
+            }
+
+        adjacency = self._build_weighted_adjacency(graph.edges)
+
+        # Get direct alters (1-hop neighbors)
+        alters = []
+        for neighbor_id, weight in adjacency.get(ego_node_id, []):
+            alters.append(neighbor_id)
+
+        n_alters = len(alters)
+
+        if n_alters == 0:
+            return {
+                "ego_id": ego_entity_id,
+                "network_size": 0,
+                "effective_size": 0.0,
+                "efficiency": 0.0,
+                "constraint": 1.0,
+                "hierarchy": 0.0,
+                "density": 0.0,
+                "avg_tie_strength": 0.0,
+            }
+
+        # Calculate structural holes metrics
+        structural_holes = self.calculate_structural_holes(graph, ego_entity_id)
+
+        # Network density among alters
+        alter_set = set(alters)
+        alter_edges = 0
+        for alter in alters:
+            for neighbor, _ in adjacency.get(alter, []):
+                if neighbor in alter_set and neighbor != alter:
+                    alter_edges += 1
+
+        alter_edges //= 2  # Each edge counted twice
+        max_alter_edges = n_alters * (n_alters - 1) / 2 if n_alters > 1 else 1
+        density = alter_edges / max_alter_edges if max_alter_edges > 0 else 0.0
+
+        # Average tie strength to ego
+        tie_strengths = [w for _, w in adjacency.get(ego_node_id, [])]
+        avg_tie_strength = sum(tie_strengths) / len(tie_strengths) if tie_strengths else 0.0
+
+        # Identify structural position types
+        broker_score = structural_holes.get("effective_size", 0) / max(1, n_alters)
+
+        return {
+            "ego_id": ego_entity_id,
+            "network_size": n_alters,
+            "effective_size": structural_holes.get("effective_size", 0.0),
+            "efficiency": structural_holes.get("efficiency", 0.0),
+            "constraint": structural_holes.get("constraint", 1.0),
+            "hierarchy": structural_holes.get("hierarchy", 0.0),
+            "density": density,
+            "avg_tie_strength": avg_tie_strength,
+            "broker_score": broker_score,
+            "alter_alter_ties": alter_edges,
+            "is_bridge": broker_score > 0.7 and density < 0.3,
+            "is_coordinator": density > 0.7,
+        }
+
+    def calculate_structural_holes(
+        self,
+        graph: Graph,
+        entity_id: str,
+    ) -> dict[str, float]:
+        """
+        Calculate Burt's structural holes metrics.
+
+        Structural holes are gaps between non-redundant contacts.
+        Entities that bridge structural holes have information advantages.
+
+        Metrics:
+        - Effective Size: Number of alters minus redundancy
+        - Efficiency: Effective size / actual size
+        - Constraint: Sum of constraints from each alter
+        - Hierarchy: Concentration of constraint
+
+        Based on: Burt, R. S. (1992). Structural Holes.
+
+        Args:
+            graph: Graph to analyze
+            entity_id: ID of the focal entity
+
+        Returns:
+            Dictionary of structural holes metrics
+        """
+        # Find node
+        node_id = None
+        for node in graph.nodes:
+            if node.id == entity_id or node.entity_id == entity_id:
+                node_id = node.id
+                break
+
+        if not node_id:
+            return {
+                "effective_size": 0.0,
+                "efficiency": 0.0,
+                "constraint": 1.0,
+                "hierarchy": 0.0,
+            }
+
+        adjacency = self._build_weighted_adjacency(graph.edges)
+
+        # Get alters
+        alters = []
+        alter_weights = {}
+        total_weight = 0.0
+
+        for neighbor_id, weight in adjacency.get(node_id, []):
+            alters.append(neighbor_id)
+            alter_weights[neighbor_id] = weight
+            total_weight += weight
+
+        n_alters = len(alters)
+
+        if n_alters == 0:
+            return {
+                "effective_size": 0.0,
+                "efficiency": 0.0,
+                "constraint": 1.0,
+                "hierarchy": 0.0,
+            }
+
+        # Normalize weights to proportions
+        p = {}  # Proportion of tie to each alter
+        for alter_id in alters:
+            p[alter_id] = alter_weights[alter_id] / total_weight if total_weight > 0 else 0.0
+
+        # Calculate redundancy for each alter
+        # Redundancy = sum of marginal strength with each alter through third parties
+        redundancy = {}
+        for j in alters:
+            r_j = 0.0
+            # For each other alter q
+            for q in alters:
+                if q == j:
+                    continue
+                # Proportion of i's relations invested in q
+                p_iq = p[q]
+                # Marginal strength of q's relation with j
+                # (proportion of q's ties that go to j)
+                q_neighbors = adjacency.get(q, [])
+                q_total = sum(w for _, w in q_neighbors)
+                m_qj = 0.0
+                for neighbor, weight in q_neighbors:
+                    if neighbor == j:
+                        m_qj = weight / q_total if q_total > 0 else 0.0
+                        break
+                r_j += p_iq * m_qj
+            redundancy[j] = r_j
+
+        # Effective size = n - sum of redundancies
+        total_redundancy = sum(redundancy.values())
+        effective_size = n_alters - total_redundancy
+
+        # Efficiency = effective_size / n
+        efficiency = effective_size / n_alters if n_alters > 0 else 0.0
+
+        # Constraint = sum of (p_ij + sum_q(p_iq * p_qj))^2
+        constraint = 0.0
+        individual_constraints = {}
+
+        for j in alters:
+            # Direct proportion
+            c_j = p[j]
+
+            # Indirect through q
+            for q in alters:
+                if q == j:
+                    continue
+                # p_iq * proportion of q's ties to j
+                p_iq = p[q]
+                q_neighbors = adjacency.get(q, [])
+                q_total = sum(w for _, w in q_neighbors)
+                p_qj = 0.0
+                for neighbor, weight in q_neighbors:
+                    if neighbor == j:
+                        p_qj = weight / q_total if q_total > 0 else 0.0
+                        break
+                c_j += p_iq * p_qj
+
+            individual_constraints[j] = c_j * c_j
+            constraint += c_j * c_j
+
+        # Hierarchy = concentration of constraint
+        # (Coleman-Theil index of constraint concentration)
+        if constraint > 0 and n_alters > 1:
+            # Normalize individual constraints
+            c_values = list(individual_constraints.values())
+            c_sum = sum(c_values)
+            if c_sum > 0:
+                # Calculate hierarchy as concentration
+                n = len(c_values)
+                avg_c = c_sum / n
+                sum_sq = sum((c - avg_c) ** 2 for c in c_values)
+                hierarchy = sum_sq / (n * avg_c * avg_c) if avg_c > 0 else 0.0
+                # Normalize to 0-1
+                hierarchy = min(1.0, hierarchy / n)
+            else:
+                hierarchy = 0.0
+        else:
+            hierarchy = 0.0
+
+        return {
+            "effective_size": effective_size,
+            "efficiency": efficiency,
+            "constraint": constraint,
+            "hierarchy": hierarchy,
+            "redundancy": total_redundancy,
+            "individual_constraints": individual_constraints,
+        }

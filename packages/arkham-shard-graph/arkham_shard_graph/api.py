@@ -4,7 +4,8 @@ import logging
 from datetime import datetime
 from typing import Any, TYPE_CHECKING
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, HTTPException, Query, Request, Body
+from pydantic import BaseModel
 
 from .models import (
     BuildGraphRequest,
@@ -26,6 +27,8 @@ from .models import (
     EntityScoreResponse,
 )
 from .scoring import CompositeScorer, ScoreConfig
+from .layouts import LayoutEngine, LayoutType, HierarchicalDirection
+from .temporal import TemporalGraphEngine, TemporalSnapshot, EvolutionMetrics
 
 if TYPE_CHECKING:
     from .shard import GraphShard
@@ -42,6 +45,9 @@ _exporter = None
 _storage = None
 _event_bus = None
 _scorer = None
+_layout_engine = None
+_temporal_engine = None
+_db_service = None
 
 
 # === Helper to get shard instance ===
@@ -54,7 +60,7 @@ def get_shard(request: Request) -> "GraphShard":
     return shard
 
 
-def init_api(builder, algorithms, exporter, storage=None, event_bus=None, scorer=None):
+def init_api(builder, algorithms, exporter, storage=None, event_bus=None, scorer=None, layout_engine=None, db_service=None):
     """
     Initialize API with shard components.
 
@@ -65,8 +71,10 @@ def init_api(builder, algorithms, exporter, storage=None, event_bus=None, scorer
         storage: Optional storage service
         event_bus: Optional event bus service
         scorer: Optional CompositeScorer instance
+        layout_engine: Optional LayoutEngine instance
+        db_service: Optional database service for temporal queries
     """
-    global _builder, _algorithms, _exporter, _storage, _event_bus, _scorer
+    global _builder, _algorithms, _exporter, _storage, _event_bus, _scorer, _layout_engine, _temporal_engine, _db_service
 
     _builder = builder
     _algorithms = algorithms
@@ -74,6 +82,9 @@ def init_api(builder, algorithms, exporter, storage=None, event_bus=None, scorer
     _storage = storage
     _event_bus = event_bus
     _scorer = scorer or CompositeScorer()
+    _layout_engine = layout_engine or LayoutEngine()
+    _db_service = db_service
+    _temporal_engine = TemporalGraphEngine(db_service=db_service) if db_service else None
 
     logger.info("Graph API initialized")
 
@@ -200,6 +211,463 @@ async def get_scores(
         limit=limit,
     )
     return await calculate_scores(request)
+
+
+# ========== Layout Calculation ==========
+
+
+class LayoutRequest(BaseModel):
+    """Request for layout calculation."""
+    project_id: str
+    layout_type: str = "hierarchical"  # hierarchical, radial, circular, tree, bipartite, grid
+    root_node_id: str | None = None
+    direction: str = "TB"  # TB, BT, LR, RL (for hierarchical/tree)
+    # Layout-specific options
+    layer_spacing: float = 100
+    node_spacing: float = 50
+    radius: float = 300  # For circular
+    radius_step: float = 100  # For radial
+    # Bipartite options
+    left_types: list[str] | None = None
+    right_types: list[str] | None = None
+    # Grid options
+    columns: int | None = None
+    cell_width: float = 100
+    cell_height: float = 100
+
+
+@router.post("/layout")
+async def calculate_layout(request: LayoutRequest) -> dict[str, Any]:
+    """
+    Calculate node positions for specified layout algorithm.
+
+    Returns pre-calculated positions that the frontend can use
+    instead of force simulation.
+
+    Layout types:
+    - hierarchical: Sugiyama-style layered layout (good for org charts)
+    - radial: Concentric circles from center node (good for ego networks)
+    - circular: All nodes on a circle (good for small graphs)
+    - tree: Reingold-Tilford tree layout (good for tree structures)
+    - bipartite: Two-column layout by entity type (good for document-entity)
+    - grid: Simple grid layout (good for overview)
+    """
+    if not _layout_engine:
+        raise HTTPException(status_code=503, detail="Layout engine not available")
+
+    try:
+        start_time = datetime.utcnow()
+
+        # Get graph
+        if _storage:
+            graph = await _storage.load_graph(request.project_id)
+        elif _builder:
+            graph = await _builder.build_graph(project_id=request.project_id)
+        else:
+            raise HTTPException(status_code=503, detail="Graph service not available")
+
+        # Validate layout type
+        try:
+            layout_type = LayoutType(request.layout_type)
+        except ValueError:
+            valid_types = [lt.value for lt in LayoutType if lt != LayoutType.FORCE_DIRECTED]
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid layout type: {request.layout_type}. Valid types: {valid_types}"
+            )
+
+        # Force-directed should be handled by frontend
+        if layout_type == LayoutType.FORCE_DIRECTED:
+            raise HTTPException(
+                status_code=400,
+                detail="Force-directed layout is handled by the frontend"
+            )
+
+        # Build options dict
+        options = {
+            "root_node_id": request.root_node_id,
+            "direction": request.direction,
+            "layer_spacing": request.layer_spacing,
+            "node_spacing": request.node_spacing,
+            "radius": request.radius,
+            "radius_step": request.radius_step,
+            "left_types": request.left_types or ["document"],
+            "right_types": request.right_types or ["person", "organization", "location"],
+            "columns": request.columns,
+            "cell_width": request.cell_width,
+            "cell_height": request.cell_height,
+            "level_spacing": request.layer_spacing,  # For tree layout
+            "sibling_spacing": request.node_spacing,  # For tree layout
+            "vertical_spacing": request.node_spacing,  # For bipartite layout
+            "spacing": request.layer_spacing * 3,  # Column spacing for bipartite
+        }
+
+        # Calculate layout
+        result = _layout_engine.calculate_layout(graph, layout_type, options)
+
+        calculation_time = (datetime.utcnow() - start_time).total_seconds() * 1000
+
+        response = result.to_dict()
+        response["calculation_time_ms"] = calculation_time
+        response["node_count"] = len(result.positions)
+
+        return response
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error calculating layout: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/layout/types")
+async def get_layout_types() -> dict[str, Any]:
+    """
+    Get available layout types and their descriptions.
+    """
+    return {
+        "layout_types": [
+            {
+                "id": "force",
+                "name": "Force-Directed",
+                "description": "Physics simulation that clusters connected nodes. Best for general exploration.",
+                "frontend_only": True,
+            },
+            {
+                "id": "hierarchical",
+                "name": "Hierarchical",
+                "description": "Layered layout showing hierarchy levels. Best for org charts and command structures.",
+                "options": ["root_node_id", "direction", "layer_spacing", "node_spacing"],
+            },
+            {
+                "id": "radial",
+                "name": "Radial",
+                "description": "Concentric circles from a center node. Best for ego networks and influence mapping.",
+                "options": ["center_node_id", "radius_step"],
+            },
+            {
+                "id": "circular",
+                "name": "Circular",
+                "description": "All nodes arranged on a circle. Best for small networks and community overview.",
+                "options": ["radius"],
+            },
+            {
+                "id": "tree",
+                "name": "Tree",
+                "description": "Classic tree structure. Best for tree-shaped data without cycles.",
+                "options": ["root_node_id", "direction", "level_spacing", "sibling_spacing"],
+            },
+            {
+                "id": "bipartite",
+                "name": "Bipartite",
+                "description": "Two-column layout by entity type. Best for document-entity relationships.",
+                "options": ["left_types", "right_types", "spacing"],
+            },
+            {
+                "id": "grid",
+                "name": "Grid",
+                "description": "Simple grid arrangement. Best for overview of many nodes.",
+                "options": ["columns", "cell_width", "cell_height"],
+            },
+        ]
+    }
+
+
+# ========== Temporal Graph Analysis ==========
+
+
+class TemporalSnapshotsRequest(BaseModel):
+    """Request for temporal snapshots."""
+    project_id: str
+    start_date: str | None = None  # ISO format
+    end_date: str | None = None    # ISO format
+    interval_days: int = 7
+    cumulative: bool = True
+    max_snapshots: int = 50
+
+
+@router.get("/temporal/range")
+async def get_temporal_range(
+    project_id: str = Query(...),
+) -> dict[str, Any]:
+    """
+    Get available time range for temporal analysis.
+
+    Returns the earliest and latest dates with data,
+    suggested interval, and expected number of snapshots.
+    """
+    if not _temporal_engine:
+        raise HTTPException(status_code=503, detail="Temporal engine not available")
+
+    try:
+        temporal_range = await _temporal_engine.get_temporal_range(project_id)
+
+        if not temporal_range:
+            return {
+                "available": False,
+                "message": "No temporal data available for this project",
+            }
+
+        return {
+            "available": True,
+            **temporal_range.to_dict(),
+        }
+
+    except Exception as e:
+        logger.error(f"Error getting temporal range: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/temporal/snapshots")
+async def get_temporal_snapshots(request: TemporalSnapshotsRequest) -> dict[str, Any]:
+    """
+    Generate graph snapshots at regular time intervals.
+
+    Returns a series of snapshots showing how the network evolved,
+    including added/removed nodes and edges between each snapshot.
+
+    Use cumulative=True (default) for all data up to each point,
+    or cumulative=False for only data within each time window.
+    """
+    if not _temporal_engine:
+        raise HTTPException(status_code=503, detail="Temporal engine not available")
+
+    try:
+        from datetime import timedelta
+
+        start_time = datetime.utcnow()
+
+        # Parse dates if provided
+        start_date = None
+        end_date = None
+
+        if request.start_date:
+            start_date = datetime.fromisoformat(request.start_date.replace("Z", "+00:00"))
+        if request.end_date:
+            end_date = datetime.fromisoformat(request.end_date.replace("Z", "+00:00"))
+
+        interval = timedelta(days=request.interval_days)
+
+        # Generate snapshots
+        snapshots = await _temporal_engine.generate_snapshots(
+            project_id=request.project_id,
+            start_date=start_date,
+            end_date=end_date,
+            interval=interval,
+            cumulative=request.cumulative,
+            max_snapshots=request.max_snapshots,
+        )
+
+        # Calculate evolution metrics
+        metrics = _temporal_engine.calculate_evolution_metrics(snapshots)
+
+        calculation_time = (datetime.utcnow() - start_time).total_seconds() * 1000
+
+        return {
+            "project_id": request.project_id,
+            "snapshot_count": len(snapshots),
+            "snapshots": [s.to_dict() for s in snapshots],
+            "evolution_metrics": metrics.to_dict(),
+            "cumulative": request.cumulative,
+            "interval_days": request.interval_days,
+            "calculation_time_ms": calculation_time,
+        }
+
+    except Exception as e:
+        logger.error(f"Error generating temporal snapshots: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/temporal/snapshot/{timestamp}")
+async def get_snapshot_at_time(
+    timestamp: str,
+    project_id: str = Query(...),
+    cumulative: bool = Query(True),
+    window_days: int = Query(7, description="Window size if not cumulative"),
+) -> dict[str, Any]:
+    """
+    Get a single graph snapshot at a specific timestamp.
+
+    Args:
+        timestamp: ISO format timestamp
+        project_id: Project ID
+        cumulative: Include all data up to this point (default: True)
+        window_days: If not cumulative, window size in days
+    """
+    if not _temporal_engine:
+        raise HTTPException(status_code=503, detail="Temporal engine not available")
+
+    try:
+        from datetime import timedelta
+
+        # Parse timestamp
+        ts = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+
+        window_size = timedelta(days=window_days) if not cumulative else None
+
+        snapshot = await _temporal_engine.get_snapshot_at(
+            project_id=project_id,
+            timestamp=ts,
+            cumulative=cumulative,
+            window_size=window_size,
+        )
+
+        return {
+            "project_id": project_id,
+            "snapshot": snapshot.to_dict(),
+        }
+
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=f"Invalid timestamp format: {e}")
+    except Exception as e:
+        logger.error(f"Error getting snapshot at {timestamp}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/temporal/evolution")
+async def get_evolution_metrics(
+    project_id: str = Query(...),
+    interval_days: int = Query(7),
+    max_snapshots: int = Query(50),
+) -> dict[str, Any]:
+    """
+    Get evolution metrics without full snapshot data.
+
+    Lighter-weight endpoint for getting just the metrics
+    about how the network has evolved over time.
+    """
+    if not _temporal_engine:
+        raise HTTPException(status_code=503, detail="Temporal engine not available")
+
+    try:
+        from datetime import timedelta
+
+        snapshots = await _temporal_engine.generate_snapshots(
+            project_id=project_id,
+            interval=timedelta(days=interval_days),
+            cumulative=True,
+            max_snapshots=max_snapshots,
+        )
+
+        metrics = _temporal_engine.calculate_evolution_metrics(snapshots)
+
+        # Build timeline summary (without full node/edge data)
+        timeline = [
+            {
+                "timestamp": s.timestamp.isoformat(),
+                "node_count": s.node_count,
+                "edge_count": s.edge_count,
+                "added_nodes": len(s.added_nodes),
+                "removed_nodes": len(s.removed_nodes),
+                "added_edges": len(s.added_edges),
+                "removed_edges": len(s.removed_edges),
+                "density": s.density,
+            }
+            for s in snapshots
+        ]
+
+        return {
+            "project_id": project_id,
+            "metrics": metrics.to_dict(),
+            "timeline": timeline,
+            "snapshot_count": len(snapshots),
+        }
+
+    except Exception as e:
+        logger.error(f"Error getting evolution metrics: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ========== Relationship Types ==========
+
+
+# Relationship type metadata for frontend
+RELATIONSHIP_TYPE_METADATA = {
+    # Basic relationships
+    "works_for": {"category": "organizational", "label": "Works For", "color": "#3b82f6", "directed": True},
+    "affiliated_with": {"category": "organizational", "label": "Affiliated With", "color": "#8b5cf6", "directed": False},
+    "located_in": {"category": "spatial", "label": "Located In", "color": "#10b981", "directed": True},
+    "mentioned_with": {"category": "basic", "label": "Mentioned With", "color": "#6b7280", "directed": False},
+    "related_to": {"category": "basic", "label": "Related To", "color": "#6b7280", "directed": False},
+    "temporal": {"category": "temporal", "label": "Temporal", "color": "#f59e0b", "directed": True},
+    "hierarchical": {"category": "organizational", "label": "Hierarchical", "color": "#3b82f6", "directed": True},
+
+    # Organizational relationships
+    "owns": {"category": "organizational", "label": "Owns", "color": "#059669", "directed": True},
+    "founded": {"category": "organizational", "label": "Founded", "color": "#0891b2", "directed": True},
+    "employed_by": {"category": "organizational", "label": "Employed By", "color": "#3b82f6", "directed": True},
+    "member_of": {"category": "organizational", "label": "Member Of", "color": "#6366f1", "directed": True},
+    "reports_to": {"category": "organizational", "label": "Reports To", "color": "#7c3aed", "directed": True},
+    "subsidiary_of": {"category": "organizational", "label": "Subsidiary Of", "color": "#2563eb", "directed": True},
+    "partner_of": {"category": "organizational", "label": "Partner Of", "color": "#4f46e5", "directed": False},
+
+    # Personal relationships
+    "married_to": {"category": "personal", "label": "Married To", "color": "#ec4899", "directed": False},
+    "child_of": {"category": "personal", "label": "Child Of", "color": "#f472b6", "directed": True},
+    "parent_of": {"category": "personal", "label": "Parent Of", "color": "#db2777", "directed": True},
+    "sibling_of": {"category": "personal", "label": "Sibling Of", "color": "#e879f9", "directed": False},
+    "relative_of": {"category": "personal", "label": "Relative Of", "color": "#d946ef", "directed": False},
+    "knows": {"category": "personal", "label": "Knows", "color": "#a855f7", "directed": False},
+    "friend_of": {"category": "personal", "label": "Friend Of", "color": "#c084fc", "directed": False},
+
+    # Interaction relationships
+    "communicated_with": {"category": "interaction", "label": "Communicated With", "color": "#14b8a6", "directed": False},
+    "met_with": {"category": "interaction", "label": "Met With", "color": "#06b6d4", "directed": False},
+    "transacted_with": {"category": "interaction", "label": "Transacted With", "color": "#22c55e", "directed": False},
+    "collaborated_with": {"category": "interaction", "label": "Collaborated With", "color": "#84cc16", "directed": False},
+
+    # Spatial relationships
+    "visited": {"category": "spatial", "label": "Visited", "color": "#f97316", "directed": True},
+    "resides_in": {"category": "spatial", "label": "Resides In", "color": "#fb923c", "directed": True},
+    "headquartered_in": {"category": "spatial", "label": "Headquartered In", "color": "#ea580c", "directed": True},
+    "traveled_to": {"category": "spatial", "label": "Traveled To", "color": "#fdba74", "directed": True},
+
+    # Temporal relationships
+    "preceded_by": {"category": "temporal", "label": "Preceded By", "color": "#eab308", "directed": True},
+    "followed_by": {"category": "temporal", "label": "Followed By", "color": "#facc15", "directed": True},
+    "concurrent_with": {"category": "temporal", "label": "Concurrent With", "color": "#fde047", "directed": False},
+
+    # Cross-shard relationship types
+    "contradicts": {"category": "analysis", "label": "Contradicts", "color": "#ef4444", "directed": False, "dash": [5, 5]},
+    "supports": {"category": "analysis", "label": "Supports", "color": "#22c55e", "directed": False},
+    "pattern_match": {"category": "analysis", "label": "Pattern Match", "color": "#a855f7", "directed": False, "dash": [3, 3]},
+    "derived_from": {"category": "analysis", "label": "Derived From", "color": "#64748b", "directed": True},
+    "evidence_for": {"category": "analysis", "label": "Evidence For", "color": "#16a34a", "directed": True},
+    "evidence_against": {"category": "analysis", "label": "Evidence Against", "color": "#dc2626", "directed": True},
+
+    # Co-occurrence (default)
+    "co_occurrence": {"category": "basic", "label": "Co-occurrence", "color": "#94a3b8", "directed": False},
+}
+
+
+@router.get("/relationship-types")
+async def get_relationship_types() -> dict[str, Any]:
+    """
+    Get available relationship types with metadata.
+
+    Returns relationship types grouped by category with styling information
+    for the frontend.
+    """
+    # Group by category
+    categories: dict[str, list[dict]] = {}
+    for rel_type, metadata in RELATIONSHIP_TYPE_METADATA.items():
+        category = metadata["category"]
+        if category not in categories:
+            categories[category] = []
+        categories[category].append({
+            "id": rel_type,
+            **metadata,
+        })
+
+    # Sort each category
+    for category in categories:
+        categories[category].sort(key=lambda x: x["label"])
+
+    return {
+        "relationship_types": RELATIONSHIP_TYPE_METADATA,
+        "categories": categories,
+        "category_order": ["organizational", "personal", "interaction", "spatial", "temporal", "analysis", "basic"],
+    }
 
 
 # ========== Cross-Shard Data Integration ==========
@@ -955,6 +1423,144 @@ async def get_entity_subgraph(
 
     except Exception as e:
         logger.error(f"Error getting entity subgraph: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ========== Ego Network Analysis ==========
+
+
+@router.get("/ego/{entity_id}")
+async def get_ego_network(
+    entity_id: str,
+    project_id: str = Query(...),
+    depth: int = Query(2, ge=1, le=3),
+    include_alter_alter_ties: bool = Query(True),
+    include_metrics: bool = Query(True),
+) -> dict[str, Any]:
+    """
+    Get ego network centered on a specific entity.
+
+    An ego network includes:
+    - The ego (center node)
+    - Alters (nodes directly connected to ego)
+    - Alter-alter ties (edges between alters, optional)
+    - At depth 2: alters of alters
+
+    Also calculates ego-centric metrics including Burt's structural holes:
+    - Effective size: Network size accounting for redundancy
+    - Efficiency: Effective size / actual size
+    - Constraint: Degree to which ego's contacts constrain their actions
+    - Hierarchy: Concentration of constraint
+
+    Args:
+        entity_id: ID of the ego (center) entity
+        project_id: Project ID
+        depth: Network depth (1 or 2)
+        include_alter_alter_ties: Include edges between alters
+        include_metrics: Calculate structural hole metrics
+    """
+    if not _algorithms:
+        raise HTTPException(status_code=503, detail="Graph algorithms not available")
+
+    try:
+        start_time = datetime.utcnow()
+
+        # Get full graph
+        if _storage:
+            graph = await _storage.load_graph(project_id)
+        elif _builder:
+            graph = await _builder.build_graph(project_id=project_id)
+        else:
+            raise HTTPException(status_code=503, detail="Graph service not available")
+
+        # Extract ego network
+        ego_graph = _algorithms.extract_ego_network(
+            graph=graph,
+            ego_entity_id=entity_id,
+            depth=depth,
+            include_alter_alter_ties=include_alter_alter_ties,
+        )
+
+        # Check for error
+        if ego_graph.metadata.get("error"):
+            raise HTTPException(
+                status_code=404,
+                detail=f"Entity {entity_id} not found in graph"
+            )
+
+        # Calculate metrics if requested
+        metrics = None
+        if include_metrics:
+            metrics = _algorithms.calculate_ego_metrics(graph, entity_id)
+
+        calculation_time = (datetime.utcnow() - start_time).total_seconds() * 1000
+
+        # Build response
+        return {
+            "project_id": project_id,
+            "ego_id": entity_id,
+            "ego_label": ego_graph.metadata.get("ego_label"),
+            "depth": depth,
+            "graph": {
+                "nodes": [n.to_dict() for n in ego_graph.nodes],
+                "edges": [e.to_dict() for e in ego_graph.edges],
+                "metadata": ego_graph.metadata,
+            },
+            "metrics": metrics,
+            "node_count": len(ego_graph.nodes),
+            "edge_count": len(ego_graph.edges),
+            "nodes_by_depth": ego_graph.metadata.get("nodes_by_depth", {}),
+            "calculation_time_ms": calculation_time,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting ego network: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/ego/{entity_id}/metrics")
+async def get_ego_metrics(
+    entity_id: str,
+    project_id: str = Query(...),
+) -> dict[str, Any]:
+    """
+    Get ego-centric metrics for an entity without the full network.
+
+    Lighter-weight endpoint for getting just structural hole metrics.
+    """
+    if not _algorithms:
+        raise HTTPException(status_code=503, detail="Graph algorithms not available")
+
+    try:
+        # Get graph
+        if _storage:
+            graph = await _storage.load_graph(project_id)
+        elif _builder:
+            graph = await _builder.build_graph(project_id=project_id)
+        else:
+            raise HTTPException(status_code=503, detail="Graph service not available")
+
+        # Calculate metrics
+        metrics = _algorithms.calculate_ego_metrics(graph, entity_id)
+
+        if metrics.get("error"):
+            raise HTTPException(
+                status_code=404,
+                detail=f"Entity {entity_id} not found in graph"
+            )
+
+        return {
+            "project_id": project_id,
+            "entity_id": entity_id,
+            **metrics,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting ego metrics: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 

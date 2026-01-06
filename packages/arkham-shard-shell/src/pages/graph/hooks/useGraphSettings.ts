@@ -14,13 +14,36 @@ export interface LabelSettings {
   zoomThreshold: number; // 0.1-2, default 0.8
 }
 
-export interface LayoutSettings {
+export interface PhysicsSettings {
   chargeStrength: number;    // -1000 to -30, default -300
   linkDistance: number;      // 20 to 200, default 60
   linkStrength: number;      // 0.1 to 1.0, default 0.5
   centerStrength: number;    // 0 to 0.3, default 0.1
   collisionPadding: number;  // 0 to 20, default 5
   alphaDecay: number;        // 0.01 to 0.05, default 0.02
+}
+
+export type LayoutType = 'force' | 'hierarchical' | 'radial' | 'circular' | 'tree' | 'bipartite' | 'grid';
+export type LayoutDirection = 'TB' | 'BT' | 'LR' | 'RL';
+
+export interface LayoutSettings {
+  layoutType: LayoutType;
+  // Hierarchical / Tree options
+  direction: LayoutDirection;
+  rootNodeId: string | null;  // Auto-detect if null
+  layerSpacing: number;       // 50-200, default 100
+  nodeSpacing: number;        // 20-100, default 50
+  // Radial options
+  radiusStep: number;         // 50-200, default 100
+  // Circular options
+  radius: number;             // 100-500, default 300
+  // Bipartite options
+  leftTypes: string[];        // Entity types for left column
+  rightTypes: string[];       // Entity types for right column
+  // Grid options
+  gridColumns: number | null; // Auto-calculate if null
+  cellWidth: number;          // 50-150, default 100
+  cellHeight: number;         // 50-150, default 100
 }
 
 export interface NodeSizeSettings {
@@ -31,6 +54,7 @@ export interface NodeSizeSettings {
 
 export interface FilterSettings {
   entityTypes: string[];      // Selected entity types (empty = all)
+  relationshipTypes: string[]; // Selected relationship types (empty = all)
   minDegree: number;         // 0-50, default 0
   maxDegree: number;         // 1-1000, default 1000
   minEdgeWeight: number;     // 0-1, default 0
@@ -76,13 +100,26 @@ export interface DataSourceSettings {
   credibilityRatings: boolean; // Use source credibility for weights
 }
 
+export interface TemporalSettings {
+  enabled: boolean;              // Is temporal mode active
+  intervalDays: number;          // Days between snapshots (1, 7, 30, 90)
+  cumulative: boolean;           // Cumulative vs window mode
+  maxSnapshots: number;          // Max snapshots to generate
+  playbackSpeed: number;         // ms between frames (1000 = 1 sec)
+  showAdditions: boolean;        // Highlight newly added nodes
+  showRemovals: boolean;         // Show nodes being removed
+  autoPlay: boolean;             // Start playing automatically
+}
+
 export interface GraphSettings {
   labels: LabelSettings;
+  physics: PhysicsSettings;
   layout: LayoutSettings;
   nodeSize: NodeSizeSettings;
   filters: FilterSettings;
   scoring: ScoringSettings;
   dataSources: DataSourceSettings;
+  temporal: TemporalSettings;
 }
 
 // Default settings
@@ -93,13 +130,27 @@ export const DEFAULT_SETTINGS: GraphSettings = {
     fontSize: 12,
     zoomThreshold: 0.8,
   },
-  layout: {
+  physics: {
     chargeStrength: -300,
     linkDistance: 60,
     linkStrength: 0.5,
     centerStrength: 0.1,
     collisionPadding: 5,
     alphaDecay: 0.02,
+  },
+  layout: {
+    layoutType: 'force',
+    direction: 'TB',
+    rootNodeId: null,
+    layerSpacing: 100,
+    nodeSpacing: 50,
+    radiusStep: 100,
+    radius: 300,
+    leftTypes: ['document'],
+    rightTypes: ['person', 'organization', 'location'],
+    gridColumns: null,
+    cellWidth: 100,
+    cellHeight: 100,
   },
   nodeSize: {
     sizeBy: 'degree',
@@ -108,6 +159,7 @@ export const DEFAULT_SETTINGS: GraphSettings = {
   },
   filters: {
     entityTypes: [],
+    relationshipTypes: [],  // Empty = all relationship types
     minDegree: 0,
     maxDegree: 1000,
     minEdgeWeight: 0,
@@ -143,6 +195,16 @@ export const DEFAULT_SETTINGS: GraphSettings = {
     patterns: false,
     credibilityRatings: false,
   },
+  temporal: {
+    enabled: false,
+    intervalDays: 7,
+    cumulative: true,
+    maxSnapshots: 50,
+    playbackSpeed: 1000,  // 1 second between frames
+    showAdditions: true,
+    showRemovals: true,
+    autoPlay: false,
+  },
 };
 
 // Presets
@@ -150,12 +212,14 @@ export const PRESETS = {
   performance: {
     ...DEFAULT_SETTINGS,
     labels: { ...DEFAULT_SETTINGS.labels, mode: 'top' as const, topPercent: 3 },
-    layout: { ...DEFAULT_SETTINGS.layout, alphaDecay: 0.05 },
+    physics: { ...DEFAULT_SETTINGS.physics, alphaDecay: 0.05 },
+    temporal: { ...DEFAULT_SETTINGS.temporal },
   },
   detail: {
     ...DEFAULT_SETTINGS,
     labels: { ...DEFAULT_SETTINGS.labels, mode: 'all' as const },
     nodeSize: { ...DEFAULT_SETTINGS.nodeSize, minRadius: 6, maxRadius: 16 },
+    temporal: { ...DEFAULT_SETTINGS.temporal },
   },
   balanced: DEFAULT_SETTINGS,
 };
@@ -170,10 +234,13 @@ export function useGraphSettings() {
       if (stored) {
         const parsed = JSON.parse(stored);
         // Deep merge with defaults to handle new settings
+        // Handle migration from old 'layout' (physics) to new 'physics'
+        const physicsSource = parsed.physics || parsed.layout || {};
         return {
           ...DEFAULT_SETTINGS,
           ...parsed,
           labels: { ...DEFAULT_SETTINGS.labels, ...parsed.labels },
+          physics: { ...DEFAULT_SETTINGS.physics, ...physicsSource },
           layout: { ...DEFAULT_SETTINGS.layout, ...parsed.layout },
           nodeSize: { ...DEFAULT_SETTINGS.nodeSize, ...parsed.nodeSize },
           filters: { ...DEFAULT_SETTINGS.filters, ...parsed.filters },
@@ -183,6 +250,7 @@ export function useGraphSettings() {
             weights: { ...DEFAULT_SETTINGS.scoring.weights, ...parsed.scoring?.weights },
           },
           dataSources: { ...DEFAULT_SETTINGS.dataSources, ...parsed.dataSources },
+          temporal: { ...DEFAULT_SETTINGS.temporal, ...parsed.temporal },
         };
       }
     } catch {
@@ -208,7 +276,15 @@ export function useGraphSettings() {
     }));
   }, []);
 
-  // Update partial layout settings
+  // Update partial physics settings (force simulation parameters)
+  const updatePhysics = useCallback((updates: Partial<PhysicsSettings>) => {
+    setSettings(prev => ({
+      ...prev,
+      physics: { ...prev.physics, ...updates },
+    }));
+  }, []);
+
+  // Update partial layout settings (layout algorithm and options)
   const updateLayout = useCallback((updates: Partial<LayoutSettings>) => {
     setSettings(prev => ({
       ...prev,
@@ -259,6 +335,14 @@ export function useGraphSettings() {
     }));
   }, []);
 
+  // Update temporal settings
+  const updateTemporal = useCallback((updates: Partial<TemporalSettings>) => {
+    setSettings(prev => ({
+      ...prev,
+      temporal: { ...prev.temporal, ...updates },
+    }));
+  }, []);
+
   // Apply preset
   const applyPreset = useCallback((preset: keyof typeof PRESETS) => {
     setSettings(PRESETS[preset]);
@@ -282,6 +366,7 @@ export function useGraphSettings() {
         ...DEFAULT_SETTINGS,
         ...parsed,
         labels: { ...DEFAULT_SETTINGS.labels, ...parsed.labels },
+        physics: { ...DEFAULT_SETTINGS.physics, ...parsed.physics },
         layout: { ...DEFAULT_SETTINGS.layout, ...parsed.layout },
         nodeSize: { ...DEFAULT_SETTINGS.nodeSize, ...parsed.nodeSize },
         filters: { ...DEFAULT_SETTINGS.filters, ...parsed.filters },
@@ -291,6 +376,7 @@ export function useGraphSettings() {
           weights: { ...DEFAULT_SETTINGS.scoring.weights, ...parsed.scoring?.weights },
         },
         dataSources: { ...DEFAULT_SETTINGS.dataSources, ...parsed.dataSources },
+        temporal: { ...DEFAULT_SETTINGS.temporal, ...parsed.temporal },
       });
       return true;
     } catch {
@@ -316,12 +402,14 @@ export function useGraphSettings() {
     settings,
     setSettings,
     updateLabels,
+    updatePhysics,
     updateLayout,
     updateNodeSize,
     updateFilters,
     updateScoring,
     updateScoringWeights,
     updateDataSources,
+    updateTemporal,
     normalizedWeights,
     applyPreset,
     reset,
