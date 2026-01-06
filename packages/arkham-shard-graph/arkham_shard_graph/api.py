@@ -2453,3 +2453,286 @@ async def delete_annotation(annotation_id: str) -> dict[str, Any]:
     except Exception as e:
         logger.error(f"Error deleting annotation: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# =============================================================================
+# ARGUMENTATION GRAPH ENDPOINTS (ACH Integration)
+# =============================================================================
+
+_argumentation_builder: "ArgumentationBuilder | None" = None
+
+
+def _get_argumentation_builder():
+    """Get or create ArgumentationBuilder instance."""
+    global _argumentation_builder
+    if _argumentation_builder is None:
+        from .argumentation import ArgumentationBuilder
+        _argumentation_builder = ArgumentationBuilder()
+    return _argumentation_builder
+
+
+@router.get("/argumentation/{matrix_id}")
+async def get_argumentation_graph(
+    matrix_id: str,
+    include_status: bool = Query(True, description="Include argument acceptance status"),
+    as_graph: bool = Query(False, description="Return as standard Graph format"),
+) -> dict[str, Any]:
+    """
+    Get argumentation graph from ACH matrix.
+
+    Transforms an ACH matrix into an argumentation framework where:
+    - Hypotheses become argument nodes (top layer)
+    - Evidence becomes evidence nodes (bottom layer)
+    - Ratings become support/attack edges based on consistency
+
+    Args:
+        matrix_id: The ACH matrix ID
+        include_status: Include Dung semantics acceptance status
+        as_graph: Return as standard Graph format for visualization
+
+    Returns:
+        Argumentation graph with nodes, edges, and optional statuses
+    """
+    if not _db_service:
+        raise HTTPException(status_code=503, detail="Database service not available")
+
+    try:
+        # Fetch ACH matrix data from database
+        # First check if matrix exists
+        matrix_result = await _db_service.fetch_one(
+            """
+            SELECT id, title, description, status, project_id, created_at, updated_at
+            FROM arkham_ach.matrices
+            WHERE id = :matrix_id
+            """,
+            {"matrix_id": matrix_id}
+        )
+
+        if not matrix_result:
+            raise HTTPException(status_code=404, detail=f"Matrix {matrix_id} not found")
+
+        # Fetch hypotheses
+        hypotheses_result = await _db_service.fetch_all(
+            """
+            SELECT id, title, description, column_index, is_lead
+            FROM arkham_ach.hypotheses
+            WHERE matrix_id = :matrix_id
+            ORDER BY column_index
+            """,
+            {"matrix_id": matrix_id}
+        )
+
+        hypotheses = [
+            {
+                "id": row["id"],
+                "title": row["title"],
+                "description": row["description"] or "",
+                "column_index": row["column_index"],
+                "is_lead": row["is_lead"],
+            }
+            for row in hypotheses_result
+        ]
+
+        # Fetch evidence
+        evidence_result = await _db_service.fetch_all(
+            """
+            SELECT id, description, source, evidence_type, credibility, relevance, row_index
+            FROM arkham_ach.evidence
+            WHERE matrix_id = :matrix_id
+            ORDER BY row_index
+            """,
+            {"matrix_id": matrix_id}
+        )
+
+        evidence = [
+            {
+                "id": row["id"],
+                "description": row["description"],
+                "source": row["source"] or "",
+                "evidence_type": row["evidence_type"],
+                "credibility": row["credibility"],
+                "relevance": row["relevance"],
+            }
+            for row in evidence_result
+        ]
+
+        # Fetch ratings
+        ratings_result = await _db_service.fetch_all(
+            """
+            SELECT evidence_id, hypothesis_id, rating, reasoning, confidence
+            FROM arkham_ach.ratings
+            WHERE matrix_id = :matrix_id
+            """,
+            {"matrix_id": matrix_id}
+        )
+
+        ratings = [
+            {
+                "evidence_id": row["evidence_id"],
+                "hypothesis_id": row["hypothesis_id"],
+                "rating": row["rating"],
+                "reasoning": row["reasoning"] or "",
+                "confidence": row["confidence"],
+            }
+            for row in ratings_result
+        ]
+
+        # Fetch scores if available
+        scores_result = await _db_service.fetch_all(
+            """
+            SELECT hypothesis_id, consistency_score, inconsistency_count,
+                   weighted_score, normalized_score, rank
+            FROM arkham_ach.hypothesis_scores
+            WHERE matrix_id = :matrix_id
+            ORDER BY rank
+            """,
+            {"matrix_id": matrix_id}
+        )
+
+        scores = [
+            {
+                "hypothesis_id": row["hypothesis_id"],
+                "consistency_score": row["consistency_score"],
+                "inconsistency_count": row["inconsistency_count"],
+                "weighted_score": row["weighted_score"],
+                "normalized_score": row["normalized_score"],
+                "rank": row["rank"],
+            }
+            for row in scores_result
+        ]
+
+        # Build matrix data dict
+        matrix_data = {
+            "id": matrix_result["id"],
+            "title": matrix_result["title"],
+            "description": matrix_result["description"] or "",
+            "hypotheses": hypotheses,
+            "evidence": evidence,
+            "ratings": ratings,
+            "scores": scores,
+        }
+
+        # Build argumentation graph
+        builder = _get_argumentation_builder()
+        arg_graph = builder.build_from_ach_matrix(matrix_data)
+
+        # Return appropriate format
+        if as_graph:
+            graph = builder.to_graph(arg_graph)
+            return {
+                "success": True,
+                "matrix_id": matrix_id,
+                "graph": {
+                    "id": graph.id,
+                    "nodes": [
+                        {
+                            "id": n.id,
+                            "label": n.label,
+                            "type": n.type,
+                            "entity_type": n.entity_type,
+                            "weight": n.weight,
+                            "properties": n.properties,
+                        }
+                        for n in graph.nodes
+                    ],
+                    "edges": [
+                        {
+                            "source": e.source,
+                            "target": e.target,
+                            "weight": e.weight,
+                            "type": e.type,
+                            "relationship_type": e.relationship_type,
+                            "properties": e.properties,
+                        }
+                        for e in graph.edges
+                    ],
+                    "properties": graph.properties,
+                },
+            }
+        else:
+            result = builder.to_dict(arg_graph)
+            result["success"] = True
+            if not include_status:
+                result.pop("statuses", None)
+            return result
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error building argumentation graph: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/argumentation/matrices/{project_id}")
+async def list_ach_matrices_for_graph(
+    project_id: str,
+) -> dict[str, Any]:
+    """
+    List ACH matrices available for argumentation graph visualization.
+
+    Args:
+        project_id: Project to filter matrices
+
+    Returns:
+        List of matrices with basic info
+    """
+    if not _db_service:
+        raise HTTPException(status_code=503, detail="Database service not available")
+
+    try:
+        # Check if ACH schema exists
+        schema_check = await _db_service.fetch_one(
+            """
+            SELECT EXISTS (
+                SELECT 1 FROM information_schema.tables
+                WHERE table_schema = 'arkham_ach'
+                AND table_name = 'matrices'
+            ) as exists
+            """
+        )
+
+        if not schema_check or not schema_check.get("exists"):
+            return {
+                "success": True,
+                "matrices": [],
+                "message": "ACH shard not installed or no matrices available",
+            }
+
+        # Fetch matrices
+        matrices_result = await _db_service.fetch_all(
+            """
+            SELECT m.id, m.title, m.description, m.status, m.created_at,
+                   COUNT(DISTINCT h.id) as hypothesis_count,
+                   COUNT(DISTINCT e.id) as evidence_count
+            FROM arkham_ach.matrices m
+            LEFT JOIN arkham_ach.hypotheses h ON h.matrix_id = m.id
+            LEFT JOIN arkham_ach.evidence e ON e.matrix_id = m.id
+            WHERE m.project_id = :project_id
+            GROUP BY m.id, m.title, m.description, m.status, m.created_at
+            ORDER BY m.created_at DESC
+            """,
+            {"project_id": project_id}
+        )
+
+        matrices = [
+            {
+                "id": row["id"],
+                "title": row["title"],
+                "description": row["description"] or "",
+                "status": row["status"],
+                "hypothesis_count": row["hypothesis_count"],
+                "evidence_count": row["evidence_count"],
+                "created_at": row["created_at"].isoformat() if row["created_at"] else None,
+            }
+            for row in matrices_result
+        ]
+
+        return {
+            "success": True,
+            "matrices": matrices,
+            "count": len(matrices),
+        }
+
+    except Exception as e:
+        logger.error(f"Error listing ACH matrices: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))

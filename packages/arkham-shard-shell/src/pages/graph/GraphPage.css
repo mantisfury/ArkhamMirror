@@ -3437,3 +3437,208 @@
   height: 22px;
   padding: 0;
 }
+
+/* ============================================
+   ARGUMENTATION VIEW (ACH Integration)
+   ============================================ */
+
+.argumentation-view {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+}
+
+.argumentation-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.75rem 1rem;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border-color);
+}
+
+.argumentation-header .matrix-selector {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.argumentation-header .matrix-selector label {
+  font-size: 0.8rem;
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+
+.argumentation-header .matrix-selector select {
+  padding: 0.375rem 0.75rem;
+  background: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  color: var(--text-primary);
+  font-size: 0.8rem;
+  min-width: 200px;
+}
+
+.argumentation-stats {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+}
+
+.argumentation-stats .stat-support {
+  color: #22c55e;
+}
+
+.argumentation-stats .stat-attack {
+  color: #ef4444;
+}
+
+.argumentation-canvas {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: auto;
+  background: var(--bg-primary);
+}
+
+.argumentation-svg {
+  background: var(--bg-primary);
+}
+
+.argumentation-loading,
+.argumentation-error,
+.argumentation-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1rem;
+  padding: 2rem;
+  color: var(--text-secondary);
+  text-align: center;
+}
+
+.argumentation-loading .spin {
+  animation: spin 1s linear infinite;
+}
+
+.argumentation-error {
+  color: var(--error-color, #ef4444);
+}
+
+.argumentation-empty h3 {
+  margin: 0;
+  color: var(--text-primary);
+}
+
+.argumentation-empty p {
+  margin: 0;
+  max-width: 300px;
+}
+
+.argumentation-legend {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 1.5rem;
+  padding: 0.75rem;
+  background: var(--bg-secondary);
+  border-top: 1px solid var(--border-color);
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+}
+
+.argumentation-legend .legend-item {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+}
+
+.argumentation-legend .legend-color {
+  width: 16px;
+  height: 4px;
+  border-radius: 2px;
+}
+
+.argumentation-legend .legend-shape {
+  width: 14px;
+  height: 14px;
+}
+
+.argumentation-legend .legend-shape.hypothesis {
+  background: #3b82f6;
+  border-radius: 3px;
+}
+
+.argumentation-legend .legend-shape.evidence {
+  background: #64748b;
+  border-radius: 50%;
+}
+
+.argumentation-tooltip {
+  padding: 0.5rem 0.75rem;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  font-size: 0.75rem;
+  color: var(--text-primary);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  pointer-events: none;
+  z-index: 1000;
+  max-width: 280px;
+}
+
+/* Argumentation Controls */
+.argumentation-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  padding: 1rem;
+}
+
+.argumentation-controls .control-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.argumentation-controls .checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+
+.argumentation-controls .checkbox-label input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--primary-color);
+}
+
+.argumentation-controls .control-info {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  padding: 0.75rem;
+  background: rgba(59, 130, 246, 0.05);
+  border: 1px solid rgba(59, 130, 246, 0.2);
+  border-radius: 6px;
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+}
+
+.argumentation-controls .control-info p {
+  margin: 0;
+  line-height: 1.4;
+}
+
+.argumentation-controls .control-info svg {
+  flex-shrink: 0;
+  color: var(--primary-color);
+}
