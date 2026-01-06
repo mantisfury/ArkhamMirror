@@ -82,7 +82,7 @@ async def initialize(self, frame) -> None:
 
 ## Current State Overview
 
-### Fully Operational Shards (19 total)
+### Fully Operational Shards (21 total)
 These shards are functional with complete backend/frontend integration:
 
 | Shard | Status | Notes |
@@ -107,18 +107,20 @@ These shards are functional with complete backend/frontend integration:
 | summary | Operational | LLM-powered summarization, source browser, statistics dashboard |
 | graph | Operational | Advanced controls, cross-shard integration, composite scoring, collapsible UI |
 | timeline | Operational | Event extraction, conflict detection, interactive visualization |
+| export | Operational | Real data export (JSON, CSV, PDF, XLSX), job management |
+| templates | Operational | Full PostgreSQL persistence, Jinja2 rendering, versioning |
 
-### Shards Requiring Work (5 total)
+### Shards Requiring Work (3 total)
 
 | Shard | Category | Backend % | Frontend % | Priority | Critical Gap |
 |-------|----------|-----------|------------|----------|--------------|
-| export | Export | 70% | 90% | High | `_generate_export_file()` creates placeholder files |
-| templates | Export | 90% | 95% | Medium | Using in-memory cache, no DB persistence |
 | reports | Export | 95% | 95% | Low | Content generation stub, PDF needs library |
 | letters | Export | 85% | 85% | Low | PDF/DOCX generation stubbed |
 | packets | Export | 95% | 90% | Low | Export/import placeholders, checksum not calculated |
 
 > **Note:** Graph shard now has advanced controls, cross-shard data integration, composite scoring, and collapsible UI (2026-01-06).
+
+> **Note:** Export and Templates shards completed with full data fetching, PDF/XLSX generation, and PostgreSQL persistence (2026-01-06).
 
 > **Note:** Timeline shard is now fully operational with event extraction, conflict detection, and interactive visualization (2026-01-06).
 
@@ -359,62 +361,59 @@ The timeline shard is now fully implemented with event extraction and interactiv
 
 ## Phase 3: Export Shards
 
-### 3.1 Export Shard
+### 3.1 Export Shard - COMPLETED (2026-01-06)
+
+**Status: Fully Operational**
 
 **File Locations:**
 - Backend: `packages/arkham-shard-export/arkham_shard_export/`
 - Frontend: `packages/arkham-shard-shell/src/pages/export/`
 
-**Current State:**
-- Frontend UI complete and polished
-- Backend job management works
-- Actual file generation is stubbed
+The export shard is now fully implemented with:
+- Real data fetching for all targets (documents, entities, claims, timeline, graph, ACH matrices)
+- JSON export with metadata
+- CSV export with JSON flattening for nested structures
+- PDF export using reportlab library
+- XLSX export using openpyxl library
+- Internal API calls via httpx to fetch data from other shards
+- Full job management with status tracking
+- File expiration handling
 
-**Known Stub Locations:**
-```python
-# shard.py - Line ~531-555
-async def _generate_export_file(self, job):
-    # Creates placeholder file with "Export placeholder" content
-    # TODO: Actually export data based on job.target and job.format
-
-    # PDF/DOCX marked as placeholder:
-    if job.format in ['pdf', 'docx', 'xlsx']:
-        # placeholder=True in format metadata
-```
-
-**Implementation Priority:**
-1. Implement data fetching for each target (documents, entities, claims, etc.)
-2. Add PDF generation: `pip install weasyprint` or `reportlab`
-3. Add DOCX generation: `pip install python-docx`
-4. Wire to actual data sources
+**Key API Endpoints:**
+- `POST /api/export/jobs` - Create export job
+- `GET /api/export/jobs/{id}` - Get job status
+- `GET /api/export/jobs/{id}/download` - Download exported file
+- `GET /api/export/formats` - List supported formats
+- `GET /api/export/targets` - List export targets
+- `GET /api/export/stats` - Export statistics
 
 ---
 
-### 3.2 Templates Shard
+### 3.2 Templates Shard - COMPLETED (2026-01-06)
+
+**Status: Fully Operational**
 
 **File Locations:**
 - Backend: `packages/arkham-shard-templates/arkham_shard_templates/`
 - Frontend: `packages/arkham-shard-shell/src/pages/templates/`
 
-**Current State:**
-- Frontend UI complete with editor, preview, versioning
-- Backend uses Jinja2 (good!)
-- **Using in-memory cache instead of database**
+The templates shard is now fully implemented with:
+- Full PostgreSQL persistence (removed in-memory caches)
+- Database methods: `_save_template()`, `_load_template()`, `_row_to_template()`, `_row_to_version()`, `_save_version()`
+- Jinja2 template rendering with auto-escaping
+- Template versioning with full history
+- Placeholder auto-detection from template content
+- Template types: REPORT, LETTER, EXPORT, EMAIL, CUSTOM
 
-**Known Issue:**
-```python
-# shard.py - Line ~69-72
-# Templates stored in memory dict, not database:
-self._templates: Dict[str, Template] = {}
-self._versions: Dict[str, List[TemplateVersion]] = {}
-
-# Database schema is created but not used for writes
-```
-
-**Implementation Priority:**
-1. Replace in-memory cache with database queries
-2. Implement `_save_template()` and `_load_templates()`
-3. Verify Jinja2 auto-escaping for security
+**Key API Endpoints:**
+- `POST /api/templates/` - Create template
+- `GET /api/templates/` - List templates with filtering
+- `GET /api/templates/{id}` - Get template
+- `PUT /api/templates/{id}` - Update template
+- `POST /api/templates/{id}/render` - Render template with data
+- `GET /api/templates/{id}/versions` - Get version history
+- `POST /api/templates/{id}/versions/{vid}/restore` - Restore version
+- `GET /api/templates/stats` - Template statistics
 
 ---
 
@@ -706,8 +705,8 @@ const { items, loading, hasMore, loadMore } = usePaginatedFetch<ItemType>('/api/
 6. ~~**Anomalies**~~ - COMPLETED (2026-01-04)
 
 ### Sprint 3: Export Infrastructure
-7. **Templates** - Switch from in-memory to DB
-8. **Export** - Implement actual file generation
+7. ~~**Templates**~~ - COMPLETED (2026-01-06)
+8. ~~**Export**~~ - COMPLETED (2026-01-06)
 9. **Reports** - Build on Templates shard
 
 ### Sprint 4: Document Production
@@ -751,8 +750,8 @@ npm install vis-network        # Alternative
 | summary | ~500 lines | ~400 lines | ~200 lines | - |
 | graph | ~600 lines | ~800 lines | ~400 lines | builder.py, algorithms.py, scoring.py, storage.py, exporter.py |
 | timeline | ~500 lines | ~500 lines | ~150 lines | extraction.py, merging.py, conflicts.py |
-| export | 666 lines | 409 lines | 173 lines | - |
-| templates | 934 lines | 671 lines | 313 lines | - |
+| export | 1292 lines | 409 lines | 173 lines | - |
+| templates | 1289 lines | 671 lines | 313 lines | - |
 | reports | ~300 lines | ~250 lines | ~150 lines | - |
 | letters | 936 lines | 615 lines | 181 lines | - |
 | packets | ~200 lines | ~200 lines | ~100 lines | - |
@@ -783,3 +782,5 @@ npm install vis-network        # Alternative
 *Summary shard completed: 2026-01-05*
 *Graph shard advanced features completed: 2026-01-06*
 *Timeline shard completed: 2026-01-06*
+*Export shard completed: 2026-01-06*
+*Templates shard completed: 2026-01-06*
