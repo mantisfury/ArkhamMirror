@@ -13,7 +13,8 @@ import { useToast } from '../../context/ToastContext';
 import { useFetch } from '../../hooks/useFetch';
 import { useGraphSettings } from './hooks/useGraphSettings';
 import { useUrlParams } from './hooks/useUrlParams';
-import { GraphControls, DataSourcesPanel, LayoutModeControls, AssociationMatrix, MatrixControls } from './components';
+import { GraphControls, DataSourcesPanel, LayoutModeControls, AssociationMatrix, MatrixControls, SankeyDiagram, SankeyControls } from './components';
+import type { FlowData } from './components';
 import { EgoMetricsPanel } from './components/EgoMetricsPanel';
 import { fetchScores, type EntityScore } from './api';
 import { getRelationshipStyle, extractRelationshipTypes } from './constants/relationshipStyles';
@@ -104,7 +105,7 @@ const ENTITY_TYPE_COLORS: Record<string, string> = {
   unknown: '#718096',
 };
 
-type TabId = 'graph' | 'matrix' | 'controls' | 'sources';
+type TabId = 'graph' | 'matrix' | 'sankey' | 'controls' | 'sources';
 
 export function GraphPage() {
   const { toast } = useToast();
@@ -145,6 +146,17 @@ export function GraphPage() {
   const [matrixRowType, setMatrixRowType] = useState('');
   const [matrixColType, setMatrixColType] = useState('');
   const [matrixBipartiteMode, setMatrixBipartiteMode] = useState(false);
+
+  // Sankey view state
+  const [sankeyFlowData, setSankeyFlowData] = useState<FlowData | null>(null);
+  const [sankeyLoading, setSankeyLoading] = useState(false);
+  const [sankeySourceTypes, setSankeySourceTypes] = useState<string[]>(['person']);
+  const [sankeyTargetTypes, setSankeyTargetTypes] = useState<string[]>(['organization']);
+  const [sankeyIntermediateTypes, setSankeyIntermediateTypes] = useState<string[]>([]);
+  const [sankeyFlowType, setSankeyFlowType] = useState<'entity' | 'relationship'>('entity');
+  const [sankeyAggregateByType, setSankeyAggregateByType] = useState(false);
+  const [sankeyMinWeight, setSankeyMinWeight] = useState(0);
+  const [sankeyMaxLinks, setSankeyMaxLinks] = useState(50);
 
   // Container ref for responsive sizing
   const containerRef = useRef<HTMLDivElement>(null);
@@ -188,7 +200,7 @@ export function GraphPage() {
     activeTab,
     selectedNode?.id || undefined,
     (tab: string) => {
-      if (tab === 'graph' || tab === 'matrix' || tab === 'controls' || tab === 'sources') {
+      if (tab === 'graph' || tab === 'matrix' || tab === 'sankey' || tab === 'controls' || tab === 'sources') {
         setActiveTab(tab as TabId);
       }
     },
@@ -889,6 +901,41 @@ export function GraphPage() {
     setShowEgoPanel(false);
   }, []);
 
+  // Load Sankey flow data
+  const loadSankeyFlows = useCallback(async () => {
+    setSankeyLoading(true);
+    try {
+      const response = await fetch('/api/graph/flows', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          project_id: projectId,
+          flow_type: sankeyFlowType,
+          source_types: sankeySourceTypes,
+          target_types: sankeyTargetTypes,
+          intermediate_types: sankeyIntermediateTypes,
+          min_weight: sankeyMinWeight,
+          aggregate_by_type: sankeyAggregateByType,
+          max_links: sankeyMaxLinks,
+        }),
+      });
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.detail || 'Failed to load flow data');
+      }
+
+      const flowData = await response.json();
+      setSankeyFlowData(flowData);
+      toast.success(`Loaded ${flowData.node_count} nodes, ${flowData.link_count} flows`);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to load flows');
+      setSankeyFlowData(null);
+    } finally {
+      setSankeyLoading(false);
+    }
+  }, [projectId, sankeyFlowType, sankeySourceTypes, sankeyTargetTypes, sankeyIntermediateTypes, sankeyMinWeight, sankeyAggregateByType, sankeyMaxLinks, toast]);
+
   // Handle clicking an alter in the ego panel
   const handleAlterClick = useCallback((alterId: string) => {
     // Find the node and select it
@@ -1014,6 +1061,13 @@ export function GraphPage() {
           Matrix View
         </button>
         <button
+          className={`graph-tab ${activeTab === 'sankey' ? 'active' : ''}`}
+          onClick={() => setActiveTab('sankey')}
+        >
+          <Icon name="GitBranch" size={16} />
+          Sankey View
+        </button>
+        <button
           className={`graph-tab ${activeTab === 'controls' ? 'active' : ''}`}
           onClick={() => setActiveTab('controls')}
         >
@@ -1031,7 +1085,7 @@ export function GraphPage() {
 
       <div className="graph-layout">
         {/* Sidebar - content changes based on tab */}
-        <aside className={`graph-sidebar ${(activeTab !== 'graph' && activeTab !== 'matrix') ? 'wide' : ''} ${sidebarCollapsed ? 'collapsed' : ''}`}>
+        <aside className={`graph-sidebar ${(activeTab !== 'graph' && activeTab !== 'matrix' && activeTab !== 'sankey') ? 'wide' : ''} ${sidebarCollapsed ? 'collapsed' : ''}`}>
           {/* Collapse toggle button */}
           <button
             className="sidebar-collapse-toggle"
@@ -1043,7 +1097,27 @@ export function GraphPage() {
 
           {/* Sidebar content - hidden when collapsed */}
           <div className="sidebar-content">
-          {activeTab === 'matrix' ? (
+          {activeTab === 'sankey' ? (
+            <SankeyControls
+              entityTypes={entityTypes}
+              sourceTypes={sankeySourceTypes}
+              onSourceTypesChange={setSankeySourceTypes}
+              targetTypes={sankeyTargetTypes}
+              onTargetTypesChange={setSankeyTargetTypes}
+              intermediateTypes={sankeyIntermediateTypes}
+              onIntermediateTypesChange={setSankeyIntermediateTypes}
+              flowType={sankeyFlowType}
+              onFlowTypeChange={setSankeyFlowType}
+              aggregateByType={sankeyAggregateByType}
+              onAggregateByTypeChange={setSankeyAggregateByType}
+              minWeight={sankeyMinWeight}
+              onMinWeightChange={setSankeyMinWeight}
+              maxLinks={sankeyMaxLinks}
+              onMaxLinksChange={setSankeyMaxLinks}
+              onRefresh={loadSankeyFlows}
+              isLoading={sankeyLoading}
+            />
+          ) : activeTab === 'matrix' ? (
             <MatrixControls
               sortBy={matrixSortBy}
               onSortByChange={setMatrixSortBy}
@@ -1269,13 +1343,38 @@ export function GraphPage() {
             </div>
           )}
 
+          {/* Sankey View */}
+          {activeTab === 'sankey' && (
+            <div className="sankey-view-container">
+              <SankeyDiagram
+                flowData={sankeyFlowData}
+                width={containerSize.width - 40}
+                height={containerSize.height - 40}
+                onNodeClick={(nodeId) => {
+                  const node = forceGraphData.nodes.find(n => n.id === nodeId);
+                  if (node) {
+                    setSelectedNode(node);
+                    setActiveTab('graph');
+                    graphRef.current?.centerAt(node.x, node.y, 500);
+                  }
+                }}
+                onLinkClick={(source, target) => {
+                  setHighlightedPath(new Set([source, target]));
+                  toast.info(`Flow: ${source} → ${target}`);
+                }}
+                highlightedNodes={highlightedPath}
+                isLoading={sankeyLoading}
+              />
+            </div>
+          )}
+
           {/* Graph View */}
-          {activeTab !== 'matrix' && loading ? (
+          {activeTab !== 'matrix' && activeTab !== 'sankey' && loading ? (
             <div className="graph-loading">
               <Icon name="Loader2" size={48} className="spin" />
               <span>Loading graph...</span>
             </div>
-          ) : activeTab !== 'matrix' && error ? (
+          ) : activeTab !== 'matrix' && activeTab !== 'sankey' && error ? (
             <div className="graph-error">
               <Icon name="AlertCircle" size={48} />
               <span>Failed to load graph</span>
@@ -1283,7 +1382,7 @@ export function GraphPage() {
                 Retry
               </button>
             </div>
-          ) : activeTab !== 'matrix' && forceGraphData.nodes.length > 0 ? (
+          ) : activeTab !== 'matrix' && activeTab !== 'sankey' && forceGraphData.nodes.length > 0 ? (
             <div className="graph-visualization">
               <ForceGraph2D
                 graphData={forceGraphData}
@@ -1354,7 +1453,7 @@ export function GraphPage() {
                 onEngineStop={() => graphRef.current?.zoomToFit(400, 50)}
               />
             </div>
-          ) : activeTab !== 'matrix' ? (
+          ) : activeTab !== 'matrix' && activeTab !== 'sankey' ? (
             <div className="graph-empty">
               <Icon name="Network" size={64} />
               <h3>No Graph Data</h3>

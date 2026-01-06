@@ -13,3 +13,5 @@ export { DataSourcesPanel } from './DataSourcesPanel';
 export { EgoMetricsPanel } from './EgoMetricsPanel';
 export { AssociationMatrix, MatrixControls } from './AssociationMatrix';
 export { TimeSlider } from './TimeSlider';
+export { SankeyDiagram, SankeyControls } from './SankeyDiagram';
+export type { FlowData } from './SankeyDiagram';

@@ -29,6 +29,7 @@ from .models import (
 from .scoring import CompositeScorer, ScoreConfig
 from .layouts import LayoutEngine, LayoutType, HierarchicalDirection
 from .temporal import TemporalGraphEngine, TemporalSnapshot, EvolutionMetrics
+from .flows import FlowAnalyzer
 
 if TYPE_CHECKING:
     from .shard import GraphShard
@@ -48,6 +49,7 @@ _scorer = None
 _layout_engine = None
 _temporal_engine = None
 _db_service = None
+_flow_analyzer = None
 
 
 # === Helper to get shard instance ===
@@ -74,7 +76,7 @@ def init_api(builder, algorithms, exporter, storage=None, event_bus=None, scorer
         layout_engine: Optional LayoutEngine instance
         db_service: Optional database service for temporal queries
     """
-    global _builder, _algorithms, _exporter, _storage, _event_bus, _scorer, _layout_engine, _temporal_engine, _db_service
+    global _builder, _algorithms, _exporter, _storage, _event_bus, _scorer, _layout_engine, _temporal_engine, _db_service, _flow_analyzer
 
     _builder = builder
     _algorithms = algorithms
@@ -85,6 +87,7 @@ def init_api(builder, algorithms, exporter, storage=None, event_bus=None, scorer
     _layout_engine = layout_engine or LayoutEngine()
     _db_service = db_service
     _temporal_engine = TemporalGraphEngine(db_service=db_service) if db_service else None
+    _flow_analyzer = FlowAnalyzer()
 
     logger.info("Graph API initialized")
 
@@ -1862,4 +1865,163 @@ async def filter_graph(request: FilterRequest) -> GraphResponse:
 
     except Exception as e:
         logger.error(f"Error filtering graph: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ========== Flow Endpoints ==========
+
+
+class FlowRequest(BaseModel):
+    """Request for flow data extraction."""
+    project_id: str
+    flow_type: str = "entity"  # "entity" or "relationship"
+    source_types: list[str] | None = None
+    target_types: list[str] | None = None
+    intermediate_types: list[str] | None = None
+    relationship_types: list[str] | None = None
+    min_weight: float = 0.0
+    aggregate_by_type: bool = False
+    max_links: int = 100
+    min_link_value: float = 0.0
+
+
+@router.post("/flows")
+async def get_flow_data(request: FlowRequest) -> dict[str, Any]:
+    """
+    Get flow data for Sankey diagram visualization.
+
+    Extracts flow data from the graph based on entity types and relationships.
+
+    Args:
+        request: Flow configuration including source/target types and filters
+
+    Returns:
+        FlowData with nodes, links, and metadata for Sankey rendering
+    """
+    if not _builder or not _flow_analyzer:
+        raise HTTPException(status_code=503, detail="Flow analyzer not available")
+
+    try:
+        # Get graph
+        if _storage:
+            graph = await _storage.load_graph(request.project_id)
+        elif _builder:
+            graph = await _builder.build_graph(project_id=request.project_id)
+        else:
+            raise HTTPException(status_code=503, detail="Graph service not available")
+
+        if not graph or not graph.nodes:
+            return {
+                "nodes": [],
+                "links": [],
+                "total_flow": 0,
+                "layer_count": 0,
+                "node_count": 0,
+                "link_count": 0,
+            }
+
+        # Extract flows based on type
+        if request.flow_type == "relationship":
+            flow_data = _flow_analyzer.extract_relationship_flows(
+                graph=graph,
+                flow_relationship_types=request.relationship_types,
+                min_weight=request.min_weight,
+                aggregate_by_type=request.aggregate_by_type,
+            )
+        else:
+            # Default: entity-based flows
+            flow_data = _flow_analyzer.extract_entity_flows(
+                graph=graph,
+                source_types=request.source_types,
+                target_types=request.target_types,
+                intermediate_types=request.intermediate_types,
+                relationship_types=request.relationship_types,
+                min_weight=request.min_weight,
+            )
+
+        # Aggregate if requested
+        if request.max_links > 0 or request.min_link_value > 0:
+            flow_data = _flow_analyzer.aggregate_flows(
+                flow_data=flow_data,
+                min_value=request.min_link_value,
+                max_links=request.max_links,
+            )
+
+        return _flow_analyzer.to_dict(flow_data)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error extracting flow data: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/flows/{project_id}")
+async def get_flows_simple(
+    project_id: str,
+    flow_type: str = Query("entity", description="Flow type: entity or relationship"),
+    source_types: str = Query(None, description="Comma-separated source entity types"),
+    target_types: str = Query(None, description="Comma-separated target entity types"),
+    min_weight: float = Query(0.0, description="Minimum edge weight"),
+    aggregate: bool = Query(False, description="Aggregate by entity type"),
+    max_links: int = Query(50, description="Maximum number of links"),
+) -> dict[str, Any]:
+    """
+    Get flow data for Sankey diagram (simple GET endpoint).
+
+    A simpler GET endpoint for basic flow extraction.
+    """
+    if not _builder or not _flow_analyzer:
+        raise HTTPException(status_code=503, detail="Flow analyzer not available")
+
+    try:
+        # Get graph
+        if _storage:
+            graph = await _storage.load_graph(project_id)
+        elif _builder:
+            graph = await _builder.build_graph(project_id=project_id)
+        else:
+            raise HTTPException(status_code=503, detail="Graph service not available")
+
+        if not graph or not graph.nodes:
+            return {
+                "nodes": [],
+                "links": [],
+                "total_flow": 0,
+                "layer_count": 0,
+                "node_count": 0,
+                "link_count": 0,
+            }
+
+        # Parse comma-separated types
+        src_types = source_types.split(",") if source_types else None
+        tgt_types = target_types.split(",") if target_types else None
+
+        # Extract flows
+        if flow_type == "relationship":
+            flow_data = _flow_analyzer.extract_relationship_flows(
+                graph=graph,
+                min_weight=min_weight,
+                aggregate_by_type=aggregate,
+            )
+        else:
+            flow_data = _flow_analyzer.extract_entity_flows(
+                graph=graph,
+                source_types=src_types,
+                target_types=tgt_types,
+                min_weight=min_weight,
+            )
+
+        # Aggregate
+        flow_data = _flow_analyzer.aggregate_flows(
+            flow_data=flow_data,
+            max_links=max_links,
+        )
+
+        return _flow_analyzer.to_dict(flow_data)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error extracting flow data: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))

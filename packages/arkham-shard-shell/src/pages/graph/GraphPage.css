@@ -2788,3 +2788,167 @@
   height: 16px;
   accent-color: var(--primary-color);
 }
+
+/* ============================================
+   SANKEY DIAGRAM
+   ============================================ */
+
+.sankey-view-container {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+  overflow: auto;
+}
+
+.sankey-diagram {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.sankey-svg {
+  background: var(--bg-primary);
+  border-radius: 8px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+}
+
+.sankey-tooltip {
+  position: absolute;
+  padding: 0.5rem 0.75rem;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  font-size: 0.75rem;
+  color: var(--text-primary);
+  pointer-events: none;
+  z-index: 100;
+  white-space: nowrap;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+}
+
+.sankey-stats {
+  display: flex;
+  gap: 1.5rem;
+  padding: 0.5rem 1rem;
+  background: var(--bg-secondary);
+  border-radius: 4px;
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+}
+
+.sankey-stats span {
+  white-space: nowrap;
+}
+
+.sankey-loading,
+.sankey-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  min-height: 400px;
+  gap: 1rem;
+  color: var(--text-secondary);
+  text-align: center;
+  padding: 2rem;
+}
+
+.sankey-loading .spin {
+  animation: spin 1s linear infinite;
+}
+
+.sankey-empty h3 {
+  margin: 0;
+  color: var(--text-primary);
+}
+
+.sankey-empty p {
+  margin: 0;
+  max-width: 300px;
+}
+
+/* Sankey Controls */
+.sankey-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  padding: 1rem;
+}
+
+.sankey-controls .control-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.sankey-controls .control-group label {
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+
+.sankey-controls .control-group select,
+.sankey-controls .control-group input[type="range"] {
+  width: 100%;
+}
+
+.sankey-controls .control-group select {
+  padding: 0.5rem;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  color: var(--text-primary);
+  font-size: 0.8rem;
+}
+
+.sankey-controls .control-group input[type="range"] {
+  height: 6px;
+  background: var(--bg-tertiary);
+  border-radius: 3px;
+  appearance: none;
+  cursor: pointer;
+}
+
+.sankey-controls .control-group input[type="range"]::-webkit-slider-thumb {
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  background: var(--primary-color);
+  border-radius: 50%;
+  cursor: pointer;
+}
+
+.sankey-controls .type-checkboxes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem 0.5rem;
+  padding: 0.5rem;
+  background: var(--bg-secondary);
+  border-radius: 4px;
+  max-height: 120px;
+  overflow-y: auto;
+}
+
+.sankey-controls .checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  font-size: 0.75rem;
+  cursor: pointer;
+}
+
+.sankey-controls .checkbox-label.small {
+  font-size: 0.7rem;
+  text-transform: capitalize;
+}
+
+.sankey-controls .checkbox-label input[type="checkbox"] {
+  width: 14px;
+  height: 14px;
+  accent-color: var(--primary-color);
+}
