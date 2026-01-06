@@ -60,6 +60,35 @@ CREATE TABLE IF NOT EXISTS arkham_graph.edges (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
+-- User-defined positions for link analysis mode
+CREATE TABLE IF NOT EXISTS arkham_graph.user_positions (
+    id TEXT PRIMARY KEY,
+    graph_id TEXT NOT NULL,
+    user_id TEXT,  -- For multi-user support (nullable for single-user)
+    node_id TEXT NOT NULL,
+    x REAL NOT NULL,
+    y REAL NOT NULL,
+    pinned BOOLEAN DEFAULT true,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(graph_id, user_id, node_id)
+);
+
+-- Annotations for link analysis mode
+CREATE TABLE IF NOT EXISTS arkham_graph.annotations (
+    id TEXT PRIMARY KEY,
+    graph_id TEXT NOT NULL,
+    node_id TEXT,  -- NULL for graph-level annotations
+    edge_source TEXT,  -- For edge annotations
+    edge_target TEXT,  -- For edge annotations
+    annotation_type TEXT NOT NULL,  -- "note", "label", "highlight", "group"
+    content TEXT,
+    style JSONB DEFAULT '{}',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    user_id TEXT  -- For multi-user support
+);
+
 -- Indexes for efficient queries
 CREATE INDEX IF NOT EXISTS idx_graph_graphs_project ON arkham_graph.graphs(project_id);
 CREATE INDEX IF NOT EXISTS idx_graph_nodes_graph ON arkham_graph.nodes(graph_id);
@@ -69,6 +98,11 @@ CREATE INDEX IF NOT EXISTS idx_graph_edges_graph ON arkham_graph.edges(graph_id)
 CREATE INDEX IF NOT EXISTS idx_graph_edges_source ON arkham_graph.edges(source_id);
 CREATE INDEX IF NOT EXISTS idx_graph_edges_target ON arkham_graph.edges(target_id);
 CREATE INDEX IF NOT EXISTS idx_graph_edges_type ON arkham_graph.edges(relationship_type);
+CREATE INDEX IF NOT EXISTS idx_graph_positions_graph ON arkham_graph.user_positions(graph_id);
+CREATE INDEX IF NOT EXISTS idx_graph_positions_node ON arkham_graph.user_positions(node_id);
+CREATE INDEX IF NOT EXISTS idx_graph_annotations_graph ON arkham_graph.annotations(graph_id);
+CREATE INDEX IF NOT EXISTS idx_graph_annotations_node ON arkham_graph.annotations(node_id);
+CREATE INDEX IF NOT EXISTS idx_graph_annotations_type ON arkham_graph.annotations(annotation_type);
 """
 
 

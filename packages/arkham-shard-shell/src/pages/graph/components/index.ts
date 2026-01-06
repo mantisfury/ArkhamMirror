@@ -15,3 +15,7 @@ export { AssociationMatrix, MatrixControls } from './AssociationMatrix';
 export { TimeSlider } from './TimeSlider';
 export { SankeyDiagram, SankeyControls } from './SankeyDiagram';
 export type { FlowData } from './SankeyDiagram';
+export { LinkAnalysisMode, useLinkAnalysisMode } from './LinkAnalysisMode';
+export type { Position, LinkAnalysisModeProps } from './LinkAnalysisMode';
+export { AnnotationPanel, useAnnotations } from './AnnotationPanel';
+export type { Annotation, AnnotationType, AnnotationPanelProps } from './AnnotationPanel';

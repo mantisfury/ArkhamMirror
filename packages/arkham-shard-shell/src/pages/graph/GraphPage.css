@@ -2952,3 +2952,488 @@
   height: 14px;
   accent-color: var(--primary-color);
 }
+
+/* ============================================
+   LINK ANALYSIS MODE (i2 Style)
+   ============================================ */
+
+.link-analysis-mode {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  padding: 1rem;
+}
+
+.link-analysis-mode h4 {
+  margin: 0 0 0.5rem 0;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+/* Mode Toggle */
+.mode-section {
+  padding-bottom: 1rem;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.mode-toggle {
+  display: flex;
+  gap: 0.25rem;
+  background: var(--bg-tertiary);
+  border-radius: 6px;
+  padding: 0.25rem;
+}
+
+.mode-btn {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.375rem;
+  padding: 0.5rem 0.75rem;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  color: var(--text-secondary);
+  font-size: 0.75rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.mode-btn:hover {
+  color: var(--text-primary);
+  background: var(--bg-hover);
+}
+
+.mode-btn.active {
+  background: var(--primary-color);
+  color: white;
+}
+
+.mode-hint {
+  margin: 0.5rem 0 0 0;
+  font-size: 0.7rem;
+  color: var(--text-tertiary);
+  line-height: 1.4;
+}
+
+/* Position Section */
+.position-section {
+  padding-bottom: 1rem;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.position-stats {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 0.75rem;
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+}
+
+.unsaved-indicator {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  color: var(--warning);
+  font-size: 0.7rem;
+}
+
+.position-actions {
+  display: flex;
+  gap: 0.375rem;
+}
+
+/* Export Section */
+.export-section {
+  padding-bottom: 1rem;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.export-actions {
+  display: flex;
+  gap: 0.375rem;
+}
+
+/* Annotation Section */
+.annotation-section {
+  padding-bottom: 1rem;
+}
+
+.annotation-hint {
+  margin: 0 0 0.75rem 0;
+  font-size: 0.7rem;
+  color: var(--text-tertiary);
+}
+
+.quick-actions {
+  display: flex;
+  gap: 0.375rem;
+}
+
+/* Context Menu */
+.graph-context-menu {
+  min-width: 180px;
+  background: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
+  padding: 0.375rem;
+  z-index: 1000;
+}
+
+.context-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  width: 100%;
+  padding: 0.5rem 0.75rem;
+  background: none;
+  border: none;
+  border-radius: 4px;
+  color: var(--text-primary);
+  font-size: 0.8rem;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.context-menu-item:hover {
+  background: var(--bg-hover);
+}
+
+.context-menu-divider {
+  height: 1px;
+  background: var(--border-color);
+  margin: 0.375rem 0;
+}
+
+.context-menu-submenu {
+  padding: 0.375rem 0.75rem;
+}
+
+.context-menu-label {
+  display: block;
+  font-size: 0.7rem;
+  color: var(--text-tertiary);
+  margin-bottom: 0.5rem;
+}
+
+.highlight-colors {
+  display: flex;
+  gap: 0.375rem;
+}
+
+.highlight-color {
+  width: 24px;
+  height: 24px;
+  border: 2px solid transparent;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: transform 0.15s ease, border-color 0.15s ease;
+}
+
+.highlight-color:hover {
+  transform: scale(1.1);
+  border-color: var(--text-primary);
+}
+
+/* ============================================
+   ANNOTATION PANEL
+   ============================================ */
+
+.annotation-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  padding: 1rem;
+  height: 100%;
+  overflow: hidden;
+}
+
+.annotation-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.annotation-header h4 {
+  margin: 0;
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.annotation-stats {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.5rem;
+  background: var(--bg-secondary);
+  border-radius: 4px;
+}
+
+.annotation-stats .stat {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+}
+
+.annotation-filter {
+  margin-bottom: 0.25rem;
+}
+
+.annotation-filter .filter-select {
+  width: 100%;
+  padding: 0.5rem;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  color: var(--text-primary);
+  font-size: 0.8rem;
+}
+
+.annotation-add-buttons {
+  display: flex;
+  gap: 0.375rem;
+}
+
+.annotation-list {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.annotation-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  padding: 2rem;
+  color: var(--text-tertiary);
+  text-align: center;
+}
+
+.annotation-empty p {
+  margin: 0;
+  font-size: 0.8rem;
+}
+
+.annotation-empty .hint {
+  font-size: 0.7rem;
+  opacity: 0.7;
+}
+
+/* Annotation Item */
+.annotation-item {
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+  padding: 0.625rem 0.75rem;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-left: 3px solid var(--text-tertiary);
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.annotation-item:hover {
+  background: var(--bg-hover);
+  border-color: var(--primary-color);
+}
+
+.annotation-type-note {
+  border-left-color: #3b82f6;
+}
+
+.annotation-type-label {
+  border-left-color: #8b5cf6;
+}
+
+.annotation-type-highlight {
+  border-left-color: #f59e0b;
+}
+
+.annotation-type-group {
+  border-left-color: #22c55e;
+}
+
+.annotation-item-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.annotation-target {
+  flex: 1;
+  font-size: 0.7rem;
+  color: var(--text-tertiary);
+}
+
+.annotation-actions {
+  display: flex;
+  gap: 0.25rem;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+.annotation-item:hover .annotation-actions {
+  opacity: 1;
+}
+
+.annotation-content {
+  font-size: 0.8rem;
+  color: var(--text-primary);
+  line-height: 1.4;
+  word-break: break-word;
+}
+
+.annotation-meta {
+  font-size: 0.65rem;
+  color: var(--text-muted);
+}
+
+/* Annotation Modal */
+.annotation-modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.annotation-modal {
+  width: 100%;
+  max-width: 400px;
+  background: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
+  overflow: hidden;
+}
+
+.annotation-modal .modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.75rem 1rem;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border-color);
+}
+
+.annotation-modal .modal-header h3 {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.annotation-modal .modal-body {
+  padding: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.annotation-modal .modal-info {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  background: var(--bg-secondary);
+  border-radius: 4px;
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+}
+
+.annotation-modal .form-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+}
+
+.annotation-modal .form-group label {
+  font-size: 0.8rem;
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+.annotation-modal .form-group textarea {
+  width: 100%;
+  padding: 0.625rem;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  color: var(--text-primary);
+  font-size: 0.85rem;
+  font-family: inherit;
+  resize: vertical;
+}
+
+.annotation-modal .form-group textarea:focus {
+  outline: none;
+  border-color: var(--primary-color);
+}
+
+.annotation-modal .color-picker {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.annotation-modal .color-option {
+  width: 28px;
+  height: 28px;
+  border: 2px solid transparent;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: transform 0.15s ease, border-color 0.15s ease;
+}
+
+.annotation-modal .color-option:hover {
+  transform: scale(1.1);
+}
+
+.annotation-modal .color-option.selected {
+  border-color: var(--text-primary);
+  transform: scale(1.1);
+}
+
+.annotation-modal .modal-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  padding: 0.75rem 1rem;
+  background: var(--bg-secondary);
+  border-top: 1px solid var(--border-color);
+}
+
+/* Small button variants */
+.btn.btn-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.375rem;
+}
+
+.btn.btn-xs {
+  padding: 0.25rem;
+  font-size: 0.7rem;
+}
+
+.btn.btn-icon.btn-xs {
+  width: 22px;
+  height: 22px;
+  padding: 0;
+}

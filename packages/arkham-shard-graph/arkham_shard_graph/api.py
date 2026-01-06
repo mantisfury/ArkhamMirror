@@ -2025,3 +2025,431 @@ async def get_flows_simple(
     except Exception as e:
         logger.error(f"Error extracting flow data: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# =============================================================================
+# Link Analysis Mode - Positions & Annotations
+# =============================================================================
+
+class PositionData(BaseModel):
+    """Single node position."""
+    node_id: str
+    x: float
+    y: float
+    pinned: bool = True
+
+
+class SavePositionsRequest(BaseModel):
+    """Request to save multiple node positions."""
+    project_id: str
+    positions: list[PositionData]
+    user_id: str | None = None
+
+
+class AnnotationData(BaseModel):
+    """Annotation data."""
+    graph_id: str
+    node_id: str | None = None
+    edge_source: str | None = None
+    edge_target: str | None = None
+    annotation_type: str  # "note", "label", "highlight", "group"
+    content: str | None = None
+    style: dict[str, Any] = {}
+    user_id: str | None = None
+
+
+@router.post("/positions")
+async def save_positions(request: SavePositionsRequest) -> dict[str, Any]:
+    """
+    Save user-defined node positions for link analysis mode.
+
+    Positions are stored per graph and optionally per user.
+    """
+    if not _db_service:
+        raise HTTPException(status_code=503, detail="Database service not available")
+
+    try:
+        # Get or create graph ID for project
+        graph_id_result = await _db_service.fetch_one(
+            "SELECT id FROM arkham_graph.graphs WHERE project_id = :project_id",
+            {"project_id": request.project_id}
+        )
+
+        if not graph_id_result:
+            raise HTTPException(status_code=404, detail="Graph not found for project")
+
+        graph_id = graph_id_result["id"]
+        saved_count = 0
+
+        for pos in request.positions:
+            import uuid
+            from datetime import datetime
+
+            pos_id = str(uuid.uuid4())
+            now = datetime.utcnow()
+
+            # Upsert position (SQLite/PostgreSQL compatible)
+            await _db_service.execute(
+                """
+                INSERT INTO arkham_graph.user_positions
+                    (id, graph_id, user_id, node_id, x, y, pinned, created_at, updated_at)
+                VALUES (:id, :graph_id, :user_id, :node_id, :x, :y, :pinned, :created_at, :updated_at)
+                ON CONFLICT (graph_id, user_id, node_id)
+                DO UPDATE SET x = :x, y = :y, pinned = :pinned, updated_at = :updated_at
+                """,
+                {
+                    "id": pos_id,
+                    "graph_id": graph_id,
+                    "user_id": request.user_id,
+                    "node_id": pos.node_id,
+                    "x": pos.x,
+                    "y": pos.y,
+                    "pinned": pos.pinned,
+                    "created_at": now,
+                    "updated_at": now,
+                }
+            )
+            saved_count += 1
+
+        return {
+            "success": True,
+            "saved_count": saved_count,
+            "project_id": request.project_id,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error saving positions: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/positions/{project_id}")
+async def get_positions(
+    project_id: str,
+    user_id: str = Query(None, description="User ID for multi-user support"),
+) -> dict[str, Any]:
+    """
+    Get saved node positions for a project.
+    """
+    if not _db_service:
+        raise HTTPException(status_code=503, detail="Database service not available")
+
+    try:
+        # Get graph ID for project
+        graph_id_result = await _db_service.fetch_one(
+            "SELECT id FROM arkham_graph.graphs WHERE project_id = :project_id",
+            {"project_id": project_id}
+        )
+
+        if not graph_id_result:
+            return {"positions": {}, "project_id": project_id}
+
+        graph_id = graph_id_result["id"]
+
+        # Get positions
+        if user_id:
+            rows = await _db_service.fetch_all(
+                """
+                SELECT node_id, x, y, pinned, updated_at
+                FROM arkham_graph.user_positions
+                WHERE graph_id = :graph_id AND (user_id = :user_id OR user_id IS NULL)
+                ORDER BY updated_at DESC
+                """,
+                {"graph_id": graph_id, "user_id": user_id}
+            )
+        else:
+            rows = await _db_service.fetch_all(
+                """
+                SELECT node_id, x, y, pinned, updated_at
+                FROM arkham_graph.user_positions
+                WHERE graph_id = :graph_id AND user_id IS NULL
+                ORDER BY updated_at DESC
+                """,
+                {"graph_id": graph_id}
+            )
+
+        # Build positions dict
+        positions = {}
+        for row in rows:
+            positions[row["node_id"]] = {
+                "x": row["x"],
+                "y": row["y"],
+                "pinned": row["pinned"],
+            }
+
+        return {
+            "positions": positions,
+            "project_id": project_id,
+            "position_count": len(positions),
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting positions: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/positions/{project_id}")
+async def clear_positions(
+    project_id: str,
+    user_id: str = Query(None, description="User ID for multi-user support"),
+) -> dict[str, Any]:
+    """
+    Clear all saved positions for a project.
+    """
+    if not _db_service:
+        raise HTTPException(status_code=503, detail="Database service not available")
+
+    try:
+        # Get graph ID for project
+        graph_id_result = await _db_service.fetch_one(
+            "SELECT id FROM arkham_graph.graphs WHERE project_id = :project_id",
+            {"project_id": project_id}
+        )
+
+        if not graph_id_result:
+            return {"deleted_count": 0, "project_id": project_id}
+
+        graph_id = graph_id_result["id"]
+
+        # Delete positions
+        if user_id:
+            await _db_service.execute(
+                """
+                DELETE FROM arkham_graph.user_positions
+                WHERE graph_id = :graph_id AND user_id = :user_id
+                """,
+                {"graph_id": graph_id, "user_id": user_id}
+            )
+        else:
+            await _db_service.execute(
+                """
+                DELETE FROM arkham_graph.user_positions
+                WHERE graph_id = :graph_id AND user_id IS NULL
+                """,
+                {"graph_id": graph_id}
+            )
+
+        return {
+            "success": True,
+            "project_id": project_id,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error clearing positions: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/annotations")
+async def save_annotation(annotation: AnnotationData) -> dict[str, Any]:
+    """
+    Save an annotation (note, label, highlight, or group).
+    """
+    if not _db_service:
+        raise HTTPException(status_code=503, detail="Database service not available")
+
+    try:
+        import uuid
+        import json
+        from datetime import datetime
+
+        annotation_id = str(uuid.uuid4())
+        now = datetime.utcnow()
+
+        await _db_service.execute(
+            """
+            INSERT INTO arkham_graph.annotations
+                (id, graph_id, node_id, edge_source, edge_target, annotation_type,
+                 content, style, created_at, updated_at, user_id)
+            VALUES (:id, :graph_id, :node_id, :edge_source, :edge_target, :annotation_type,
+                    :content, :style, :created_at, :updated_at, :user_id)
+            """,
+            {
+                "id": annotation_id,
+                "graph_id": annotation.graph_id,
+                "node_id": annotation.node_id,
+                "edge_source": annotation.edge_source,
+                "edge_target": annotation.edge_target,
+                "annotation_type": annotation.annotation_type,
+                "content": annotation.content,
+                "style": json.dumps(annotation.style),
+                "created_at": now,
+                "updated_at": now,
+                "user_id": annotation.user_id,
+            }
+        )
+
+        return {
+            "success": True,
+            "annotation_id": annotation_id,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error saving annotation: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/annotations/{project_id}")
+async def get_annotations(
+    project_id: str,
+    annotation_type: str = Query(None, description="Filter by type"),
+    user_id: str = Query(None, description="User ID"),
+) -> dict[str, Any]:
+    """
+    Get all annotations for a project.
+    """
+    if not _db_service:
+        raise HTTPException(status_code=503, detail="Database service not available")
+
+    try:
+        # Get graph ID for project
+        graph_id_result = await _db_service.fetch_one(
+            "SELECT id FROM arkham_graph.graphs WHERE project_id = :project_id",
+            {"project_id": project_id}
+        )
+
+        if not graph_id_result:
+            return {"annotations": [], "project_id": project_id}
+
+        graph_id = graph_id_result["id"]
+
+        # Build query
+        query = """
+            SELECT id, node_id, edge_source, edge_target, annotation_type,
+                   content, style, created_at, updated_at, user_id
+            FROM arkham_graph.annotations
+            WHERE graph_id = :graph_id
+        """
+        params: dict[str, Any] = {"graph_id": graph_id}
+
+        if annotation_type:
+            query += " AND annotation_type = :annotation_type"
+            params["annotation_type"] = annotation_type
+
+        if user_id:
+            query += " AND (user_id = :user_id OR user_id IS NULL)"
+            params["user_id"] = user_id
+
+        query += " ORDER BY created_at DESC"
+
+        rows = await _db_service.fetch_all(query, params)
+
+        import json
+        annotations = []
+        for row in rows:
+            style = row["style"]
+            if isinstance(style, str):
+                try:
+                    style = json.loads(style)
+                except:
+                    style = {}
+
+            annotations.append({
+                "id": row["id"],
+                "node_id": row["node_id"],
+                "edge_source": row["edge_source"],
+                "edge_target": row["edge_target"],
+                "annotation_type": row["annotation_type"],
+                "content": row["content"],
+                "style": style,
+                "created_at": row["created_at"].isoformat() if row["created_at"] else None,
+                "user_id": row["user_id"],
+            })
+
+        return {
+            "annotations": annotations,
+            "project_id": project_id,
+            "count": len(annotations),
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting annotations: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.put("/annotations/{annotation_id}")
+async def update_annotation(
+    annotation_id: str,
+    content: str = Body(None),
+    style: dict[str, Any] = Body(None),
+) -> dict[str, Any]:
+    """
+    Update an existing annotation.
+    """
+    if not _db_service:
+        raise HTTPException(status_code=503, detail="Database service not available")
+
+    try:
+        import json
+        from datetime import datetime
+
+        updates = []
+        params: dict[str, Any] = {"id": annotation_id, "updated_at": datetime.utcnow()}
+
+        if content is not None:
+            updates.append("content = :content")
+            params["content"] = content
+
+        if style is not None:
+            updates.append("style = :style")
+            params["style"] = json.dumps(style)
+
+        if not updates:
+            return {"success": True, "annotation_id": annotation_id, "updated": False}
+
+        updates.append("updated_at = :updated_at")
+
+        await _db_service.execute(
+            f"""
+            UPDATE arkham_graph.annotations
+            SET {", ".join(updates)}
+            WHERE id = :id
+            """,
+            params
+        )
+
+        return {
+            "success": True,
+            "annotation_id": annotation_id,
+            "updated": True,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error updating annotation: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/annotations/{annotation_id}")
+async def delete_annotation(annotation_id: str) -> dict[str, Any]:
+    """
+    Delete an annotation.
+    """
+    if not _db_service:
+        raise HTTPException(status_code=503, detail="Database service not available")
+
+    try:
+        await _db_service.execute(
+            "DELETE FROM arkham_graph.annotations WHERE id = :id",
+            {"id": annotation_id}
+        )
+
+        return {
+            "success": True,
+            "annotation_id": annotation_id,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting annotation: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
