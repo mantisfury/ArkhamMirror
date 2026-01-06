@@ -3078,3 +3078,271 @@ async def get_causal_ordering(
     except Exception as e:
         logger.error(f"Error getting causal ordering: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# =============================================================================
+# GEOSPATIAL GRAPH ENDPOINTS
+# =============================================================================
+
+_geo_engine: "GeoGraphEngine | None" = None
+
+
+def _get_geo_engine():
+    """Get or create GeoGraphEngine instance."""
+    global _geo_engine
+    if _geo_engine is None:
+        from .geospatial import GeoGraphEngine
+        _geo_engine = GeoGraphEngine()
+    return _geo_engine
+
+
+@router.get("/geo/{project_id}")
+async def get_geo_graph(
+    project_id: str,
+    document_ids: str | None = Query(None, description="Comma-separated document IDs"),
+    cluster_radius_km: float | None = Query(None, description="Cluster nearby nodes within radius"),
+    format: str = Query("json", description="Output format: json or geojson"),
+) -> dict[str, Any]:
+    """
+    Get geographic graph data for map visualization.
+
+    Extracts coordinates from location entities and calculates
+    edge distances.
+
+    Args:
+        project_id: Project to build geo graph for
+        document_ids: Optional filter to specific documents
+        cluster_radius_km: Optional clustering radius in km
+        format: Output format (json or geojson)
+
+    Returns:
+        Geographic graph data with coordinates and distances
+    """
+    if not _db_service:
+        raise HTTPException(status_code=503, detail="Database service not available")
+
+    try:
+        doc_ids = document_ids.split(",") if document_ids else None
+        graph = await _get_or_build_graph(project_id, doc_ids)
+
+        if not graph:
+            return {
+                "success": False,
+                "error": "No graph data available",
+            }
+
+        engine = _get_geo_engine()
+        geo_data = engine.build_geo_graph(graph, cluster_radius_km)
+
+        if not geo_data.nodes:
+            return {
+                "success": True,
+                "message": "No geographic coordinates found in graph",
+                "nodes": [],
+                "edges": [],
+            }
+
+        if format == "geojson":
+            return {
+                "success": True,
+                "geojson": engine.to_geojson(geo_data),
+            }
+        else:
+            result = engine.to_dict(geo_data)
+            result["success"] = True
+            return result
+
+    except Exception as e:
+        logger.error(f"Error building geo graph: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/geo/{project_id}/bounds")
+async def get_geo_bounds(
+    project_id: str,
+    document_ids: str | None = Query(None, description="Comma-separated document IDs"),
+) -> dict[str, Any]:
+    """
+    Get geographic bounding box for the graph.
+
+    Args:
+        project_id: Project to analyze
+        document_ids: Optional filter to specific documents
+
+    Returns:
+        Bounding box with min/max coordinates and center
+    """
+    if not _db_service:
+        raise HTTPException(status_code=503, detail="Database service not available")
+
+    try:
+        doc_ids = document_ids.split(",") if document_ids else None
+        graph = await _get_or_build_graph(project_id, doc_ids)
+
+        if not graph:
+            return {
+                "success": False,
+                "error": "No graph data available",
+            }
+
+        engine = _get_geo_engine()
+        geo_nodes = engine.extract_geo_nodes(graph)
+
+        if not geo_nodes:
+            return {
+                "success": True,
+                "bounds": None,
+                "message": "No geographic coordinates found",
+            }
+
+        bounds = engine.calculate_bounds(geo_nodes)
+
+        return {
+            "success": True,
+            "bounds": {
+                "min_lat": bounds.min_lat,
+                "max_lat": bounds.max_lat,
+                "min_lng": bounds.min_lng,
+                "max_lng": bounds.max_lng,
+                "center": bounds.center,
+            } if bounds else None,
+            "node_count": len(geo_nodes),
+        }
+
+    except Exception as e:
+        logger.error(f"Error getting geo bounds: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/geo/{project_id}/distance")
+async def calculate_distance(
+    project_id: str,
+    source_id: str = Query(..., description="Source node ID"),
+    target_id: str = Query(..., description="Target node ID"),
+) -> dict[str, Any]:
+    """
+    Calculate geographic distance between two nodes.
+
+    Args:
+        project_id: Project containing the nodes
+        source_id: Source node ID
+        target_id: Target node ID
+
+    Returns:
+        Distance in kilometers
+    """
+    if not _db_service:
+        raise HTTPException(status_code=503, detail="Database service not available")
+
+    try:
+        graph = await _get_or_build_graph(project_id)
+
+        if not graph:
+            return {
+                "success": False,
+                "error": "No graph data available",
+            }
+
+        engine = _get_geo_engine()
+        geo_nodes = engine.extract_geo_nodes(graph)
+
+        # Find source and target nodes
+        source_node = next((n for n in geo_nodes if n.entity_id == source_id), None)
+        target_node = next((n for n in geo_nodes if n.entity_id == target_id), None)
+
+        if not source_node:
+            return {
+                "success": False,
+                "error": f"Source node {source_id} not found or has no coordinates",
+            }
+
+        if not target_node:
+            return {
+                "success": False,
+                "error": f"Target node {target_id} not found or has no coordinates",
+            }
+
+        distance = engine.calculate_distance(
+            source_node.latitude, source_node.longitude,
+            target_node.latitude, target_node.longitude,
+        )
+
+        return {
+            "success": True,
+            "source": {
+                "id": source_id,
+                "label": source_node.label,
+                "coordinates": [source_node.latitude, source_node.longitude],
+            },
+            "target": {
+                "id": target_id,
+                "label": target_node.label,
+                "coordinates": [target_node.latitude, target_node.longitude],
+            },
+            "distance_km": distance,
+            "distance_miles": distance * 0.621371,
+        }
+
+    except Exception as e:
+        logger.error(f"Error calculating distance: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/geo/{project_id}/clusters")
+async def get_geo_clusters(
+    project_id: str,
+    radius_km: float = Query(50.0, description="Cluster radius in km"),
+) -> dict[str, Any]:
+    """
+    Get geographic clusters of nearby nodes.
+
+    Args:
+        project_id: Project to analyze
+        radius_km: Maximum cluster radius
+
+    Returns:
+        List of node clusters with centers
+    """
+    if not _db_service:
+        raise HTTPException(status_code=503, detail="Database service not available")
+
+    try:
+        graph = await _get_or_build_graph(project_id)
+
+        if not graph:
+            return {
+                "success": False,
+                "error": "No graph data available",
+            }
+
+        engine = _get_geo_engine()
+        geo_nodes = engine.extract_geo_nodes(graph)
+
+        if not geo_nodes:
+            return {
+                "success": True,
+                "clusters": [],
+                "message": "No geographic coordinates found",
+            }
+
+        clusters = engine.cluster_nodes(geo_nodes, radius_km)
+
+        return {
+            "success": True,
+            "clusters": [
+                {
+                    "id": c.id,
+                    "center": [c.center_lat, c.center_lng],
+                    "node_count": len(c.node_ids),
+                    "node_ids": c.node_ids,
+                    "radius_km": c.radius_km,
+                }
+                for c in clusters
+            ],
+            "cluster_count": len(clusters),
+            "total_nodes": len(geo_nodes),
+        }
+
+    except Exception as e:
+        logger.error(f"Error getting clusters: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))

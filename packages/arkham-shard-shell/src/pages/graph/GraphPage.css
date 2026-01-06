@@ -3982,3 +3982,351 @@
   color: var(--primary-color);
   margin-top: 2px;
 }
+
+/* =================================================================
+   GeoGraphView - Geographic Network Overlay (Checkpoint 10)
+   ================================================================= */
+
+.geo-view {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: var(--bg-secondary);
+}
+
+/* Loading State */
+.geo-loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  gap: 1rem;
+  color: var(--text-secondary);
+}
+
+.geo-loading .spin {
+  animation: spin 1s linear infinite;
+}
+
+/* Error State */
+.geo-error {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  gap: 0.75rem;
+  color: var(--text-secondary);
+  text-align: center;
+  padding: 2rem;
+}
+
+.geo-error svg {
+  color: var(--text-tertiary);
+  opacity: 0.5;
+}
+
+.geo-error h3 {
+  margin: 0;
+  font-size: 1.1rem;
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+.geo-error p {
+  margin: 0;
+  font-size: 0.85rem;
+}
+
+.geo-error .hint {
+  font-size: 0.75rem;
+  color: var(--text-tertiary);
+  font-style: italic;
+}
+
+/* Empty State */
+.geo-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  gap: 0.75rem;
+  color: var(--text-secondary);
+  text-align: center;
+  padding: 2rem;
+}
+
+.geo-empty svg {
+  color: var(--text-tertiary);
+  opacity: 0.5;
+}
+
+.geo-empty h3 {
+  margin: 0;
+  font-size: 1.1rem;
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+.geo-empty p {
+  margin: 0;
+  font-size: 0.85rem;
+}
+
+/* Controls Bar */
+.geo-controls-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.75rem 1rem;
+  background: var(--bg-tertiary);
+  border-bottom: 1px solid var(--border-color);
+  flex-shrink: 0;
+}
+
+.geo-stats {
+  display: flex;
+  align-items: center;
+  gap: 1.5rem;
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+}
+
+.geo-stats span {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.geo-options {
+  display: flex;
+  align-items: center;
+  gap: 1.25rem;
+}
+
+.geo-options .checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.geo-options .checkbox-label:hover {
+  color: var(--text-primary);
+}
+
+.geo-options input[type="checkbox"] {
+  width: 14px;
+  height: 14px;
+  accent-color: var(--primary-color);
+}
+
+.geo-options .cluster-radius {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+}
+
+.geo-options .cluster-radius label {
+  color: var(--text-tertiary);
+}
+
+.geo-options .cluster-radius input[type="range"] {
+  width: 100px;
+  height: 4px;
+  accent-color: var(--primary-color);
+}
+
+/* Map Container */
+.geo-map-container {
+  flex: 1;
+  position: relative;
+  overflow: hidden;
+}
+
+.geo-map-container .leaflet-container {
+  background: var(--bg-primary);
+}
+
+/* Custom Marker Icon */
+.geo-marker-icon {
+  background: transparent !important;
+  border: none !important;
+}
+
+/* Map Popups */
+.geo-popup {
+  padding: 0.25rem;
+}
+
+.geo-popup strong {
+  display: block;
+  font-size: 0.85rem;
+  margin-bottom: 0.25rem;
+  color: var(--text-primary);
+}
+
+.geo-popup .entity-type {
+  font-size: 0.7rem;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 0.5rem;
+}
+
+.geo-popup div {
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  line-height: 1.4;
+}
+
+.geo-popup .coords {
+  margin-top: 0.5rem;
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  color: var(--text-tertiary);
+}
+
+/* Legend */
+.geo-legend {
+  display: flex;
+  align-items: center;
+  gap: 1.25rem;
+  padding: 0.5rem 1rem;
+  background: var(--bg-tertiary);
+  border-top: 1px solid var(--border-color);
+  flex-shrink: 0;
+  overflow-x: auto;
+}
+
+.geo-legend .legend-item {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  text-transform: capitalize;
+  white-space: nowrap;
+}
+
+.geo-legend .legend-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+/* GeoGraph Controls (side panel) */
+.geo-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  padding: 1rem;
+}
+
+.geo-controls .control-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.geo-controls .control-group label:not(.checkbox-label) {
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+
+.geo-controls .checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+
+.geo-controls .checkbox-label input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--primary-color);
+}
+
+.geo-controls input[type="range"] {
+  width: 100%;
+  height: 4px;
+  accent-color: var(--primary-color);
+}
+
+.geo-controls .value {
+  font-size: 0.75rem;
+  color: var(--text-tertiary);
+  font-family: var(--font-mono);
+}
+
+.geo-controls .control-info {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  padding: 0.75rem;
+  background: rgba(59, 130, 246, 0.05);
+  border: 1px solid rgba(59, 130, 246, 0.2);
+  border-radius: 6px;
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+}
+
+.geo-controls .control-info p {
+  margin: 0;
+  line-height: 1.4;
+}
+
+.geo-controls .control-info svg {
+  flex-shrink: 0;
+  color: var(--primary-color);
+  margin-top: 2px;
+}
+
+/* Leaflet overrides for dark mode */
+.leaflet-control-zoom a {
+  background: var(--bg-secondary) !important;
+  color: var(--text-primary) !important;
+  border-color: var(--border-color) !important;
+}
+
+.leaflet-control-zoom a:hover {
+  background: var(--bg-tertiary) !important;
+}
+
+.leaflet-control-attribution {
+  background: rgba(var(--bg-secondary-rgb), 0.8) !important;
+  color: var(--text-tertiary) !important;
+  font-size: 0.65rem !important;
+}
+
+.leaflet-control-attribution a {
+  color: var(--text-secondary) !important;
+}
+
+.leaflet-popup-content-wrapper {
+  background: var(--bg-secondary) !important;
+  color: var(--text-primary) !important;
+  border-radius: 8px !important;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2) !important;
+}
+
+.leaflet-popup-tip {
+  background: var(--bg-secondary) !important;
+}
+
+.leaflet-popup-close-button {
+  color: var(--text-secondary) !important;
+}
+
+.leaflet-popup-close-button:hover {
+  color: var(--text-primary) !important;
+}
