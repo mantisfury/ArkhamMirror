@@ -194,12 +194,12 @@ class TemplatesShard(ArkhamShard):
 
         # Publish event
         if self._event_bus:
-            await self._event_bus.publish("templates.template.created", {
+            await self._event_bus.emit("templates.template.created", {
                 "template_id": template.id,
                 "name": template.name,
                 "template_type": template.template_type.value,
                 "created_by": created_by,
-            })
+            }, source="templates-shard")
 
         logger.info(f"Created template: {template.name} ({template.id})")
         return template
@@ -357,12 +357,12 @@ class TemplatesShard(ArkhamShard):
 
         # Publish event
         if self._event_bus:
-            await self._event_bus.publish("templates.template.updated", {
+            await self._event_bus.emit("templates.template.updated", {
                 "template_id": template.id,
                 "name": template.name,
                 "version": template.version,
                 "updated_by": updated_by,
-            })
+            }, source="templates-shard")
 
         logger.info(f"Updated template: {template.name} ({template.id})")
         return template
@@ -397,11 +397,11 @@ class TemplatesShard(ArkhamShard):
 
         # Publish event
         if self._event_bus:
-            await self._event_bus.publish("templates.template.deleted", {
+            await self._event_bus.emit("templates.template.deleted", {
                 "template_id": template_id,
                 "name": template.name,
                 "deleted_by": deleted_by,
-            })
+            }, source="templates-shard")
 
         logger.info(f"Deleted template: {template.name} ({template_id})")
         return True
@@ -435,11 +435,11 @@ class TemplatesShard(ArkhamShard):
         await self._save_template(template)
 
         if self._event_bus:
-            await self._event_bus.publish("templates.template.activated", {
+            await self._event_bus.emit("templates.template.activated", {
                 "template_id": template_id,
                 "name": template.name,
                 "activated_by": activated_by,
-            })
+            }, source="templates-shard")
 
         logger.info(f"Activated template: {template.name} ({template_id})")
         return template
@@ -473,11 +473,11 @@ class TemplatesShard(ArkhamShard):
         await self._save_template(template)
 
         if self._event_bus:
-            await self._event_bus.publish("templates.template.deactivated", {
+            await self._event_bus.emit("templates.template.deactivated", {
                 "template_id": template_id,
                 "name": template.name,
                 "deactivated_by": deactivated_by,
-            })
+            }, source="templates-shard")
 
         logger.info(f"Deactivated template: {template.name} ({template_id})")
         return template
@@ -518,12 +518,12 @@ class TemplatesShard(ArkhamShard):
         )
 
         if self._event_bus:
-            await self._event_bus.publish("templates.version.created", {
+            await self._event_bus.emit("templates.version.created", {
                 "template_id": template_id,
                 "version_id": version.id,
                 "version_number": version.version_number,
                 "created_by": created_by,
-            })
+            }, source="templates-shard")
 
         return version
 
@@ -628,12 +628,12 @@ class TemplatesShard(ArkhamShard):
         )
 
         if self._event_bus:
-            await self._event_bus.publish("templates.version.restored", {
+            await self._event_bus.emit("templates.version.restored", {
                 "template_id": template_id,
                 "version_id": version_id,
                 "new_version": template.version,
                 "restored_by": restored_by,
-            })
+            }, source="templates-shard")
 
         logger.info(f"Restored template {template_id} to version {version.version_number}")
         return template
@@ -694,11 +694,11 @@ class TemplatesShard(ArkhamShard):
         )
 
         if self._event_bus:
-            await self._event_bus.publish("templates.rendered", {
+            await self._event_bus.emit("templates.rendered", {
                 "template_id": template_id,
                 "template_name": template.name,
                 "output_format": render_request.output_format.value,
-            })
+            }, source="templates-shard")
 
         return result
 

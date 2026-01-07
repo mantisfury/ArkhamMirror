@@ -6,6 +6,7 @@ REST API endpoints for letter generation and management.
 
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
+import httpx
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
@@ -430,6 +431,176 @@ async def list_templates(
         offset=offset,
     )
     return [_template_to_response(t) for t in templates]
+
+
+# === Shared Templates Integration (from Templates Shard) ===
+
+INTERNAL_API_BASE = "http://127.0.0.1:8100"
+
+
+class SharedTemplateInfo(BaseModel):
+    """Info about a template from the Templates shard."""
+    id: str
+    name: str
+    description: str
+    template_type: str
+    content: str
+    placeholders: List[Dict[str, Any]]
+    created_at: str
+    updated_at: str
+
+
+class SharedTemplatesResponse(BaseModel):
+    """Response for shared templates."""
+    templates: List[SharedTemplateInfo]
+    count: int
+    source: str = "templates-shard"
+
+
+class ApplySharedTemplateRequest(BaseModel):
+    """Request to apply a shared template."""
+    template_id: str = Field(..., description="Template ID from Templates shard")
+    title: str = Field(..., description="Letter title")
+    placeholder_values: Dict[str, Any] = Field(default_factory=dict, description="Values for placeholders")
+    recipient_name: Optional[str] = None
+    recipient_address: Optional[str] = None
+    subject: Optional[str] = None
+
+
+@router.get("/templates/shared", response_model=SharedTemplatesResponse)
+async def get_shared_templates(
+    request: Request,
+    limit: int = Query(50, ge=1, le=200),
+):
+    """
+    Get letter templates from the Templates shard.
+    
+    This endpoint fetches templates of type LETTER from the centralized
+    Templates shard, enabling reuse of templates across the system.
+    """
+    try:
+        async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
+            response = await client.get(
+                f"{INTERNAL_API_BASE}/api/templates",
+                params={"template_type": "LETTER", "limit": limit, "is_active": True}
+            )
+            
+            if response.status_code != 200:
+                # Return empty list if templates shard unavailable
+                return SharedTemplatesResponse(templates=[], count=0)
+            
+            data = response.json()
+            templates_data = data.get("items", [])
+            
+            templates = []
+            for t in templates_data:
+                templates.append(SharedTemplateInfo(
+                    id=t.get("id", ""),
+                    name=t.get("name", ""),
+                    description=t.get("description", ""),
+                    template_type=t.get("template_type", "LETTER"),
+                    content=t.get("content", ""),
+                    placeholders=t.get("placeholders", []),
+                    created_at=t.get("created_at", ""),
+                    updated_at=t.get("updated_at", ""),
+                ))
+            
+            return SharedTemplatesResponse(
+                templates=templates,
+                count=len(templates),
+            )
+    except httpx.RequestError as e:
+        # Templates shard not available
+        return SharedTemplatesResponse(templates=[], count=0, source="error: " + str(e))
+
+
+@router.post("/from-shared-template", response_model=LetterResponse)
+async def create_letter_from_shared_template(
+    body: ApplySharedTemplateRequest,
+    request: Request,
+):
+    """
+    Create a letter using a template from the Templates shard.
+    
+    Fetches the template from the Templates shard, renders it with
+    the provided placeholder values, and creates a new letter.
+    """
+    from .models import LetterType
+    
+    shard = get_shard(request)
+    
+    try:
+        async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
+            # Fetch the template
+            response = await client.get(
+                f"{INTERNAL_API_BASE}/api/templates/{body.template_id}"
+            )
+            
+            if response.status_code != 200:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Template {body.template_id} not found in Templates shard"
+                )
+            
+            template_data = response.json()
+            
+            # Render the template with provided values
+            render_response = await client.post(
+                f"{INTERNAL_API_BASE}/api/templates/{body.template_id}/render",
+                json={"data": body.placeholder_values}
+            )
+            
+            if render_response.status_code != 200:
+                # Fall back to raw content if render fails
+                rendered_content = template_data.get("content", "")
+            else:
+                render_result = render_response.json()
+                rendered_content = render_result.get("rendered_content", template_data.get("content", ""))
+            
+            # Create the letter
+            letter = await shard.create_letter(
+                title=body.title,
+                letter_type=LetterType.FORMAL,  # Default to formal for shared templates
+                content=rendered_content,
+                recipient_name=body.recipient_name,
+                recipient_address=body.recipient_address,
+                subject=body.subject,
+                metadata={
+                    "from_shared_template": True,
+                    "shared_template_id": body.template_id,
+                    "shared_template_name": template_data.get("name", ""),
+                    "placeholder_values": body.placeholder_values,
+                }
+            )
+            
+            return _letter_to_response(letter)
+            
+    except httpx.RequestError as e:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Templates shard unavailable: {str(e)}"
+        )
+
+
+@router.get("/templates/shared/{template_id}")
+async def get_shared_template_detail(
+    template_id: str,
+    request: Request,
+):
+    """Get details of a specific shared template."""
+    try:
+        async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
+            response = await client.get(
+                f"{INTERNAL_API_BASE}/api/templates/{template_id}"
+            )
+            
+            if response.status_code != 200:
+                raise HTTPException(status_code=404, detail="Template not found")
+            
+            return response.json()
+            
+    except httpx.RequestError as e:
+        raise HTTPException(status_code=503, detail=f"Templates shard unavailable: {str(e)}")
 
 
 @router.get("/templates/{template_id}", response_model=TemplateResponse)

@@ -144,7 +144,7 @@ app.include_router(events.router, prefix="/api/events", tags=["Events"])
 app.include_router(frame_api.router, prefix="/api/frame", tags=["Frame"])
 
 # Output Services API routes
-app.include_router(export.router, prefix="/api/export", tags=["Export"])
+# NOTE: export router removed - export shard handles /api/export routes
 # NOTE: templates router removed - templates shard handles /api/templates routes
 app.include_router(notifications.router, prefix="/api/notifications", tags=["Notifications"])
 app.include_router(scheduler.router, prefix="/api/scheduler", tags=["Scheduler"])

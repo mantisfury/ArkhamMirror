@@ -6,6 +6,7 @@ REST API endpoints for report generation and management.
 
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
+import httpx
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
@@ -358,6 +359,142 @@ async def list_templates(
         offset=offset,
     )
     return [_template_to_response(t) for t in templates]
+
+
+
+# === Shared Templates Integration (from Templates Shard) ===
+
+INTERNAL_API_BASE = "http://127.0.0.1:8100"
+
+
+class SharedTemplateInfo(BaseModel):
+    """Info about a template from the Templates shard."""
+    id: str
+    name: str
+    description: str
+    template_type: str
+    content: str
+    placeholders: List[Dict[str, Any]]
+    created_at: str
+    updated_at: str
+
+
+class SharedTemplatesResponse(BaseModel):
+    """Response for shared templates."""
+    templates: List[SharedTemplateInfo]
+    count: int
+    source: str = "templates-shard"
+
+
+class ApplySharedTemplateRequest(BaseModel):
+    """Request to apply a shared template for report generation."""
+    template_id: str = Field(..., description="Template ID from Templates shard")
+    title: str = Field(..., description="Report title")
+    placeholder_values: Dict[str, Any] = Field(default_factory=dict, description="Values for placeholders")
+    output_format: ReportFormat = Field(default=ReportFormat.HTML)
+    parameters: Optional[Dict[str, Any]] = Field(default=None, description="Additional report parameters")
+
+
+@router.get("/templates/shared", response_model=SharedTemplatesResponse)
+async def get_shared_templates(
+    request: Request,
+    limit: int = Query(50, ge=1, le=200),
+):
+    """
+    Get report templates from the Templates shard.
+    
+    Fetches templates of type REPORT from the centralized Templates shard.
+    """
+    try:
+        async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
+            response = await client.get(
+                f"{INTERNAL_API_BASE}/api/templates",
+                params={"template_type": "REPORT", "limit": limit, "is_active": True}
+            )
+            
+            if response.status_code != 200:
+                return SharedTemplatesResponse(templates=[], count=0)
+            
+            data = response.json()
+            templates_data = data.get("items", [])
+            
+            templates = []
+            for t in templates_data:
+                templates.append(SharedTemplateInfo(
+                    id=t.get("id", ""),
+                    name=t.get("name", ""),
+                    description=t.get("description", ""),
+                    template_type=t.get("template_type", "REPORT"),
+                    content=t.get("content", ""),
+                    placeholders=t.get("placeholders", []),
+                    created_at=t.get("created_at", ""),
+                    updated_at=t.get("updated_at", ""),
+                ))
+            
+            return SharedTemplatesResponse(templates=templates, count=len(templates))
+    except httpx.RequestError as e:
+        return SharedTemplatesResponse(templates=[], count=0, source="error: " + str(e))
+
+
+@router.get("/templates/shared/{template_id}")
+async def get_shared_template_detail(template_id: str, request: Request):
+    """Get details of a specific shared template."""
+    try:
+        async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
+            response = await client.get(f"{INTERNAL_API_BASE}/api/templates/{template_id}")
+            if response.status_code != 200:
+                raise HTTPException(status_code=404, detail="Template not found")
+            return response.json()
+    except httpx.RequestError as e:
+        raise HTTPException(status_code=503, detail=f"Templates shard unavailable: {str(e)}")
+
+
+@router.post("/from-shared-template", response_model=ReportResponse)
+async def create_report_from_shared_template(body: ApplySharedTemplateRequest, request: Request):
+    """Create a report using a template from the Templates shard."""
+    from .models import ReportType
+    
+    shard = get_shard(request)
+    
+    try:
+        async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
+            response = await client.get(f"{INTERNAL_API_BASE}/api/templates/{body.template_id}")
+            
+            if response.status_code != 200:
+                raise HTTPException(status_code=404, detail=f"Template {body.template_id} not found")
+            
+            template_data = response.json()
+            
+            render_response = await client.post(
+                f"{INTERNAL_API_BASE}/api/templates/{body.template_id}/render",
+                json={"data": body.placeholder_values}
+            )
+            
+            if render_response.status_code != 200:
+                rendered_content = template_data.get("content", "")
+            else:
+                render_result = render_response.json()
+                rendered_content = render_result.get("rendered_content", template_data.get("content", ""))
+            
+            params = body.parameters or {}
+            params.update({
+                "from_shared_template": True,
+                "shared_template_id": body.template_id,
+                "shared_template_name": template_data.get("name", ""),
+                "rendered_content": rendered_content,
+            })
+            
+            report = await shard.create_report(
+                report_type=ReportType.CUSTOM,
+                title=body.title,
+                parameters=params,
+                output_format=body.output_format,
+            )
+            
+            return _report_to_response(report)
+            
+    except httpx.RequestError as e:
+        raise HTTPException(status_code=503, detail=f"Templates shard unavailable: {str(e)}")
 
 
 @router.get("/templates/{template_id}", response_model=TemplateResponse)
