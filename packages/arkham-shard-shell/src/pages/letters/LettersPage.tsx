@@ -40,6 +40,29 @@ interface Template {
   required_placeholders: string[];
 }
 
+interface SharedTemplate {
+  id: string;
+  name: string;
+  description: string;
+  template_type: string;
+  content: string;
+  placeholders: Array<{
+    name: string;
+    description: string;
+    data_type: string;
+    default_value: string | null;
+    required: boolean;
+  }>;
+  created_at: string;
+  updated_at: string;
+}
+
+interface SharedTemplatesResponse {
+  templates: SharedTemplate[];
+  count: number;
+  source: string;
+}
+
 interface Statistics {
   total_letters: number;
   by_status: Record<string, number>;
@@ -90,6 +113,11 @@ export function LettersPage() {
 
   const { data: templates, loading: loadingTemplates } = useFetch<Template[]>(
     '/api/letters/templates'
+  );
+
+  // Fetch shared templates from Templates shard
+  const { data: sharedTemplatesData, loading: loadingShared } = useFetch<SharedTemplatesResponse>(
+    '/api/letters/templates/shared'
   );
 
   const { data: stats } = useFetch<Statistics>('/api/letters/stats');
@@ -416,8 +444,13 @@ export function LettersPage() {
         {viewMode === 'template' && (
           <TemplateSelector
             templates={templates || []}
-            loading={loadingTemplates}
+            sharedTemplates={sharedTemplatesData?.templates || []}
+            loading={loadingTemplates || loadingShared}
             onSelect={handleCreateFromTemplate}
+            onSelectShared={(template) => {
+              // When selecting a shared template, use its content directly
+              setViewMode('create');
+            }}
           />
         )}
 
@@ -446,16 +479,45 @@ export function LettersPage() {
 // Template Selector Component
 interface TemplateSelectorProps {
   templates: Template[];
+  sharedTemplates: SharedTemplate[];
   loading: boolean;
   onSelect: (template: Template) => void;
+  onSelectShared: (template: SharedTemplate) => void;
 }
 
-function TemplateSelector({ templates, loading, onSelect }: TemplateSelectorProps) {
+function TemplateSelector({ templates, sharedTemplates, loading, onSelect, onSelectShared }: TemplateSelectorProps) {
+  const { toast } = useToast();
   const [filterType, setFilterType] = useState<string>('');
+  const [activeTab, setActiveTab] = useState<'local' | 'shared'>('shared');
 
   const filteredTemplates = templates.filter(t =>
     !filterType || t.letter_type === filterType
   );
+
+  const handleUseSharedTemplate = async (template: SharedTemplate) => {
+    try {
+      // Create letter from shared template
+      const response = await fetch('/api/letters/from-shared-template', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          template_id: template.id,
+          title: `Letter from ${template.name}`,
+          placeholder_values: {},
+        }),
+      });
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.detail || 'Failed to create letter from template');
+      }
+
+      toast.success('Letter created from template');
+      onSelectShared(template);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to use template');
+    }
+  };
 
   if (loading) {
     return (
@@ -470,39 +532,92 @@ function TemplateSelector({ templates, loading, onSelect }: TemplateSelectorProp
     <div className="template-selector">
       <div className="template-header">
         <h2>Choose a Template</h2>
-        <select value={filterType} onChange={(e) => setFilterType(e.target.value)}>
-          <option value="">All Types</option>
-          {LETTER_TYPES.map(type => (
-            <option key={type.value} value={type.value}>
-              {type.label}
-            </option>
-          ))}
-        </select>
-      </div>
-
-      <div className="templates-grid">
-        {filteredTemplates.map(template => (
-          <div key={template.id} className="template-card" onClick={() => onSelect(template)}>
-            <div className="template-icon">
-              <Icon name={LETTER_TYPES.find(t => t.value === template.letter_type)?.icon || 'FileText'} size={24} />
-            </div>
-            <h3>{template.name}</h3>
-            <p>{template.description}</p>
-            <div className="template-meta">
-              <span className="type-badge">{template.letter_type}</span>
-              <span className="placeholders-count">
-                {template.placeholders.length} placeholders
-              </span>
-            </div>
-          </div>
-        ))}
-      </div>
-
-      {filteredTemplates.length === 0 && (
-        <div className="templates-empty">
-          <Icon name="FileText" size={48} />
-          <p>No templates available</p>
+        <div className="template-tabs">
+          <button
+            className={`tab-btn ${activeTab === 'shared' ? 'active' : ''}`}
+            onClick={() => setActiveTab('shared')}
+          >
+            <Icon name="Library" size={16} />
+            Shared Templates ({sharedTemplates.length})
+          </button>
+          <button
+            className={`tab-btn ${activeTab === 'local' ? 'active' : ''}`}
+            onClick={() => setActiveTab('local')}
+          >
+            <Icon name="FileText" size={16} />
+            Local Templates ({templates.length})
+          </button>
         </div>
+      </div>
+
+      {activeTab === 'shared' && (
+        <>
+          {sharedTemplates.length > 0 ? (
+            <div className="templates-grid">
+              {sharedTemplates.map(template => (
+                <div key={template.id} className="template-card shared" onClick={() => handleUseSharedTemplate(template)}>
+                  <div className="template-icon">
+                    <Icon name="Library" size={24} />
+                  </div>
+                  <h3>{template.name}</h3>
+                  <p>{template.description}</p>
+                  <div className="template-meta">
+                    <span className="type-badge shared">Shared</span>
+                    <span className="placeholders-count">
+                      {template.placeholders.length} placeholders
+                    </span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="templates-empty">
+              <Icon name="Library" size={48} />
+              <p>No shared letter templates available</p>
+              <span className="empty-hint">Create LETTER type templates in the Templates shard</span>
+            </div>
+          )}
+        </>
+      )}
+
+      {activeTab === 'local' && (
+        <>
+          <div className="filter-row">
+            <select value={filterType} onChange={(e) => setFilterType(e.target.value)}>
+              <option value="">All Types</option>
+              {LETTER_TYPES.map(type => (
+                <option key={type.value} value={type.value}>
+                  {type.label}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {filteredTemplates.length > 0 ? (
+            <div className="templates-grid">
+              {filteredTemplates.map(template => (
+                <div key={template.id} className="template-card" onClick={() => onSelect(template)}>
+                  <div className="template-icon">
+                    <Icon name={LETTER_TYPES.find(t => t.value === template.letter_type)?.icon || 'FileText'} size={24} />
+                  </div>
+                  <h3>{template.name}</h3>
+                  <p>{template.description}</p>
+                  <div className="template-meta">
+                    <span className="type-badge">{template.letter_type}</span>
+                    <span className="placeholders-count">
+                      {template.placeholders.length} placeholders
+                    </span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="templates-empty">
+              <Icon name="FileText" size={48} />
+              <p>No local templates available</p>
+            </div>
+          )}
+        </>
       )}
     </div>
   );

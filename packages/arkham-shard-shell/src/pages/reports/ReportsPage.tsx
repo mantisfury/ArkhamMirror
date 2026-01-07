@@ -41,6 +41,29 @@ interface ReportTemplate {
   metadata: Record<string, unknown>;
 }
 
+interface SharedTemplate {
+  id: string;
+  name: string;
+  description: string;
+  template_type: string;
+  content: string;
+  placeholders: Array<{
+    name: string;
+    description: string;
+    data_type: string;
+    default_value: string | null;
+    required: boolean;
+  }>;
+  created_at: string;
+  updated_at: string;
+}
+
+interface SharedTemplatesResponse {
+  templates: SharedTemplate[];
+  count: number;
+  source: string;
+}
+
 const REPORT_TYPES = [
   { value: 'summary', label: 'System Summary', icon: 'FileText' },
   { value: 'entity_profile', label: 'Entity Profile', icon: 'User' },
@@ -78,6 +101,11 @@ export function ReportsPage() {
   // Fetch templates
   const { data: templates, loading: templatesLoading, error: templatesError, refetch: refetchTemplates } = useFetch<ReportTemplate[]>(
     '/api/reports/templates'
+  );
+
+  // Fetch shared templates from Templates shard
+  const { data: sharedTemplatesData, loading: sharedLoading } = useFetch<SharedTemplatesResponse>(
+    '/api/reports/templates/shared'
   );
 
   const handleCreateReport = async () => {
@@ -337,52 +365,123 @@ export function ReportsPage() {
       {/* Templates Tab */}
       {activeTab === 'templates' && (
         <main className="templates-content">
-          {templatesLoading ? (
-            <div className="templates-loading">
-              <Icon name="Loader2" size={32} className="spin" />
-              <span>Loading templates...</span>
-            </div>
-          ) : templatesError ? (
-            <div className="templates-error">
-              <Icon name="AlertCircle" size={32} />
-              <span>Failed to load templates</span>
-              <button className="btn btn-secondary" onClick={() => refetchTemplates()}>
-                Retry
-              </button>
-            </div>
-          ) : templates && templates.length > 0 ? (
-            <div className="templates-list">
-              {templates.map(template => (
-                <div key={template.id} className="template-card">
-                  <Icon name="FileTemplate" size={20} />
-                  <div className="template-info">
-                    <h3>{template.name}</h3>
-                    <p>{template.description}</p>
-                    <div className="template-meta">
-                      <span>Type: {template.report_type}</span>
-                      <span>Format: {template.default_format}</span>
+          {/* Shared Templates Section */}
+          <div className="templates-section">
+            <h3 className="section-title">
+              <Icon name="Library" size={18} />
+              Shared Templates from Templates Shard
+            </h3>
+            {sharedLoading ? (
+              <div className="templates-loading small">
+                <Icon name="Loader2" size={24} className="spin" />
+                <span>Loading shared templates...</span>
+              </div>
+            ) : sharedTemplatesData?.templates && sharedTemplatesData.templates.length > 0 ? (
+              <div className="templates-list">
+                {sharedTemplatesData.templates.map(template => (
+                  <div key={template.id} className="template-card shared">
+                    <Icon name="Library" size={20} />
+                    <div className="template-info">
+                      <h3>{template.name}</h3>
+                      <p>{template.description}</p>
+                      <div className="template-meta">
+                        <span className="shared-badge">Shared</span>
+                        <span>{template.placeholders.length} placeholders</span>
+                      </div>
                     </div>
+                    <button
+                      className="btn btn-sm btn-primary"
+                      onClick={async () => {
+                        try {
+                          const response = await fetch('/api/reports/from-shared-template', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                              template_id: template.id,
+                              title: `Report from ${template.name}`,
+                              placeholder_values: {},
+                            }),
+                          });
+                          if (response.ok) {
+                            toast.success('Report created from template');
+                            refetchReports();
+                            setActiveTab('reports');
+                          } else {
+                            const error = await response.json();
+                            toast.error(error.detail || 'Failed to create report');
+                          }
+                        } catch (err) {
+                          toast.error('Failed to create report from template');
+                        }
+                      }}
+                    >
+                      Use Template
+                    </button>
                   </div>
-                  <button
-                    className="btn btn-sm btn-primary"
-                    onClick={() => {
-                      setSelectedTemplate(template.id);
-                      setReportType(template.report_type);
-                      setOutputFormat(template.default_format);
-                      setShowCreateDialog(true);
-                    }}
-                  >
-                    Use Template
-                  </button>
-                </div>
-              ))}
-            </div>
-          ) : (
-            <div className="templates-empty">
-              <Icon name="FileTemplate" size={48} />
-              <span>No templates available</span>
-            </div>
-          )}
+                ))}
+              </div>
+            ) : (
+              <div className="templates-empty small">
+                <Icon name="Library" size={32} />
+                <span>No shared report templates</span>
+                <small>Create REPORT type templates in the Templates shard</small>
+              </div>
+            )}
+          </div>
+
+          {/* Local Templates Section */}
+          <div className="templates-section">
+            <h3 className="section-title">
+              <Icon name="FileTemplate" size={18} />
+              Local Templates
+            </h3>
+            {templatesLoading ? (
+              <div className="templates-loading small">
+                <Icon name="Loader2" size={24} className="spin" />
+                <span>Loading templates...</span>
+              </div>
+            ) : templatesError ? (
+              <div className="templates-error">
+                <Icon name="AlertCircle" size={32} />
+                <span>Failed to load templates</span>
+                <button className="btn btn-secondary" onClick={() => refetchTemplates()}>
+                  Retry
+                </button>
+              </div>
+            ) : templates && templates.length > 0 ? (
+              <div className="templates-list">
+                {templates.map(template => (
+                  <div key={template.id} className="template-card">
+                    <Icon name="FileTemplate" size={20} />
+                    <div className="template-info">
+                      <h3>{template.name}</h3>
+                      <p>{template.description}</p>
+                      <div className="template-meta">
+                        <span>Type: {template.report_type}</span>
+                        <span>Format: {template.default_format}</span>
+                      </div>
+                    </div>
+                    <button
+                      className="btn btn-sm btn-primary"
+                      onClick={() => {
+                        setSelectedTemplate(template.id);
+                        setReportType(template.report_type);
+                        setOutputFormat(template.default_format);
+                        setShowCreateDialog(true);
+                      }}
+                    >
+                      Use Template
+                    </button>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="templates-empty small">
+                <Icon name="FileTemplate" size={32} />
+                <span>No local templates available</span>
+              </div>
+            )}
+          </div>
         </main>
       )}
 

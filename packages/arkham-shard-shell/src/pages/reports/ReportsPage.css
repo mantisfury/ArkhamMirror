@@ -345,3 +345,48 @@
     max-height: 95vh;
   }
 }
+
+/* Templates Sections */
+.templates-section {
+  margin-bottom: 2rem;
+}
+
+.section-title {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0 0 1rem 0;
+  padding-bottom: 0.5rem;
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  border-bottom: 1px solid var(--border-color);
+}
+
+.templates-loading.small,
+.templates-empty.small {
+  padding: 1.5rem;
+  font-size: 0.875rem;
+}
+
+.templates-empty.small small {
+  display: block;
+  margin-top: 0.25rem;
+  color: var(--text-tertiary);
+  font-size: 0.75rem;
+}
+
+.template-card.shared {
+  border-color: var(--primary);
+  background: linear-gradient(135deg, var(--bg-tertiary) 0%, rgba(59, 130, 246, 0.1) 100%);
+}
+
+.shared-badge {
+  display: inline-block;
+  padding: 0.125rem 0.5rem;
+  background: var(--primary);
+  color: white;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  font-weight: 500;
+}

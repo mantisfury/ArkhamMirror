@@ -481,3 +481,68 @@
   opacity: 0.5;
   cursor: not-allowed;
 }
+
+/* Template Tabs */
+.template-tabs {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.tab-btn {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 1rem;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 0.875rem;
+  transition: all 0.2s ease;
+}
+
+.tab-btn:hover {
+  background: var(--bg-quaternary);
+  color: var(--text-primary);
+}
+
+.tab-btn.active {
+  background: var(--primary);
+  color: white;
+  border-color: var(--primary);
+}
+
+.filter-row {
+  margin-bottom: 1rem;
+}
+
+.filter-row select {
+  padding: 0.5rem 1rem;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  color: var(--text-primary);
+}
+
+.template-card.shared {
+  border-color: var(--primary);
+  background: linear-gradient(135deg, var(--bg-tertiary) 0%, rgba(59, 130, 246, 0.1) 100%);
+}
+
+.template-card.shared:hover {
+  border-color: var(--primary);
+  box-shadow: 0 4px 12px rgba(59, 130, 246, 0.2);
+}
+
+.type-badge.shared {
+  background: var(--primary);
+  color: white;
+}
+
+.empty-hint {
+  display: block;
+  margin-top: 0.5rem;
+  font-size: 0.75rem;
+  color: var(--text-tertiary);
+}
