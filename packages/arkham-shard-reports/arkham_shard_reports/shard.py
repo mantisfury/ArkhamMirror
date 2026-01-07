@@ -223,18 +223,22 @@ class ReportsShard(ArkhamShard):
                 source=self.name,
             )
 
-        # Queue generation if workers available
-        if self._workers:
-            await self._workers.enqueue(
-                pool="reports",
-                job_id=f"report-gen-{report_id}",
-                payload={
-                    "report_id": report_id,
-                    "action": "generate_report",
-                },
-            )
-        else:
-            # Generate inline (stub implementation)
+        # Queue generation if workers available, otherwise generate inline
+        try:
+            if self._workers:
+                await self._workers.enqueue(
+                    pool="reports",
+                    job_id=f"report-gen-{report_id}",
+                    payload={
+                        "report_id": report_id,
+                        "action": "generate_report",
+                    },
+                )
+            else:
+                await self._generate_report_inline(report)
+        except Exception as e:
+            # Worker pool not available, generate inline
+            logger.info(f"Workers not available, generating inline: {e}")
             await self._generate_report_inline(report)
 
         return report

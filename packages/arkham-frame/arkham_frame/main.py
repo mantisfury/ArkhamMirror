@@ -132,7 +132,8 @@ app.add_middleware(
 
 # Include API routes
 from .api import health, projects, shards, events, frame as frame_api
-from .api import export, templates, notifications, scheduler
+from .api import export, notifications, scheduler
+# NOTE: templates import removed - templates shard handles /api/templates routes
 
 app.include_router(health.router, tags=["Health"])
 # NOTE: Frame's documents router removed - documents shard handles /api/documents routes
@@ -144,7 +145,7 @@ app.include_router(frame_api.router, prefix="/api/frame", tags=["Frame"])
 
 # Output Services API routes
 app.include_router(export.router, prefix="/api/export", tags=["Export"])
-app.include_router(templates.router, prefix="/api/templates", tags=["Templates"])
+# NOTE: templates router removed - templates shard handles /api/templates routes
 app.include_router(notifications.router, prefix="/api/notifications", tags=["Notifications"])
 app.include_router(scheduler.router, prefix="/api/scheduler", tags=["Scheduler"])
 

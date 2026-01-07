@@ -6,7 +6,9 @@ including FOIA requests, complaints, legal correspondence, and custom documents.
 """
 
 import logging
+import os
 import re
+import tempfile
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
@@ -53,6 +55,7 @@ class LettersShard(ArkhamShard):
         self._llm = None
         self._storage = None
         self._initialized = False
+        self._letters_dir = None
 
     async def initialize(self, frame) -> None:
         """Initialize shard with frame services."""
@@ -61,6 +64,10 @@ class LettersShard(ArkhamShard):
         self._events = frame.events
         self._llm = getattr(frame, "llm", None)
         self._storage = getattr(frame, "storage", None)
+
+        # Setup letters output directory
+        self._letters_dir = os.path.join(tempfile.gettempdir(), "arkham_letters")
+        os.makedirs(self._letters_dir, exist_ok=True)
 
         # Create database schema
         await self._create_schema()
@@ -587,13 +594,13 @@ class LettersShard(ArkhamShard):
             # Generate export content
             file_content = await self._generate_export(letter, export_format)
 
-            # Save to storage if available
-            if self._storage:
-                file_name = f"letter_{letter_id}.{export_format.value}"
-                file_path = await self._storage.save(file_name, file_content)
-            else:
-                # No storage, stub path
-                file_path = f"/tmp/letter_{letter_id}.{export_format.value}"
+            # Save to letters directory
+            file_name = f"letter_{letter_id}.{export_format.value}"
+            file_path = os.path.join(self._letters_dir, file_name)
+
+            # Write file
+            with open(file_path, 'wb') as f:
+                f.write(file_content)
 
             # Update letter with export info
             letter.last_export_format = export_format
