@@ -124,6 +124,7 @@ export function GraphPage() {
   const [containerSize, setContainerSize] = useState({ width: 800, height: 600 });
   const [zoomLevel, setZoomLevel] = useState(1);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const hasInitialFit = useRef(false); // Track if initial zoomToFit has been done
 
   // Scoring state
   const [scores, setScores] = useState<Map<string, EntityScore>>(new Map());
@@ -830,7 +831,13 @@ export function GraphPage() {
     }
   }, [selectedNode, highlightedPath, pathStart, labels.fontSize, getNodeRadius, shouldShowLabel, lodSettings.showTextBackgrounds]);
 
-  // Link rendering - color based on relationship type
+  // Calculate max edge weight for opacity normalization
+  const maxEdgeWeight = useMemo(() => {
+    if (!forceGraphData.links.length) return 1;
+    return Math.max(...forceGraphData.links.map(l => l.weight || 0), 1);
+  }, [forceGraphData.links]);
+
+  // Link rendering - color based on relationship type with weight-based opacity
   const linkColor = useCallback((link: GraphEdge): string => {
     const sourceId = typeof link.source === 'string' ? link.source : (link.source as GraphNode).id;
     const targetId = typeof link.target === 'string' ? link.target : (link.target as GraphNode).id;
@@ -844,9 +851,14 @@ export function GraphPage() {
     const relType = link.relationship_type || link.type;
     const style = getRelationshipStyle(relType);
 
-    // Apply opacity
-    return style.color + 'cc'; // Add 80% opacity
-  }, [highlightedPath]);
+    // Calculate opacity based on weight (stronger = more opaque)
+    // Range from 30% (weak) to 100% (strong)
+    const normalizedWeight = Math.min((link.weight || 0) / maxEdgeWeight, 1);
+    const opacity = Math.round(0.3 + normalizedWeight * 0.7); // 0.3 to 1.0
+    const opacityHex = Math.round(opacity * 255).toString(16).padStart(2, '0');
+
+    return style.color + opacityHex;
+  }, [highlightedPath, maxEdgeWeight]);
 
   const linkWidth = useCallback((link: GraphEdge): number => {
     const sourceId = typeof link.source === 'string' ? link.source : (link.source as GraphNode).id;
@@ -1449,7 +1461,13 @@ export function GraphPage() {
                 // Performance: reduce simulation time for large graphs
                 cooldownTicks={lodSettings.cooldownTicks}
                 warmupTicks={lodSettings.warmupTicks}
-                onEngineStop={() => graphRef.current?.zoomToFit(400, 50)}
+                onEngineStop={() => {
+                  // Only fit to view on initial load, not on every engine stop
+                  if (!hasInitialFit.current) {
+                    hasInitialFit.current = true;
+                    graphRef.current?.zoomToFit(400, 50);
+                  }
+                }}
               />
             </div>
           ) : activeTab !== 'matrix' && activeTab !== 'sankey' ? (
