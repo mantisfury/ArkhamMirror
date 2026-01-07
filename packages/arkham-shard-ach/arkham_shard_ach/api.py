@@ -516,6 +516,98 @@ async def get_matrices_count():
     return {"count": len(matrices)}
 
 
+@router.get("/evidence")
+async def list_all_evidence(
+    limit: int = Query(100, ge=1, le=500),
+):
+    """
+    List all evidence items across all matrices.
+    Used by graph shard for cross-shard data integration.
+    """
+    if not _shard or not _shard._db:
+        return {"items": [], "total": 0}
+
+    try:
+        rows = await _shard._db.fetch_all(
+            """
+            SELECT e.*, m.title as matrix_title
+            FROM arkham_ach.evidence e
+            JOIN arkham_ach.matrices m ON e.matrix_id = m.id
+            ORDER BY e.created_at DESC
+            LIMIT :limit
+            """,
+            {"limit": limit}
+        )
+
+        items = []
+        for row in rows:
+            items.append({
+                "id": row["id"],
+                "matrix_id": row["matrix_id"],
+                "matrix_title": row["matrix_title"],
+                "description": row["description"],
+                "source": row["source"],
+                "evidence_type": row["evidence_type"],
+                "credibility": row["credibility"],
+                "relevance": row["relevance"],
+                "created_at": row["created_at"].isoformat() if row["created_at"] else None,
+            })
+
+        # Get total count
+        count_row = await _shard._db.fetch_one("SELECT COUNT(*) as cnt FROM arkham_ach.evidence")
+        total = count_row["cnt"] if count_row else len(items)
+
+        return {"items": items, "total": total}
+    except Exception as e:
+        logger.error(f"Failed to list evidence: {e}")
+        return {"items": [], "total": 0}
+
+
+@router.get("/hypotheses")
+async def list_all_hypotheses(
+    limit: int = Query(100, ge=1, le=500),
+):
+    """
+    List all hypotheses across all matrices.
+    Used by graph shard for cross-shard data integration.
+    """
+    if not _shard or not _shard._db:
+        return {"items": [], "total": 0}
+
+    try:
+        rows = await _shard._db.fetch_all(
+            """
+            SELECT h.*, m.title as matrix_title
+            FROM arkham_ach.hypotheses h
+            JOIN arkham_ach.matrices m ON h.matrix_id = m.id
+            ORDER BY h.created_at DESC
+            LIMIT :limit
+            """,
+            {"limit": limit}
+        )
+
+        items = []
+        for row in rows:
+            items.append({
+                "id": row["id"],
+                "matrix_id": row["matrix_id"],
+                "matrix_title": row["matrix_title"],
+                "title": row["title"],
+                "description": row["description"],
+                "is_lead": row["is_lead"],
+                "created_at": row["created_at"].isoformat() if row["created_at"] else None,
+            })
+
+        # Get total count
+        count_row = await _shard._db.fetch_one("SELECT COUNT(*) as cnt FROM arkham_ach.hypotheses")
+        total = count_row["cnt"] if count_row else len(items)
+
+        return {"items": items, "total": total}
+    except Exception as e:
+        logger.error(f"Failed to list hypotheses: {e}")
+        return {"items": [], "total": 0}
+
+
 @router.post("/hypothesis")
 async def add_hypothesis(request: AddHypothesisRequest):
     """Add a hypothesis to a matrix."""

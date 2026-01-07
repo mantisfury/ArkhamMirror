@@ -687,14 +687,14 @@ async def get_sources_status() -> dict[str, Any]:
     import httpx
 
     sources = {
-        "claims": {"endpoint": "/api/claims", "available": False, "count": 0},
+        "claims": {"endpoint": "/api/claims/", "available": False, "count": 0},
         "achEvidence": {"endpoint": "/api/ach/evidence", "available": False, "count": 0},
         "achHypotheses": {"endpoint": "/api/ach/hypotheses", "available": False, "count": 0},
-        "provenanceArtifacts": {"endpoint": "/api/provenance/artifacts", "available": False, "count": 0},
+        "provenanceArtifacts": {"endpoint": "/api/provenance/chains", "available": False, "count": 0},
         "timelineEvents": {"endpoint": "/api/timeline/events", "available": False, "count": 0},
-        "contradictions": {"endpoint": "/api/contradictions", "available": False, "count": 0},
-        "patterns": {"endpoint": "/api/patterns", "available": False, "count": 0},
-        "credibilityRatings": {"endpoint": "/api/credibility/ratings", "available": False, "count": 0},
+        "contradictions": {"endpoint": "/api/contradictions/list", "available": False, "count": 0},
+        "patterns": {"endpoint": "/api/patterns/", "available": False, "count": 0},
+        "credibilityRatings": {"endpoint": "/api/credibility/", "available": False, "count": 0},
     }
 
     async with httpx.AsyncClient(base_url="http://127.0.0.1:8100", timeout=5.0) as client:
