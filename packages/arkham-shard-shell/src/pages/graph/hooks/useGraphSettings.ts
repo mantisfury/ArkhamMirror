@@ -82,7 +82,7 @@ export interface ScoringSettings {
 export interface DataSourceSettings {
   // Primary sources - base data for graph building
   documentEntities: boolean;      // Include entities from documents
-  selectedDocumentIds: string[];  // Specific documents to include (empty = all)
+  selectedDocumentIds: string[] | null;  // null = all, [] = none, [...ids] = specific
   entityCooccurrences: boolean;   // Include co-occurrence relationships
 
   // Node sources - add entities from other shards
@@ -183,7 +183,7 @@ export const DEFAULT_SETTINGS: GraphSettings = {
   dataSources: {
     // Primary sources - enabled by default
     documentEntities: true,
-    selectedDocumentIds: [],  // Empty = all documents
+    selectedDocumentIds: null,  // null = all documents
     entityCooccurrences: true,
     // Cross-shard sources - disabled by default
     claims: false,

@@ -17,20 +17,24 @@ import {
   useModels,
   useCacheStats,
   useNearest,
-  useEmbedDocument,
   useClearCache,
   useAvailableModels,
   useVectorCollections,
   useCheckModelSwitch,
   useSwitchModel,
+  useDocumentsForEmbedding,
+  useBatchEmbedDocuments,
 } from './api';
-import type { AvailableModel, ModelSwitchCheckResult } from './types';
+import type { AvailableModel, ModelSwitchCheckResult, DocumentForEmbedding } from './types';
 
 export function EmbedPage() {
   const { toast } = useToast();
   const [searchQuery, setSearchQuery] = useState('');
   const [searchLimit, setSearchLimit] = useState(10);
-  const [docIdInput, setDocIdInput] = useState('');
+
+  // Document selection state
+  const [selectedDocIds, setSelectedDocIds] = useState<Set<string>>(new Set());
+  const [onlyUnembedded, setOnlyUnembedded] = useState(false);
 
   // Model management state
   const [selectedModel, setSelectedModel] = useState<string | null>(null);
@@ -42,10 +46,13 @@ export function EmbedPage() {
   const { data: collections, refetch: refetchCollections } = useVectorCollections();
   const { data: cacheStats, loading: loadingCache, refetch: refetchCache } = useCacheStats();
   const { search, data: searchResults, loading: searching } = useNearest();
-  const { embed: embedDoc, loading: embeddingDoc } = useEmbedDocument();
   const { clear: clearCacheAPI, loading: clearingCache } = useClearCache();
   const { check: checkSwitch, loading: checkingSwitch } = useCheckModelSwitch();
   const { switchTo: switchModelAPI, loading: switchingModel } = useSwitchModel();
+
+  // Document embedding hooks
+  const { fetch: fetchDocs, data: docsData, loading: loadingDocs, refetch: refetchDocs } = useDocumentsForEmbedding(onlyUnembedded);
+  const { embed: batchEmbed, loading: batchEmbedding } = useBatchEmbedDocuments();
 
   // Auto-refresh cache stats
   useEffect(() => {
@@ -55,6 +62,11 @@ export function EmbedPage() {
 
     return () => clearInterval(interval);
   }, [refetchCache]);
+
+  // Fetch documents on mount and when filter changes
+  useEffect(() => {
+    fetchDocs();
+  }, [fetchDocs, onlyUnembedded]);
 
   const currentModel = models?.find(m => m.loaded) || availableModels?.find(m => m.is_current);
 
@@ -71,19 +83,65 @@ export function EmbedPage() {
     }
   };
 
-  const handleEmbedDocument = async () => {
-    if (!docIdInput.trim()) {
-      toast.warning('Please enter a document ID');
+  // Document selection handlers
+  const handleDocumentSelect = (docId: string) => {
+    setSelectedDocIds(prev => {
+      const next = new Set(prev);
+      if (next.has(docId)) {
+        next.delete(docId);
+      } else {
+        next.add(docId);
+      }
+      return next;
+    });
+  };
+
+  const handleSelectAll = () => {
+    if (!docsData?.documents) return;
+    const allIds = docsData.documents.map(d => d.id);
+    setSelectedDocIds(new Set(allIds));
+  };
+
+  const handleSelectNone = () => {
+    setSelectedDocIds(new Set());
+  };
+
+  const handleSelectUnembedded = () => {
+    if (!docsData?.documents) return;
+    const unembeddedIds = docsData.documents.filter(d => !d.has_embeddings).map(d => d.id);
+    setSelectedDocIds(new Set(unembeddedIds));
+  };
+
+  const handleBatchEmbed = async () => {
+    if (selectedDocIds.size === 0) {
+      toast.warning('Please select at least one document');
       return;
     }
 
     try {
-      const result = await embedDoc(docIdInput);
-      toast.success(`Document embedding queued: ${result.job_id}`);
-      setDocIdInput('');
+      const result = await batchEmbed(Array.from(selectedDocIds));
+      if (result.summary.queued_count > 0) {
+        toast.success(`Queued ${result.summary.queued_count} documents (${result.summary.total_chunks} chunks) for embedding`);
+      }
+      if (result.summary.skipped_count > 0) {
+        toast.info(`Skipped ${result.summary.skipped_count} documents (no chunks)`);
+      }
+      if (result.summary.failed_count > 0) {
+        toast.error(`Failed to queue ${result.summary.failed_count} documents`);
+      }
+      setSelectedDocIds(new Set());
+      // Refresh document list after queueing
+      refetchDocs();
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : 'Embedding failed');
+      toast.error(error instanceof Error ? error.message : 'Batch embedding failed');
     }
+  };
+
+  const formatFileSize = (bytes: number | null): string => {
+    if (!bytes) return '-';
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
   };
 
   const handleClearCache = async () => {
@@ -512,40 +570,125 @@ export function EmbedPage() {
         <div className="section-header">
           <h2>
             <Icon name="FileCode" size={20} />
-            Embed Document
+            Embed Documents
           </h2>
           <p className="section-description">
-            Queue a document for asynchronous embedding
+            Select documents to queue for embedding
           </p>
         </div>
 
-        <div className="embed-controls">
-          <input
-            type="text"
-            className="doc-id-input"
-            placeholder="Enter document ID..."
-            value={docIdInput}
-            onChange={e => setDocIdInput(e.target.value)}
-            onKeyDown={e => e.key === 'Enter' && handleEmbedDocument()}
-          />
-          <button
-            className="button-primary"
-            onClick={handleEmbedDocument}
-            disabled={embeddingDoc || !docIdInput.trim()}
-          >
-            {embeddingDoc ? (
-              <>
-                <Icon name="Loader" size={16} className="spinner" />
-                Queueing...
-              </>
-            ) : (
-              <>
-                <Icon name="Play" size={16} />
-                Queue Embedding
-              </>
-            )}
-          </button>
+        <div className="document-controls">
+          <div className="selection-actions">
+            <button className="button-small" onClick={handleSelectAll}>
+              Select All
+            </button>
+            <button className="button-small" onClick={handleSelectNone}>
+              Select None
+            </button>
+            <button className="button-small" onClick={handleSelectUnembedded}>
+              Select Unembedded
+            </button>
+            <label className="filter-checkbox">
+              <input
+                type="checkbox"
+                checked={onlyUnembedded}
+                onChange={e => setOnlyUnembedded(e.target.checked)}
+              />
+              Show only unembedded
+            </label>
+            <button className="button-small" onClick={() => refetchDocs()}>
+              <Icon name="RefreshCw" size={14} />
+              Refresh
+            </button>
+          </div>
+
+          <div className="embed-action">
+            <span className="selection-count">
+              {selectedDocIds.size} document{selectedDocIds.size !== 1 ? 's' : ''} selected
+            </span>
+            <button
+              className="button-primary"
+              onClick={handleBatchEmbed}
+              disabled={batchEmbedding || selectedDocIds.size === 0}
+            >
+              {batchEmbedding ? (
+                <>
+                  <Icon name="Loader" size={16} className="spinner" />
+                  Queueing...
+                </>
+              ) : (
+                <>
+                  <Icon name="Play" size={16} />
+                  Queue Selected
+                </>
+              )}
+            </button>
+          </div>
         </div>
+
+        {loadingDocs ? (
+          <div className="loading-state">
+            <Icon name="Loader" size={24} className="spinner" />
+            Loading documents...
+          </div>
+        ) : docsData && docsData.documents.length > 0 ? (
+          <div className="document-list">
+            <div className="document-list-header">
+              <span className="col-select"></span>
+              <span className="col-title">Document</span>
+              <span className="col-size">Size</span>
+              <span className="col-chunks">Chunks</span>
+              <span className="col-embeddings">Embeddings</span>
+              <span className="col-status">Status</span>
+            </div>
+            {docsData.documents.map((doc: DocumentForEmbedding) => (
+              <div
+                key={doc.id}
+                className={`document-row ${selectedDocIds.has(doc.id) ? 'selected' : ''}`}
+                onClick={() => handleDocumentSelect(doc.id)}
+              >
+                <span className="col-select">
+                  <input
+                    type="checkbox"
+                    checked={selectedDocIds.has(doc.id)}
+                    onChange={() => handleDocumentSelect(doc.id)}
+                    onClick={e => e.stopPropagation()}
+                  />
+                </span>
+                <span className="col-title">
+                  <span className="doc-title">{doc.title}</span>
+                  {doc.filename && doc.filename !== doc.title && (
+                    <span className="doc-filename">{doc.filename}</span>
+                  )}
+                </span>
+                <span className="col-size">{formatFileSize(doc.file_size)}</span>
+                <span className="col-chunks">{doc.chunk_count}</span>
+                <span className="col-embeddings">
+                  {doc.has_embeddings ? (
+                    <span className="has-embeddings">
+                      <Icon name="CheckCircle2" size={14} />
+                      {doc.embedding_count > 0 && doc.embedding_count}
+                    </span>
+                  ) : (
+                    <span className="no-embeddings">
+                      <Icon name="Circle" size={14} />
+                      None
+                    </span>
+                  )}
+                </span>
+                <span className="col-status">
+                  <span className={`status-badge ${doc.status}`}>{doc.status}</span>
+                </span>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="empty-state">
+            <Icon name="FileX" size={48} />
+            <p>No documents available for embedding</p>
+            <p className="empty-hint">Ingest documents first to embed them</p>
+          </div>
+        )}
       </section>
 
       {/* Cache Statistics */}
@@ -910,29 +1053,216 @@ export function EmbedPage() {
           color: #d1d5db;
         }
 
-        .embed-controls {
+        .document-controls {
           display: flex;
-          gap: 0.75rem;
+          flex-direction: column;
+          gap: 1rem;
+          margin-bottom: 1rem;
         }
 
-        .doc-id-input {
-          flex: 1;
-          padding: 0.75rem 1rem;
+        .selection-actions {
+          display: flex;
+          flex-wrap: wrap;
+          align-items: center;
+          gap: 0.5rem;
+        }
+
+        .button-small {
+          display: inline-flex;
+          align-items: center;
+          gap: 0.375rem;
+          padding: 0.375rem 0.75rem;
+          background: #374151;
+          color: #d1d5db;
+          border: 1px solid #4b5563;
+          border-radius: 0.375rem;
+          font-size: 0.75rem;
+          cursor: pointer;
+          transition: all 0.15s;
+        }
+
+        .button-small:hover {
+          background: #4b5563;
+          color: #f9fafb;
+        }
+
+        .filter-checkbox {
+          display: flex;
+          align-items: center;
+          gap: 0.375rem;
+          padding: 0.375rem 0.75rem;
+          background: #1f2937;
+          border: 1px solid #374151;
+          border-radius: 0.375rem;
+          font-size: 0.75rem;
+          color: #d1d5db;
+          cursor: pointer;
+        }
+
+        .filter-checkbox input {
+          accent-color: #6366f1;
+        }
+
+        .embed-action {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+        }
+
+        .selection-count {
+          font-size: 0.875rem;
+          color: #9ca3af;
+        }
+
+        .document-list {
           background: #1f2937;
           border: 1px solid #374151;
           border-radius: 0.5rem;
-          color: #f9fafb;
+          overflow: hidden;
+        }
+
+        .document-list-header {
+          display: grid;
+          grid-template-columns: 40px 1fr 80px 80px 100px 100px;
+          gap: 0.5rem;
+          padding: 0.75rem 1rem;
+          background: #111827;
+          border-bottom: 1px solid #374151;
+          font-size: 0.75rem;
+          font-weight: 600;
+          color: #9ca3af;
+          text-transform: uppercase;
+          letter-spacing: 0.05em;
+        }
+
+        .document-row {
+          display: grid;
+          grid-template-columns: 40px 1fr 80px 80px 100px 100px;
+          gap: 0.5rem;
+          padding: 0.75rem 1rem;
+          border-bottom: 1px solid #374151;
           font-size: 0.875rem;
-          transition: border-color 0.15s;
+          color: #d1d5db;
+          cursor: pointer;
+          transition: background 0.15s;
         }
 
-        .doc-id-input:focus {
-          outline: none;
-          border-color: #6366f1;
+        .document-row:last-child {
+          border-bottom: none;
         }
 
-        .doc-id-input::placeholder {
+        .document-row:hover {
+          background: #111827;
+        }
+
+        .document-row.selected {
+          background: rgba(99, 102, 241, 0.1);
+          border-left: 3px solid #6366f1;
+          margin-left: -3px;
+        }
+
+        .col-select {
+          display: flex;
+          align-items: center;
+          justify-content: center;
+        }
+
+        .col-select input[type="checkbox"] {
+          width: 16px;
+          height: 16px;
+          accent-color: #6366f1;
+          cursor: pointer;
+        }
+
+        .col-title {
+          display: flex;
+          flex-direction: column;
+          gap: 0.125rem;
+          min-width: 0;
+        }
+
+        .doc-title {
+          font-weight: 500;
+          color: #f9fafb;
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
+        }
+
+        .doc-filename {
+          font-size: 0.75rem;
           color: #6b7280;
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
+        }
+
+        .col-size,
+        .col-chunks {
+          display: flex;
+          align-items: center;
+          font-family: monospace;
+          font-size: 0.8125rem;
+        }
+
+        .col-embeddings {
+          display: flex;
+          align-items: center;
+        }
+
+        .has-embeddings {
+          display: flex;
+          align-items: center;
+          gap: 0.25rem;
+          color: #22c55e;
+          font-size: 0.8125rem;
+        }
+
+        .no-embeddings {
+          display: flex;
+          align-items: center;
+          gap: 0.25rem;
+          color: #6b7280;
+          font-size: 0.8125rem;
+        }
+
+        .col-status {
+          display: flex;
+          align-items: center;
+        }
+
+        .status-badge {
+          padding: 0.125rem 0.5rem;
+          border-radius: 9999px;
+          font-size: 0.625rem;
+          font-weight: 600;
+          text-transform: uppercase;
+          letter-spacing: 0.05em;
+          background: #374151;
+          color: #9ca3af;
+        }
+
+        .status-badge.completed,
+        .status-badge.processed {
+          background: rgba(34, 197, 94, 0.2);
+          color: #22c55e;
+        }
+
+        .status-badge.pending {
+          background: rgba(245, 158, 11, 0.2);
+          color: #f59e0b;
+        }
+
+        .status-badge.error,
+        .status-badge.failed {
+          background: rgba(239, 68, 68, 0.2);
+          color: #ef4444;
+        }
+
+        .empty-hint {
+          font-size: 0.75rem;
+          color: #6b7280;
+          margin-top: 0.25rem;
         }
 
         .stats-grid {

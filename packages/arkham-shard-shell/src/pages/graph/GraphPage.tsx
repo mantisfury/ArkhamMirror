@@ -411,7 +411,7 @@ export function GraphPage() {
     try {
       const { dataSources } = settings;
       // Determine if any documents are selected
-      const hasDocuments = dataSources.selectedDocumentIds.length > 0 || dataSources.documentEntities;
+      const hasDocuments = (dataSources.selectedDocumentIds === null || (dataSources.selectedDocumentIds && dataSources.selectedDocumentIds.length > 0)) || dataSources.documentEntities;
 
       const response = await fetch('/api/graph/build', {
         method: 'POST',
@@ -423,9 +423,7 @@ export function GraphPage() {
           include_document_entities: hasDocuments,
           include_cooccurrences: dataSources.entityCooccurrences,
           // Specific documents to include (empty = all)
-          document_ids: dataSources.selectedDocumentIds.length > 0
-            ? dataSources.selectedDocumentIds
-            : null,
+          document_ids: dataSources.selectedDocumentIds,  // null = all, [] = none, [...] = specific
           // Cross-shard node sources
           include_temporal: dataSources.timelineEvents,
           include_claims: dataSources.claims,
@@ -1280,6 +1278,7 @@ export function GraphPage() {
               <EgoMetricsPanel
                 entityId={egoFocusEntity}
                 entityName={selectedNode?.label}
+                projectId={projectId}
                 onClose={clearEgoFocus}
                 onAlterClick={handleAlterClick}
               />

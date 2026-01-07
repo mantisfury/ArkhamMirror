@@ -25,6 +25,8 @@ import type {
   ModelSwitchCheckResult,
   ModelSwitchResult,
   CurrentModelInfo,
+  DocumentsForEmbeddingResponse,
+  BatchEmbedDocumentsResponse,
 } from './types';
 
 const API_PREFIX = '/api/embed';
@@ -394,4 +396,86 @@ export function useSwitchModel() {
   }, []);
 
   return { switchTo, data, loading, error };
+}
+
+// --- Document Embedding API Functions ---
+
+export async function getDocumentsForEmbedding(
+  limit: number = 100,
+  offset: number = 0,
+  onlyUnembedded: boolean = false
+): Promise<DocumentsForEmbeddingResponse> {
+  const params = new URLSearchParams({
+    limit: String(limit),
+    offset: String(offset),
+    only_unembedded: String(onlyUnembedded),
+  });
+  return fetchAPI<DocumentsForEmbeddingResponse>(`/documents/available?${params}`);
+}
+
+export async function embedDocumentsBatch(docIds: string[]): Promise<BatchEmbedDocumentsResponse> {
+  return fetchAPI<BatchEmbedDocumentsResponse>('/documents/batch', {
+    method: 'POST',
+    body: JSON.stringify({ doc_ids: docIds }),
+  });
+}
+
+// --- Document Embedding Hooks ---
+
+/**
+ * Hook for fetching documents available for embedding
+ */
+export function useDocumentsForEmbedding(onlyUnembedded: boolean = false) {
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<Error | null>(null);
+  const [data, setData] = useState<DocumentsForEmbeddingResponse | null>(null);
+
+  const fetch = useCallback(async (limit: number = 100, offset: number = 0) => {
+    setLoading(true);
+    setError(null);
+    try {
+      const result = await getDocumentsForEmbedding(limit, offset, onlyUnembedded);
+      setData(result);
+      return result;
+    } catch (err) {
+      const error = err instanceof Error ? err : new Error('Failed to fetch documents');
+      setError(error);
+      throw error;
+    } finally {
+      setLoading(false);
+    }
+  }, [onlyUnembedded]);
+
+  const refetch = useCallback(() => {
+    return fetch();
+  }, [fetch]);
+
+  return { fetch, refetch, data, loading, error };
+}
+
+/**
+ * Hook for batch embedding multiple documents
+ */
+export function useBatchEmbedDocuments() {
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<Error | null>(null);
+  const [data, setData] = useState<BatchEmbedDocumentsResponse | null>(null);
+
+  const embed = useCallback(async (docIds: string[]) => {
+    setLoading(true);
+    setError(null);
+    try {
+      const result = await embedDocumentsBatch(docIds);
+      setData(result);
+      return result;
+    } catch (err) {
+      const error = err instanceof Error ? err : new Error('Batch embed failed');
+      setError(error);
+      throw error;
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  return { embed, data, loading, error };
 }

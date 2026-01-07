@@ -234,6 +234,8 @@ class EmbedShard(ArkhamShard):
             from arkham_frame.services.vectors import VectorPoint
 
             points = []
+            vector_ids = []
+            chunk_ids = []
             for emb, data in zip(embeddings, chunk_data):
                 vector_id = str(uuid_mod.uuid4())
                 point = VectorPoint(
@@ -247,6 +249,9 @@ class EmbedShard(ArkhamShard):
                     }
                 )
                 points.append(point)
+                vector_ids.append(vector_id)
+                if data.get('chunk_id'):
+                    chunk_ids.append(data['chunk_id'])
 
             # Get collection name based on active project
             collection_name = self.frame.get_collection_name("documents")
@@ -269,7 +274,7 @@ class EmbedShard(ArkhamShard):
 
             logger.info(f"Stored {len(embeddings)} embeddings for document {doc_id}")
 
-            # Emit completion event
+            # Emit completion event with IDs for provenance tracking
             event_bus = self.frame.get_service("events")
             if event_bus:
                 await event_bus.emit(
@@ -278,6 +283,24 @@ class EmbedShard(ArkhamShard):
                         "document_id": doc_id,
                         "chunks_embedded": len(embeddings),
                         "dimensions": self.embedding_manager.get_model_info().dimensions,
+                        "vector_ids": vector_ids,
+                        "chunk_ids": chunk_ids,
+                        "output_ids": vector_ids,  # For provenance linking
+                        "output_table": "qdrant_vectors",
+                    },
+                    source="embed-shard",
+                )
+
+                # Also emit document.processed - signals full pipeline completion (ingest → parse → embed)
+                await event_bus.emit(
+                    "document.processed",
+                    {
+                        "document_id": doc_id,
+                        "chunks_embedded": len(embeddings),
+                        "vector_ids": vector_ids,
+                        "chunk_ids": chunk_ids,
+                        "pipeline": ["ingest", "parse", "embed"],
+                        "status": "completed",
                     },
                     source="embed-shard",
                 )

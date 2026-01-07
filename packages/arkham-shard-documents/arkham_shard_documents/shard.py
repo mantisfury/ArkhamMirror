@@ -277,7 +277,7 @@ class DocumentsShard(ArkhamShard):
             processed_at=row.get("processed_at"),
         )
 
-    def _frame_row_to_document(self, row: Dict[str, Any]) -> DocumentRecord:
+    def _frame_row_to_document(self, row: Dict[str, Any], entity_count: int = 0) -> DocumentRecord:
         """Convert arkham_frame.documents row to DocumentRecord object."""
         # Map Frame schema to DocumentRecord (Frame uses different column names)
         metadata = self._parse_jsonb(row.get("metadata"), {})
@@ -291,7 +291,7 @@ class DocumentsShard(ArkhamShard):
             status=DocumentStatus(row.get("status", "pending")),
             page_count=row.get("page_count", 0),
             chunk_count=row.get("chunk_count", 0),
-            entity_count=0,  # Not stored in Frame's table
+            entity_count=entity_count,  # Computed from entities table
             word_count=0,  # Not stored in Frame's table
             project_id=row.get("project_id"),
             tags=[],  # Not stored in Frame's table
@@ -301,6 +301,45 @@ class DocumentsShard(ArkhamShard):
             updated_at=row.get("updated_at"),
             processed_at=row.get("processed_at"),
         )
+
+    async def _get_entity_counts_for_documents(self, doc_ids: List[str]) -> Dict[str, int]:
+        """
+        Get entity counts for a list of documents.
+
+        Queries the arkham_entity_mentions table to count unique entities per document.
+
+        Args:
+            doc_ids: List of document IDs
+
+        Returns:
+            Dict mapping document_id to entity count
+        """
+        if not doc_ids or not self._db:
+            return {}
+
+        try:
+            # Query counts from entity_mentions table (more reliable than document_ids JSONB)
+            # Count distinct entities per document
+            query = """
+                SELECT
+                    document_id,
+                    COUNT(DISTINCT entity_id) as entity_count
+                FROM arkham_entity_mentions
+                WHERE document_id = ANY(:doc_ids)
+                GROUP BY document_id
+            """
+            rows = await self._db.fetch_all(query, {"doc_ids": doc_ids})
+
+            # Build result dict, defaulting to 0 for documents with no entities
+            result = {doc_id: 0 for doc_id in doc_ids}
+            for row in rows:
+                result[row["document_id"]] = row["entity_count"]
+
+            return result
+        except Exception as e:
+            logger.debug(f"Failed to get entity counts: {e}")
+            # Fallback: return 0 for all documents if table doesn't exist
+            return {doc_id: 0 for doc_id in doc_ids}
 
     # --- Public Service Methods ---
 
@@ -369,7 +408,15 @@ class DocumentsShard(ArkhamShard):
 
         try:
             rows = await self._db.fetch_all(query, params)
-            return [self._frame_row_to_document(row) for row in rows]
+
+            # Get entity counts for all documents in one query
+            doc_ids = [row["id"] for row in rows]
+            entity_counts = await self._get_entity_counts_for_documents(doc_ids)
+
+            return [
+                self._frame_row_to_document(row, entity_counts.get(row["id"], 0))
+                for row in rows
+            ]
         except Exception as e:
             logger.error(f"Failed to list documents: {e}")
             # Return empty list on error instead of crashing
@@ -395,7 +442,10 @@ class DocumentsShard(ArkhamShard):
         )
 
         if row:
-            return self._frame_row_to_document(row)
+            # Get entity count for this document
+            entity_counts = await self._get_entity_counts_for_documents([document_id])
+            entity_count = entity_counts.get(document_id, 0)
+            return self._frame_row_to_document(row, entity_count)
 
         return None
 

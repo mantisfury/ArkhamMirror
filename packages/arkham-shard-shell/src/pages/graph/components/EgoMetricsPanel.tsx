@@ -8,50 +8,60 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Icon } from '../../../components/common/Icon';
 
-export interface EgoMetrics {
-  ego_entity_id: string;
-  ego_entity_name: string;
-  network_size: number;
-  effective_size: number;
-  efficiency: number;
-  constraint: number;
-  hierarchy: number;
-  broker_score: number;
-  density: number;
-  avg_tie_strength: number;
-  alter_composition: {
-    by_type: Record<string, number>;
-    by_relationship: Record<string, number>;
+// API response structure
+export interface EgoNetworkResponse {
+  project_id: string;
+  ego_id: string;
+  ego_label: string;
+  depth: number;
+  graph: {
+    nodes: Array<{
+      id: string;
+      entity_id: string;
+      label: string;
+      entity_type: string;
+      document_count?: number;
+      degree?: number;
+      properties?: {
+        ego_distance?: number;
+        is_ego?: boolean;
+      };
+    }>;
+    edges: Array<{
+      source: string;
+      target: string;
+      relationship_type?: string;
+      weight?: number;
+    }>;
+    metadata: {
+      ego_id: string;
+      ego_label: string;
+      depth: number;
+      node_count: number;
+      edge_count: number;
+      nodes_by_depth: Record<string, number>;
+    };
   };
-  bridging_ties: number;
-  redundant_ties: number;
-}
-
-export interface EgoNetwork {
-  ego: {
-    id: string;
-    name: string;
-    type: string;
+  metrics: {
+    ego_id: string;
+    network_size: number;
+    effective_size: number;
+    efficiency: number;
+    constraint: number;
+    hierarchy: number;
+    density: number;
+    avg_tie_strength: number;
   };
-  alters: Array<{
-    id: string;
-    name: string;
-    type: string;
-    distance: number;
-    tie_strength: number;
-  }>;
-  ties: Array<{
-    source: string;
-    target: string;
-    type: string;
-    weight: number;
-  }>;
-  metrics: EgoMetrics;
+  node_count: number;
+  edge_count: number;
+  nodes_by_depth: Record<string, number>;
+  calculation_time_ms: number;
 }
 
 interface EgoMetricsPanelProps {
   entityId: string | null;
   entityName?: string;
+  projectId: string;
   onClose: () => void;
   onAlterClick?: (alterId: string) => void;
   isLoading?: boolean;
@@ -62,11 +72,12 @@ const API_BASE = '/api/graph';
 export function EgoMetricsPanel({
   entityId,
   entityName,
+  projectId,
   onClose,
   onAlterClick,
   isLoading: externalLoading = false,
 }: EgoMetricsPanelProps) {
-  const [egoNetwork, setEgoNetwork] = useState<EgoNetwork | null>(null);
+  const [egoNetwork, setEgoNetwork] = useState<EgoNetworkResponse | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<'metrics' | 'alters' | 'composition'>('metrics');
@@ -74,14 +85,14 @@ export function EgoMetricsPanel({
 
   // Fetch ego network data
   const fetchEgoNetwork = useCallback(async () => {
-    if (!entityId) return;
+    if (!entityId || !projectId) return;
 
     setIsLoading(true);
     setError(null);
 
     try {
       const response = await fetch(
-        `${API_BASE}/ego/${encodeURIComponent(entityId)}?depth=${depth}&include_alter_alter=true`
+        `${API_BASE}/ego/${encodeURIComponent(entityId)}?project_id=${encodeURIComponent(projectId)}&depth=${depth}&include_alter_alter=true`
       );
 
       if (!response.ok) {
@@ -99,7 +110,7 @@ export function EgoMetricsPanel({
     } finally {
       setIsLoading(false);
     }
-  }, [entityId, depth]);
+  }, [entityId, projectId, depth]);
 
   useEffect(() => {
     if (entityId) {
@@ -121,14 +132,6 @@ export function EgoMetricsPanel({
     if (constraint < 0.6) return { label: 'Medium', color: 'var(--warning)' };
     return { label: 'High (Embedded)', color: 'var(--danger)' };
   };
-
-  // Get broker score interpretation
-  const getBrokerLevel = (score: number): { label: string; color: string } => {
-    if (score >= 0.7) return { label: 'Strong Broker', color: 'var(--success)' };
-    if (score >= 0.4) return { label: 'Moderate', color: 'var(--warning)' };
-    return { label: 'Limited', color: 'var(--text-muted)' };
-  };
-
   if (!entityId) {
     return (
       <div className="ego-panel">
@@ -151,13 +154,30 @@ export function EgoMetricsPanel({
 
   const loading = isLoading || externalLoading;
 
+  // Derive alters (non-ego nodes) and ties from the graph data
+  const alters = egoNetwork?.graph?.nodes?.filter(n => !n.properties?.is_ego) || [];
+  const ties = egoNetwork?.graph?.edges || [];
+  const egoNode = egoNetwork?.graph?.nodes?.find(n => n.properties?.is_ego);
+
+  // Safely access metrics with defaults
+  const metrics = egoNetwork?.metrics || {
+    ego_id: '',
+    network_size: 0,
+    effective_size: 0,
+    efficiency: 0,
+    constraint: 1,
+    hierarchy: 0,
+    density: 0,
+    avg_tie_strength: 0,
+  };
+
   return (
     <div className="ego-panel">
       {/* Header */}
       <div className="ego-panel-header">
         <h3>
           <Icon name="Target" size={16} />
-          {entityName || egoNetwork?.ego?.name || 'Ego Network'}
+          {entityName || egoNetwork?.ego_label || egoNode?.label || 'Ego Network'}
         </h3>
         <div className="ego-panel-actions">
           <select
@@ -218,7 +238,7 @@ export function EgoMetricsPanel({
               onClick={() => setActiveTab('alters')}
             >
               <Icon name="Users" size={14} />
-              Alters ({egoNetwork.alters.length})
+              Alters ({alters.length})
             </button>
             <button
               className={`ego-tab ${activeTab === 'composition' ? 'active' : ''}`}
@@ -236,23 +256,23 @@ export function EgoMetricsPanel({
               <div className="ego-summary-cards">
                 <div className="ego-summary-card">
                   <span className="card-label">Network Size</span>
-                  <span className="card-value">{egoNetwork.metrics.network_size}</span>
+                  <span className="card-value">{metrics.network_size}</span>
                   <span className="card-sub">alters</span>
                 </div>
                 <div className="ego-summary-card">
                   <span className="card-label">Effective Size</span>
-                  <span className="card-value">{formatNumber(egoNetwork.metrics.effective_size)}</span>
+                  <span className="card-value">{formatNumber(metrics.effective_size)}</span>
                   <span className="card-sub">non-redundant</span>
                 </div>
                 <div className="ego-summary-card highlight">
-                  <span className="card-label">Broker Score</span>
+                  <span className="card-label">Efficiency</span>
                   <span
                     className="card-value"
-                    style={{ color: getBrokerLevel(egoNetwork.metrics.broker_score).color }}
+                    style={{ color: metrics.efficiency > 0.5 ? '#22c55e' : '#f59e0b' }}
                   >
-                    {formatPercent(egoNetwork.metrics.broker_score)}
+                    {formatPercent(metrics.efficiency)}
                   </span>
-                  <span className="card-sub">{getBrokerLevel(egoNetwork.metrics.broker_score).label}</span>
+                  <span className="card-sub">{metrics.efficiency > 0.5 ? 'efficient' : 'redundant'}</span>
                 </div>
               </div>
 
@@ -268,10 +288,10 @@ export function EgoMetricsPanel({
                     <div className="metric-bar">
                       <div
                         className="metric-fill efficiency"
-                        style={{ width: formatPercent(egoNetwork.metrics.efficiency) }}
+                        style={{ width: formatPercent(metrics.efficiency) }}
                       />
                     </div>
-                    <span className="metric-value">{formatPercent(egoNetwork.metrics.efficiency)}</span>
+                    <span className="metric-value">{formatPercent(metrics.efficiency)}</span>
                   </div>
 
                   <div className="ego-metric">
@@ -280,15 +300,15 @@ export function EgoMetricsPanel({
                       <div
                         className="metric-fill constraint"
                         style={{
-                          width: formatPercent(Math.min(1, egoNetwork.metrics.constraint)),
-                          backgroundColor: getConstraintLevel(egoNetwork.metrics.constraint).color
+                          width: formatPercent(Math.min(1, metrics.constraint)),
+                          backgroundColor: getConstraintLevel(metrics.constraint).color
                         }}
                       />
                     </div>
                     <span className="metric-value">
-                      {formatNumber(egoNetwork.metrics.constraint)}
+                      {formatNumber(metrics.constraint)}
                       <span className="metric-interpretation">
-                        {getConstraintLevel(egoNetwork.metrics.constraint).label}
+                        {getConstraintLevel(metrics.constraint).label}
                       </span>
                     </span>
                   </div>
@@ -298,10 +318,10 @@ export function EgoMetricsPanel({
                     <div className="metric-bar">
                       <div
                         className="metric-fill hierarchy"
-                        style={{ width: formatPercent(Math.min(1, egoNetwork.metrics.hierarchy)) }}
+                        style={{ width: formatPercent(Math.min(1, metrics.hierarchy)) }}
                       />
                     </div>
-                    <span className="metric-value">{formatNumber(egoNetwork.metrics.hierarchy)}</span>
+                    <span className="metric-value">{formatNumber(metrics.hierarchy)}</span>
                   </div>
                 </div>
               </div>
@@ -315,19 +335,19 @@ export function EgoMetricsPanel({
                 <div className="ego-properties">
                   <div className="ego-property">
                     <span className="property-label">Density</span>
-                    <span className="property-value">{formatPercent(egoNetwork.metrics.density)}</span>
+                    <span className="property-value">{formatPercent(metrics.density)}</span>
                   </div>
                   <div className="ego-property">
                     <span className="property-label">Avg Tie Strength</span>
-                    <span className="property-value">{formatNumber(egoNetwork.metrics.avg_tie_strength)}</span>
+                    <span className="property-value">{formatNumber(metrics.avg_tie_strength)}</span>
                   </div>
                   <div className="ego-property">
-                    <span className="property-label">Bridging Ties</span>
-                    <span className="property-value success">{egoNetwork.metrics.bridging_ties}</span>
+                    <span className="property-label">Total Alters</span>
+                    <span className="property-value">{alters.length}</span>
                   </div>
                   <div className="ego-property">
-                    <span className="property-label">Redundant Ties</span>
-                    <span className="property-value muted">{egoNetwork.metrics.redundant_ties}</span>
+                    <span className="property-label">Total Ties</span>
+                    <span className="property-value">{ties.length}</span>
                   </div>
                 </div>
               </div>
@@ -336,12 +356,12 @@ export function EgoMetricsPanel({
               <div className="ego-interpretation">
                 <Icon name="Lightbulb" size={14} />
                 <p>
-                  {egoNetwork.metrics.constraint < 0.3 ? (
+                  {metrics.constraint < 0.3 ? (
                     <>
                       <strong>Strong broker position:</strong> This entity bridges disconnected groups,
                       providing access to diverse information and control over information flow.
                     </>
-                  ) : egoNetwork.metrics.constraint > 0.6 ? (
+                  ) : metrics.constraint > 0.6 ? (
                     <>
                       <strong>Embedded position:</strong> This entity's contacts are well-connected to each other,
                       limiting access to novel information but providing strong social support.
@@ -361,30 +381,39 @@ export function EgoMetricsPanel({
           {activeTab === 'alters' && (
             <div className="ego-panel-content">
               <div className="ego-alters-list">
-                {egoNetwork.alters
-                  .sort((a, b) => a.distance - b.distance || b.tie_strength - a.tie_strength)
-                  .map((alter) => (
-                    <div
-                      key={alter.id}
-                      className={`ego-alter-item distance-${alter.distance}`}
-                      onClick={() => onAlterClick?.(alter.id)}
-                    >
-                      <div className="alter-info">
-                        <span className="alter-name">{alter.name}</span>
-                        <span className="alter-type">{alter.type}</span>
+                {alters.length === 0 ? (
+                  <div className="ego-panel-empty">
+                    <Icon name="Users" size={24} />
+                    <p>No connected entities found</p>
+                  </div>
+                ) : (
+                  alters
+                    .sort((a, b) => (a.properties?.ego_distance || 0) - (b.properties?.ego_distance || 0))
+                    .map((alter) => (
+                      <div
+                        key={alter.id}
+                        className={`ego-alter-item distance-${alter.properties?.ego_distance || 1}`}
+                        onClick={() => onAlterClick?.(alter.id)}
+                      >
+                        <div className="alter-info">
+                          <span className="alter-name">{alter.label}</span>
+                          <span className="alter-type">{alter.entity_type}</span>
+                        </div>
+                        <div className="alter-metrics">
+                          <span className="alter-distance" title="Distance from ego">
+                            <Icon name="GitCommit" size={12} />
+                            {alter.properties?.ego_distance || 1}
+                          </span>
+                          {alter.degree !== undefined && (
+                            <span className="alter-strength" title="Connections">
+                              <Icon name="Link" size={12} />
+                              {alter.degree}
+                            </span>
+                          )}
+                        </div>
                       </div>
-                      <div className="alter-metrics">
-                        <span className="alter-distance" title="Distance from ego">
-                          <Icon name="GitCommit" size={12} />
-                          {alter.distance}
-                        </span>
-                        <span className="alter-strength" title="Tie strength">
-                          <Icon name="Link" size={12} />
-                          {alter.tie_strength.toFixed(1)}
-                        </span>
-                      </div>
-                    </div>
-                  ))}
+                    ))
+                )}
               </div>
             </div>
           )}
@@ -392,55 +421,79 @@ export function EgoMetricsPanel({
           {/* Composition Tab */}
           {activeTab === 'composition' && (
             <div className="ego-panel-content">
-              {/* By Type */}
+              {/* By Type - computed from alters */}
               <div className="ego-section">
                 <h4>
                   <Icon name="Layers" size={14} />
                   By Entity Type
                 </h4>
                 <div className="composition-list">
-                  {Object.entries(egoNetwork.metrics.alter_composition.by_type)
-                    .sort(([, a], [, b]) => b - a)
-                    .map(([type, count]) => (
-                      <div key={type} className="composition-item">
-                        <span className="composition-label">{type}</span>
-                        <div className="composition-bar">
-                          <div
-                            className="composition-fill"
-                            style={{
-                              width: `${(count / egoNetwork.alters.length) * 100}%`
-                            }}
-                          />
+                  {alters.length === 0 ? (
+                    <div className="ego-panel-empty">
+                      <p>No alters to analyze</p>
+                    </div>
+                  ) : (
+                    Object.entries(
+                      alters.reduce((acc, alter) => {
+                        const type = alter.entity_type || 'Unknown';
+                        acc[type] = (acc[type] || 0) + 1;
+                        return acc;
+                      }, {} as Record<string, number>)
+                    )
+                      .sort(([, a], [, b]) => b - a)
+                      .map(([type, count]) => (
+                        <div key={type} className="composition-item">
+                          <span className="composition-label">{type}</span>
+                          <div className="composition-bar">
+                            <div
+                              className="composition-fill"
+                              style={{
+                                width: `${(count / alters.length) * 100}%`
+                              }}
+                            />
+                          </div>
+                          <span className="composition-count">{count}</span>
                         </div>
-                        <span className="composition-count">{count}</span>
-                      </div>
-                    ))}
+                      ))
+                  )}
                 </div>
               </div>
 
-              {/* By Relationship */}
+              {/* By Relationship - computed from ties */}
               <div className="ego-section">
                 <h4>
                   <Icon name="Link2" size={14} />
                   By Relationship Type
                 </h4>
                 <div className="composition-list">
-                  {Object.entries(egoNetwork.metrics.alter_composition.by_relationship)
-                    .sort(([, a], [, b]) => b - a)
-                    .map(([rel, count]) => (
-                      <div key={rel} className="composition-item">
-                        <span className="composition-label">{rel}</span>
-                        <div className="composition-bar">
-                          <div
-                            className="composition-fill relationship"
-                            style={{
-                              width: `${(count / egoNetwork.ties.length) * 100}%`
-                            }}
-                          />
+                  {ties.length === 0 ? (
+                    <div className="ego-panel-empty">
+                      <p>No relationships found</p>
+                    </div>
+                  ) : (
+                    Object.entries(
+                      ties.reduce((acc, tie) => {
+                        const rel = tie.relationship_type || 'co_occurrence';
+                        acc[rel] = (acc[rel] || 0) + 1;
+                        return acc;
+                      }, {} as Record<string, number>)
+                    )
+                      .sort(([, a], [, b]) => b - a)
+                      .map(([rel, count]) => (
+                        <div key={rel} className="composition-item">
+                          <span className="composition-label">{rel}</span>
+                          <div className="composition-bar">
+                            <div
+                              className="composition-fill relationship"
+                              style={{
+                                width: `${(count / ties.length) * 100}%`
+                              }}
+                            />
+                          </div>
+                          <span className="composition-count">{count}</span>
                         </div>
-                        <span className="composition-count">{count}</span>
-                      </div>
-                    ))}
+                      ))
+                  )}
                 </div>
               </div>
             </div>

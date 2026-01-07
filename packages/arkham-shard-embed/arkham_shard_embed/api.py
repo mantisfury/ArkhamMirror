@@ -89,6 +89,12 @@ class DocumentEmbedRequestBody(BaseModel):
     chunk_overlap: int = 50
 
 
+class BatchDocumentEmbedRequestBody(BaseModel):
+    """Request to embed multiple documents at once."""
+    doc_ids: list[str]
+    force: bool = False
+
+
 class ConfigUpdateRequest(BaseModel):
     batch_size: int | None = None
     cache_size: int | None = None
@@ -320,6 +326,204 @@ async def get_document_embeddings(doc_id: str):
             status_code=500,
             detail=f"Failed to get embeddings: {str(e)}"
         )
+
+
+@router.get("/documents/available")
+async def get_documents_for_embedding(
+    limit: int = Query(default=100, le=500),
+    offset: int = Query(default=0, ge=0),
+    only_unembedded: bool = Query(default=False, description="Only show documents without embeddings"),
+):
+    """
+    Get list of documents available for embedding.
+
+    Returns documents with their embedding status (whether they have vectors or not).
+    """
+    if not _frame:
+        raise HTTPException(status_code=503, detail="Frame not initialized")
+
+    if not _frame.documents:
+        raise HTTPException(status_code=503, detail="Document service unavailable")
+
+    try:
+        # Get documents from documents service
+        docs, total = await _frame.documents.list_documents(
+            limit=limit,
+            offset=offset,
+        )
+
+        # Get embedding counts for each document from vector store
+        collection_name = get_collection_name("documents")
+        vectors_service = _vector_store.vectors_service if _vector_store else None
+
+        result_docs = []
+        for doc in docs:
+            doc_dict = doc if isinstance(doc, dict) else doc.__dict__ if hasattr(doc, '__dict__') else {}
+
+            # Try to get the document ID
+            doc_id = doc_dict.get('id') or doc_dict.get('document_id') or (doc.id if hasattr(doc, 'id') else None)
+
+            if not doc_id:
+                continue
+
+            # Get embedding count for this document
+            embedding_count = 0
+            if vectors_service:
+                try:
+                    # Search for vectors with this doc_id in payload
+                    results = await vectors_service.scroll(
+                        collection=collection_name,
+                        scroll_filter={"must": [{"key": "doc_id", "match": {"value": doc_id}}]},
+                        limit=1,
+                        with_payload=False,
+                        with_vectors=False,
+                    )
+                    embedding_count = len(results[0]) if results and results[0] else 0
+                except Exception as e:
+                    logger.debug(f"Could not get embedding count for {doc_id}: {e}")
+
+            # Get chunk count from database if available
+            chunk_count = 0
+            if _db_service:
+                try:
+                    result = await _db_service.fetch_one(
+                        """SELECT COUNT(*) as count FROM arkham_frame.chunks
+                           WHERE document_id = :doc_id""",
+                        {"doc_id": doc_id}
+                    )
+                    if result:
+                        chunk_count = result.get("count", 0)
+                except Exception as e:
+                    logger.debug(f"Could not get chunk count for {doc_id}: {e}")
+
+            # Filter if only_unembedded is requested
+            if only_unembedded and embedding_count > 0:
+                continue
+
+            result_docs.append({
+                "id": doc_id,
+                "title": doc_dict.get('title') or doc_dict.get('original_name') or doc_dict.get('filename') or 'Untitled',
+                "filename": doc_dict.get('filename') or doc_dict.get('original_name'),
+                "mime_type": doc_dict.get('mime_type'),
+                "file_size": doc_dict.get('file_size'),
+                "created_at": str(doc_dict.get('created_at', '')),
+                "status": doc_dict.get('status', 'unknown'),
+                "chunk_count": chunk_count,
+                "embedding_count": embedding_count,
+                "has_embeddings": embedding_count > 0,
+            })
+
+        return {
+            "documents": result_docs,
+            "total": total if not only_unembedded else len(result_docs),
+            "limit": limit,
+            "offset": offset,
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to get documents for embedding: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to get documents: {str(e)}")
+
+
+@router.post("/documents/batch")
+async def embed_documents_batch(request: BatchDocumentEmbedRequestBody):
+    """
+    Queue multiple documents for embedding.
+
+    This queues embedding jobs for all specified documents.
+    Returns a summary of queued jobs.
+    """
+    if not _worker_service:
+        raise HTTPException(status_code=503, detail="Worker service not initialized")
+
+    if not _db_service:
+        raise HTTPException(status_code=503, detail="Database service not initialized")
+
+    if not request.doc_ids:
+        raise HTTPException(status_code=400, detail="No document IDs provided")
+
+    results = {
+        "queued": [],
+        "skipped": [],
+        "failed": [],
+    }
+
+    for doc_id in request.doc_ids:
+        try:
+            # Fetch chunks for this document
+            chunks = await _db_service.fetch_all(
+                """SELECT id, text, chunk_index FROM arkham_frame.chunks
+                   WHERE document_id = :doc_id
+                   ORDER BY chunk_index""",
+                {"doc_id": doc_id}
+            )
+
+            if not chunks:
+                results["skipped"].append({
+                    "doc_id": doc_id,
+                    "reason": "No chunks found"
+                })
+                continue
+
+            # Extract texts and metadata
+            texts = []
+            chunk_ids = []
+            for chunk in chunks:
+                text = chunk.get("text", "")
+                if text and text.strip():
+                    texts.append(text)
+                    chunk_ids.append(chunk.get("id", ""))
+
+            if not texts:
+                results["skipped"].append({
+                    "doc_id": doc_id,
+                    "reason": "No valid text in chunks"
+                })
+                continue
+
+            # Build payload for worker
+            job_id = str(uuid.uuid4())
+            payload = {
+                "batch": True,
+                "texts": texts,
+                "doc_id": doc_id,
+                "chunk_ids": chunk_ids,
+            }
+
+            await _worker_service.enqueue(
+                pool="gpu-embed",
+                job_id=job_id,
+                payload=payload,
+            )
+
+            results["queued"].append({
+                "job_id": job_id,
+                "doc_id": doc_id,
+                "chunk_count": len(texts),
+            })
+
+            logger.info(f"Queued embedding job {job_id} for doc {doc_id} ({len(texts)} chunks)")
+
+        except Exception as e:
+            logger.error(f"Failed to queue embedding for {doc_id}: {e}")
+            results["failed"].append({
+                "doc_id": doc_id,
+                "error": str(e)
+            })
+
+    return {
+        "success": True,
+        "message": f"Queued {len(results['queued'])} documents for embedding",
+        "queued": results["queued"],
+        "skipped": results["skipped"],
+        "failed": results["failed"],
+        "summary": {
+            "queued_count": len(results["queued"]),
+            "skipped_count": len(results["skipped"]),
+            "failed_count": len(results["failed"]),
+            "total_chunks": sum(r["chunk_count"] for r in results["queued"]),
+        }
+    }
 
 
 @router.post("/similarity", response_model=SimilarityResult)

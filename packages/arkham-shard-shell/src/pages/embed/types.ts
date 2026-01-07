@@ -161,3 +161,55 @@ export interface CurrentModelInfo {
   device: string | null;
   description: string;
 }
+
+// --- Document Embedding Types ---
+
+export interface DocumentForEmbedding {
+  id: string;
+  title: string;
+  filename: string | null;
+  mime_type: string | null;
+  file_size: number | null;
+  created_at: string;
+  status: string;
+  chunk_count: number;
+  embedding_count: number;
+  has_embeddings: boolean;
+}
+
+export interface DocumentsForEmbeddingResponse {
+  documents: DocumentForEmbedding[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export interface BatchEmbedQueuedItem {
+  job_id: string;
+  doc_id: string;
+  chunk_count: number;
+}
+
+export interface BatchEmbedSkippedItem {
+  doc_id: string;
+  reason: string;
+}
+
+export interface BatchEmbedFailedItem {
+  doc_id: string;
+  error: string;
+}
+
+export interface BatchEmbedDocumentsResponse {
+  success: boolean;
+  message: string;
+  queued: BatchEmbedQueuedItem[];
+  skipped: BatchEmbedSkippedItem[];
+  failed: BatchEmbedFailedItem[];
+  summary: {
+    queued_count: number;
+    skipped_count: number;
+    failed_count: number;
+    total_chunks: number;
+  };
+}

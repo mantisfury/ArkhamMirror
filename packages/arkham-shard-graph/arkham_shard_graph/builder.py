@@ -336,7 +336,7 @@ class GraphBuilder:
             return relationships
 
         try:
-            # Use arkham_frame.entity_relationships
+            # Use arkham_entity_relationships (populated by entities shard from parse events)
             query = """
                 SELECT
                     source_id,
@@ -344,7 +344,7 @@ class GraphBuilder:
                     relationship_type,
                     confidence,
                     metadata
-                FROM arkham_frame.entity_relationships
+                FROM arkham_entity_relationships
                 WHERE source_id = ANY(:entity_ids)
                   AND target_id = ANY(:entity_ids)
             """

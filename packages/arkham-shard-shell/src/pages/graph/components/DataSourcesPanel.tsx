@@ -202,26 +202,32 @@ export function DataSourcesPanel({
   }, []);
 
   // Document selection handlers
-  const selectedDocIds = settings.selectedDocumentIds || [];
-  const allDocsSelected = selectedDocIds.length === 0; // Empty means all
+  // Convention: null/undefined = all, [] = none, [ids...] = specific
+  const selectedDocIds = settings.selectedDocumentIds;
+  const allDocsSelected = selectedDocIds === null || selectedDocIds === undefined;
+  const noneSelected = Array.isArray(selectedDocIds) && selectedDocIds.length === 0;
 
   const toggleDocument = (docId: string) => {
     if (allDocsSelected) {
       // Switching from "all" to specific selection - select all except this one
       const allIds = documents.map(d => d.id).filter(id => id !== docId);
       onChange({ selectedDocumentIds: allIds });
+    } else if (noneSelected) {
+      // Switching from "none" to selecting just this one
+      onChange({ selectedDocumentIds: [docId] });
     } else {
       // Toggle individual document
-      if (selectedDocIds.includes(docId)) {
-        onChange({ selectedDocumentIds: selectedDocIds.filter(id => id !== docId) });
+      if (selectedDocIds!.includes(docId)) {
+        const newIds = selectedDocIds!.filter(id => id !== docId);
+        onChange({ selectedDocumentIds: newIds });
       } else {
-        onChange({ selectedDocumentIds: [...selectedDocIds, docId] });
+        onChange({ selectedDocumentIds: [...selectedDocIds!, docId] });
       }
     }
   };
 
   const selectAllDocs = () => {
-    onChange({ selectedDocumentIds: [] }); // Empty = all
+    onChange({ selectedDocumentIds: null }); // null = all
   };
 
   const selectNoneDocs = () => {
@@ -229,12 +235,12 @@ export function DataSourcesPanel({
   };
 
   const isDocSelected = (docId: string) => {
-    return allDocsSelected || selectedDocIds.includes(docId);
+    return allDocsSelected || (Array.isArray(selectedDocIds) && selectedDocIds.includes(docId));
   };
 
   // Count enabled sources
   const enabledCrossShardCount = SOURCE_CONFIGS.filter(c => settings[c.key]).length;
-  const selectedDocCount = allDocsSelected ? documents.length : selectedDocIds.length;
+  const selectedDocCount = allDocsSelected ? documents.length : (noneSelected ? 0 : selectedDocIds!.length);
   const totalEntityCount = documents
     .filter(d => isDocSelected(d.id))
     .reduce((sum, d) => sum + (d.entity_count || 0), 0);
