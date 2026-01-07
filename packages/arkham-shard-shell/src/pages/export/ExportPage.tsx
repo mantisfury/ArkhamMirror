@@ -93,6 +93,10 @@ export function ExportPage() {
   const [includeMetadata, setIncludeMetadata] = useState(true);
   const [includeRelationships, setIncludeRelationships] = useState(true);
   const [maxRecords, setMaxRecords] = useState<string>('');
+  // Timeline-specific options
+  const [includeConflicts, setIncludeConflicts] = useState(false);
+  const [includeGaps, setIncludeGaps] = useState(false);
+  const [groupBy, setGroupBy] = useState<string>('');
 
   // Fetch data
   const { data: formats, loading: _formatsLoading } = useFetch<FormatInfo[]>('/api/export/formats');
@@ -127,6 +131,10 @@ export function ExportPage() {
             include_metadata: includeMetadata,
             include_relationships: includeRelationships,
             max_records: maxRecords ? parseInt(maxRecords, 10) : null,
+            // Timeline-specific options
+            include_conflicts: selectedTarget === 'timeline' ? includeConflicts : false,
+            include_gaps: selectedTarget === 'timeline' ? includeGaps : false,
+            group_by: selectedTarget === 'timeline' && groupBy ? groupBy : null,
           },
         }),
       });
@@ -296,6 +304,53 @@ export function ExportPage() {
                 <span className="option-description">Limit number of exported records</span>
               </div>
             </div>
+
+            {/* Timeline-specific options */}
+            {selectedTarget === 'timeline' && (
+              <div className="timeline-options">
+                <h4>Timeline Options</h4>
+                <label className="option-item">
+                  <input
+                    type="checkbox"
+                    checked={includeConflicts}
+                    onChange={e => setIncludeConflicts(e.target.checked)}
+                  />
+                  <div>
+                    <span className="option-label">Include Conflicts</span>
+                    <span className="option-description">Add timeline conflicts and contradictions</span>
+                  </div>
+                </label>
+
+                <label className="option-item">
+                  <input
+                    type="checkbox"
+                    checked={includeGaps}
+                    onChange={e => setIncludeGaps(e.target.checked)}
+                  />
+                  <div>
+                    <span className="option-label">Include Gaps</span>
+                    <span className="option-description">Add timeline gap analysis</span>
+                  </div>
+                </label>
+
+                <div className="option-item">
+                  <label htmlFor="groupBy" className="option-label">Group Events By</label>
+                  <select
+                    id="groupBy"
+                    value={groupBy}
+                    onChange={e => setGroupBy(e.target.value)}
+                    className="option-select"
+                  >
+                    <option value="">Chronological (no grouping)</option>
+                    <option value="day">Day</option>
+                    <option value="week">Week</option>
+                    <option value="month">Month</option>
+                    <option value="entity">Entity</option>
+                  </select>
+                  <span className="option-description">Organize events by time period or entity</span>
+                </div>
+              </div>
+            )}
           </div>
 
           <div className="export-actions">

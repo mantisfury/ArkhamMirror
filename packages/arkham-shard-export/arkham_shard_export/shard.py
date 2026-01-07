@@ -539,7 +539,14 @@ class ExportShard(ArkhamShard):
         """Generate export file with real data."""
         # Fetch data based on target
         data = await self._fetch_data(job.target, job.filters, job.options)
-        record_count = len(data) if isinstance(data, list) else 1
+        # Calculate record count - handle timeline dict format
+        if isinstance(data, list):
+            record_count = len(data)
+        elif isinstance(data, dict) and "events" in data:
+            # Timeline format with events list
+            record_count = len(data.get("events", []))
+        else:
+            record_count = 1
 
         # Generate file based on format
         filename = f"{job.id}_{job.target.value}.{self._get_file_extension(job.format)}"
@@ -746,8 +753,8 @@ class ExportShard(ArkhamShard):
         client: httpx.AsyncClient,
         filters: Dict[str, Any],
         options: Optional[ExportOptions],
-    ) -> List[Dict[str, Any]]:
-        """Fetch timeline events from the timeline shard."""
+    ) -> Dict[str, Any]:
+        """Fetch timeline events with optional gaps, conflicts, and entity info."""
         params = {"limit": 1000, "offset": 0}
 
         if options:
@@ -760,15 +767,128 @@ class ExportShard(ArkhamShard):
         if max_records:
             params["limit"] = min(max_records, 1000)
 
+        # Fetch events
         response = await client.get(f"{INTERNAL_API_BASE}/api/timeline/events", params=params)
         if response.status_code != 200:
             logger.error(f"Timeline API error: {response.status_code}")
-            return []
+            return {"events": [], "gaps": [], "conflicts": [], "entities": {}}
 
         data = response.json()
         events = data.get("events", [])
 
-        return events
+        result = {
+            "events": events,
+            "gaps": [],
+            "conflicts": [],
+            "entities": {},
+            "stats": {
+                "total_events": len(events),
+                "date_range": {
+                    "start": events[0].get("date_start") if events else None,
+                    "end": events[-1].get("date_start") if events else None,
+                },
+            },
+        }
+
+        # Fetch gaps if requested
+        if options and options.include_gaps:
+            try:
+                gap_params = {}
+                if options.date_range_start:
+                    gap_params["start_date"] = options.date_range_start.isoformat()
+                if options.date_range_end:
+                    gap_params["end_date"] = options.date_range_end.isoformat()
+                gaps_response = await client.get(f"{INTERNAL_API_BASE}/api/timeline/gaps", params=gap_params)
+                if gaps_response.status_code == 200:
+                    gaps_data = gaps_response.json()
+                    result["gaps"] = gaps_data.get("gaps", [])
+                    result["stats"]["gap_count"] = len(result["gaps"])
+            except Exception as e:
+                logger.warning(f"Failed to fetch timeline gaps: {e}")
+
+        # Fetch conflicts if requested
+        if options and options.include_conflicts:
+            try:
+                conflicts_response = await client.get(f"{INTERNAL_API_BASE}/api/timeline/conflicts/analyze")
+                if conflicts_response.status_code == 200:
+                    conflicts_data = conflicts_response.json()
+                    result["conflicts"] = conflicts_data.get("conflicts", [])
+                    result["stats"]["conflict_count"] = len(result["conflicts"])
+            except Exception as e:
+                logger.warning(f"Failed to fetch timeline conflicts: {e}")
+
+        # Fetch entity names if events have entity IDs
+        entity_ids = set()
+        for event in events:
+            for eid in event.get("entities", []):
+                entity_ids.add(eid)
+
+        if entity_ids:
+            try:
+                for eid in list(entity_ids)[:50]:  # Limit to 50 entities
+                    ent_response = await client.get(f"{INTERNAL_API_BASE}/api/entities/{eid}")
+                    if ent_response.status_code == 200:
+                        ent_data = ent_response.json()
+                        result["entities"][eid] = {
+                            "name": ent_data.get("name", "Unknown"),
+                            "type": ent_data.get("entity_type", "UNKNOWN"),
+                        }
+            except Exception as e:
+                logger.warning(f"Failed to fetch entity names: {e}")
+
+        # Group events if requested
+        if options and options.group_by:
+            result["grouped_events"] = self._group_timeline_events(events, options.group_by, result.get("entities", {}))
+
+        return result
+
+    def _group_timeline_events(
+        self,
+        events: List[Dict[str, Any]],
+        group_by: str,
+        entities: Dict[str, Dict[str, str]],
+    ) -> Dict[str, List[Dict[str, Any]]]:
+        """Group timeline events by day/week/month/entity."""
+        from collections import defaultdict
+        grouped = defaultdict(list)
+
+        for event in events:
+            date_str = event.get("date_start", "")
+            if not date_str:
+                grouped["Unknown"].append(event)
+                continue
+
+            try:
+                # Parse date - handle various formats
+                if "T" in date_str:
+                    dt = datetime.fromisoformat(date_str.replace("Z", "+00:00"))
+                else:
+                    dt = datetime.strptime(date_str[:10], "%Y-%m-%d")
+
+                if group_by == "day":
+                    key = dt.strftime("%Y-%m-%d")
+                elif group_by == "week":
+                    key = f"{dt.year}-W{dt.isocalendar()[1]:02d}"
+                elif group_by == "month":
+                    key = dt.strftime("%Y-%m")
+                elif group_by == "entity":
+                    # Group by entities mentioned in the event
+                    event_entities = event.get("entities", [])
+                    if event_entities:
+                        for eid in event_entities:
+                            ent_name = entities.get(eid, {}).get("name", eid[:8])
+                            grouped[ent_name].append(event)
+                    else:
+                        grouped["No Entity"].append(event)
+                    continue
+                else:
+                    key = "Unknown"
+
+                grouped[key].append(event)
+            except Exception:
+                grouped["Unknown"].append(event)
+
+        return dict(grouped)
 
     async def _fetch_graph(
         self,
@@ -1079,23 +1199,143 @@ class ExportShard(ArkhamShard):
             story.append(Spacer(1, 12))
 
     def _add_timeline_to_pdf(self, story, data, styles):
-        """Add timeline events to PDF."""
-        from reportlab.platypus import Paragraph, Spacer
+        """Add timeline events to PDF with enhanced formatting."""
+        from reportlab.platypus import Paragraph, Spacer, Table, TableStyle, PageBreak
+        from reportlab.lib import colors
+        from reportlab.lib.styles import ParagraphStyle
 
         heading_style = styles["Heading2"]
+        heading3_style = ParagraphStyle(
+            "Heading3",
+            parent=styles["Heading3"] if "Heading3" in styles else styles["Heading2"],
+            fontSize=11,
+            spaceAfter=6,
+        )
         normal_style = styles["Normal"]
 
+        # Handle new format (dict with events, gaps, conflicts, entities)
+        if isinstance(data, dict):
+            events = data.get("events", [])
+            gaps = data.get("gaps", [])
+            conflicts = data.get("conflicts", [])
+            entities = data.get("entities", {})
+            stats = data.get("stats", {})
+            grouped_events = data.get("grouped_events")
+        else:
+            # Legacy format - list of events
+            events = data if isinstance(data, list) else [data]
+            gaps = []
+            conflicts = []
+            entities = {}
+            stats = {}
+            grouped_events = None
+
+        # Summary statistics
+        story.append(Paragraph("Timeline Summary", heading_style))
+        story.append(Spacer(1, 6))
+        story.append(Paragraph(f"<b>Total Events:</b> {len(events)}", normal_style))
+        if stats.get("date_range"):
+            dr = stats["date_range"]
+            story.append(Paragraph(f"<b>Date Range:</b> {dr.get('start', 'N/A')} to {dr.get('end', 'N/A')}", normal_style))
+        if stats.get("gap_count"):
+            story.append(Paragraph(f"<b>Timeline Gaps:</b> {stats['gap_count']}", normal_style))
+        if stats.get("conflict_count"):
+            story.append(Paragraph(f"<b>Conflicts Detected:</b> {stats['conflict_count']}", normal_style))
+        story.append(Spacer(1, 12))
+
+        # Conflicts section (if any)
+        if conflicts:
+            story.append(Paragraph("Conflicts / Issues", heading_style))
+            story.append(Spacer(1, 6))
+            for i, conflict in enumerate(conflicts[:20]):
+                conflict_type = conflict.get("conflict_type", "Unknown")
+                severity = conflict.get("severity", "medium")
+                desc = conflict.get("description", "")[:150]
+                story.append(Paragraph(
+                    f"<b>{i+1}. [{severity.upper()}] {conflict_type}:</b> {desc}",
+                    normal_style
+                ))
+                if conflict.get("resolution_suggestion"):
+                    story.append(Paragraph(
+                        f"   <i>Suggestion: {conflict['resolution_suggestion'][:100]}</i>",
+                        normal_style
+                    ))
+            story.append(Spacer(1, 12))
+
+        # Gaps section (if any)
+        if gaps:
+            story.append(Paragraph("Timeline Gaps", heading_style))
+            story.append(Spacer(1, 6))
+            for gap in gaps[:15]:
+                start = gap.get("gap_start", "?")
+                end = gap.get("gap_end", "?")
+                days = gap.get("days", 0)
+                severity = gap.get("severity", "low")
+                story.append(Paragraph(
+                    f"<b>[{severity.upper()}]</b> {start} to {end} ({days} days)",
+                    normal_style
+                ))
+            story.append(Spacer(1, 12))
+
+        # Events section
         story.append(Paragraph("Timeline Events", heading_style))
         story.append(Spacer(1, 6))
 
-        if not isinstance(data, list):
-            data = [data]
+        # If grouped, show by group
+        if grouped_events:
+            for group_name, group_events in sorted(grouped_events.items()):
+                story.append(Paragraph(f"<b>{group_name}</b> ({len(group_events)} events)", heading3_style))
+                for event in group_events[:20]:
+                    self._add_single_event_to_pdf(story, event, normal_style, entities)
+                if len(group_events) > 20:
+                    story.append(Paragraph(f"  ... and {len(group_events) - 20} more events", normal_style))
+                story.append(Spacer(1, 8))
+        else:
+            # Chronological list
+            for event in events[:100]:
+                self._add_single_event_to_pdf(story, event, normal_style, entities)
 
-        for event in data[:100]:  # Limit for PDF
-            date_str = event.get("date_start", "Unknown date")
-            text = event.get("text", "No description")[:200]
-            story.append(Paragraph(f"<b>{date_str}:</b> {text}", normal_style))
-            story.append(Spacer(1, 6))
+        if len(events) > 100 and not grouped_events:
+            story.append(Paragraph(f"<i>... and {len(events) - 100} more events (truncated for PDF)</i>", normal_style))
+
+    def _add_single_event_to_pdf(self, story, event, style, entities):
+        """Add a single timeline event to the PDF."""
+        from reportlab.platypus import Paragraph, Spacer
+
+        date_str = event.get("date_start", "Unknown date")
+        precision = event.get("precision", "")
+        text = event.get("text", "No description")[:250]
+        event_type = event.get("event_type", "")
+        source = event.get("source_document", "")
+
+        # Format date with precision indicator
+        if precision and precision != "day":
+            date_str = f"{date_str} ({precision})"
+
+        # Build event line
+        line = f"<b>{date_str}</b>"
+        if event_type:
+            line += f" [{event_type}]"
+        line += f": {text}"
+
+        story.append(Paragraph(line, style))
+
+        # Add entity names if present
+        event_entities = event.get("entities", [])
+        if event_entities and entities:
+            entity_names = []
+            for eid in event_entities[:5]:
+                ent_info = entities.get(eid, {})
+                name = ent_info.get("name", eid[:8])
+                entity_names.append(name)
+            if entity_names:
+                story.append(Paragraph(f"   <i>Entities: {', '.join(entity_names)}</i>", style))
+
+        # Add source if present
+        if source:
+            story.append(Paragraph(f"   <i>Source: {source[:50]}</i>", style))
+
+        story.append(Spacer(1, 4))
 
     def _add_generic_list_to_pdf(self, story, data, styles):
         """Add generic list data to PDF."""
@@ -1137,6 +1377,10 @@ class ExportShard(ArkhamShard):
         # Style for headers
         header_font = Font(bold=True)
         header_fill = PatternFill(start_color="DDDDDD", end_color="DDDDDD", fill_type="solid")
+
+        # Handle timeline dict format
+        if isinstance(data, dict) and "events" in data:
+            data = data.get("events", [])
 
         if not isinstance(data, list):
             data = [data]
@@ -1210,6 +1454,10 @@ class ExportShard(ArkhamShard):
                 "max_records": job.options.max_records,
                 "sort_by": job.options.sort_by,
                 "sort_order": job.options.sort_order,
+                # Timeline-specific options
+                "include_conflicts": job.options.include_conflicts,
+                "include_gaps": job.options.include_gaps,
+                "group_by": job.options.group_by,
             })
 
         data = (
@@ -1268,6 +1516,10 @@ class ExportShard(ArkhamShard):
                 max_records=options_data.get("max_records"),
                 sort_by=options_data.get("sort_by"),
                 sort_order=options_data.get("sort_order", "asc"),
+                # Timeline-specific options
+                include_conflicts=options_data.get("include_conflicts", False),
+                include_gaps=options_data.get("include_gaps", False),
+                group_by=options_data.get("group_by"),
             )
 
         return ExportJob(

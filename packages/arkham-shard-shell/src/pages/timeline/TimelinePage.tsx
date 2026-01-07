@@ -6,6 +6,7 @@
  */
 
 import { useState, useCallback, useMemo } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { Icon } from '../../components/common/Icon';
 import { useToast } from '../../context/ToastContext';
 import { useFetch } from '../../hooks/useFetch';
@@ -51,17 +52,99 @@ interface Document {
   event_count: number;
 }
 
+interface EntityWithEvents {
+  entity_id: string;
+  name: string;
+  entity_type: string;
+  event_count: number;
+}
+
+interface EntitiesResponse {
+  entities: EntityWithEvents[];
+  count: number;
+}
+
+interface EventNote {
+  id: string;
+  event_id: string;
+  note: string;
+  author: string | null;
+  created_at: string;
+}
+
+interface EditingEvent {
+  id: string;
+  text: string;
+  date_start: string;
+  date_end: string;
+  event_type: string;
+  precision: string;
+  entities: string[];
+}
+
+interface TimelineGap {
+  start_date: string;
+  end_date: string;
+  gap_days: number;
+  before_event_id: string;
+  after_event_id: string;
+  severity: string;
+}
+
+interface GapsResponse {
+  gaps: TimelineGap[];
+  count: number;
+  total_gap_days: number;
+  median_gap_days: number;
+  coverage_percent: number;
+}
+
+interface ConflictDetail {
+  id: string;
+  type: string;
+  severity: string;
+  event_ids: string[];
+  description: string;
+  documents: string[];
+  suggested_resolution: string | null;
+}
+
+interface ConflictsResponse {
+  conflicts: ConflictDetail[];
+  count: number;
+  by_type: Record<string, number>;
+  by_severity: Record<string, number>;
+}
+
 type TabId = 'timeline' | 'stats' | 'extract';
 
 export function TimelinePage() {
   const { toast } = useToast();
+  const navigate = useNavigate();
   const [activeTab, setActiveTab] = useState<TabId>('timeline');
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
+  const [selectedEntityId, setSelectedEntityId] = useState<string>('');
   const [filterApplied, setFilterApplied] = useState(false);
   const [extracting, setExtracting] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<{ type: 'event' | 'document' | 'all'; id?: string; name?: string } | null>(null);
+
+  // Edit modal state
+  const [editingEvent, setEditingEvent] = useState<EditingEvent | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  // Notes state
+  const [showNotesFor, setShowNotesFor] = useState<string | null>(null);
+  const [notes, setNotes] = useState<EventNote[]>([]);
+  const [newNote, setNewNote] = useState('');
+  const [loadingNotes, setLoadingNotes] = useState(false);
+
+  // Gap and conflict analysis state
+  const [gapsData, setGapsData] = useState<GapsResponse | null>(null);
+  const [conflictsData, setConflictsData] = useState<ConflictsResponse | null>(null);
+  const [analyzingGaps, setAnalyzingGaps] = useState(false);
+  const [analyzingConflicts, setAnalyzingConflicts] = useState(false);
 
   // Build query string
   const buildQuery = useCallback(() => {
@@ -86,6 +169,20 @@ export function TimelinePage() {
   // Fetch documents for extraction
   const { data: docsData, loading: docsLoading, refetch: refetchDocs } = useFetch<{ documents: Document[]; count: number }>('/api/timeline/documents');
 
+  // Fetch entities with timeline events
+  const { data: entitiesData } = useFetch<EntitiesResponse>('/api/timeline/entities?limit=100');
+
+  // Create entity lookup map for displaying names
+  const entityLookup = useMemo(() => {
+    const lookup: Record<string, EntityWithEvents> = {};
+    if (entitiesData?.entities) {
+      for (const entity of entitiesData.entities) {
+        lookup[entity.entity_id] = entity;
+      }
+    }
+    return lookup;
+  }, [entitiesData]);
+
   const applyFilter = () => {
     if (startDate && endDate && startDate > endDate) {
       toast.error('Start date must be before end date');
@@ -98,6 +195,7 @@ export function TimelinePage() {
   const clearFilter = () => {
     setStartDate('');
     setEndDate('');
+    setSelectedEntityId('');
     setFilterApplied(false);
     setTimeout(() => refetchEvents(), 0);
   };
@@ -200,6 +298,158 @@ export function TimelinePage() {
     }
   };
 
+  // Edit event functions
+  const openEditModal = (event: TimelineEvent) => {
+    setEditingEvent({
+      id: event.id,
+      text: event.text,
+      date_start: event.date_start.split('T')[0],
+      date_end: event.date_end?.split('T')[0] || '',
+      event_type: event.event_type,
+      precision: event.precision,
+      entities: event.entities || [],
+    });
+  };
+
+  const saveEvent = async () => {
+    if (!editingEvent) return;
+
+    setSaving(true);
+    try {
+      const response = await fetch(`/api/timeline/events/${editingEvent.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          text: editingEvent.text,
+          date_start: editingEvent.date_start,
+          date_end: editingEvent.date_end || null,
+          event_type: editingEvent.event_type,
+          precision: editingEvent.precision,
+          entities: editingEvent.entities,
+        }),
+      });
+
+      if (response.ok) {
+        toast.success('Event updated');
+        setEditingEvent(null);
+        refetchEvents();
+      } else {
+        const error = await response.json();
+        toast.error(error.detail || 'Failed to update event');
+      }
+    } catch {
+      toast.error('Failed to update event');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  // Notes functions
+  const loadNotes = async (eventId: string) => {
+    setLoadingNotes(true);
+    setShowNotesFor(eventId);
+    try {
+      const response = await fetch(`/api/timeline/events/${eventId}/notes`);
+      if (response.ok) {
+        const data = await response.json();
+        setNotes(data.notes || []);
+      }
+    } catch {
+      toast.error('Failed to load notes');
+    } finally {
+      setLoadingNotes(false);
+    }
+  };
+
+  const addNote = async () => {
+    if (!showNotesFor || !newNote.trim()) return;
+
+    try {
+      const response = await fetch(`/api/timeline/events/${showNotesFor}/notes`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ note: newNote.trim() }),
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        setNotes([data, ...notes]);
+        setNewNote('');
+        toast.success('Note added');
+      } else {
+        const error = await response.json();
+        toast.error(error.detail || 'Failed to add note');
+      }
+    } catch {
+      toast.error('Failed to add note');
+    }
+  };
+
+  const deleteNote = async (noteId: string) => {
+    if (!showNotesFor) return;
+
+    try {
+      const response = await fetch(`/api/timeline/events/${showNotesFor}/notes/${noteId}`, {
+        method: 'DELETE',
+      });
+
+      if (response.ok) {
+        setNotes(notes.filter(n => n.id !== noteId));
+        toast.success('Note deleted');
+      } else {
+        const error = await response.json();
+        toast.error(error.detail || 'Failed to delete note');
+      }
+    } catch {
+      toast.error('Failed to delete note');
+    }
+  };
+
+  // Gap and conflict analysis functions
+  const analyzeGaps = async () => {
+    setAnalyzingGaps(true);
+    try {
+      const response = await fetch('/api/timeline/gaps?min_gap_days=30');
+      if (response.ok) {
+        const data = await response.json();
+        setGapsData(data);
+      } else {
+        toast.error('Failed to analyze gaps');
+      }
+    } catch {
+      toast.error('Failed to analyze gaps');
+    } finally {
+      setAnalyzingGaps(false);
+    }
+  };
+
+  const analyzeConflicts = async () => {
+    setAnalyzingConflicts(true);
+    try {
+      const response = await fetch('/api/timeline/conflicts/analyze');
+      if (response.ok) {
+        const data = await response.json();
+        setConflictsData(data);
+      } else {
+        toast.error('Failed to analyze conflicts');
+      }
+    } catch {
+      toast.error('Failed to analyze conflicts');
+    } finally {
+      setAnalyzingConflicts(false);
+    }
+  };
+
+  const getSeverityColor = (severity: string) => {
+    switch (severity) {
+      case 'critical': return 'var(--error-color)';
+      case 'high': return '#ef4444';
+      case 'medium': return '#f59e0b';
+      case 'low': return '#22c55e';
+      default: return 'var(--text-muted)';
+    }
+  };
+
   const formatDate = (dateStr: string) => {
     try {
       const date = new Date(dateStr);
@@ -256,8 +506,16 @@ export function TimelinePage() {
       return new Map<string, TimelineEvent[]>();
     }
 
+    // Filter events by selected entity if any
+    let filteredEvents = eventsData.events;
+    if (selectedEntityId) {
+      filteredEvents = eventsData.events.filter(event =>
+        event.entities && event.entities.includes(selectedEntityId)
+      );
+    }
+
     const groups = new Map<string, TimelineEvent[]>();
-    eventsData.events.forEach(event => {
+    filteredEvents.forEach(event => {
       if (!event?.date_start) return;
       const dateKey = event.date_start.split('T')[0];
       if (!groups.has(dateKey)) {
@@ -266,7 +524,7 @@ export function TimelinePage() {
       groups.get(dateKey)!.push(event);
     });
     return groups;
-  }, [eventsData]);
+  }, [eventsData, selectedEntityId]);
 
   return (
     <div className="timeline-page">
@@ -331,6 +589,22 @@ export function TimelinePage() {
                     className="date-input"
                   />
                 </div>
+                <div className="date-input-group">
+                  <label htmlFor="entity-filter">Filter by Entity</label>
+                  <select
+                    id="entity-filter"
+                    value={selectedEntityId}
+                    onChange={e => setSelectedEntityId(e.target.value)}
+                    className="entity-select"
+                  >
+                    <option value="">All Entities</option>
+                    {entitiesData?.entities?.map(entity => (
+                      <option key={entity.entity_id} value={entity.entity_id}>
+                        {entity.name} ({entity.event_count})
+                      </option>
+                    ))}
+                  </select>
+                </div>
               </div>
               <div className="filter-actions">
                 <button
@@ -347,6 +621,23 @@ export function TimelinePage() {
                     Clear
                   </button>
                 )}
+                <button
+                  className="btn btn-secondary"
+                  onClick={() => {
+                    // Navigate to graph with timeline events enabled
+                    const params = new URLSearchParams();
+                    params.set('sources', 'timeline');
+                    if (filterApplied && startDate) params.set('start_date', startDate);
+                    if (filterApplied && endDate) params.set('end_date', endDate);
+                    navigate(`/graph?${params.toString()}`);
+                    toast.info('Opening Graph with Timeline Events. Enable "Timeline Events" in Data Sources and click Build Graph.');
+                  }}
+                  disabled={!eventsData?.events || eventsData.events.length === 0}
+                  title="Visualize timeline events in the Graph view"
+                >
+                  <Icon name="Network" size={16} />
+                  Visualize in Graph
+                </button>
               </div>
             </div>
 
@@ -415,9 +706,21 @@ export function TimelinePage() {
                               <div className="event-entities">
                                 <Icon name="Users" size={14} />
                                 <div className="entity-tags">
-                                  {event.entities.slice(0, 5).map((entity, idx) => (
-                                    <span key={idx} className="entity-tag">{entity}</span>
-                                  ))}
+                                  {event.entities.slice(0, 5).map((entityId, idx) => {
+                                    const entity = entityLookup[entityId];
+                                    const displayName = entity?.name || entityId.slice(0, 12) + '...';
+                                    const isSelected = selectedEntityId === entityId;
+                                    return (
+                                      <button
+                                        key={idx}
+                                        className={`entity-tag clickable ${isSelected ? 'selected' : ''}`}
+                                        onClick={() => setSelectedEntityId(isSelected ? '' : entityId)}
+                                        title={`${entity?.name || entityId} (${entity?.entity_type || 'entity'}) - Click to filter`}
+                                      >
+                                        {displayName}
+                                      </button>
+                                    );
+                                  })}
                                   {event.entities.length > 5 && (
                                     <span className="entity-tag more">+{event.entities.length - 5}</span>
                                   )}
@@ -429,13 +732,29 @@ export function TimelinePage() {
                                 <Icon name="FileText" size={14} />
                                 {event.document_id.slice(0, 8)}...
                               </span>
-                              <button
-                                className="btn-icon btn-delete"
-                                onClick={() => setConfirmDelete({ type: 'event', id: event.id })}
-                                title="Delete event"
-                              >
-                                <Icon name="Trash2" size={14} />
-                              </button>
+                              <div className="event-actions">
+                                <button
+                                  className="btn-icon"
+                                  onClick={() => loadNotes(event.id)}
+                                  title="View/add notes"
+                                >
+                                  <Icon name="MessageSquare" size={14} />
+                                </button>
+                                <button
+                                  className="btn-icon"
+                                  onClick={() => openEditModal(event)}
+                                  title="Edit event"
+                                >
+                                  <Icon name="Edit2" size={14} />
+                                </button>
+                                <button
+                                  className="btn-icon btn-delete"
+                                  onClick={() => setConfirmDelete({ type: 'event', id: event.id })}
+                                  title="Delete event"
+                                >
+                                  <Icon name="Trash2" size={14} />
+                                </button>
+                              </div>
                             </div>
                           </div>
                         </div>
@@ -577,6 +896,132 @@ export function TimelinePage() {
                     </div>
                   </div>
                 )}
+
+                {/* Timeline Gaps Analysis */}
+                <div className="stats-section">
+                  <div className="section-header">
+                    <h3>Timeline Gaps</h3>
+                    <button
+                      className="btn btn-secondary btn-sm"
+                      onClick={analyzeGaps}
+                      disabled={analyzingGaps}
+                    >
+                      {analyzingGaps ? (
+                        <>
+                          <Icon name="Loader2" size={14} className="spin" />
+                          Analyzing...
+                        </>
+                      ) : (
+                        <>
+                          <Icon name="Search" size={14} />
+                          Analyze Gaps
+                        </>
+                      )}
+                    </button>
+                  </div>
+                  {gapsData ? (
+                    <div className="analysis-results">
+                      <div className="analysis-summary">
+                        <div className="summary-item">
+                          <span className="summary-value">{gapsData.count}</span>
+                          <span className="summary-label">Gaps Found</span>
+                        </div>
+                        <div className="summary-item">
+                          <span className="summary-value">{gapsData.median_gap_days}d</span>
+                          <span className="summary-label">Median Gap</span>
+                        </div>
+                        <div className="summary-item">
+                          <span className="summary-value">{gapsData.coverage_percent}%</span>
+                          <span className="summary-label">Coverage</span>
+                        </div>
+                      </div>
+                      {gapsData.gaps.length > 0 && (
+                        <div className="gap-list">
+                          {gapsData.gaps.slice(0, 5).map((gap, idx) => (
+                            <div key={idx} className="gap-item">
+                              <div className="gap-severity" style={{ backgroundColor: getSeverityColor(gap.severity) }} />
+                              <div className="gap-info">
+                                <span className="gap-days">{gap.gap_days} days</span>
+                                <span className="gap-dates">
+                                  {formatDateOnly(gap.start_date)} → {formatDateOnly(gap.end_date)}
+                                </span>
+                              </div>
+                            </div>
+                          ))}
+                          {gapsData.gaps.length > 5 && (
+                            <div className="gap-more">+{gapsData.gaps.length - 5} more gaps</div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    <p className="analysis-hint">Click "Analyze Gaps" to detect timeline gaps (&gt;30 days)</p>
+                  )}
+                </div>
+
+                {/* Conflicts Analysis */}
+                <div className="stats-section">
+                  <div className="section-header">
+                    <h3>Temporal Conflicts</h3>
+                    <button
+                      className="btn btn-secondary btn-sm"
+                      onClick={analyzeConflicts}
+                      disabled={analyzingConflicts}
+                    >
+                      {analyzingConflicts ? (
+                        <>
+                          <Icon name="Loader2" size={14} className="spin" />
+                          Analyzing...
+                        </>
+                      ) : (
+                        <>
+                          <Icon name="AlertTriangle" size={14} />
+                          Analyze Conflicts
+                        </>
+                      )}
+                    </button>
+                  </div>
+                  {conflictsData ? (
+                    <div className="analysis-results">
+                      <div className="analysis-summary">
+                        <div className="summary-item">
+                          <span className="summary-value">{conflictsData.count}</span>
+                          <span className="summary-label">Conflicts</span>
+                        </div>
+                        {Object.entries(conflictsData.by_severity).map(([severity, count]) => (
+                          <div key={severity} className="summary-item">
+                            <span className="summary-value" style={{ color: getSeverityColor(severity) }}>{count}</span>
+                            <span className="summary-label">{severity}</span>
+                          </div>
+                        ))}
+                      </div>
+                      {conflictsData.conflicts.length > 0 && (
+                        <div className="conflict-list">
+                          {conflictsData.conflicts.slice(0, 5).map((conflict) => (
+                            <div key={conflict.id} className="conflict-item">
+                              <div className="conflict-severity" style={{ backgroundColor: getSeverityColor(conflict.severity) }} />
+                              <div className="conflict-info">
+                                <span className="conflict-type">{conflict.type}</span>
+                                <span className="conflict-desc">{conflict.description}</span>
+                                {conflict.suggested_resolution && (
+                                  <span className="conflict-resolution">
+                                    <Icon name="Lightbulb" size={12} />
+                                    {conflict.suggested_resolution}
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+                          ))}
+                          {conflictsData.conflicts.length > 5 && (
+                            <div className="conflict-more">+{conflictsData.conflicts.length - 5} more conflicts</div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    <p className="analysis-hint">Click "Analyze Conflicts" to detect temporal inconsistencies</p>
+                  )}
+                </div>
               </>
             ) : (
               <div className="timeline-empty">
@@ -709,6 +1154,186 @@ export function TimelinePage() {
                   </>
                 )}
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Edit Event Modal */}
+      {editingEvent && (
+        <div className="modal-overlay" onClick={() => setEditingEvent(null)}>
+          <div className="modal-dialog modal-lg" onClick={e => e.stopPropagation()}>
+            <div className="modal-header">
+              <Icon name="Edit2" size={24} />
+              <h3>Edit Event</h3>
+              <button className="btn-icon" onClick={() => setEditingEvent(null)}>
+                <Icon name="X" size={20} />
+              </button>
+            </div>
+            <div className="modal-body">
+              <div className="form-group">
+                <label htmlFor="edit-text">Event Text</label>
+                <textarea
+                  id="edit-text"
+                  className="form-input"
+                  rows={4}
+                  value={editingEvent.text}
+                  onChange={e => setEditingEvent({ ...editingEvent, text: e.target.value })}
+                />
+              </div>
+              <div className="form-row">
+                <div className="form-group">
+                  <label htmlFor="edit-date-start">Start Date</label>
+                  <input
+                    id="edit-date-start"
+                    type="date"
+                    className="form-input"
+                    value={editingEvent.date_start}
+                    onChange={e => setEditingEvent({ ...editingEvent, date_start: e.target.value })}
+                  />
+                </div>
+                <div className="form-group">
+                  <label htmlFor="edit-date-end">End Date</label>
+                  <input
+                    id="edit-date-end"
+                    type="date"
+                    className="form-input"
+                    value={editingEvent.date_end}
+                    onChange={e => setEditingEvent({ ...editingEvent, date_end: e.target.value })}
+                  />
+                </div>
+              </div>
+              <div className="form-row">
+                <div className="form-group">
+                  <label htmlFor="edit-type">Event Type</label>
+                  <select
+                    id="edit-type"
+                    className="form-input"
+                    value={editingEvent.event_type}
+                    onChange={e => setEditingEvent({ ...editingEvent, event_type: e.target.value })}
+                  >
+                    <option value="historical">Historical</option>
+                    <option value="biographical">Biographical</option>
+                    <option value="legal">Legal</option>
+                    <option value="financial">Financial</option>
+                    <option value="medical">Medical</option>
+                    <option value="meeting">Meeting</option>
+                    <option value="deadline">Deadline</option>
+                    <option value="unknown">Unknown</option>
+                  </select>
+                </div>
+                <div className="form-group">
+                  <label htmlFor="edit-precision">Precision</label>
+                  <select
+                    id="edit-precision"
+                    className="form-input"
+                    value={editingEvent.precision}
+                    onChange={e => setEditingEvent({ ...editingEvent, precision: e.target.value })}
+                  >
+                    <option value="day">Day</option>
+                    <option value="week">Week</option>
+                    <option value="month">Month</option>
+                    <option value="year">Year</option>
+                    <option value="decade">Decade</option>
+                    <option value="approximate">Approximate</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+            <div className="modal-footer">
+              <button className="btn btn-secondary" onClick={() => setEditingEvent(null)}>
+                Cancel
+              </button>
+              <button
+                className="btn btn-primary"
+                onClick={saveEvent}
+                disabled={saving || !editingEvent.text.trim()}
+              >
+                {saving ? (
+                  <>
+                    <Icon name="Loader2" size={14} className="spin" />
+                    Saving...
+                  </>
+                ) : (
+                  <>
+                    <Icon name="Check" size={14} />
+                    Save Changes
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Notes Panel */}
+      {showNotesFor && (
+        <div className="modal-overlay" onClick={() => { setShowNotesFor(null); setNotes([]); setNewNote(''); }}>
+          <div className="modal-dialog modal-md" onClick={e => e.stopPropagation()}>
+            <div className="modal-header">
+              <Icon name="MessageSquare" size={24} />
+              <h3>Event Notes</h3>
+              <button className="btn-icon" onClick={() => { setShowNotesFor(null); setNotes([]); setNewNote(''); }}>
+                <Icon name="X" size={20} />
+              </button>
+            </div>
+            <div className="modal-body">
+              <div className="notes-input">
+                <textarea
+                  className="form-input"
+                  rows={3}
+                  placeholder="Add a note..."
+                  value={newNote}
+                  onChange={e => setNewNote(e.target.value)}
+                  onKeyDown={e => {
+                    if (e.key === 'Enter' && e.ctrlKey) {
+                      addNote();
+                    }
+                  }}
+                />
+                <button
+                  className="btn btn-primary"
+                  onClick={addNote}
+                  disabled={!newNote.trim()}
+                >
+                  <Icon name="Plus" size={14} />
+                  Add Note
+                </button>
+              </div>
+              <div className="notes-list">
+                {loadingNotes ? (
+                  <div className="notes-loading">
+                    <Icon name="Loader2" size={20} className="spin" />
+                    <span>Loading notes...</span>
+                  </div>
+                ) : notes.length === 0 ? (
+                  <div className="notes-empty">
+                    <Icon name="MessageSquare" size={32} />
+                    <span>No notes yet</span>
+                  </div>
+                ) : (
+                  notes.map(note => (
+                    <div key={note.id} className="note-item">
+                      <div className="note-content">{note.note}</div>
+                      <div className="note-footer">
+                        <span className="note-date">
+                          {formatDate(note.created_at)}
+                        </span>
+                        {note.author && (
+                          <span className="note-author">{note.author}</span>
+                        )}
+                        <button
+                          className="btn-icon btn-delete"
+                          onClick={() => deleteNote(note.id)}
+                          title="Delete note"
+                        >
+                          <Icon name="Trash2" size={14} />
+                        </button>
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
             </div>
           </div>
         </div>

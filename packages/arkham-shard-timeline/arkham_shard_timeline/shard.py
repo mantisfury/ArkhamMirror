@@ -202,6 +202,24 @@ class TimelineShard(ArkhamShard):
             ON arkham_timeline_conflicts(severity)
         """)
 
+        # Create timeline annotations table
+        await self.database_service.execute("""
+            CREATE TABLE IF NOT EXISTS arkham_timeline_annotations (
+                id TEXT PRIMARY KEY,
+                event_id TEXT NOT NULL REFERENCES arkham_timeline_events(id) ON DELETE CASCADE,
+                note TEXT NOT NULL,
+                author TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        # Create index for annotations
+        await self.database_service.execute("""
+            CREATE INDEX IF NOT EXISTS idx_arkham_timeline_annotations_event_id
+            ON arkham_timeline_annotations(event_id)
+        """)
+
         logger.info("Timeline schema created successfully")
 
     async def _on_document_indexed(self, event: dict) -> None:
@@ -322,6 +340,10 @@ class TimelineShard(ArkhamShard):
 
         # Extract events
         events = self.extractor.extract_events(doc_text, document_id, context)
+
+        # Link entities to events
+        if events:
+            events = await self._link_entities_to_events(events)
 
         # Store events if database available
         if self.database_service and events:
@@ -496,6 +518,113 @@ class TimelineShard(ArkhamShard):
             date_range=event_date_range,
             related_entities=related_entities,
         )
+
+    async def _link_entities_to_events(
+        self,
+        events: list[TimelineEvent]
+    ) -> list[TimelineEvent]:
+        """
+        Link entities to timeline events by matching entity names in event text.
+
+        Queries the arkham_entities table for entity names and aliases,
+        then searches each event's text for matches.
+
+        Args:
+            events: List of extracted timeline events
+
+        Returns:
+            Events with entities field populated
+        """
+        if not self.database_service or not events:
+            return events
+
+        try:
+            # Fetch all entities with their names and aliases
+            rows = await self.database_service.fetch_all(
+                """
+                SELECT id, name, aliases, entity_type
+                FROM arkham_entities
+                WHERE name IS NOT NULL AND name != ''
+                """
+            )
+
+            if not rows:
+                logger.debug("No entities found for linking")
+                return events
+
+            # Build entity lookup: name/alias -> entity_id
+            import json
+            entity_lookup: dict[str, str] = {}
+            entity_names: list[tuple[str, str]] = []  # (name, entity_id)
+
+            for row in rows:
+                entity_id = row["id"]
+                name = row["name"]
+                aliases_raw = row.get("aliases", "[]")
+
+                # Parse aliases - handle both string and list
+                if isinstance(aliases_raw, str):
+                    try:
+                        aliases = json.loads(aliases_raw) if aliases_raw else []
+                    except json.JSONDecodeError:
+                        aliases = []
+                else:
+                    aliases = aliases_raw or []
+
+                # Add primary name (case-insensitive matching)
+                if name:
+                    name_lower = name.lower()
+                    entity_lookup[name_lower] = entity_id
+                    entity_names.append((name, entity_id))
+
+                # Add aliases
+                for alias in aliases:
+                    if alias and isinstance(alias, str):
+                        alias_lower = alias.lower()
+                        if alias_lower not in entity_lookup:  # Don't overwrite
+                            entity_lookup[alias_lower] = entity_id
+                            entity_names.append((alias, entity_id))
+
+            # Sort by name length (longest first) to match longer names before substrings
+            entity_names.sort(key=lambda x: len(x[0]), reverse=True)
+
+            # Link entities to events
+            import re
+            linked_count = 0
+
+            for event in events:
+                if not event.text:
+                    continue
+
+                text_lower = event.text.lower()
+                matched_entities: set[str] = set()
+
+                # Search for entity names in event text
+                for name, entity_id in entity_names:
+                    if entity_id in matched_entities:
+                        continue  # Already matched this entity
+
+                    name_lower = name.lower()
+                    # Use word boundary matching for better precision
+                    # Escape special regex characters in name
+                    escaped_name = re.escape(name_lower)
+                    pattern = rf'\b{escaped_name}\b'
+
+                    if re.search(pattern, text_lower):
+                        matched_entities.add(entity_id)
+
+                if matched_entities:
+                    # Merge with any existing entities
+                    existing = set(event.entities) if event.entities else set()
+                    event.entities = list(existing | matched_entities)
+                    linked_count += 1
+
+            logger.info(f"Linked entities to {linked_count} of {len(events)} events")
+
+        except Exception as e:
+            logger.error(f"Failed to link entities to events: {e}", exc_info=True)
+
+        return events
 
     async def _store_events(self, events: list[TimelineEvent]) -> None:
         """Store timeline events in database."""

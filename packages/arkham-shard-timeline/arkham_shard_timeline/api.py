@@ -1003,6 +1003,699 @@ async def normalize_dates(request: NormalizeRequest):
     return NormalizeResponse(normalized=results)
 
 
+class EntityWithTimelineEvents(BaseModel):
+    """Entity with timeline event count."""
+    entity_id: str
+    name: str
+    entity_type: str
+    event_count: int
+
+
+class EntitiesWithEventsResponse(BaseModel):
+    """Response for entities with timeline events."""
+    entities: list[EntityWithTimelineEvents]
+    count: int
+
+
+@router.get("/entities", response_model=EntitiesWithEventsResponse)
+async def list_entities_with_events(
+    request: Request,
+    limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    min_events: int = Query(1, ge=1, description="Minimum number of events to include entity"),
+):
+    """
+    List entities that have timeline events.
+
+    Returns entities from arkham_entities that are mentioned in timeline events,
+    along with the count of events for each entity.
+    """
+    shard = get_shard(request)
+
+    if not shard.database_service:
+        raise HTTPException(status_code=503, detail="Database service not available")
+
+    try:
+        # Query entities mentioned in timeline events
+        # This uses JSONB array to find entity IDs in the entities column
+        rows = await shard.database_service.fetch_all(
+            """
+            WITH entity_counts AS (
+                SELECT
+                    jsonb_array_elements_text(entities) as entity_id,
+                    COUNT(*) as event_count
+                FROM arkham_timeline_events
+                WHERE jsonb_array_length(entities) > 0
+                GROUP BY jsonb_array_elements_text(entities)
+                HAVING COUNT(*) >= :min_events
+            )
+            SELECT
+                e.id as entity_id,
+                e.name,
+                e.entity_type,
+                COALESCE(ec.event_count, 0) as event_count
+            FROM arkham_entities e
+            INNER JOIN entity_counts ec ON e.id = ec.entity_id
+            ORDER BY ec.event_count DESC, e.name
+            LIMIT :limit OFFSET :offset
+            """,
+            {"limit": limit, "offset": offset, "min_events": min_events}
+        )
+
+        entities = [
+            EntityWithTimelineEvents(
+                entity_id=row["entity_id"],
+                name=row["name"],
+                entity_type=row["entity_type"],
+                event_count=row["event_count"],
+            )
+            for row in rows
+        ]
+
+        return EntitiesWithEventsResponse(
+            entities=entities,
+            count=len(entities),
+        )
+
+    except Exception as e:
+        logger.error(f"Failed to list entities with events: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Query failed: {str(e)}")
+
+
+# ========== Event Management ==========
+
+
+class UpdateEventRequest(BaseModel):
+    """Request to update a timeline event."""
+    text: Optional[str] = None
+    date_start: Optional[str] = None
+    date_end: Optional[str] = None
+    event_type: Optional[str] = None
+    precision: Optional[str] = None
+    entities: Optional[list[str]] = None
+
+
+class UpdateEventResponse(BaseModel):
+    """Response after updating an event."""
+    id: str
+    updated: bool
+    message: str
+
+
+@router.put("/events/{event_id}", response_model=UpdateEventResponse)
+async def update_event(
+    request: Request,
+    event_id: str,
+    update: UpdateEventRequest,
+):
+    """
+    Update a timeline event.
+
+    Allows updating text, dates, event type, precision, and entities.
+    """
+    shard = get_shard(request)
+
+    if not shard.database_service:
+        raise HTTPException(status_code=503, detail="Database service not available")
+
+    try:
+        # Check if event exists
+        existing = await shard.database_service.fetch_one(
+            "SELECT id FROM arkham_timeline_events WHERE id = :event_id",
+            {"event_id": event_id}
+        )
+        if not existing:
+            raise HTTPException(status_code=404, detail=f"Event not found: {event_id}")
+
+        # Build update query dynamically
+        updates = []
+        params = {"event_id": event_id}
+
+        if update.text is not None:
+            updates.append("text = :text")
+            params["text"] = update.text
+
+        if update.date_start is not None:
+            updates.append("date_start = :date_start")
+            params["date_start"] = update.date_start
+
+        if update.date_end is not None:
+            updates.append("date_end = :date_end")
+            params["date_end"] = update.date_end if update.date_end else None
+
+        if update.event_type is not None:
+            updates.append("event_type = :event_type")
+            params["event_type"] = update.event_type
+
+        if update.precision is not None:
+            updates.append("precision = :precision")
+            params["precision"] = update.precision
+
+        if update.entities is not None:
+            import json
+            updates.append("entities = :entities")
+            params["entities"] = json.dumps(update.entities)
+
+        if not updates:
+            return UpdateEventResponse(
+                id=event_id,
+                updated=False,
+                message="No fields to update"
+            )
+
+        query = f"UPDATE arkham_timeline_events SET {', '.join(updates)} WHERE id = :event_id"
+        await shard.database_service.execute(query, params)
+
+        # Emit event
+        if _event_bus:
+            await _event_bus.emit(
+                "timeline.event.updated",
+                {"event_id": event_id, "fields": list(params.keys())},
+                source="timeline-shard",
+            )
+
+        return UpdateEventResponse(
+            id=event_id,
+            updated=True,
+            message=f"Updated {len(updates)} field(s)"
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to update event: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to update event: {str(e)}")
+
+
+class AddNoteRequest(BaseModel):
+    """Request to add a note to an event."""
+    note: str
+    author: Optional[str] = None
+
+
+class NoteResponse(BaseModel):
+    """A single note/annotation."""
+    id: str
+    event_id: str
+    note: str
+    author: Optional[str]
+    created_at: str
+
+
+class NotesListResponse(BaseModel):
+    """List of notes for an event."""
+    notes: list[NoteResponse]
+    count: int
+
+
+@router.post("/events/{event_id}/notes", response_model=NoteResponse)
+async def add_event_note(
+    request: Request,
+    event_id: str,
+    note_request: AddNoteRequest,
+):
+    """
+    Add an annotation/note to a timeline event.
+    """
+    shard = get_shard(request)
+
+    if not shard.database_service:
+        raise HTTPException(status_code=503, detail="Database service not available")
+
+    try:
+        # Check if event exists
+        existing = await shard.database_service.fetch_one(
+            "SELECT id FROM arkham_timeline_events WHERE id = :event_id",
+            {"event_id": event_id}
+        )
+        if not existing:
+            raise HTTPException(status_code=404, detail=f"Event not found: {event_id}")
+
+        import uuid
+        from datetime import datetime
+
+        note_id = str(uuid.uuid4())
+        created_at = datetime.utcnow()
+
+        await shard.database_service.execute(
+            """
+            INSERT INTO arkham_timeline_annotations (id, event_id, note, author, created_at, updated_at)
+            VALUES (:id, :event_id, :note, :author, :created_at, :updated_at)
+            """,
+            {
+                "id": note_id,
+                "event_id": event_id,
+                "note": note_request.note,
+                "author": note_request.author,
+                "created_at": created_at,
+                "updated_at": created_at,
+            }
+        )
+
+        # Emit event
+        if _event_bus:
+            await _event_bus.emit(
+                "timeline.note.added",
+                {"event_id": event_id, "note_id": note_id},
+                source="timeline-shard",
+            )
+
+        return NoteResponse(
+            id=note_id,
+            event_id=event_id,
+            note=note_request.note,
+            author=note_request.author,
+            created_at=created_at.isoformat(),
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to add note: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to add note: {str(e)}")
+
+
+@router.get("/events/{event_id}/notes", response_model=NotesListResponse)
+async def get_event_notes(
+    request: Request,
+    event_id: str,
+):
+    """
+    Get all annotations/notes for a timeline event.
+    """
+    shard = get_shard(request)
+
+    if not shard.database_service:
+        raise HTTPException(status_code=503, detail="Database service not available")
+
+    try:
+        rows = await shard.database_service.fetch_all(
+            """
+            SELECT id, event_id, note, author, created_at
+            FROM arkham_timeline_annotations
+            WHERE event_id = :event_id
+            ORDER BY created_at DESC
+            """,
+            {"event_id": event_id}
+        )
+
+        notes = [
+            NoteResponse(
+                id=row["id"],
+                event_id=row["event_id"],
+                note=row["note"],
+                author=row.get("author"),
+                created_at=row["created_at"].isoformat() if row.get("created_at") else "",
+            )
+            for row in rows
+        ]
+
+        return NotesListResponse(notes=notes, count=len(notes))
+
+    except Exception as e:
+        logger.error(f"Failed to get notes: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to get notes: {str(e)}")
+
+
+@router.delete("/events/{event_id}/notes/{note_id}")
+async def delete_event_note(
+    request: Request,
+    event_id: str,
+    note_id: str,
+):
+    """
+    Delete an annotation/note from a timeline event.
+    """
+    shard = get_shard(request)
+
+    if not shard.database_service:
+        raise HTTPException(status_code=503, detail="Database service not available")
+
+    try:
+        result = await shard.database_service.execute(
+            "DELETE FROM arkham_timeline_annotations WHERE id = :note_id AND event_id = :event_id",
+            {"note_id": note_id, "event_id": event_id}
+        )
+
+        deleted = result.rowcount if hasattr(result, 'rowcount') else 1
+
+        if deleted == 0:
+            raise HTTPException(status_code=404, detail=f"Note not found: {note_id}")
+
+        return {"deleted": True, "note_id": note_id}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to delete note: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to delete note: {str(e)}")
+
+
+class TimelineGap(BaseModel):
+    """A gap in the timeline."""
+    start_date: str
+    end_date: str
+    gap_days: int
+    before_event_id: str
+    after_event_id: str
+    severity: str  # low, medium, high
+
+
+class GapsResponse(BaseModel):
+    """Response for timeline gaps analysis."""
+    gaps: list[TimelineGap]
+    count: int
+    total_gap_days: int
+    median_gap_days: int
+    coverage_percent: float
+
+
+@router.get("/gaps", response_model=GapsResponse)
+async def get_timeline_gaps(
+    request: Request,
+    min_gap_days: int = Query(30, ge=1, description="Minimum gap size in days to report"),
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+):
+    """
+    Analyze timeline for gaps (periods with no events).
+
+    Returns gaps larger than min_gap_days, along with statistics about timeline coverage.
+    """
+    shard = get_shard(request)
+
+    if not shard.database_service:
+        raise HTTPException(status_code=503, detail="Database service not available")
+
+    try:
+        # Build query
+        query = "SELECT * FROM arkham_timeline_events WHERE 1=1"
+        params = {}
+
+        if start_date:
+            query += " AND date_start >= :start_date"
+            params["start_date"] = start_date
+        if end_date:
+            query += " AND date_start <= :end_date"
+            params["end_date"] = end_date
+
+        query += " ORDER BY date_start"
+
+        rows = await shard.database_service.fetch_all(query, params)
+        events = [shard._row_to_event(row) for row in rows]
+
+        if len(events) < 2:
+            return GapsResponse(
+                gaps=[],
+                count=0,
+                total_gap_days=0,
+                median_gap_days=0,
+                coverage_percent=100.0,
+            )
+
+        # Analyze gaps
+        gaps = []
+        all_gap_days = []
+
+        for i in range(len(events) - 1):
+            event1 = events[i]
+            event2 = events[i + 1]
+            gap_days = (event2.date_start - event1.date_start).days
+
+            all_gap_days.append(gap_days)
+
+            if gap_days >= min_gap_days:
+                # Determine severity based on gap size
+                if gap_days >= 365:
+                    severity = "high"
+                elif gap_days >= 90:
+                    severity = "medium"
+                else:
+                    severity = "low"
+
+                gaps.append(TimelineGap(
+                    start_date=event1.date_start.isoformat(),
+                    end_date=event2.date_start.isoformat(),
+                    gap_days=gap_days,
+                    before_event_id=event1.id,
+                    after_event_id=event2.id,
+                    severity=severity,
+                ))
+
+        # Calculate statistics
+        total_gap_days = sum(all_gap_days)
+        sorted_gaps = sorted(all_gap_days)
+        median_gap_days = sorted_gaps[len(sorted_gaps) // 2] if sorted_gaps else 0
+
+        # Calculate coverage (rough estimate)
+        if events:
+            timeline_span = (events[-1].date_start - events[0].date_start).days
+            if timeline_span > 0:
+                # Assume events "cover" 1 day each
+                coverage_percent = min(100.0, (len(events) / timeline_span) * 100)
+            else:
+                coverage_percent = 100.0
+        else:
+            coverage_percent = 0.0
+
+        return GapsResponse(
+            gaps=gaps,
+            count=len(gaps),
+            total_gap_days=total_gap_days,
+            median_gap_days=median_gap_days,
+            coverage_percent=round(coverage_percent, 1),
+        )
+
+    except Exception as e:
+        logger.error(f"Failed to analyze gaps: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to analyze gaps: {str(e)}")
+
+
+class ConflictDetail(BaseModel):
+    """Detailed conflict information."""
+    id: str
+    type: str
+    severity: str
+    event_ids: list[str]
+    description: str
+    documents: list[str]
+    suggested_resolution: Optional[str]
+    metadata: dict
+
+
+class ConflictsDetailResponse(BaseModel):
+    """Enhanced conflicts response with full details."""
+    conflicts: list[ConflictDetail]
+    count: int
+    by_type: dict[str, int]
+    by_severity: dict[str, int]
+
+
+@router.get("/conflicts/analyze")
+async def analyze_conflicts(
+    request: Request,
+    tolerance_days: int = Query(0, ge=0, description="Days of tolerance for date matching"),
+):
+    """
+    Analyze all events for conflicts.
+
+    Detects contradictions, inconsistencies, gaps, and overlaps.
+    Returns detailed conflict information.
+    """
+    shard = get_shard(request)
+
+    if not shard.database_service:
+        raise HTTPException(status_code=503, detail="Database service not available")
+
+    try:
+        # Get all events
+        rows = await shard.database_service.fetch_all(
+            "SELECT * FROM arkham_timeline_events ORDER BY date_start"
+        )
+        events = [shard._row_to_event(row) for row in rows]
+
+        if len(events) < 2:
+            return ConflictsDetailResponse(
+                conflicts=[],
+                count=0,
+                by_type={},
+                by_severity={},
+            )
+
+        # Run conflict detection
+        from .conflicts import ConflictDetector
+        detector = ConflictDetector(tolerance_days=tolerance_days)
+        conflicts = detector.detect_conflicts(events)
+
+        # Convert to response format
+        conflict_details = []
+        by_type: dict[str, int] = {}
+        by_severity: dict[str, int] = {}
+
+        for conflict in conflicts:
+            type_str = conflict.type.value
+            severity_str = conflict.severity.value
+
+            by_type[type_str] = by_type.get(type_str, 0) + 1
+            by_severity[severity_str] = by_severity.get(severity_str, 0) + 1
+
+            conflict_details.append(ConflictDetail(
+                id=conflict.id,
+                type=type_str,
+                severity=severity_str,
+                event_ids=conflict.events,
+                description=conflict.description,
+                documents=conflict.documents,
+                suggested_resolution=conflict.suggested_resolution,
+                metadata=conflict.metadata or {},
+            ))
+
+        # Store conflicts for future reference
+        if conflicts:
+            try:
+                await shard._store_conflicts(conflicts)
+            except Exception as e:
+                logger.warning(f"Failed to store conflicts: {e}")
+
+        return ConflictsDetailResponse(
+            conflicts=conflict_details,
+            count=len(conflict_details),
+            by_type=by_type,
+            by_severity=by_severity,
+        )
+
+    except Exception as e:
+        logger.error(f"Failed to analyze conflicts: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to analyze conflicts: {str(e)}")
+
+
+class MergeEventsRequest(BaseModel):
+    """Request to merge multiple events."""
+    event_ids: list[str]
+    keep_event_id: Optional[str] = None  # If specified, merge into this event; otherwise use first
+
+
+class MergeEventsResponse(BaseModel):
+    """Response after merging events."""
+    merged_event_id: str
+    merged_count: int
+    deleted_ids: list[str]
+
+
+@router.post("/events/merge", response_model=MergeEventsResponse)
+async def merge_events(
+    request: Request,
+    merge_request: MergeEventsRequest,
+):
+    """
+    Merge multiple timeline events into one.
+
+    Combines text and entities from all events into the kept event.
+    Other events are deleted.
+    """
+    shard = get_shard(request)
+
+    if not shard.database_service:
+        raise HTTPException(status_code=503, detail="Database service not available")
+
+    if len(merge_request.event_ids) < 2:
+        raise HTTPException(status_code=400, detail="At least 2 events required for merge")
+
+    try:
+        import json
+
+        # Fetch all events to merge
+        placeholders = ", ".join([f":id{i}" for i in range(len(merge_request.event_ids))])
+        params = {f"id{i}": eid for i, eid in enumerate(merge_request.event_ids)}
+
+        rows = await shard.database_service.fetch_all(
+            f"SELECT * FROM arkham_timeline_events WHERE id IN ({placeholders})",
+            params
+        )
+
+        if len(rows) < 2:
+            raise HTTPException(status_code=404, detail="Not enough events found to merge")
+
+        # Determine which event to keep
+        keep_id = merge_request.keep_event_id or merge_request.event_ids[0]
+        keep_event = None
+        merge_events_list = []
+
+        for row in rows:
+            if row["id"] == keep_id:
+                keep_event = row
+            else:
+                merge_events_list.append(row)
+
+        if not keep_event:
+            # Keep the first found event
+            keep_event = rows[0]
+            merge_events_list = rows[1:]
+            keep_id = keep_event["id"]
+
+        # Combine text (join with newline)
+        texts = [keep_event["text"]]
+        for ev in merge_events_list:
+            if ev.get("text") and ev["text"] not in texts:
+                texts.append(ev["text"])
+        combined_text = "\n---\n".join(texts)
+
+        # Combine entities (union)
+        all_entities = set()
+        keep_entities = keep_event.get("entities", [])
+        if isinstance(keep_entities, str):
+            keep_entities = json.loads(keep_entities) if keep_entities else []
+        all_entities.update(keep_entities)
+
+        for ev in merge_events_list:
+            ev_entities = ev.get("entities", [])
+            if isinstance(ev_entities, str):
+                ev_entities = json.loads(ev_entities) if ev_entities else []
+            all_entities.update(ev_entities)
+
+        # Update the kept event
+        await shard.database_service.execute(
+            """
+            UPDATE arkham_timeline_events
+            SET text = :text, entities = :entities
+            WHERE id = :event_id
+            """,
+            {
+                "event_id": keep_id,
+                "text": combined_text,
+                "entities": json.dumps(list(all_entities)),
+            }
+        )
+
+        # Delete the merged events
+        deleted_ids = [ev["id"] for ev in merge_events_list]
+        for eid in deleted_ids:
+            await shard.database_service.execute(
+                "DELETE FROM arkham_timeline_events WHERE id = :event_id",
+                {"event_id": eid}
+            )
+
+        # Emit event
+        if _event_bus:
+            await _event_bus.emit(
+                "timeline.events.merged",
+                {"kept_event_id": keep_id, "merged_count": len(deleted_ids), "deleted_ids": deleted_ids},
+                source="timeline-shard",
+            )
+
+        return MergeEventsResponse(
+            merged_event_id=keep_id,
+            merged_count=len(deleted_ids) + 1,
+            deleted_ids=deleted_ids,
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to merge events: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to merge events: {str(e)}")
+
+
 # --- Helper Functions ---
 
 

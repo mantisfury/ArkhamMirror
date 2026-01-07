@@ -640,6 +640,10 @@ RELATIONSHIP_TYPE_METADATA = {
 
     # Co-occurrence (default)
     "co_occurrence": {"category": "basic", "label": "Co-occurrence", "color": "#94a3b8", "directed": False},
+
+    # Timeline-specific relationships
+    "mentions": {"category": "temporal", "label": "Mentions", "color": "#ec4899", "directed": True},
+    "conflict": {"category": "temporal", "label": "Conflict", "color": "#ef4444", "directed": False, "dashed": True},
 }
 
 
@@ -1089,9 +1093,10 @@ async def _enrich_graph_with_cross_shard_data(
                 logger.warning(f"Failed to fetch provenance artifacts: {e}")
 
         # Timeline Events as nodes
+        timeline_event_entities: dict[str, list[str]] = {}  # event_id -> entity_ids
         if include_timeline:
             try:
-                response = await client.get(f"/api/timeline/events?project_id={project_id}&limit=500")
+                response = await client.get(f"/api/timeline/events?limit=500")
                 if response.status_code == 200:
                     data = response.json()
                     events = data.get("items", data.get("events", []))
@@ -1100,20 +1105,31 @@ async def _enrich_graph_with_cross_shard_data(
                         label = item.get("title") or item.get("text") or item.get("description") or "Event"
                         if len(label) > 50:
                             label = label[:47] + "..."
+                        event_id = f"timeline-event-{item.get('id')}"
                         node = GraphNode(
-                            id=f"event-{item.get('id')}",
-                            entity_id=f"event-{item.get('id')}",
+                            id=event_id,
+                            entity_id=event_id,
                             label=label,
-                            entity_type="event",
+                            entity_type="timeline_event",
                             properties={
                                 "source_shard": "timeline",
                                 "original_id": item.get("id"),
-                                "event_date": item.get("date_start") or item.get("event_date"),
+                                "date_start": item.get("date_start") or item.get("event_date"),
+                                "date_end": item.get("date_end"),
+                                "precision": item.get("precision", "day"),
                                 "event_type": item.get("event_type"),
+                                "document_id": item.get("document_id"),
+                                "confidence": item.get("confidence", 1.0),
                             },
                         )
                         added_nodes.append(node)
-                    logger.info(f"Added {len(events)} event nodes")
+
+                        # Track entities mentioned in this event for edge creation
+                        event_entities = item.get("entities", [])
+                        if event_entities:
+                            timeline_event_entities[event_id] = event_entities
+
+                    logger.info(f"Added {len(events)} timeline event nodes")
             except Exception as e:
                 logger.warning(f"Failed to fetch timeline events: {e}")
 
@@ -1179,6 +1195,108 @@ async def _enrich_graph_with_cross_shard_data(
                     logger.info(f"Added {edge_count} pattern edges")
             except Exception as e:
                 logger.warning(f"Failed to fetch patterns: {e}")
+
+        # === TIMELINE EVENT EDGES (events sharing entities) ===
+
+        if include_timeline and timeline_event_entities:
+            # Create edges between timeline events that share entities
+            # Also create edges from events to the entities they mention
+            event_edge_count = 0
+            entity_edge_count = 0
+
+            event_ids = list(timeline_event_entities.keys())
+
+            # Edges between events that share entities (temporal relationship)
+            for i, event_id_a in enumerate(event_ids):
+                entities_a = set(timeline_event_entities[event_id_a])
+                for event_id_b in event_ids[i + 1:]:
+                    entities_b = set(timeline_event_entities[event_id_b])
+                    shared = entities_a & entities_b
+
+                    if shared:
+                        # Weight based on number of shared entities
+                        weight = min(1.0, len(shared) * 0.3)
+                        edge = GraphEdge(
+                            source=event_id_a,
+                            target=event_id_b,
+                            relationship_type="temporal",
+                            weight=weight,
+                            properties={
+                                "source_shard": "timeline",
+                                "shared_entities": list(shared),
+                                "shared_count": len(shared),
+                            },
+                        )
+                        added_edges.append(edge)
+                        event_edge_count += 1
+
+            # Edges from timeline events to entity nodes they mention
+            for event_id, entity_ids in timeline_event_entities.items():
+                for entity_id in entity_ids:
+                    # Check if entity exists in graph (from document entities)
+                    if entity_id in existing_node_ids:
+                        edge = GraphEdge(
+                            source=event_id,
+                            target=entity_id,
+                            relationship_type="mentions",
+                            weight=0.5,
+                            properties={
+                                "source_shard": "timeline",
+                                "relationship": "event_mentions_entity",
+                            },
+                        )
+                        added_edges.append(edge)
+                        entity_edge_count += 1
+
+            if event_edge_count > 0 or entity_edge_count > 0:
+                logger.info(f"Added {event_edge_count} temporal event edges, {entity_edge_count} event-entity edges")
+
+            # Fetch and add conflict edges
+            try:
+                conflicts_response = await client.get("/api/timeline/conflicts/analyze")
+                if conflicts_response.status_code == 200:
+                    conflicts_data = conflicts_response.json()
+                    conflicts = conflicts_data.get("conflicts", [])
+                    conflict_edge_count = 0
+
+                    for conflict in conflicts:
+                        event_ids = conflict.get("event_ids", [])
+                        conflict_type = conflict.get("type", "unknown")
+                        severity = conflict.get("severity", "low")
+
+                        # Create conflict edges between involved events
+                        for i, eid_a in enumerate(event_ids):
+                            for eid_b in event_ids[i + 1:]:
+                                # Map event IDs to graph node IDs
+                                node_id_a = f"timeline-event-{eid_a}"
+                                node_id_b = f"timeline-event-{eid_b}"
+
+                                # Check if both nodes exist
+                                if node_id_a in existing_node_ids or node_id_b in existing_node_ids:
+                                    # Weight based on severity
+                                    severity_weights = {"critical": 1.0, "high": 0.8, "medium": 0.5, "low": 0.3}
+                                    weight = severity_weights.get(severity, 0.3)
+
+                                    edge = GraphEdge(
+                                        source=node_id_a,
+                                        target=node_id_b,
+                                        relationship_type="conflict",
+                                        weight=weight,
+                                        properties={
+                                            "source_shard": "timeline",
+                                            "conflict_type": conflict_type,
+                                            "conflict_severity": severity,
+                                            "conflict_id": conflict.get("id"),
+                                            "description": conflict.get("description", ""),
+                                        },
+                                    )
+                                    added_edges.append(edge)
+                                    conflict_edge_count += 1
+
+                    if conflict_edge_count > 0:
+                        logger.info(f"Added {conflict_edge_count} conflict edges from {len(conflicts)} conflicts")
+            except Exception as e:
+                logger.warning(f"Failed to fetch timeline conflicts: {e}")
 
         # === CREDIBILITY WEIGHTS ===
 

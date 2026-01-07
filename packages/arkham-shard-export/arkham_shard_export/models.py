@@ -57,6 +57,10 @@ class ExportOptions:
     max_records: Optional[int] = None                # Limit number of records
     sort_by: Optional[str] = None                    # Sort field
     sort_order: str = "asc"                          # asc or desc
+    # Timeline-specific options
+    include_conflicts: bool = False                  # Include timeline conflicts
+    include_gaps: bool = False                       # Include timeline gaps
+    group_by: Optional[str] = None                   # Group by: day/week/month/entity
 
 
 @dataclass
