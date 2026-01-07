@@ -123,11 +123,18 @@ export function AssociationMatrix({
     const sortedCols = bipartiteMode ? sortNodes(colNodes) : sortedRows;
 
     // Build edge lookup for fast access
+    // Note: d3-force mutates links, so source/target may be objects or strings
     const edgeMap = new Map<string, number>();
     edges.forEach(edge => {
+      // Handle both string IDs and object references (d3-force mutates links)
+      const sourceId = typeof edge.source === 'string' ? edge.source : (edge.source as any)?.id;
+      const targetId = typeof edge.target === 'string' ? edge.target : (edge.target as any)?.id;
+
+      if (!sourceId || !targetId) return;
+
       // Store both directions for undirected graph
-      const key1 = `${edge.source}|${edge.target}`;
-      const key2 = `${edge.target}|${edge.source}`;
+      const key1 = `${sourceId}|${targetId}`;
+      const key2 = `${targetId}|${sourceId}`;
       edgeMap.set(key1, edge.weight);
       edgeMap.set(key2, edge.weight);
     });

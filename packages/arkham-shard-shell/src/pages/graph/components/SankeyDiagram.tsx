@@ -36,10 +36,10 @@ export interface FlowData {
   link_count: number;
 }
 
-// Internal types for D3 processing (source/target become indices)
+// Internal types for D3 processing (source/target are string IDs, d3-sankey resolves them)
 interface ProcessedLink {
-  source: number;
-  target: number;
+  source: string;
+  target: string;
   value: number;
   category: string | null;
   relationship_type: string | null;
@@ -124,34 +124,113 @@ export function SankeyDiagram({
     return CATEGORY_COLORS[category.toLowerCase()] || CATEGORY_COLORS.default;
   }, []);
 
-  // Process flow data for D3 Sankey
+  // Process flow data for D3 Sankey (must be acyclic - DAG)
   const sankeyData = useMemo(() => {
     if (!flowData || flowData.nodes.length === 0 || flowData.links.length === 0) {
       return null;
     }
 
-    // Create node index map
-    const nodeIndexMap = new Map<string, number>();
-    flowData.nodes.forEach((node, i) => {
-      nodeIndexMap.set(node.id, i);
+    // Create node maps
+    const nodeById = new Map(flowData.nodes.map(n => [n.id, n]));
+    const nodeIds = new Set(flowData.nodes.map(n => n.id));
+
+    // Filter valid links (no self-loops, valid nodes)
+    let validLinks = flowData.links.filter(link => {
+      const hasSource = nodeIds.has(link.source);
+      const hasTarget = nodeIds.has(link.target);
+      const notSelfLoop = link.source !== link.target;
+      return hasSource && hasTarget && notSelfLoop;
     });
 
-    // Convert links to use indices
-    const links = flowData.links
-      .filter(link => {
-        const sourceIdx = nodeIndexMap.get(link.source);
-        const targetIdx = nodeIndexMap.get(link.target);
-        return sourceIdx !== undefined && targetIdx !== undefined && sourceIdx !== targetIdx;
-      })
-      .map(link => ({
-        ...link,
-        source: nodeIndexMap.get(link.source)!,
-        target: nodeIndexMap.get(link.target)!,
-      }));
+    // Check if nodes have layer info - use it to enforce directionality
+    const hasLayers = flowData.nodes.some(n => n.layer !== undefined && n.layer >= 0);
 
-    if (links.length === 0) {
+    if (hasLayers) {
+      // Only keep links that go from lower layer to higher layer (forward flow)
+      validLinks = validLinks.filter(link => {
+        const sourceNode = nodeById.get(link.source);
+        const targetNode = nodeById.get(link.target);
+        if (!sourceNode || !targetNode) return false;
+        return sourceNode.layer < targetNode.layer;
+      });
+    } else {
+      // No layer info - compute layers using topological sort and remove back-edges
+      // Build adjacency list
+      const outEdges = new Map<string, Set<string>>();
+      const inDegree = new Map<string, number>();
+
+      nodeIds.forEach(id => {
+        outEdges.set(id, new Set());
+        inDegree.set(id, 0);
+      });
+
+      validLinks.forEach(link => {
+        outEdges.get(link.source)!.add(link.target);
+        inDegree.set(link.target, (inDegree.get(link.target) || 0) + 1);
+      });
+
+      // Compute layers using Kahn's algorithm (topological sort)
+      const layers = new Map<string, number>();
+      const queue: string[] = [];
+
+      // Start with nodes that have no incoming edges
+      nodeIds.forEach(id => {
+        if (inDegree.get(id) === 0) {
+          queue.push(id);
+          layers.set(id, 0);
+        }
+      });
+
+      while (queue.length > 0) {
+        const node = queue.shift()!;
+        const nodeLayer = layers.get(node) || 0;
+
+        outEdges.get(node)?.forEach(target => {
+          const newDegree = (inDegree.get(target) || 1) - 1;
+          inDegree.set(target, newDegree);
+
+          // Set target layer to max of current layer + 1
+          const currentTargetLayer = layers.get(target) ?? -1;
+          layers.set(target, Math.max(currentTargetLayer, nodeLayer + 1));
+
+          if (newDegree === 0) {
+            queue.push(target);
+          }
+        });
+      }
+
+      // Nodes not in layers have cycles - assign them a default layer
+      nodeIds.forEach(id => {
+        if (!layers.has(id)) {
+          layers.set(id, 0);
+        }
+      });
+
+      // Filter to only forward edges (source layer < target layer)
+      validLinks = validLinks.filter(link => {
+        const sourceLayer = layers.get(link.source) ?? 0;
+        const targetLayer = layers.get(link.target) ?? 0;
+        return sourceLayer < targetLayer;
+      });
+
+      // Update node layers
+      flowData.nodes.forEach(n => {
+        n.layer = layers.get(n.id) ?? 0;
+      });
+    }
+
+    if (validLinks.length === 0) {
       return null;
     }
+
+    // Map to processed links
+    const links = validLinks.map(link => ({
+      source: link.source,
+      target: link.target,
+      value: link.value,
+      category: link.category,
+      relationship_type: link.relationship_type,
+    }));
 
     return {
       nodes: flowData.nodes.map(n => ({ ...n })),
