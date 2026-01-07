@@ -705,44 +705,35 @@ class ReportsShard(ArkhamShard):
 
         # Entities
         try:
-            resp = await client.get(f"{INTERNAL_API_BASE}/api/entities/stats")
+            resp = await client.get(f"{INTERNAL_API_BASE}/api/entities/count")
             if resp.status_code == 200:
-                stats = resp.json()
-                summary["entities"]["total"] = stats.get("total", 0)
-                summary["entities"]["by_type"] = stats.get("by_type", {})
+                summary["entities"]["total"] = resp.json().get("count", 0)
         except Exception as e:
-            logger.warning(f"Failed to fetch entities stats: {e}")
+            logger.warning(f"Failed to fetch entities count: {e}")
 
         # Claims
         try:
-            resp = await client.get(f"{INTERNAL_API_BASE}/api/claims/stats")
+            resp = await client.get(f"{INTERNAL_API_BASE}/api/claims/count")
             if resp.status_code == 200:
-                stats = resp.json()
-                summary["claims"]["total"] = stats.get("total", 0)
-                summary["claims"]["verified"] = stats.get("verified", 0)
-                summary["claims"]["unverified"] = stats.get("unverified", 0)
+                summary["claims"]["total"] = resp.json().get("count", 0)
         except Exception as e:
-            logger.warning(f"Failed to fetch claims stats: {e}")
+            logger.warning(f"Failed to fetch claims count: {e}")
 
         # Contradictions
         try:
-            resp = await client.get(f"{INTERNAL_API_BASE}/api/contradictions/stats")
+            resp = await client.get(f"{INTERNAL_API_BASE}/api/contradictions/count")
             if resp.status_code == 200:
-                stats = resp.json()
-                summary["contradictions"]["total"] = stats.get("total", 0)
-                summary["contradictions"]["confirmed"] = stats.get("by_status", {}).get("confirmed", 0)
+                summary["contradictions"]["total"] = resp.json().get("count", 0)
         except Exception as e:
-            logger.warning(f"Failed to fetch contradictions stats: {e}")
+            logger.warning(f"Failed to fetch contradictions count: {e}")
 
         # Anomalies
         try:
-            resp = await client.get(f"{INTERNAL_API_BASE}/api/anomalies/stats")
+            resp = await client.get(f"{INTERNAL_API_BASE}/api/anomalies/count")
             if resp.status_code == 200:
-                stats = resp.json()
-                summary["anomalies"]["total"] = stats.get("total", 0)
-                summary["anomalies"]["by_severity"] = stats.get("by_severity", {})
+                summary["anomalies"]["total"] = resp.json().get("count", 0)
         except Exception as e:
-            logger.warning(f"Failed to fetch anomalies stats: {e}")
+            logger.warning(f"Failed to fetch anomalies count: {e}")
 
         # Timeline
         try:
@@ -902,18 +893,31 @@ class ReportsShard(ArkhamShard):
         """Fetch custom data based on parameters."""
         custom_data = {}
 
+        # Check if this is from a shared template with rendered content
+        if params.get("from_shared_template") and params.get("rendered_content"):
+            custom_data["rendered_content"] = params["rendered_content"]
+            custom_data["template_name"] = params.get("shared_template_name", "")
+            # Also fetch summary data for context
+            summary = await self._fetch_summary_data(client, params)
+            custom_data["system_summary"] = summary
+            return custom_data
+
         # Allow custom endpoints to be specified
         endpoints = params.get("endpoints", [])
-        for endpoint_config in endpoints:
-            endpoint = endpoint_config.get("url", "")
-            key = endpoint_config.get("key", endpoint)
-            try:
-                resp = await client.get(f"{INTERNAL_API_BASE}{endpoint}")
-                if resp.status_code == 200:
-                    custom_data[key] = resp.json()
-            except Exception as e:
-                logger.warning(f"Failed to fetch custom endpoint {endpoint}: {e}")
-                custom_data[key] = {"error": str(e)}
+        if endpoints:
+            for endpoint_config in endpoints:
+                endpoint = endpoint_config.get("url", "")
+                key = endpoint_config.get("key", endpoint)
+                try:
+                    resp = await client.get(f"{INTERNAL_API_BASE}{endpoint}")
+                    if resp.status_code == 200:
+                        custom_data[key] = resp.json()
+                except Exception as e:
+                    logger.warning(f"Failed to fetch custom endpoint {endpoint}: {e}")
+                    custom_data[key] = {"error": str(e)}
+        else:
+            # Default: fetch summary data if no endpoints specified
+            custom_data = await self._fetch_summary_data(client, params)
 
         return custom_data
 
@@ -1236,6 +1240,8 @@ class ReportsShard(ArkhamShard):
             html += self._generate_entity_profile_html(content)
         elif report.report_type == ReportType.TIMELINE:
             html += self._generate_timeline_html(content)
+        elif report.report_type == ReportType.CUSTOM:
+            html += self._generate_custom_html(content)
         else:
             html += f"<div class='section'><pre>{json.dumps(content, indent=2, default=str)}</pre></div>"
 
@@ -1313,6 +1319,35 @@ class ReportsShard(ArkhamShard):
             html += f"<tr><td>{event.get('date_start', 'N/A')}</td><td>{event.get('text', '')[:200]}</td><td>{event.get('event_type', 'N/A')}</td></tr>"
 
         html += "</table>"
+        return html
+
+    def _generate_custom_html(self, content: Dict[str, Any]) -> str:
+        """Generate custom report HTML content."""
+        html = ""
+        
+        # Check if this is from a shared template
+        if content.get("rendered_content"):
+            template_name = content.get("template_name", "Custom Template")
+            rendered = content["rendered_content"]
+            
+            html += f"""
+    <h2>Report Content</h2>
+    <div class="section">
+        <p><em>Generated from template: {template_name}</em></p>
+    </div>
+    <div class="section">
+        {rendered}
+    </div>
+"""
+            
+            # Add system summary if available
+            if content.get("system_summary"):
+                html += "<h2>System Context</h2>"
+                html += self._generate_summary_html(content["system_summary"])
+        else:
+            # Fallback to summary-style output
+            html += self._generate_summary_html(content)
+        
         return html
 
     async def _generate_markdown(self, file_path: str, report: Report, data: Dict[str, Any]) -> None:

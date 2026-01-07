@@ -447,7 +447,7 @@ export function LettersPage() {
             sharedTemplates={sharedTemplatesData?.templates || []}
             loading={loadingTemplates || loadingShared}
             onSelect={handleCreateFromTemplate}
-            onSelectShared={(template) => {
+            onSelectShared={(_template) => {
               // When selecting a shared template, use its content directly
               setViewMode('create');
             }}

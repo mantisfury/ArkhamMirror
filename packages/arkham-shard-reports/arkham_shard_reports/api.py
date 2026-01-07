@@ -7,7 +7,9 @@ REST API endpoints for report generation and management.
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
 import httpx
+from pathlib import Path
 from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel, Field
 
 if TYPE_CHECKING:
@@ -50,7 +52,7 @@ class ReportResponse(BaseModel):
 
 class ReportListResponse(BaseModel):
     """Response model for listing reports."""
-    reports: List[ReportResponse]
+    items: List[ReportResponse]
     total: int
     limit: int
     offset: int
@@ -277,7 +279,7 @@ async def list_reports(
     total = await shard.get_count(status=status.value if status else None)
 
     return ReportListResponse(
-        reports=[_report_to_response(r) for r in reports],
+        items=[_report_to_response(r) for r in reports],
         total=total,
         limit=limit,
         offset=offset,
@@ -321,6 +323,33 @@ async def delete_report(request: Request, report_id: str):
         raise HTTPException(status_code=404, detail=f"Report {report_id} not found")
 
 
+@router.get("/{report_id}/content")
+async def get_report_content(request: Request, report_id: str):
+    """Get report content for viewing in the UI."""
+    shard = get_shard(request)
+    report = await shard.get_report(report_id)
+
+    if not report:
+        raise HTTPException(status_code=404, detail=f"Report {report_id} not found")
+
+    if not report.file_path:
+        raise HTTPException(status_code=404, detail=f"Report file not found")
+
+    file_path = Path(report.file_path)
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail=f"Report file not found on disk")
+
+    content = file_path.read_text(encoding='utf-8')
+    return {
+        "id": report.id,
+        "title": report.title,
+        "content": content,
+        "output_format": report.output_format,
+        "created_at": str(report.created_at),
+        "completed_at": str(report.completed_at) if report.completed_at else None,
+    }
+
+
 @router.get("/{report_id}/download")
 async def download_report(request: Request, report_id: str):
     """Download a report file."""
@@ -331,14 +360,26 @@ async def download_report(request: Request, report_id: str):
         raise HTTPException(status_code=404, detail=f"Report {report_id} not found")
 
     if not report.file_path:
-        raise HTTPException(status_code=404, detail=f"Report file not found")
+        raise HTTPException(status_code=404, detail=f"Report file not generated yet")
 
-    # Stub: would return file response here
-    return {
-        "message": "Download endpoint (stub)",
-        "file_path": report.file_path,
-        "file_size": report.file_size,
+    file_path = Path(report.file_path)
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail=f"Report file not found on disk")
+
+    # Determine media type based on format
+    media_types = {
+        'html': 'text/html',
+        'pdf': 'application/pdf',
+        'markdown': 'text/markdown',
+        'json': 'application/json',
     }
+    media_type = media_types.get(report.output_format, 'application/octet-stream')
+
+    return FileResponse(
+        path=str(file_path),
+        filename=f"{report.title.replace(' ', '_')}.{report.output_format}",
+        media_type=media_type,
+    )
 
 
 # === Templates ===
@@ -484,7 +525,7 @@ async def create_report_from_shared_template(body: ApplySharedTemplateRequest, r
                 "rendered_content": rendered_content,
             })
             
-            report = await shard.create_report(
+            report = await shard.generate_report(
                 report_type=ReportType.CUSTOM,
                 title=body.title,
                 parameters=params,
@@ -636,7 +677,7 @@ async def list_pending_reports(
     total = await shard.get_count(status="pending")
 
     return ReportListResponse(
-        reports=[_report_to_response(r) for r in reports],
+        items=[_report_to_response(r) for r in reports],
         total=total,
         limit=limit,
         offset=offset,
@@ -658,7 +699,7 @@ async def list_completed_reports(
     total = await shard.get_count(status="completed")
 
     return ReportListResponse(
-        reports=[_report_to_response(r) for r in reports],
+        items=[_report_to_response(r) for r in reports],
         total=total,
         limit=limit,
         offset=offset,
@@ -680,7 +721,7 @@ async def list_failed_reports(
     total = await shard.get_count(status="failed")
 
     return ReportListResponse(
-        reports=[_report_to_response(r) for r in reports],
+        items=[_report_to_response(r) for r in reports],
         total=total,
         limit=limit,
         offset=offset,

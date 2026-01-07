@@ -60,7 +60,7 @@ class PacketResponse(BaseModel):
 
 class PacketListResponse(BaseModel):
     """Response model for listing packets."""
-    packets: List[PacketResponse]
+    items: List[PacketResponse]
     total: int
     limit: int
     offset: int
@@ -297,7 +297,7 @@ async def list_packets(
     total = await shard.get_count(status=status.value if status else None)
 
     return PacketListResponse(
-        packets=[_packet_to_response(p) for p in packets],
+        items=[_packet_to_response(p) for p in packets],
         total=total,
         limit=limit,
         offset=offset,
@@ -614,7 +614,7 @@ async def list_draft_packets(
     total = await shard.get_count(status="draft")
 
     return PacketListResponse(
-        packets=[_packet_to_response(p) for p in packets],
+        items=[_packet_to_response(p) for p in packets],
         total=total,
         limit=limit,
         offset=offset,
@@ -636,7 +636,7 @@ async def list_finalized_packets(
     total = await shard.get_count(status="finalized")
 
     return PacketListResponse(
-        packets=[_packet_to_response(p) for p in packets],
+        items=[_packet_to_response(p) for p in packets],
         total=total,
         limit=limit,
         offset=offset,
@@ -658,7 +658,7 @@ async def list_shared_packets(
     total = await shard.get_count(status="shared")
 
     return PacketListResponse(
-        packets=[_packet_to_response(p) for p in packets],
+        items=[_packet_to_response(p) for p in packets],
         total=total,
         limit=limit,
         offset=offset,

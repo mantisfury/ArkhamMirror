@@ -178,6 +178,30 @@ a:hover {
   color: var(--arkham-text-muted);
 }
 
+.sidebar-footer-right {
+  display: flex;
+  align-items: center;
+  gap: var(--arkham-space-sm);
+}
+
+.kofi-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--arkham-radius-sm);
+  background: var(--arkham-bg-tertiary);
+  color: var(--arkham-text-muted);
+  transition: all 0.2s ease;
+  text-decoration: none;
+}
+
+.kofi-button:hover {
+  background: #ff5e5b;
+  color: white;
+}
+
 /* Navigation Groups */
 .nav-group {
   margin-bottom: var(--arkham-space-md);

@@ -12,7 +12,7 @@
  */
 
 import { useState, useCallback, useEffect } from 'react';
-import { NavLink, useLocation } from 'react-router-dom';
+import { NavLink } from 'react-router-dom';
 import { useShell } from '../../context/ShellContext';
 import { useBadgeContext } from '../../context/BadgeContext';
 import { Icon } from '../common/Icon';
@@ -33,8 +33,6 @@ interface CollapseState {
 interface NavItemProps {
   manifest: ShardManifest;
   sidebarCollapsed: boolean;
-  subRoutesCollapsed: boolean;
-  onToggleSubRoutes: () => void;
 }
 
 function NavBadge({ shardName, subRouteId }: { shardName: string; subRouteId?: string }) {
@@ -50,24 +48,18 @@ function NavBadge({ shardName, subRouteId }: { shardName: string; subRouteId?: s
   );
 }
 
-function NavItem({ manifest, sidebarCollapsed, subRoutesCollapsed, onToggleSubRoutes }: NavItemProps) {
+function NavItem({ manifest, sidebarCollapsed }: NavItemProps) {
   const { navigation, name } = manifest;
-  const location = useLocation();
-  const hasSubRoutes = navigation.sub_routes && navigation.sub_routes.length > 0;
-
-  // Check if any sub-route is active
-  const isSubRouteActive = hasSubRoutes && navigation.sub_routes!.some(
-    sub => location.pathname === sub.route || location.pathname.startsWith(sub.route + '/')
-  );
+  
 
   return (
     <div className="nav-item-wrapper">
       <div className="nav-item-row">
         <NavLink
           to={navigation.route}
-          className={({ isActive }) => `nav-item ${isActive || isSubRouteActive ? 'active' : ''}`}
+          className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}
           title={sidebarCollapsed ? navigation.label : undefined}
-          end={!hasSubRoutes}
+          end
         >
           <Icon name={navigation.icon} size={20} className="nav-icon" />
           {!sidebarCollapsed && (
@@ -78,38 +70,9 @@ function NavItem({ manifest, sidebarCollapsed, subRoutesCollapsed, onToggleSubRo
           )}
         </NavLink>
 
-        {/* Sub-routes toggle button */}
-        {!sidebarCollapsed && hasSubRoutes && (
-          <button
-            className={`nav-subroutes-toggle ${subRoutesCollapsed ? 'collapsed' : ''}`}
-            onClick={(e) => {
-              e.preventDefault();
-              e.stopPropagation();
-              onToggleSubRoutes();
-            }}
-            title={subRoutesCollapsed ? 'Expand sub-routes' : 'Collapse sub-routes'}
-          >
-            <Icon name="ChevronDown" size={14} />
-          </button>
-        )}
+
       </div>
 
-      {/* Sub-routes */}
-      {!sidebarCollapsed && hasSubRoutes && !subRoutesCollapsed && (
-        <div className="nav-subroutes">
-          {navigation.sub_routes!.map(sub => (
-            <NavLink
-              key={sub.id}
-              to={sub.route}
-              className={({ isActive }) => `nav-subitem ${isActive ? 'active' : ''}`}
-            >
-              <Icon name={sub.icon} size={16} className="nav-icon" />
-              <span className="nav-label">{sub.label}</span>
-              <NavBadge shardName={name} subRouteId={sub.id} />
-            </NavLink>
-          ))}
-        </div>
-      )}
     </div>
   );
 }
@@ -119,9 +82,7 @@ interface NavGroupProps {
   shards: ShardManifest[];
   sidebarCollapsed: boolean;
   categoryCollapsed: boolean;
-  shardCollapseState: Record<string, boolean>;
   onToggleCategory: () => void;
-  onToggleShard: (shardName: string) => void;
 }
 
 function NavGroup({
@@ -129,9 +90,7 @@ function NavGroup({
   shards,
   sidebarCollapsed,
   categoryCollapsed,
-  shardCollapseState,
   onToggleCategory,
-  onToggleShard,
 }: NavGroupProps) {
   if (shards.length === 0) return null;
 
@@ -152,8 +111,6 @@ function NavGroup({
           key={shard.name}
           manifest={shard}
           sidebarCollapsed={sidebarCollapsed}
-          subRoutesCollapsed={shardCollapseState[shard.name] ?? false}
-          onToggleSubRoutes={() => onToggleShard(shard.name)}
         />
       ))}
     </div>
@@ -196,17 +153,6 @@ export function Sidebar() {
     }));
   }, []);
 
-  // Toggle shard sub-routes collapse
-  const toggleShard = useCallback((shardName: string) => {
-    setCollapseState(prev => ({
-      ...prev,
-      shards: {
-        ...prev.shards,
-        [shardName]: !prev.shards[shardName],
-      },
-    }));
-  }, []);
-
   // Group shards by category
   const groupedShards = CATEGORY_ORDER.reduce((acc, category) => {
     acc[category] = shards
@@ -222,7 +168,7 @@ export function Sidebar() {
         {!sidebarCollapsed && (
           <div className="sidebar-brand">
             <Icon name="Layers" size={24} />
-            <span className="brand-text">SHATTERED</span>
+            <span className="brand-text">ArkhamMirror: SHATTERED</span>
           </div>
         )}
         <button
@@ -244,9 +190,7 @@ export function Sidebar() {
             shards={groupedShards[category]}
             sidebarCollapsed={sidebarCollapsed}
             categoryCollapsed={collapseState.categories[category] ?? false}
-            shardCollapseState={collapseState.shards}
             onToggleCategory={() => toggleCategory(category)}
-            onToggleShard={toggleShard}
           />
         ))}
       </nav>
@@ -255,7 +199,18 @@ export function Sidebar() {
       <div className="sidebar-footer">
         <BadgeStatusIndicator />
         {!sidebarCollapsed && (
-          <div className="sidebar-version">v0.1.0</div>
+          <div className="sidebar-footer-right">
+            <a
+              href="https://ko-fi.com/arkhammirror"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="kofi-button"
+              title="Support on Ko-fi"
+            >
+              <Icon name="Coffee" size={16} />
+            </a>
+            <div className="sidebar-version">v0.1.0</div>
+          </div>
         )}
       </div>
     </aside>

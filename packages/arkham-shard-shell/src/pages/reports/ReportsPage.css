@@ -390,3 +390,133 @@
   font-size: 0.75rem;
   font-weight: 500;
 }
+
+/* Large Dialog */
+.dialog-lg {
+  max-width: 900px;
+  width: 95%;
+  max-height: 85vh;
+}
+
+/* Report Viewer */
+.report-viewer {
+  max-height: 60vh;
+  overflow-y: auto;
+}
+
+.loading-content {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1rem;
+  padding: 3rem;
+  color: var(--text-secondary);
+}
+
+.report-html-content {
+  padding: 1rem;
+  background: var(--bg-tertiary);
+  border-radius: 8px;
+  line-height: 1.6;
+}
+
+.report-html-content h1,
+.report-html-content h2,
+.report-html-content h3 {
+  margin-top: 1.5rem;
+  margin-bottom: 0.75rem;
+  color: var(--text-primary);
+}
+
+.report-html-content p {
+  margin-bottom: 1rem;
+}
+
+.report-html-content table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 1rem 0;
+}
+
+.report-html-content th,
+.report-html-content td {
+  border: 1px solid var(--border-color);
+  padding: 0.5rem;
+  text-align: left;
+}
+
+.report-html-content th {
+  background: var(--bg-secondary);
+}
+
+.report-text-content {
+  padding: 1rem;
+  background: var(--bg-tertiary);
+  border-radius: 8px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: monospace;
+  font-size: 0.875rem;
+  line-height: 1.5;
+  max-height: 50vh;
+  overflow-y: auto;
+}
+
+/* Template Preview */
+.template-preview {
+  padding: 1rem;
+  background: var(--bg-tertiary);
+  border-radius: 8px;
+  margin-bottom: 1.5rem;
+  border-left: 4px solid var(--primary);
+}
+
+.template-preview h4 {
+  margin: 0 0 0.5rem 0;
+  font-size: 1rem;
+  color: var(--text-primary);
+}
+
+.template-preview p {
+  margin: 0;
+  font-size: 0.875rem;
+  color: var(--text-secondary);
+}
+
+/* Placeholders Info */
+.placeholders-info {
+  margin-top: 1rem;
+}
+
+.placeholders-info label {
+  display: block;
+  margin-bottom: 0.5rem;
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+.placeholder-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.placeholder-item {
+  display: flex;
+  flex-direction: column;
+  padding: 0.5rem;
+  background: var(--bg-tertiary);
+  border-radius: 4px;
+}
+
+.placeholder-name {
+  font-weight: 500;
+  font-size: 0.875rem;
+  color: var(--text-primary);
+}
+
+.placeholder-desc {
+  font-size: 0.75rem;
+  color: var(--text-tertiary);
+}

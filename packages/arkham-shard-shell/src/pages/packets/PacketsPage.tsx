@@ -5,7 +5,7 @@
  * Packets bundle documents, entities, and analyses for archiving and collaboration.
  */
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Icon } from '../../components/common/Icon';
 import { useToast } from '../../context/ToastContext';
 import { useFetch } from '../../hooks/useFetch';
@@ -362,21 +362,35 @@ export function PacketsPage() {
         />
       )}
 
-      {/* Add Content Modal (stub) */}
-      {showAddContentModal && (
-        <div className="modal-overlay" onClick={() => setShowAddContentModal(false)}>
-          <div className="modal" onClick={e => e.stopPropagation()}>
-            <div className="modal-header">
-              <h3>Add Content</h3>
-              <button className="btn-icon" onClick={() => setShowAddContentModal(false)}>
-                <Icon name="X" size={20} />
-              </button>
-            </div>
-            <div className="modal-body">
-              <p>Content addition UI coming soon. Use API to add content for now.</p>
-            </div>
-          </div>
-        </div>
+      {/* Add Content Modal */}
+      {showAddContentModal && selectedPacket && (
+        <AddContentModal
+          packetId={selectedPacket}
+          onClose={() => setShowAddContentModal(false)}
+          onAdd={async (contentType, contentId, contentTitle) => {
+            try {
+              const response = await fetch(`/api/packets/${selectedPacket}/contents`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  content_type: contentType,
+                  content_id: contentId,
+                  content_title: contentTitle,
+                  order: 0,
+                }),
+              });
+              if (!response.ok) {
+                const error = await response.json();
+                throw new Error(error.detail || 'Failed to add content');
+              }
+              toast.success('Content added to packet');
+              setShowAddContentModal(false);
+              refetchContents();
+            } catch (err) {
+              toast.error(err instanceof Error ? err.message : 'Failed to add content');
+            }
+          }}
+        />
       )}
     </div>
   );
@@ -442,6 +456,185 @@ function CreatePacketModal({ onClose, onCreate }: CreatePacketModalProps) {
             </button>
           </div>
         </form>
+      </div>
+    </div>
+  );
+}
+
+// Add Content Modal Component
+interface AddContentModalProps {
+  packetId: string;
+  onClose: () => void;
+  onAdd: (contentType: string, contentId: string, contentTitle: string) => void;
+}
+
+type ContentSearchResult = {
+  id: string;
+  title: string;
+  type: string;
+  subtitle?: string;
+};
+
+const CONTENT_TYPES = [
+  { value: 'document', label: 'Document', icon: 'FileText', endpoint: '/api/documents/items' },
+  { value: 'entity', label: 'Entity', icon: 'User', endpoint: '/api/entities/items' },
+  { value: 'matrix', label: 'ACH Matrix', icon: 'Grid3X3', endpoint: '/api/ach/matrices' },
+  { value: 'report', label: 'Report', icon: 'FileBarChart', endpoint: '/api/reports/' },
+  { value: 'timeline', label: 'Timeline', icon: 'Clock', endpoint: '/api/timeline/events' },
+  { value: 'claim', label: 'Claim', icon: 'Quote', endpoint: '/api/claims/' },
+];
+
+function AddContentModal({ onClose, onAdd }: AddContentModalProps) {
+  const [contentType, setContentType] = useState('document');
+  const [searchQuery, setSearchQuery] = useState('');
+  const [results, setResults] = useState<ContentSearchResult[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [selectedItem, setSelectedItem] = useState<ContentSearchResult | null>(null);
+
+  const currentType = CONTENT_TYPES.find(t => t.value === contentType);
+
+  // Fetch items when content type changes or search query changes
+  useEffect(() => {
+    const fetchItems = async () => {
+      if (!currentType) return;
+
+      setLoading(true);
+      try {
+        const params = new URLSearchParams({ limit: '20' });
+        if (searchQuery) {
+          params.append('search', searchQuery);
+        }
+
+        const response = await fetch(`${currentType.endpoint}?${params}`);
+        if (!response.ok) {
+          setResults([]);
+          return;
+        }
+
+        const data = await response.json();
+
+        // Normalize different response formats
+        let items: ContentSearchResult[] = [];
+        const rawItems = data.items || data.documents || data.entities ||
+                        data.matrices || data.reports || data.events ||
+                        data.claims || [];
+
+        items = rawItems.map((item: any) => ({
+          id: item.id,
+          title: item.title || item.name || item.description?.slice(0, 50) || item.id,
+          type: contentType,
+          subtitle: item.created_at ? new Date(item.created_at).toLocaleDateString() : undefined,
+        }));
+
+        setResults(items);
+      } catch (err) {
+        console.error('Failed to fetch items:', err);
+        setResults([]);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    const debounce = setTimeout(fetchItems, 300);
+    return () => clearTimeout(debounce);
+  }, [contentType, searchQuery, currentType]);
+
+  const handleAdd = () => {
+    if (!selectedItem) return;
+    onAdd(contentType, selectedItem.id, selectedItem.title);
+  };
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal modal-lg" onClick={e => e.stopPropagation()}>
+        <div className="modal-header">
+          <h3>Add Content to Packet</h3>
+          <button className="btn-icon" onClick={onClose}>
+            <Icon name="X" size={20} />
+          </button>
+        </div>
+        <div className="modal-body">
+          <div className="content-type-selector">
+            <label>Content Type</label>
+            <div className="content-type-grid">
+              {CONTENT_TYPES.map(type => (
+                <button
+                  key={type.value}
+                  className={`content-type-btn ${contentType === type.value ? 'active' : ''}`}
+                  onClick={() => {
+                    setContentType(type.value);
+                    setSelectedItem(null);
+                  }}
+                >
+                  <Icon name={type.icon as any} size={20} />
+                  <span>{type.label}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="content-search">
+            <label>Search {currentType?.label}s</label>
+            <div className="search-input-wrapper">
+              <Icon name="Search" size={16} />
+              <input
+                type="text"
+                placeholder={`Search ${currentType?.label?.toLowerCase()}s...`}
+                value={searchQuery}
+                onChange={e => setSearchQuery(e.target.value)}
+              />
+            </div>
+          </div>
+
+          <div className="content-results">
+            {loading ? (
+              <div className="content-loading">
+                <Icon name="Loader2" size={24} className="spin" />
+                <span>Loading...</span>
+              </div>
+            ) : results.length > 0 ? (
+              <div className="content-list">
+                {results.map(item => (
+                  <div
+                    key={item.id}
+                    className={`content-item ${selectedItem?.id === item.id ? 'selected' : ''}`}
+                    onClick={() => setSelectedItem(item)}
+                  >
+                    <Icon name={currentType?.icon as any || 'File'} size={18} />
+                    <div className="content-item-info">
+                      <div className="content-item-title">{item.title}</div>
+                      {item.subtitle && (
+                        <div className="content-item-subtitle">{item.subtitle}</div>
+                      )}
+                    </div>
+                    {selectedItem?.id === item.id && (
+                      <Icon name="Check" size={18} className="check-icon" />
+                    )}
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="content-empty">
+                <Icon name={currentType?.icon as any || 'File'} size={32} />
+                <span>No {currentType?.label?.toLowerCase()}s found</span>
+              </div>
+            )}
+          </div>
+        </div>
+        <div className="modal-footer">
+          <button type="button" className="btn btn-secondary" onClick={onClose}>
+            Cancel
+          </button>
+          <button
+            type="button"
+            className="btn btn-primary"
+            disabled={!selectedItem}
+            onClick={handleAdd}
+          >
+            <Icon name="Plus" size={16} />
+            Add to Packet
+          </button>
+        </div>
       </div>
     </div>
   );

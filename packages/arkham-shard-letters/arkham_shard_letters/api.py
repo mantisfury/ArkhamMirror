@@ -76,7 +76,7 @@ class LetterResponse(BaseModel):
 
 class LetterListResponse(BaseModel):
     """Response model for listing letters."""
-    letters: List[LetterResponse]
+    items: List[LetterResponse]
     total: int
     limit: int
     offset: int
@@ -298,7 +298,7 @@ async def list_letters(
     total = await shard.get_count(status=status.value if status else None)
 
     return LetterListResponse(
-        letters=[_letter_to_response(l) for l in letters],
+        items=[_letter_to_response(l) for l in letters],
         total=total,
         limit=limit,
         offset=offset,
@@ -560,7 +560,7 @@ async def create_letter_from_shared_template(
             # Create the letter
             letter = await shard.create_letter(
                 title=body.title,
-                letter_type=LetterType.FORMAL,  # Default to formal for shared templates
+                letter_type=LetterType.CUSTOM,  # Default to formal for shared templates
                 content=rendered_content,
                 recipient_name=body.recipient_name,
                 recipient_address=body.recipient_address,
@@ -734,7 +734,7 @@ async def list_draft_letters(
     total = await shard.get_count(status="draft")
 
     return LetterListResponse(
-        letters=[_letter_to_response(l) for l in letters],
+        items=[_letter_to_response(l) for l in letters],
         total=total,
         limit=limit,
         offset=offset,
@@ -756,7 +756,7 @@ async def list_finalized_letters(
     total = await shard.get_count(status="finalized")
 
     return LetterListResponse(
-        letters=[_letter_to_response(l) for l in letters],
+        items=[_letter_to_response(l) for l in letters],
         total=total,
         limit=limit,
         offset=offset,
@@ -778,7 +778,7 @@ async def list_sent_letters(
     total = await shard.get_count(status="sent")
 
     return LetterListResponse(
-        letters=[_letter_to_response(l) for l in letters],
+        items=[_letter_to_response(l) for l in letters],
         total=total,
         limit=limit,
         offset=offset,

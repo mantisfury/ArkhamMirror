@@ -89,6 +89,11 @@ export function ReportsPage() {
   const [reportType, setReportType] = useState('summary');
   const [outputFormat, setOutputFormat] = useState('html');
   const [creating, setCreating] = useState(false);
+  const [viewingReport, setViewingReport] = useState<Report | null>(null);
+  const [reportContent, setReportContent] = useState<string>('');
+  const [loadingContent, setLoadingContent] = useState(false);
+  const [templateDialog, setTemplateDialog] = useState<SharedTemplate | null>(null);
+  const [templateTitle, setTemplateTitle] = useState('');
 
   // Fetch reports with pagination
   const {
@@ -163,19 +168,64 @@ export function ReportsPage() {
     }
   };
 
-  const handleDownloadReport = async (reportId: string) => {
+  const handleDownloadReport = async (report: Report) => {
     try {
-      const response = await fetch(`/api/reports/${reportId}/download`);
-
-      if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.detail || 'Failed to download report');
-      }
-
-      const data = await response.json();
-      toast.info('Download endpoint (stub): ' + data.file_path);
+      // Open download in new tab
+      window.open(`/api/reports/${report.id}/download`, '_blank');
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Failed to download report');
+    }
+  };
+
+  const handleViewReport = async (report: Report) => {
+    setViewingReport(report);
+    setLoadingContent(true);
+    try {
+      const response = await fetch(`/api/reports/${report.id}/content`);
+      if (response.ok) {
+        const data = await response.json();
+        setReportContent(data.content);
+      } else {
+        setReportContent('Unable to load report content');
+      }
+    } catch (err) {
+      setReportContent('Error loading report content');
+    } finally {
+      setLoadingContent(false);
+    }
+  };
+
+  const handleUseSharedTemplate = async () => {
+    if (!templateDialog || !templateTitle.trim()) {
+      toast.error('Please enter a report title');
+      return;
+    }
+
+    setCreating(true);
+    try {
+      const response = await fetch('/api/reports/from-shared-template', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          template_id: templateDialog.id,
+          title: templateTitle,
+          placeholder_values: {},
+        }),
+      });
+
+      if (response.ok) {
+        toast.success('Report created from template');
+        setTemplateDialog(null);
+        setTemplateTitle('');
+        refetchReports();
+      } else {
+        const error = await response.json();
+        toast.error(error.detail || 'Failed to create report');
+      }
+    } catch (err) {
+      toast.error('Failed to create report from template');
+    } finally {
+      setCreating(false);
     }
   };
 
@@ -328,13 +378,22 @@ export function ReportsPage() {
 
                   <div className="report-actions">
                     {report.status === 'completed' && (
-                      <button
-                        className="btn btn-sm btn-primary"
-                        onClick={() => handleDownloadReport(report.id)}
-                      >
-                        <Icon name="Download" size={14} />
-                        Download
-                      </button>
+                      <>
+                        <button
+                          className="btn btn-sm btn-secondary"
+                          onClick={() => handleViewReport(report)}
+                        >
+                          <Icon name="Eye" size={14} />
+                          View
+                        </button>
+                        <button
+                          className="btn btn-sm btn-primary"
+                          onClick={() => handleDownloadReport(report)}
+                        >
+                          <Icon name="Download" size={14} />
+                          Download
+                        </button>
+                      </>
                     )}
                     <button
                       className="btn btn-sm btn-danger"
@@ -391,28 +450,9 @@ export function ReportsPage() {
                     </div>
                     <button
                       className="btn btn-sm btn-primary"
-                      onClick={async () => {
-                        try {
-                          const response = await fetch('/api/reports/from-shared-template', {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({
-                              template_id: template.id,
-                              title: `Report from ${template.name}`,
-                              placeholder_values: {},
-                            }),
-                          });
-                          if (response.ok) {
-                            toast.success('Report created from template');
-                            refetchReports();
-                            setActiveTab('reports');
-                          } else {
-                            const error = await response.json();
-                            toast.error(error.detail || 'Failed to create report');
-                          }
-                        } catch (err) {
-                          toast.error('Failed to create report from template');
-                        }
+                      onClick={() => {
+                        setTemplateDialog(template);
+                        setTemplateTitle(`Report from ${template.name}`);
                       }}
                     >
                       Use Template
@@ -556,6 +596,127 @@ export function ReportsPage() {
               <button
                 className="btn btn-primary"
                 onClick={handleCreateReport}
+                disabled={creating}
+              >
+                {creating ? (
+                  <>
+                    <Icon name="Loader2" size={16} className="spin" />
+                    Creating...
+                  </>
+                ) : (
+                  <>
+                    <Icon name="FileText" size={16} />
+                    Create Report
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {/* View Report Modal */}
+      {viewingReport && (
+        <div className="dialog-overlay" onClick={() => setViewingReport(null)}>
+          <div className="dialog dialog-lg" onClick={e => e.stopPropagation()}>
+            <div className="dialog-header">
+              <h2>{viewingReport.title}</h2>
+              <button
+                className="dialog-close"
+                onClick={() => setViewingReport(null)}
+              >
+                <Icon name="X" size={20} />
+              </button>
+            </div>
+            <div className="dialog-content report-viewer">
+              {loadingContent ? (
+                <div className="loading-content">
+                  <Icon name="Loader2" size={32} className="spin" />
+                  <span>Loading report...</span>
+                </div>
+              ) : viewingReport.output_format === 'html' ? (
+                <div
+                  className="report-html-content"
+                  dangerouslySetInnerHTML={{ __html: reportContent }}
+                />
+              ) : (
+                <pre className="report-text-content">{reportContent}</pre>
+              )}
+            </div>
+            <div className="dialog-actions">
+              <button
+                className="btn btn-secondary"
+                onClick={() => setViewingReport(null)}
+              >
+                Close
+              </button>
+              <button
+                className="btn btn-primary"
+                onClick={() => handleDownloadReport(viewingReport)}
+              >
+                <Icon name="Download" size={16} />
+                Download
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Use Shared Template Dialog */}
+      {templateDialog && (
+        <div className="dialog-overlay" onClick={() => setTemplateDialog(null)}>
+          <div className="dialog" onClick={e => e.stopPropagation()}>
+            <div className="dialog-header">
+              <h2>Create Report from Template</h2>
+              <button
+                className="dialog-close"
+                onClick={() => setTemplateDialog(null)}
+              >
+                <Icon name="X" size={20} />
+              </button>
+            </div>
+            <div className="dialog-content">
+              <div className="template-preview">
+                <h4>{templateDialog.name}</h4>
+                <p>{templateDialog.description}</p>
+              </div>
+
+              <div className="form-group">
+                <label htmlFor="template-report-title">Report Title</label>
+                <input
+                  id="template-report-title"
+                  type="text"
+                  className="form-input"
+                  value={templateTitle}
+                  onChange={e => setTemplateTitle(e.target.value)}
+                  placeholder="Enter report title"
+                />
+              </div>
+
+              {templateDialog.placeholders.length > 0 && (
+                <div className="placeholders-info">
+                  <label>Template Placeholders</label>
+                  <div className="placeholder-list">
+                    {templateDialog.placeholders.map(p => (
+                      <div key={p.name} className="placeholder-item">
+                        <span className="placeholder-name">{p.name}</span>
+                        <span className="placeholder-desc">{p.description}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+            <div className="dialog-actions">
+              <button
+                className="btn btn-secondary"
+                onClick={() => setTemplateDialog(null)}
+                disabled={creating}
+              >
+                Cancel
+              </button>
+              <button
+                className="btn btn-primary"
+                onClick={handleUseSharedTemplate}
                 disabled={creating}
               >
                 {creating ? (
