@@ -46,7 +46,7 @@ services:
       - ARKHAM_SERVE_SHELL=true
     volumes:
       # Persist uploaded documents and exports
-      - datasilo:/app/DataSilo
+      - datasilo:/app/data_silo
       # Optional: mount config file for shard selection
       - ./config/shattered.yaml:/app/config/shattered.yaml:ro
     depends_on:

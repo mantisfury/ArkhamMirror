@@ -274,12 +274,12 @@ class ResourceService:
         except ImportError:
             pass
 
-        # Detect disk space for DataSilo
+        # Detect disk space for data_silo
         try:
             import psutil
             # Use relative path from frame package
             frame_dir = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
-            data_silo = os.path.join(frame_dir, "DataSilo")
+            data_silo = os.path.join(frame_dir, "data_silo")
 
             if not os.path.exists(data_silo):
                 os.makedirs(data_silo, exist_ok=True)
@@ -287,7 +287,7 @@ class ResourceService:
             resources.data_silo_path = data_silo
             disk = psutil.disk_usage(data_silo)
             resources.disk_free_mb = disk.free // (1024 * 1024)
-            logger.info(f"DataSilo: {data_silo} ({resources.disk_free_mb}MB free)")
+            logger.info(f"data_silo: {data_silo} ({resources.disk_free_mb}MB free)")
         except Exception as e:
             logger.warning(f"Disk detection failed: {e}")
 

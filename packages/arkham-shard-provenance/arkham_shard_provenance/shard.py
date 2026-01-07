@@ -1529,6 +1529,117 @@ class ProvenanceShard(ArkhamShard):
             project_id=project_id
         )
 
+    # --- Helper Methods ---
+
+    def _infer_artifact_type(self, table_name: str, event_type: str = "") -> str:
+        """
+        Infer artifact type from table name and event type.
+
+        Args:
+            table_name: Database table name (e.g., "arkham_documents", "qdrant_vectors")
+            event_type: Event name (e.g., "embed.document.completed")
+
+        Returns:
+            Human-readable artifact type
+        """
+        # Table-based inference
+        table_mapping = {
+            "arkham_documents": "document",
+            "arkham_document_chunks": "chunk",
+            "arkham_document_pages": "page",
+            "arkham_entities": "entity",
+            "arkham_claims": "claim",
+            "arkham_frame.entities": "entity",
+            "arkham_frame.documents": "document",
+            "qdrant_vectors": "embedding",
+            "arkham_ach_matrices": "ach_matrix",
+            "arkham_ach_hypotheses": "hypothesis",
+            "arkham_ach_evidence": "evidence",
+            "arkham_timeline_events": "timeline_event",
+            "arkham_contradictions": "contradiction",
+            "arkham_anomalies": "anomaly",
+            "arkham_patterns": "pattern",
+            "arkham_credibility_assessments": "credibility",
+            "arkham_reports": "report",
+            "arkham_letters": "letter",
+            "arkham_packets": "packet",
+        }
+
+        # Check table mapping first
+        if table_name in table_mapping:
+            return table_mapping[table_name]
+
+        # Partial match on table name
+        for key, value in table_mapping.items():
+            if key in table_name or table_name in key:
+                return value
+
+        # Event-based inference as fallback
+        if event_type:
+            event_lower = event_type.lower()
+            if "embed" in event_lower or "vector" in event_lower:
+                return "embedding"
+            if "chunk" in event_lower:
+                return "chunk"
+            if "entity" in event_lower:
+                return "entity"
+            if "document" in event_lower:
+                return "document"
+            if "parse" in event_lower:
+                return "chunk"
+
+        # Final fallback - extract from table name
+        if "chunk" in table_name.lower():
+            return "chunk"
+        if "vector" in table_name.lower() or "embed" in table_name.lower():
+            return "embedding"
+        if "entity" in table_name.lower():
+            return "entity"
+        if "document" in table_name.lower():
+            return "document"
+
+        return "artifact"
+
+    def _generate_artifact_title(
+        self,
+        artifact_type: str,
+        payload: Dict[str, Any],
+        entity_id: str,
+        index: int = 0,
+    ) -> str:
+        """
+        Generate a meaningful title for an artifact.
+
+        Args:
+            artifact_type: Type of artifact (document, chunk, entity, etc.)
+            payload: Event payload with context
+            entity_id: Entity ID
+            index: Index if part of a batch
+
+        Returns:
+            Human-readable title
+        """
+        # Try to get title from payload
+        title = payload.get("title") or payload.get("name") or payload.get("filename")
+
+        if title:
+            if artifact_type == "document":
+                return title
+            return f"{artifact_type.title()}: {title[:50]}"
+
+        # Try to get text content
+        text = payload.get("text", "")
+        if text:
+            preview = text[:50].replace("\n", " ").strip()
+            return f"{artifact_type.title()}: {preview}..."
+
+        # Fallback with index
+        parent_id = payload.get("document_id") or payload.get("parent_document_id") or ""
+        if parent_id and index > 0:
+            return f"{artifact_type.title()} #{index} from doc:{parent_id[:8]}"
+
+        return f"{artifact_type.title()} {entity_id[:8]}"
+
     # --- Event Handlers ---
 
     async def _on_entity_created(self, event: Dict[str, Any]) -> None:
@@ -1548,6 +1659,8 @@ class ProvenanceShard(ArkhamShard):
             event_type = event.get("event_type", "")
             source = event.get("source", "unknown")
 
+            logger.info(f"[PROVENANCE] Received created event: {event_type} from {source}")
+
             # Skip our own events to prevent recursion
             if "provenance" in source.lower() or event_type.startswith("provenance."):
                 return
@@ -1558,32 +1671,42 @@ class ProvenanceShard(ArkhamShard):
                 logger.debug(f"No entity_id in event: {event_type}")
                 return
 
-            # Determine artifact type from event type
+            # Determine artifact type and table from event type
             # Event format: {shard}.{entity}.{action}
             parts = event_type.split(".")
             if len(parts) >= 2:
                 shard_name = parts[0]
-                entity_type = parts[1]
+                entity_type_from_event = parts[1]
             else:
                 shard_name = source.replace("-shard", "")
-                entity_type = "unknown"
+                entity_type_from_event = "unknown"
 
-            # Map to table name
-            entity_table = f"arkham_{shard_name}_{entity_type}s"
-            if entity_type == "document":
-                entity_table = "arkham_documents"
-            elif entity_type == "entity":
-                entity_table = "arkham_entities"
-            elif entity_type == "claim":
-                entity_table = "arkham_claims"
-            elif entity_type == "chunk":
-                entity_table = "arkham_document_chunks"
+            # Map to table name based on entity type
+            table_mapping = {
+                "document": "arkham_documents",
+                "entity": "arkham_entities",
+                "claim": "arkham_claims",
+                "chunk": "arkham_document_chunks",
+                "matrix": "arkham_ach_matrices",
+                "hypothesis": "arkham_ach_hypotheses",
+                "evidence": "arkham_ach_evidence",
+                "report": "arkham_reports",
+                "letter": "arkham_letters",
+                "packet": "arkham_packets",
+                "project": "arkham_projects",
+                "timeline": "arkham_timeline_events",
+            }
 
-            # Create or update artifact
-            title = payload.get("title") or payload.get("name") or payload.get("text", "")[:100]
+            entity_table = table_mapping.get(entity_type_from_event, f"arkham_{shard_name}_{entity_type_from_event}s")
 
-            await self.create_artifact(
-                artifact_type=entity_type,
+            # Use helper to get canonical artifact type
+            artifact_type = self._infer_artifact_type(entity_table, event_type)
+
+            # Generate meaningful title
+            title = self._generate_artifact_title(artifact_type, payload, entity_id)
+
+            artifact = await self.create_artifact(
+                artifact_type=artifact_type,
                 entity_id=entity_id,
                 entity_table=entity_table,
                 title=title,
@@ -1594,16 +1717,17 @@ class ProvenanceShard(ArkhamShard):
                 }
             )
 
-            logger.debug(f"Created artifact for {entity_type}:{entity_id} from event {event_type}")
+            logger.info(f"[PROVENANCE] Created artifact {artifact['id']} for {artifact_type}:{entity_id} from {event_type}")
 
         except Exception as e:
-            logger.warning(f"Failed to track entity creation: {e}")
+            logger.warning(f"Failed to track entity creation: {e}", exc_info=True)
 
     async def _on_process_completed(self, event: Dict[str, Any]) -> None:
         """
         Handle process completion events from any shard.
 
         Automatically creates links between source and output artifacts.
+        Also creates a provenance record for the processing event.
 
         Args:
             event: Event payload with process details
@@ -1616,7 +1740,14 @@ class ProvenanceShard(ArkhamShard):
             event_type = event.get("event_type", "")
             source = event.get("source", "unknown")
 
-            # Extract source and output IDs
+            logger.info(f"[PROVENANCE] Received completed event: {event_type} from {source}")
+            logger.debug(f"[PROVENANCE] Payload: {payload}")
+
+            # Skip our own events to prevent recursion
+            if "provenance" in source.lower() or event_type.startswith("provenance."):
+                return
+
+            # Extract source ID (document being processed)
             source_id = payload.get("source_id") or payload.get("document_id") or payload.get("input_id")
             output_ids = payload.get("output_ids") or payload.get("chunk_ids") or []
 
@@ -1627,59 +1758,119 @@ class ProvenanceShard(ArkhamShard):
             if isinstance(output_ids, str):
                 output_ids = [output_ids]
 
-            if not output_ids:
-                logger.debug(f"No output_ids in completion event: {event_type}")
-                return
+            # Determine source table and type
+            source_table = payload.get("source_table", "arkham_documents")
+            source_type = "document" if "document" in source_table else "unknown"
 
-            # Get or create default auto-tracking chain
-            project_id = payload.get("project_id")
-            chain = await self._get_or_create_default_chain(project_id)
-
-            # Get source artifact
-            source_artifact = await self.get_artifact_by_entity(
-                source_id,
-                payload.get("source_table", "arkham_documents")
-            )
+            # Get or CREATE source artifact (don't just look it up)
+            source_artifact = await self.get_artifact_by_entity(source_id, source_table)
 
             if not source_artifact:
-                logger.debug(f"Source artifact not found for {source_id}")
-                return
-
-            # Determine link type from event
-            link_type = "derived_from"
-            if "extract" in event_type:
-                link_type = "extracted_from"
-            elif "embed" in event_type:
-                link_type = "generated_by"
-            elif "parse" in event_type or "chunk" in event_type:
-                link_type = "derived_from"
-
-            # Create links for each output
-            for output_id in output_ids:
-                output_artifact = await self.get_artifact_by_entity(
-                    output_id,
-                    payload.get("output_table", "arkham_document_chunks")
+                # Auto-create artifact for the source document
+                logger.info(f"[PROVENANCE] Auto-creating artifact for {source_type}:{source_id}")
+                source_artifact = await self.create_artifact(
+                    artifact_type=source_type,
+                    entity_id=source_id,
+                    entity_table=source_table,
+                    title=payload.get("title") or payload.get("filename") or f"Document {source_id[:8]}",
+                    metadata={
+                        "source_event": event_type,
+                        "source_shard": source,
+                        "auto_created": True,
+                    }
                 )
+                logger.info(f"[PROVENANCE] Created artifact {source_artifact['id']} for {source_type}:{source_id}")
 
-                if output_artifact:
-                    try:
-                        await self.add_link_impl(
-                            chain_id=chain["id"],
-                            source_artifact_id=source_artifact["id"],
-                            target_artifact_id=output_artifact["id"],
-                            link_type=link_type,
-                            confidence=1.0,
+            # Record processing as a transformation/provenance record
+            # Even if no output_ids, we still want to track that this document was processed
+            import uuid
+            import json
+            from datetime import datetime
+
+            record_id = str(uuid.uuid4())
+            await self._db.execute(
+                """
+                INSERT INTO arkham_provenance_records
+                (id, entity_type, entity_id, source_type, source_id, imported_by, metadata)
+                VALUES (:id, :entity_type, :entity_id, :source_type, :source_id, :imported_by, :metadata)
+                ON CONFLICT (id) DO NOTHING
+                """,
+                {
+                    "id": record_id,
+                    "entity_type": source_type,
+                    "entity_id": source_id,
+                    "source_type": event_type.split(".")[0],  # e.g., "parse" from "parse.document.completed"
+                    "source_id": source_id,
+                    "imported_by": source,
+                    "metadata": json.dumps({
+                        "event": event_type,
+                        "payload": payload,
+                        "processed_at": datetime.utcnow().isoformat(),
+                    }),
+                }
+            )
+            logger.info(f"[PROVENANCE] Created record {record_id} for {event_type} on {source_id}")
+
+            # If there are output IDs, create links
+            if output_ids:
+                project_id = payload.get("project_id")
+                chain = await self._get_or_create_default_chain(project_id)
+
+                # Determine link type from event
+                link_type = "derived_from"
+                if "extract" in event_type:
+                    link_type = "extracted_from"
+                elif "embed" in event_type:
+                    link_type = "generated_by"
+                elif "parse" in event_type or "chunk" in event_type:
+                    link_type = "derived_from"
+
+                # Create links for each output
+                output_table = payload.get("output_table", "arkham_document_chunks")
+
+                # Determine output artifact type from table name and event
+                output_type = self._infer_artifact_type(output_table, event_type)
+
+                for idx, output_id in enumerate(output_ids):
+                    output_artifact = await self.get_artifact_by_entity(output_id, output_table)
+
+                    if not output_artifact:
+                        # Generate meaningful title
+                        doc_title = payload.get("title") or payload.get("filename") or source_id[:8]
+                        output_title = f"{output_type.title()} #{idx + 1} from '{doc_title}'"
+
+                        output_artifact = await self.create_artifact(
+                            artifact_type=output_type,
+                            entity_id=output_id,
+                            entity_table=output_table,
+                            title=output_title,
                             metadata={
                                 "source_event": event_type,
-                                "auto_linked": True,
+                                "parent_document_id": source_id,
+                                "index": idx,
+                                "auto_created": True,
                             }
                         )
-                        logger.debug(f"Created auto-link: {source_artifact['id']} -> {output_artifact['id']}")
-                    except Exception as e:
-                        logger.warning(f"Failed to create link: {e}")
+
+                    if output_artifact:
+                        try:
+                            await self.add_link_impl(
+                                chain_id=chain["id"],
+                                source_artifact_id=source_artifact["id"],
+                                target_artifact_id=output_artifact["id"],
+                                link_type=link_type,
+                                confidence=1.0,
+                                metadata={
+                                    "source_event": event_type,
+                                    "auto_linked": True,
+                                }
+                            )
+                            logger.debug(f"Created auto-link: {source_artifact['id']} -> {output_artifact['id']}")
+                        except Exception as e:
+                            logger.warning(f"Failed to create link: {e}")
 
         except Exception as e:
-            logger.warning(f"Failed to track process completion: {e}")
+            logger.warning(f"Failed to track process completion: {e}", exc_info=True)
 
     async def _on_document_processed(self, event: Dict[str, Any]) -> None:
         """

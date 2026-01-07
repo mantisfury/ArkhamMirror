@@ -70,6 +70,12 @@ data/
 *.db
 *.sqlite
 
+# Data Silo (both naming conventions)
+DataSilo/
+data_silo/
+**/DataSilo/
+**/data_silo/
+
 # Secrets
 *.pem
 *.key

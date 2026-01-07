@@ -180,7 +180,7 @@ class ParseShard(ArkhamShard):
                 f"{parse_result.get('chunks_saved', 0)} chunks saved"
             )
 
-            # Emit completion event
+            # Emit completion event with IDs for provenance tracking
             event_bus = self._frame.get_service("events")
             if event_bus:
                 await event_bus.emit(
@@ -190,6 +190,11 @@ class ParseShard(ArkhamShard):
                         "entities": parse_result.get("total_entities", 0),
                         "chunks": parse_result.get("total_chunks", 0),
                         "chunks_saved": parse_result.get("chunks_saved", 0),
+                        "entities_saved": parse_result.get("entities_saved", 0),
+                        "chunk_ids": parse_result.get("chunk_ids", []),
+                        "entity_ids": parse_result.get("entity_ids", []),
+                        "output_ids": parse_result.get("chunk_ids", []),  # For provenance linking
+                        "output_table": "arkham_document_chunks",
                     },
                     source="parse-shard",
                 )
@@ -210,7 +215,7 @@ class ParseShard(ArkhamShard):
             if doc_id:
                 logger.info(f"Document {doc_id} parsing completed")
 
-                # Emit parse completion event
+                # Emit parse completion event with IDs for provenance tracking
                 event_bus = self._frame.get_service("events")
                 if event_bus:
                     await event_bus.emit(
@@ -219,6 +224,12 @@ class ParseShard(ArkhamShard):
                             "document_id": doc_id,
                             "entities": result.get("total_entities", 0),
                             "chunks": result.get("total_chunks", 0),
+                            "chunks_saved": result.get("chunks_saved", 0),
+                            "entities_saved": result.get("entities_saved", 0),
+                            "chunk_ids": result.get("chunk_ids", []),
+                            "entity_ids": result.get("entity_ids", []),
+                            "output_ids": result.get("chunk_ids", []),  # For provenance linking
+                            "output_table": "arkham_document_chunks",
                         },
                         source="parse-shard",
                     )
@@ -334,14 +345,16 @@ class ParseShard(ArkhamShard):
 
         # Save chunks to database if requested
         chunks_saved = 0
+        chunk_ids = []
         if save_chunks and all_chunks:
-            chunks_saved = await self._save_chunks(document_id, all_chunks, doc_service)
+            chunks_saved, chunk_ids = await self._save_chunks(document_id, all_chunks, doc_service)
 
         # Save entities to database via EntityService
         entities_saved = 0
+        entity_ids = []
         entity_service = self._frame.get_service("entities")
         if entity_service and all_entities:
-            entities_saved = await self._save_entities(document_id, all_entities, entity_service)
+            entities_saved, entity_ids = await self._save_entities(document_id, all_entities, entity_service)
 
         # Emit entity extraction event for Entities shard to process
         event_bus = self._frame.get_service("events")
@@ -405,11 +418,13 @@ class ParseShard(ArkhamShard):
             "total_chunks": len(all_chunks),
             "chunks_saved": chunks_saved,
             "entities_saved": entities_saved,
+            "chunk_ids": chunk_ids,  # For provenance tracking
+            "entity_ids": entity_ids,  # For provenance tracking
             "pages_processed": len(pages),
             "processing_time_ms": processing_time,
         }
 
-    async def _save_chunks(self, document_id: str, chunks: list, doc_service) -> int:
+    async def _save_chunks(self, document_id: str, chunks: list, doc_service) -> tuple[int, list[str]]:
         """
         Save chunks to the database.
 
@@ -419,13 +434,14 @@ class ParseShard(ArkhamShard):
             doc_service: Document service instance
 
         Returns:
-            Number of chunks saved
+            Tuple of (number of chunks saved, list of chunk IDs)
         """
         saved_count = 0
+        chunk_ids = []
 
         for chunk in chunks:
             try:
-                await doc_service.add_chunk(
+                saved_chunk = await doc_service.add_chunk(
                     doc_id=document_id,
                     chunk_index=chunk.chunk_index,
                     text=chunk.text,
@@ -439,6 +455,8 @@ class ParseShard(ArkhamShard):
                     },
                 )
                 saved_count += 1
+                if saved_chunk and hasattr(saved_chunk, 'id'):
+                    chunk_ids.append(saved_chunk.id)
             except Exception as e:
                 logger.error(f"Failed to save chunk {chunk.chunk_index}: {e}")
 
@@ -447,9 +465,36 @@ class ParseShard(ArkhamShard):
             await doc_service.update_chunk_count(document_id)
 
         logger.debug(f"Saved {saved_count}/{len(chunks)} chunks for document {document_id}")
-        return saved_count
 
-    async def _save_entities(self, document_id: str, entities: list, entity_service) -> int:
+        # Emit chunk creation events for provenance tracking
+        if chunk_ids:
+            event_bus = self._frame.get_service("events")
+            if event_bus:
+                # Emit batch event with all chunk IDs
+                await event_bus.emit(
+                    "chunks.batch.created",
+                    {
+                        "document_id": document_id,
+                        "chunk_ids": chunk_ids,
+                        "count": len(chunk_ids),
+                    },
+                    source="parse-shard",
+                )
+                # Also emit individual created events for each chunk (for provenance artifact creation)
+                for chunk_id in chunk_ids:
+                    await event_bus.emit(
+                        "chunks.chunk.created",
+                        {
+                            "id": chunk_id,
+                            "chunk_id": chunk_id,
+                            "document_id": document_id,
+                        },
+                        source="parse-shard",
+                    )
+
+        return saved_count, chunk_ids
+
+    async def _save_entities(self, document_id: str, entities: list, entity_service) -> tuple[int, list[str]]:
         """
         Save extracted entities to the database via EntityService.
 
@@ -459,9 +504,10 @@ class ParseShard(ArkhamShard):
             entity_service: Entity service instance from Frame
 
         Returns:
-            Number of entities saved
+            Tuple of (number of entities saved, list of entity IDs)
         """
         saved_count = 0
+        entity_ids = []
 
         # Map parse shard EntityType to Frame EntityType
         from arkham_frame.services.entities import EntityType as FrameEntityType
@@ -495,7 +541,7 @@ class ParseShard(ArkhamShard):
                 # Map to Frame's EntityType
                 frame_entity_type = type_mapping.get(entity_type_val, FrameEntityType.OTHER)
 
-                await entity_service.create_entity(
+                saved_entity = await entity_service.create_entity(
                     text=entity.text,
                     entity_type=frame_entity_type,
                     document_id=document_id,
@@ -509,8 +555,37 @@ class ParseShard(ArkhamShard):
                     },
                 )
                 saved_count += 1
+                if saved_entity and hasattr(saved_entity, 'id'):
+                    entity_ids.append(saved_entity.id)
             except Exception as e:
                 logger.error(f"Failed to save entity '{entity.text}': {e}")
 
         logger.debug(f"Saved {saved_count}/{len(entities)} entities for document {document_id}")
-        return saved_count
+
+        # Emit entity creation events for provenance tracking
+        if entity_ids:
+            event_bus = self._frame.get_service("events")
+            if event_bus:
+                # Emit batch event with all entity IDs
+                await event_bus.emit(
+                    "entities.batch.created",
+                    {
+                        "document_id": document_id,
+                        "entity_ids": entity_ids,
+                        "count": len(entity_ids),
+                    },
+                    source="parse-shard",
+                )
+                # Also emit individual created events for each entity (for provenance artifact creation)
+                for entity_id in entity_ids:
+                    await event_bus.emit(
+                        "entities.entity.created",
+                        {
+                            "id": entity_id,
+                            "entity_id": entity_id,
+                            "document_id": document_id,
+                        },
+                        source="parse-shard",
+                    )
+
+        return saved_count, entity_ids

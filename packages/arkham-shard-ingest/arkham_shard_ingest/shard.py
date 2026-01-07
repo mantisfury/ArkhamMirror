@@ -82,7 +82,7 @@ class IngestShard(ArkhamShard):
             logger.warning("Database service not available, persistence disabled")
 
         # Get storage paths from config
-        data_silo = Path(self._config.get("data_silo_path", "./DataSilo"))
+        data_silo = Path(self._config.get("data_silo_path", "./data_silo"))
         storage_path = data_silo / "documents"
         temp_path = data_silo / "temp" / "ingest"
 
@@ -316,6 +316,25 @@ class IngestShard(ArkhamShard):
                 )
 
             logger.info(f"Registered document {doc.id} from job {job.id}")
+
+            # Emit document created event for provenance tracking
+            event_bus = self._frame.get_service("events")
+            if event_bus:
+                await event_bus.emit(
+                    "documents.document.created",
+                    {
+                        "id": doc.id,
+                        "document_id": doc.id,
+                        "title": job.file_info.original_name,
+                        "filename": job.file_info.original_name,
+                        "mime_type": doc.mime_type,
+                        "file_size": doc.file_size,
+                        "source": "ingest",
+                        "job_id": job.id,
+                    },
+                    source="ingest-shard",
+                )
+
             return doc.id
 
         except Exception as e:

@@ -951,7 +951,10 @@ Be specific about what would be observable and when."""
             user_prompt=prompt,
         )
 
-        return self._parse_milestones(getattr(response, "text", ""), matrix)
+        # Extract text from response (handles both dict and object formats)
+        response_text = getattr(response, "text", "") if hasattr(response, "text") else response.get("text", "")
+
+        return self._parse_milestones(response_text, matrix)
 
     def _parse_milestones(
         self,
@@ -964,57 +967,83 @@ Be specific about what would be observable and when."""
         # Map hypothesis labels to IDs
         hyp_map = {f"H{i+1}": h for i, h in enumerate(matrix.hypotheses)}
 
-        # Split into hypothesis sections (H1:, H2:, etc.)
-        sections = re.split(r'\n(?=\s*H\d+\s*[:\-])', text.strip())
+        # Helper to check if text is a placeholder
+        def is_placeholder_text(desc: str) -> bool:
+            lower_desc = desc.lower()
+            return (
+                lower_desc in ('description of milestone/indicator', '...')
+                or lower_desc.startswith('by [timeframe]')
+                or '[specific observable event' in lower_desc
+                or lower_desc.startswith('genuine lunar landing')
+                or lower_desc.startswith('filmed on earth')
+                or lower_desc.startswith('misinterpretation')
+                or lower_desc.startswith('partial lunar')
+            )
 
-        for section in sections:
-            if not section.strip():
-                continue
+        # Helper to strip markdown formatting
+        def strip_markdown(s: str) -> str:
+            """Remove markdown bold/italic markers."""
+            return re.sub(r'\*+', '', s).strip()
 
-            # Match the hypothesis label at the start
-            header_match = re.match(r'^\s*(H\d+)\s*[:\-]\s*(.*)$', section.strip(), re.IGNORECASE)
-            if not header_match:
-                continue
+        # Strategy 1: Look for bullet points with H labels like "* **H1:** milestone text"
+        # This matches the common LLM output format
+        bullet_pattern = re.compile(
+            r'^[\*\-\u2022]\s*\*{0,2}\s*(H\d+)\s*[:\-]\*{0,2}\s*(.+)$',
+            re.IGNORECASE | re.MULTILINE
+        )
 
-            label = header_match.group(1).upper()
-            if label not in hyp_map:
-                continue
+        for match in bullet_pattern.finditer(text):
+            label = match.group(1).upper()
+            description = strip_markdown(match.group(2)).strip()
+            if label in hyp_map and description and not is_placeholder_text(description):
+                suggestions.append(MilestoneSuggestion(
+                    hypothesis_id=hyp_map[label].id,
+                    hypothesis_label=label,
+                    description=description,
+                ))
 
-            # Get the rest after the header
-            first_line_content = header_match.group(2).strip()
-            remaining_lines = section.strip().split('\n')[1:]
+        # Strategy 2: If no results from Strategy 1, try parsing section-based format
+        if not suggestions:
+            # Split into hypothesis sections (H1:, **H1:, etc.)
+            sections = re.split(r'\n(?=\s*\*{0,2}\s*H\d+\s*[:\-])', text.strip())
 
-            # If first line has content, it's a single-line milestone
-            if first_line_content and not first_line_content.startswith('-'):
-                # Filter out placeholder text from prompt format examples
-                lower_desc = first_line_content.lower()
-                is_placeholder = (
-                    lower_desc in ('description of milestone/indicator', '...')
-                    or lower_desc.startswith('by [timeframe]')
-                    or '[specific observable event' in lower_desc
+            for section in sections:
+                if not section.strip():
+                    continue
+
+                # Match the hypothesis label at the start (with optional markdown)
+                header_match = re.match(
+                    r'^\s*\*{0,2}\s*(H\d+)\s*[:\-]\*{0,2}\s*(.*)$',
+                    section.strip(),
+                    re.IGNORECASE
                 )
-                if not is_placeholder:
+                if not header_match:
+                    continue
+
+                label = header_match.group(1).upper()
+                if label not in hyp_map:
+                    continue
+
+                # Get the rest after the header
+                first_line_content = strip_markdown(header_match.group(2)).strip()
+                remaining_lines = section.strip().split('\n')[1:]
+
+                # If first line has content, it's a single-line milestone
+                if first_line_content and not first_line_content.startswith('-') and not is_placeholder_text(first_line_content):
                     suggestions.append(MilestoneSuggestion(
                         hypothesis_id=hyp_map[label].id,
                         hypothesis_label=label,
                         description=first_line_content,
                     ))
 
-            # Parse bullet points as individual milestones
-            for line in remaining_lines:
-                line = line.strip()
-                # Match bullet points: "- milestone" or "* milestone"
-                bullet_match = re.match(r'^[\-\*\u2022]\s*(.+)$', line)
-                if bullet_match:
-                    description = bullet_match.group(1).strip()
-                    if description:
-                        lower_desc = description.lower()
-                        is_placeholder = (
-                            lower_desc == 'description of milestone/indicator'
-                            or lower_desc.startswith('by [timeframe]')
-                            or '[specific observable event' in lower_desc
-                        )
-                        if not is_placeholder:
+                # Parse bullet points as individual milestones
+                for line in remaining_lines:
+                    line = line.strip()
+                    # Match bullet points: "- milestone" or "* milestone" (without H label)
+                    bullet_match = re.match(r'^[\-\*\u2022]\s+(.+)$', line)
+                    if bullet_match:
+                        description = strip_markdown(bullet_match.group(1)).strip()
+                        if description and not is_placeholder_text(description):
                             suggestions.append(MilestoneSuggestion(
                                 hypothesis_id=hyp_map[label].id,
                                 hypothesis_label=label,

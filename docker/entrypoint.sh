@@ -51,7 +51,7 @@ if [ -n "$QDRANT_URL" ]; then
     QDRANT_PORT=${QDRANT_PORT:-6333}
 
     for i in {1..30}; do
-        if curl -sf "http://$QDRANT_HOST:$QDRANT_PORT/health" > /dev/null 2>&1; then
+        if curl -sf "http://$QDRANT_HOST:$QDRANT_PORT/healthz" > /dev/null 2>&1; then
             echo "Qdrant is ready!"
             break
         fi

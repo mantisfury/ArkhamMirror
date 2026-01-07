@@ -261,6 +261,11 @@ async def parse_document_sync(doc_id: str, save_chunks: bool = True):
                     "entities": result.get("total_entities", 0),
                     "chunks": result.get("total_chunks", 0),
                     "chunks_saved": result.get("chunks_saved", 0),
+                    "entities_saved": result.get("entities_saved", 0),
+                    "chunk_ids": result.get("chunk_ids", []),
+                    "entity_ids": result.get("entity_ids", []),
+                    "output_ids": result.get("chunk_ids", []),  # For provenance linking
+                    "output_table": "arkham_document_chunks",
                 },
                 source="parse-shard",
             )

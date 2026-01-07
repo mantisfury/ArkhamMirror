@@ -643,7 +643,7 @@ class WorkerService:
 
         # Set DATA_SILO_PATH for workers to resolve relative file paths
         # This enables portability across Docker/host environments
-        data_silo_path = self.config.get("data_silo_path", "./DataSilo")
+        data_silo_path = self.config.get("data_silo_path", "./data_silo")
         os.environ["DATA_SILO_PATH"] = str(Path(data_silo_path).resolve())
 
         # Import the run_worker function

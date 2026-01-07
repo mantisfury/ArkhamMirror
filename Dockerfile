@@ -17,8 +17,8 @@ WORKDIR /build
 # Copy package files first for layer caching
 COPY packages/arkham-shard-shell/package*.json ./
 
-# Install dependencies
-RUN npm ci --silent
+# Install dependencies (--legacy-peer-deps for react-leaflet@5 / React 18 compat)
+RUN npm ci --silent --legacy-peer-deps
 
 # Copy source and build
 COPY packages/arkham-shard-shell/ ./
@@ -78,6 +78,10 @@ COPY packages/arkham-shard-settings/ ./packages/arkham-shard-settings/
 COPY packages/arkham-shard-summary/ ./packages/arkham-shard-summary/
 COPY packages/arkham-shard-templates/ ./packages/arkham-shard-templates/
 COPY packages/arkham-shard-timeline/ ./packages/arkham-shard-timeline/
+
+# Install CPU-only PyTorch BEFORE shards to avoid downloading ~3GB of CUDA libraries
+# This must come before sentence-transformers (used by arkham-shard-embed)
+RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu
 
 # Install each shard (continue on error for optional shards)
 RUN for shard_dir in ./packages/arkham-shard-*/; do \
@@ -147,10 +151,10 @@ COPY packages/arkham-shard-timeline/shard.yaml /app/manifests/timeline.yaml
 WORKDIR /app
 
 # Create directories for data persistence
-RUN mkdir -p /app/DataSilo/documents \
-             /app/DataSilo/exports \
-             /app/DataSilo/temp \
-             /app/DataSilo/models \
+RUN mkdir -p /app/data_silo/documents \
+             /app/data_silo/exports \
+             /app/data_silo/temp \
+             /app/data_silo/models \
              /app/config
 
 # Copy entrypoint script and fix line endings (Windows CRLF -> Unix LF)
