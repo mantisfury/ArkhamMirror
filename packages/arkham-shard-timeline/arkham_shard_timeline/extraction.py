@@ -129,6 +129,59 @@ class DateExtractor:
             'winter': 12,  # December
         }
 
+    def _extract_context(self, text: str, start: int, end: int, max_chars: int = 200) -> str:
+        """
+        Extract the surrounding context (sentence or line) for a date match.
+
+        Args:
+            text: Full document text
+            start: Start position of the date match
+            end: End position of the date match
+            max_chars: Maximum characters of context to extract
+
+        Returns:
+            The sentence or line containing the date
+        """
+        # Find sentence boundaries (. ! ? or newlines)
+        sentence_end_pattern = re.compile(r'[.!?\n]')
+
+        # Find the start of the sentence (look backwards for sentence end or start of text)
+        context_start = max(0, start - max_chars)
+        prefix = text[context_start:start]
+
+        # Find last sentence boundary in prefix
+        matches = list(sentence_end_pattern.finditer(prefix))
+        if matches:
+            # Start after the last sentence boundary
+            context_start = context_start + matches[-1].end()
+        elif context_start > 0:
+            # No sentence boundary found, find first space after context_start
+            space_pos = prefix.find(' ')
+            if space_pos != -1:
+                context_start = context_start + space_pos + 1
+
+        # Find the end of the sentence (look forward for sentence end or end of text)
+        context_end = min(len(text), end + max_chars)
+        suffix = text[end:context_end]
+
+        # Find first sentence boundary in suffix
+        match = sentence_end_pattern.search(suffix)
+        if match:
+            context_end = end + match.end()
+        elif context_end < len(text):
+            # No sentence boundary found, find last space before context_end
+            space_pos = suffix.rfind(' ')
+            if space_pos != -1:
+                context_end = end + space_pos
+
+        # Extract and clean the context
+        context = text[context_start:context_end].strip()
+
+        # Remove excessive whitespace
+        context = re.sub(r'\s+', ' ', context)
+
+        return context
+
     def extract_events(
         self,
         text: str,
@@ -192,15 +245,17 @@ class DateExtractor:
                     date = datetime(year, month, day)
                     precision = DatePrecision.DAY
 
+                event_context = self._extract_context(text, match.start(), match.end())
                 event = TimelineEvent(
                     id=str(uuid.uuid4()),
                     document_id=document_id,
-                    text=match.group(0),
+                    text=event_context,
                     date_start=date,
                     precision=precision,
                     confidence=0.99,  # ISO dates are very reliable
                     event_type=EventType.REFERENCE,
                     span=(match.start(), match.end()),
+                    metadata={"date_text": match.group(0)},
                 )
                 events.append(event)
 
@@ -229,15 +284,18 @@ class DateExtractor:
             if month:
                 try:
                     date = datetime(year, month, day)
+                    # Extract surrounding context
+                    event_context = self._extract_context(text, match.start(), match.end())
                     event = TimelineEvent(
                         id=str(uuid.uuid4()),
                         document_id=document_id,
-                        text=match.group(0),
+                        text=event_context,  # Use full context instead of just date
                         date_start=date,
                         precision=DatePrecision.DAY,
                         confidence=0.95,
                         event_type=EventType.REFERENCE,
                         span=(match.start(), match.end()),
+                        metadata={"date_text": match.group(0)},
                     )
                     events.append(event)
                 except ValueError as e:
@@ -253,15 +311,17 @@ class DateExtractor:
             if month:
                 try:
                     date = datetime(year, month, day)
+                    event_context = self._extract_context(text, match.start(), match.end())
                     event = TimelineEvent(
                         id=str(uuid.uuid4()),
                         document_id=document_id,
-                        text=match.group(0),
+                        text=event_context,
                         date_start=date,
                         precision=DatePrecision.DAY,
                         confidence=0.95,
                         event_type=EventType.REFERENCE,
                         span=(match.start(), match.end()),
+                        metadata={"date_text": match.group(0)},
                     )
                     events.append(event)
                 except ValueError as e:

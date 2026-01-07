@@ -817,6 +817,134 @@ async def get_entity_timeline(
     )
 
 
+class DeleteResponse(BaseModel):
+    deleted: int
+    message: str
+
+
+@router.delete("/events/{event_id}", response_model=DeleteResponse)
+async def delete_event(request: Request, event_id: str):
+    """
+    Delete a single timeline event by ID.
+    """
+    shard = get_shard(request)
+
+    if not shard.database_service:
+        raise HTTPException(status_code=503, detail="Database service not available")
+
+    try:
+        result = await shard.database_service.execute(
+            "DELETE FROM arkham_timeline_events WHERE id = :event_id",
+            {"event_id": event_id}
+        )
+        deleted = result.rowcount if hasattr(result, 'rowcount') else 1
+
+        if deleted == 0:
+            raise HTTPException(status_code=404, detail=f"Event not found: {event_id}")
+
+        # Emit event
+        if _event_bus:
+            await _event_bus.emit(
+                "timeline.event.deleted",
+                {"event_id": event_id},
+                source="timeline-shard",
+            )
+
+        return DeleteResponse(deleted=1, message=f"Event {event_id} deleted")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to delete event: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to delete event: {str(e)}")
+
+
+@router.delete("/document/{document_id}/events", response_model=DeleteResponse)
+async def delete_document_events(request: Request, document_id: str):
+    """
+    Delete all timeline events for a specific document.
+    """
+    shard = get_shard(request)
+
+    if not shard.database_service:
+        raise HTTPException(status_code=503, detail="Database service not available")
+
+    try:
+        # First count how many will be deleted
+        count_result = await shard.database_service.fetch_one(
+            "SELECT COUNT(*) as count FROM arkham_timeline_events WHERE document_id = :doc_id",
+            {"doc_id": document_id}
+        )
+        count = count_result["count"] if count_result else 0
+
+        if count == 0:
+            return DeleteResponse(deleted=0, message=f"No events found for document {document_id}")
+
+        # Delete all events for this document
+        await shard.database_service.execute(
+            "DELETE FROM arkham_timeline_events WHERE document_id = :doc_id",
+            {"doc_id": document_id}
+        )
+
+        # Emit event
+        if _event_bus:
+            await _event_bus.emit(
+                "timeline.document.events_deleted",
+                {"document_id": document_id, "count": count},
+                source="timeline-shard",
+            )
+
+        return DeleteResponse(deleted=count, message=f"Deleted {count} events from document {document_id}")
+    except Exception as e:
+        logger.error(f"Failed to delete document events: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to delete events: {str(e)}")
+
+
+@router.delete("/events", response_model=DeleteResponse)
+async def delete_all_events(
+    request: Request,
+    confirm: bool = Query(False, description="Must be true to confirm deletion of all events")
+):
+    """
+    Delete all timeline events. Requires confirm=true query parameter.
+    """
+    if not confirm:
+        raise HTTPException(
+            status_code=400,
+            detail="Must pass confirm=true query parameter to delete all events"
+        )
+
+    shard = get_shard(request)
+
+    if not shard.database_service:
+        raise HTTPException(status_code=503, detail="Database service not available")
+
+    try:
+        # Count events first
+        count_result = await shard.database_service.fetch_one(
+            "SELECT COUNT(*) as count FROM arkham_timeline_events"
+        )
+        count = count_result["count"] if count_result else 0
+
+        if count == 0:
+            return DeleteResponse(deleted=0, message="No events to delete")
+
+        # Delete all events
+        await shard.database_service.execute("DELETE FROM arkham_timeline_events")
+
+        # Emit event
+        if _event_bus:
+            await _event_bus.emit(
+                "timeline.events.cleared",
+                {"count": count},
+                source="timeline-shard",
+            )
+
+        return DeleteResponse(deleted=count, message=f"Deleted all {count} events")
+    except Exception as e:
+        logger.error(f"Failed to delete all events: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to delete events: {str(e)}")
+
+
 @router.post("/normalize", response_model=NormalizeResponse)
 async def normalize_dates(request: NormalizeRequest):
     """

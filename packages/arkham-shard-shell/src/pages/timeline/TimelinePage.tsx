@@ -60,6 +60,8 @@ export function TimelinePage() {
   const [endDate, setEndDate] = useState('');
   const [filterApplied, setFilterApplied] = useState(false);
   const [extracting, setExtracting] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState<string | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState<{ type: 'event' | 'document' | 'all'; id?: string; name?: string } | null>(null);
 
   // Build query string
   const buildQuery = useCallback(() => {
@@ -118,6 +120,83 @@ export function TimelinePage() {
       toast.error('Failed to extract timeline');
     } finally {
       setExtracting(null);
+    }
+  };
+
+  const deleteEvent = async (eventId: string) => {
+    setDeleting(eventId);
+    try {
+      const response = await fetch(`/api/timeline/events/${eventId}`, { method: 'DELETE' });
+      if (response.ok) {
+        toast.success('Event deleted');
+        refetchEvents();
+        refetchStats();
+        refetchDocs();
+      } else {
+        const error = await response.json();
+        toast.error(error.detail || 'Failed to delete event');
+      }
+    } catch {
+      toast.error('Failed to delete event');
+    } finally {
+      setDeleting(null);
+      setConfirmDelete(null);
+    }
+  };
+
+  const deleteDocumentEvents = async (documentId: string) => {
+    setDeleting(documentId);
+    try {
+      const response = await fetch(`/api/timeline/document/${documentId}/events`, { method: 'DELETE' });
+      if (response.ok) {
+        const result = await response.json();
+        toast.success(`Deleted ${result.deleted} events`);
+        refetchEvents();
+        refetchStats();
+        refetchDocs();
+      } else {
+        const error = await response.json();
+        toast.error(error.detail || 'Failed to delete events');
+      }
+    } catch {
+      toast.error('Failed to delete document events');
+    } finally {
+      setDeleting(null);
+      setConfirmDelete(null);
+    }
+  };
+
+  const deleteAllEvents = async () => {
+    setDeleting('all');
+    try {
+      const response = await fetch('/api/timeline/events?confirm=true', { method: 'DELETE' });
+      if (response.ok) {
+        const result = await response.json();
+        toast.success(`Deleted all ${result.deleted} events`);
+        refetchEvents();
+        refetchStats();
+        refetchDocs();
+      } else {
+        const error = await response.json();
+        toast.error(error.detail || 'Failed to delete events');
+      }
+    } catch {
+      toast.error('Failed to delete all events');
+    } finally {
+      setDeleting(null);
+      setConfirmDelete(null);
+    }
+  };
+
+  const handleConfirmDelete = () => {
+    if (!confirmDelete) return;
+
+    if (confirmDelete.type === 'event' && confirmDelete.id) {
+      deleteEvent(confirmDelete.id);
+    } else if (confirmDelete.type === 'document' && confirmDelete.id) {
+      deleteDocumentEvents(confirmDelete.id);
+    } else if (confirmDelete.type === 'all') {
+      deleteAllEvents();
     }
   };
 
@@ -350,6 +429,13 @@ export function TimelinePage() {
                                 <Icon name="FileText" size={14} />
                                 {event.document_id.slice(0, 8)}...
                               </span>
+                              <button
+                                className="btn-icon btn-delete"
+                                onClick={() => setConfirmDelete({ type: 'event', id: event.id })}
+                                title="Delete event"
+                              >
+                                <Icon name="Trash2" size={14} />
+                              </button>
                             </div>
                           </div>
                         </div>
@@ -534,23 +620,38 @@ export function TimelinePage() {
                         <span className="event-badge empty">No events</span>
                       )}
                     </div>
-                    <button
-                      className="btn btn-secondary btn-sm"
-                      onClick={() => extractTimeline(doc.id)}
-                      disabled={extracting === doc.id}
-                    >
-                      {extracting === doc.id ? (
-                        <>
-                          <Icon name="Loader2" size={14} className="spin" />
-                          Extracting...
-                        </>
-                      ) : (
-                        <>
-                          <Icon name="Play" size={14} />
-                          Extract
-                        </>
+                    <div className="doc-actions">
+                      <button
+                        className="btn btn-secondary btn-sm"
+                        onClick={() => extractTimeline(doc.id)}
+                        disabled={extracting === doc.id}
+                      >
+                        {extracting === doc.id ? (
+                          <>
+                            <Icon name="Loader2" size={14} className="spin" />
+                            Extracting...
+                          </>
+                        ) : (
+                          <>
+                            <Icon name="Play" size={14} />
+                            Extract
+                          </>
+                        )}
+                      </button>
+                      {doc.event_count > 0 && (
+                        <button
+                          className="btn btn-danger btn-sm"
+                          onClick={() => setConfirmDelete({ type: 'document', id: doc.id, name: doc.filename || doc.id })}
+                          disabled={deleting === doc.id}
+                        >
+                          {deleting === doc.id ? (
+                            <Icon name="Loader2" size={14} className="spin" />
+                          ) : (
+                            <Icon name="Trash2" size={14} />
+                          )}
+                        </button>
                       )}
-                    </button>
+                    </div>
                   </div>
                 ))}
               </div>
@@ -564,6 +665,54 @@ export function TimelinePage() {
           </div>
         )}
       </main>
+
+      {/* Confirmation Dialog */}
+      {confirmDelete && (
+        <div className="modal-overlay" onClick={() => setConfirmDelete(null)}>
+          <div className="modal-dialog" onClick={e => e.stopPropagation()}>
+            <div className="modal-header">
+              <Icon name="AlertTriangle" size={24} className="text-warning" />
+              <h3>Confirm Delete</h3>
+            </div>
+            <div className="modal-body">
+              {confirmDelete.type === 'event' && (
+                <p>Are you sure you want to delete this event?</p>
+              )}
+              {confirmDelete.type === 'document' && (
+                <p>Delete all events from <strong>{confirmDelete.name}</strong>?</p>
+              )}
+              {confirmDelete.type === 'all' && (
+                <p>Delete <strong>all</strong> timeline events? This cannot be undone.</p>
+              )}
+            </div>
+            <div className="modal-footer">
+              <button
+                className="btn btn-secondary"
+                onClick={() => setConfirmDelete(null)}
+              >
+                Cancel
+              </button>
+              <button
+                className="btn btn-danger"
+                onClick={handleConfirmDelete}
+                disabled={deleting !== null}
+              >
+                {deleting !== null ? (
+                  <>
+                    <Icon name="Loader2" size={14} className="spin" />
+                    Deleting...
+                  </>
+                ) : (
+                  <>
+                    <Icon name="Trash2" size={14} />
+                    Delete
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
