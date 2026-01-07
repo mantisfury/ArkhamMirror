@@ -94,6 +94,7 @@ jobs:
 
       - name: Generate artifact attestation
         if: github.event_name != 'pull_request'
+        continue-on-error: true  # Only works on public repos
         uses: actions/attest-build-provenance@v1
         with:
           subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
