@@ -77,6 +77,30 @@ KNOWN_MODELS: dict[str, ModelInfo] = {
         size_mb=90,
         required_by=["embed"],
     ),
+    "bge-m3": ModelInfo(
+        id="bge-m3",
+        name="BGE-M3",
+        model_type=ModelType.EMBEDDING,
+        description="Multilingual embedding model (1024 dimensions). Supports 100+ languages with excellent cross-lingual retrieval.",
+        size_mb=2200,
+        required_by=["embed"],
+    ),
+    "bge-large-en-v1.5": ModelInfo(
+        id="bge-large-en-v1.5",
+        name="BGE-Large-EN v1.5",
+        model_type=ModelType.EMBEDDING,
+        description="High quality English embedding model (1024 dimensions). Best for English-only workloads.",
+        size_mb=1300,
+        required_by=["embed"],
+    ),
+    "paraphrase-MiniLM-L6-v2": ModelInfo(
+        id="paraphrase-MiniLM-L6-v2",
+        name="paraphrase-MiniLM-L6-v2",
+        model_type=ModelType.EMBEDDING,
+        description="Optimized for paraphrase detection (384 dimensions). Good for semantic similarity tasks.",
+        size_mb=90,
+        required_by=["embed"],
+    ),
 
     # PaddleOCR models
     "paddleocr-en": ModelInfo(
@@ -259,10 +283,21 @@ class ModelService:
 
         return models
 
+    def _get_hf_model_path(self, model_id: str) -> str:
+        """Get the HuggingFace model path for a given model ID."""
+        # Map model IDs to their HuggingFace paths
+        model_paths = {
+            "bge-m3": "BAAI/bge-m3",
+            "bge-large-en-v1.5": "BAAI/bge-large-en-v1.5",
+            # sentence-transformers models use their default org
+        }
+        return model_paths.get(model_id, f"sentence-transformers/{model_id}")
+
     def _check_model_installed(self, model_id: str, model_type: ModelType) -> tuple[bool, str | None]:
         """Check if a specific model is installed."""
         if model_type == ModelType.EMBEDDING:
-            return self._check_hf_model_installed(f"sentence-transformers/{model_id}")
+            hf_path = self._get_hf_model_path(model_id)
+            return self._check_hf_model_installed(hf_path)
         elif model_type == ModelType.OCR:
             lang = "en" if model_id == "paddleocr-en" else "ch"
             return self._check_paddle_model_installed(lang)
@@ -341,8 +376,10 @@ class ModelService:
             self._downloading.discard(model_id)
 
     async def _download_embedding_model(self, model_id: str):
-        """Download a sentence-transformers model."""
+        """Download an embedding model from HuggingFace."""
         import asyncio
+
+        hf_path = self._get_hf_model_path(model_id)
 
         def _download():
             # Temporarily disable offline mode for download
@@ -352,10 +389,10 @@ class ModelService:
 
             try:
                 from sentence_transformers import SentenceTransformer
-                logger.info(f"Downloading embedding model: {model_id}")
+                logger.info(f"Downloading embedding model: {hf_path}")
                 # This triggers the download
-                SentenceTransformer(f"sentence-transformers/{model_id}")
-                logger.info(f"Successfully downloaded: {model_id}")
+                SentenceTransformer(hf_path)
+                logger.info(f"Successfully downloaded: {hf_path}")
             finally:
                 # Restore offline mode if it was set
                 if old_offline:

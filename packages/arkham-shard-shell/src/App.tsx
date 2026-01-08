@@ -132,10 +132,12 @@ export function App() {
 
                   {/* Settings shard with sub-routes */}
                   <Route path="/settings" element={<SettingsPage />} />
+                  <Route path="/settings/general" element={<SettingsPage />} />
                   <Route path="/settings/appearance" element={<SettingsPage />} />
                   <Route path="/settings/notifications" element={<SettingsPage />} />
                   <Route path="/settings/performance" element={<SettingsPage />} />
                   <Route path="/settings/data" element={<SettingsPage />} />
+                  <Route path="/settings/models" element={<SettingsPage />} />
                   <Route path="/settings/advanced" element={<SettingsPage />} />
                   <Route path="/settings/shards" element={<SettingsPage />} />
 
