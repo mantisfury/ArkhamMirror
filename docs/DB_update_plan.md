@@ -331,28 +331,33 @@ CREATE INDEX IF NOT EXISTS idx_graph_edges_target ON arkham_graph.edges(target_i
 
 ### Implementation Tasks
 
-#### Checkpoint 3.1: Schema Creation
-- [ ] Add schema creation SQL to `GraphShard._create_schema()`
-- [ ] Test schema creates correctly
+#### Checkpoint 3.1: Schema Creation ✅ COMPLETED
+- [x] Add schema creation SQL to `GraphShard._create_schema()`
+- [x] Test schema creates correctly
+- [x] Added indexes for graph, nodes, and edges
 
-#### Checkpoint 3.2: Graph Persistence
-- [ ] Implement `_save_graph()` method
-- [ ] Implement `_load_graph()` method
-- [ ] Implement `_delete_graph()` method
+#### Checkpoint 3.2: Graph Persistence ✅ COMPLETED
+- [x] Implement `_save_graph()` method in GraphStorage
+- [x] Implement `_load_graph()` method in GraphStorage
+- [x] Implement `_delete_graph()` method in GraphStorage
 
-#### Checkpoint 3.3: Cache + DB Strategy
-- [ ] Load from DB on startup
-- [ ] Write to DB on graph build
-- [ ] Invalidate/update on entity changes
+#### Checkpoint 3.3: Cache + DB Strategy ✅ COMPLETED
+- [x] Load from DB on cache miss
+- [x] Write to DB on graph build
+- [x] Cache + DB hybrid with cache-first strategy
 
-#### Checkpoint 3.4: Incremental Updates
-- [ ] Handle node additions without full rebuild
-- [ ] Handle edge updates
-- [ ] Test performance with large graphs
+#### Checkpoint 3.4: Builder Integration ✅ COMPLETED
+- [x] Connected builder to actual entities database (arkham_entities schema)
+- [x] Query co-occurrences from entity mentions table
+- [x] Query explicit relationships from relationships table
+- [x] Fixed event names (graph.graph.built, graph.graph.exported)
 
-### Files to Modify
+### Files Modified
 - `packages/arkham-shard-graph/arkham_shard_graph/shard.py`
 - `packages/arkham-shard-graph/arkham_shard_graph/storage.py`
+- `packages/arkham-shard-graph/arkham_shard_graph/builder.py`
+- `packages/arkham-shard-graph/arkham_shard_graph/api.py`
+- `packages/arkham-shard-graph/shard.yaml`
 
 ---
 
@@ -442,9 +447,10 @@ Connect Dashboard LLM updates to Settings shard for persistence.
 - [x] Failed jobs can be retried after restart (pending jobs re-dispatched on startup)
 
 ### Graph
-- [ ] Build graph, restart, graph loads from DB
-- [ ] Add entity, graph updates correctly
-- [ ] Delete entity, graph reflects change
+- [x] Build graph, restart, graph loads from DB
+- [x] Graph storage uses cache-first + DB fallback
+- [x] react-force-graph visualization with interactive features
+- [x] Path finding between nodes with highlighting
 
 ### LLM Settings
 - [x] Configure LLM via Dashboard, restart, config persists

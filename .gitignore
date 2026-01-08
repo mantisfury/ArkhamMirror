@@ -80,3 +80,12 @@ data_silo/
 *.pem
 *.key
 credentials.json
+
+# Claude Code
+.claude/settings.local.json
+
+# Backup files
+*.bak
+
+# Test output
+test_*/
