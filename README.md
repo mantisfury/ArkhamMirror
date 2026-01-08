@@ -11,7 +11,7 @@
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.0-blue.svg)](https://www.typescriptlang.org/)
 [![React 18](https://img.shields.io/badge/React-18-61dafb.svg)](https://react.dev/)
 
-[Philosophy](#philosophy) | [Architecture](#architecture) | [Features](#features) | [Quick Start](#quick-start) | [Shards](#implemented-shards) | [Documentation](#documentation)
+[Philosophy](#philosophy) | [Architecture](#architecture) | [Features](#features) | [Quick Start](#quick-start) | [Security](#authentication--security) | [Production](#production-deployment) | [Shards](#implemented-shards) | [Documentation](#documentation)
 
 </div>
 
@@ -375,12 +375,146 @@ python -m arkham_frame.workers --pool gpu-embed --count 1
 ### Docker Deployment
 
 ```bash
+# Copy environment template
+cp .env.example .env
+
+# Generate a secure auth key
+python -c "import secrets; print('AUTH_SECRET_KEY=' + secrets.token_urlsafe(32))"
+# Add the output to your .env file
+
 # Start all services
 docker compose up -d
 
-# Or start specific services
-docker compose up -d postgres redis qdrant
-docker compose up -d frame shell
+# Access the application
+open http://localhost:8100
+```
+
+**First-time Setup**: When you first access the application, you'll be prompted to create an admin account. This sets up your tenant and initial credentials.
+
+---
+
+## Authentication & Security
+
+SHATTERED includes built-in authentication and multi-tenant support.
+
+### Initial Setup
+
+1. **Start the application** using Docker or manual installation
+2. **Navigate to the app** - you'll be redirected to the setup wizard
+3. **Create your tenant** - enter organization name and admin credentials
+4. **Log in** with your new admin account
+
+### User Roles
+
+| Role | Capabilities |
+|------|--------------|
+| **Admin** | Full access: user management, settings, audit logs |
+| **Analyst** | Read/write access to all analysis features |
+| **Viewer** | Read-only access to documents and analyses |
+
+### Environment Variables
+
+Add these to your `.env` file:
+
+```env
+# REQUIRED: Generate with: python -c "import secrets; print(secrets.token_urlsafe(32))"
+AUTH_SECRET_KEY=your-secure-random-key
+
+# Optional: JWT token lifetime (default: 3600 seconds = 1 hour)
+JWT_LIFETIME_SECONDS=3600
+
+# Optional: Rate limiting
+RATE_LIMIT_DEFAULT=100/minute
+RATE_LIMIT_UPLOAD=20/minute
+RATE_LIMIT_AUTH=10/minute
+
+# Optional: CORS origins (comma-separated, defaults to localhost)
+CORS_ORIGINS=https://your-domain.com
+```
+
+### Managing Users
+
+Admins can manage users at **Settings → Users**:
+- Create new users with email, password, and role
+- Edit user roles and display names
+- Deactivate/reactivate accounts
+- View user activity
+
+### Audit Logging
+
+All security-relevant actions are logged:
+- User creation, updates, deletion
+- Role changes
+- Login attempts (coming soon)
+
+View the audit log at **Settings → Audit Log** (admin only).
+
+---
+
+## Production Deployment
+
+For production deployments with HTTPS, SHATTERED includes Traefik integration.
+
+### Prerequisites
+
+1. A domain name pointing to your server
+2. Ports 80 and 443 open for Let's Encrypt verification
+3. Docker and Docker Compose installed
+
+### Setup
+
+```bash
+# 1. Configure environment
+cp .env.example .env
+
+# Edit .env and set:
+# - AUTH_SECRET_KEY (generate a secure key)
+# - DOMAIN=your-domain.com
+# - ACME_EMAIL=admin@your-domain.com
+
+# 2. Create certificate storage
+mkdir -p traefik
+touch traefik/acme.json
+chmod 600 traefik/acme.json
+
+# 3. Start with HTTPS
+docker compose -f docker-compose.yml -f docker-compose.traefik.yml up -d
+```
+
+### What Traefik Provides
+
+- **Automatic HTTPS** via Let's Encrypt (auto-renewing)
+- **HTTP → HTTPS redirect** for all traffic
+- **Security headers** (HSTS, CSP, X-Frame-Options)
+- **Modern TLS** (TLS 1.2+ only, strong ciphers)
+
+### Verify Deployment
+
+```bash
+# Check HTTPS is working
+curl -I https://your-domain.com
+
+# Check HTTP redirects
+curl -I http://your-domain.com
+# Should return 301 redirect to HTTPS
+
+# Check security headers
+curl -I https://your-domain.com | grep -i "strict-transport"
+```
+
+### Traefik Dashboard (Optional)
+
+To enable the Traefik dashboard:
+
+```bash
+# Generate password hash
+htpasswd -nb admin your-password
+
+# Add to .env
+TRAEFIK_DASHBOARD=true
+TRAEFIK_DASHBOARD_AUTH=admin:$apr1$...  # output from htpasswd
+
+# Access at https://traefik.your-domain.com
 ```
 
 ---
@@ -496,6 +630,7 @@ async def list_items(frame=Depends(get_frame)):
 
 | Document | Description |
 |----------|-------------|
+| [SECURITY.md](SECURITY.md) | Security best practices and deployment guide |
 | [CLAUDE.md](CLAUDE.md) | Project guidelines and development standards |
 | [docs/voltron_plan.md](docs/voltron_plan.md) | Architecture deep-dive |
 | [docs/shard_manifest_schema_prod.md](docs/shard_manifest_schema_prod.md) | Production manifest schema |

@@ -1,0 +1,117 @@
+# =============================================================================
+# SHATTERED KANDOR: Docker Compose - Traefik HTTPS Overlay
+# =============================================================================
+#
+# This overlay adds Traefik reverse proxy for production HTTPS deployment.
+# Use with the base docker-compose.yml:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.traefik.yml up -d
+#
+# Required environment variables:
+#   DOMAIN       - Your domain name (e.g., shattered.example.com)
+#   ACME_EMAIL   - Email for Let's Encrypt notifications
+#
+# Optional:
+#   TRAEFIK_DASHBOARD       - Enable dashboard (true/false, default: false)
+#   TRAEFIK_DASHBOARD_AUTH  - Dashboard auth (htpasswd format)
+#
+# Setup:
+#   1. Point your domain DNS to this server
+#   2. Create certificate storage: touch traefik/acme.json && chmod 600 traefik/acme.json
+#   3. Set environment variables
+#   4. Run with overlay
+#
+# =============================================================================
+
+services:
+  # ---------------------------------------------------------------------------
+  # Traefik Reverse Proxy
+  # ---------------------------------------------------------------------------
+  traefik:
+    image: traefik:v3.2
+    container_name: shattered-traefik
+    restart: unless-stopped
+    ports:
+      - "80:80"     # HTTP (redirects to HTTPS)
+      - "443:443"   # HTTPS
+    environment:
+      - ACME_EMAIL=${ACME_EMAIL:?ACME_EMAIL is required for Let's Encrypt}
+      - TRAEFIK_DASHBOARD_AUTH=${TRAEFIK_DASHBOARD_AUTH:-}
+    volumes:
+      # Docker socket for container discovery
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      # Traefik configuration
+      - ./traefik/traefik.yml:/etc/traefik/traefik.yml:ro
+      - ./traefik/dynamic:/etc/traefik/dynamic:ro
+      # Certificate storage (MUST be chmod 600)
+      - ./traefik/acme.json:/etc/traefik/acme.json
+    networks:
+      - shattered-net
+    labels:
+      # Enable Traefik for this container (dashboard)
+      - "traefik.enable=${TRAEFIK_DASHBOARD:-false}"
+      - "traefik.http.routers.traefik.rule=Host(`traefik.${DOMAIN}`)"
+      - "traefik.http.routers.traefik.entrypoints=websecure"
+      - "traefik.http.routers.traefik.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.traefik.service=api@internal"
+      - "traefik.http.routers.traefik.middlewares=dashboard-auth@file"
+    healthcheck:
+      test: ["CMD", "traefik", "healthcheck"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ---------------------------------------------------------------------------
+  # Application Override
+  # ---------------------------------------------------------------------------
+  # Remove direct port exposure, add Traefik labels
+  app:
+    ports: []  # Remove port 8100 exposure - Traefik handles it
+    environment:
+      # Update CORS to use HTTPS domain
+      - CORS_ORIGINS=https://${DOMAIN:?DOMAIN is required}
+    labels:
+      # Enable Traefik for this container
+      - "traefik.enable=true"
+
+      # HTTP Router (main application)
+      - "traefik.http.routers.shattered.rule=Host(`${DOMAIN}`)"
+      - "traefik.http.routers.shattered.entrypoints=websecure"
+      - "traefik.http.routers.shattered.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.shattered.service=shattered"
+
+      # Service definition
+      - "traefik.http.services.shattered.loadbalancer.server.port=8100"
+
+      # Health check
+      - "traefik.http.services.shattered.loadbalancer.healthcheck.path=/health"
+      - "traefik.http.services.shattered.loadbalancer.healthcheck.interval=30s"
+
+  # ---------------------------------------------------------------------------
+  # Database Override
+  # ---------------------------------------------------------------------------
+  # Remove external port exposure in production
+  postgres:
+    ports: []  # Don't expose PostgreSQL externally
+
+  # ---------------------------------------------------------------------------
+  # Qdrant Override
+  # ---------------------------------------------------------------------------
+  # Remove external port exposure in production
+  qdrant:
+    ports: []  # Don't expose Qdrant externally
+
+  # ---------------------------------------------------------------------------
+  # Redis Override
+  # ---------------------------------------------------------------------------
+  # Remove external port exposure in production
+  redis:
+    ports: []  # Don't expose Redis externally
+
+# -----------------------------------------------------------------------------
+# Network (same as base)
+# -----------------------------------------------------------------------------
+networks:
+  shattered-net:
+    name: shattered-network
+    driver: bridge

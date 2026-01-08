@@ -1,0 +1,96 @@
+# =============================================================================
+# Traefik Dynamic Configuration - Security
+# =============================================================================
+#
+# This file is watched by Traefik and reloaded on changes (no restart needed).
+# Contains security middlewares applied to all HTTPS traffic.
+# =============================================================================
+
+http:
+  middlewares:
+    # -------------------------------------------------------------------------
+    # Security Headers Middleware
+    # -------------------------------------------------------------------------
+    # Applied to all HTTPS traffic via entryPoints configuration
+    security-headers:
+      headers:
+        # HSTS - Enforce HTTPS for 1 year, include subdomains
+        stsSeconds: 31536000
+        stsIncludeSubdomains: true
+        stsPreload: true
+
+        # Prevent MIME type sniffing
+        contentTypeNosniff: true
+
+        # Clickjacking protection - deny framing
+        frameDeny: true
+
+        # XSS protection (legacy browsers)
+        browserXssFilter: true
+
+        # Referrer policy
+        referrerPolicy: strict-origin-when-cross-origin
+
+        # Content Security Policy
+        # Note: May need adjustment based on application requirements
+        contentSecurityPolicy: |
+          default-src 'self';
+          script-src 'self' 'unsafe-inline' 'unsafe-eval';
+          style-src 'self' 'unsafe-inline';
+          img-src 'self' data: blob:;
+          font-src 'self' data:;
+          connect-src 'self' ws: wss:;
+          frame-ancestors 'none';
+          base-uri 'self';
+          form-action 'self';
+
+        # Permissions Policy (formerly Feature Policy)
+        permissionsPolicy: |
+          accelerometer=(),
+          camera=(),
+          geolocation=(),
+          gyroscope=(),
+          magnetometer=(),
+          microphone=(),
+          payment=(),
+          usb=()
+
+        # Remove server identification headers
+        customResponseHeaders:
+          X-Powered-By: ""
+          Server: ""
+
+    # -------------------------------------------------------------------------
+    # Rate Limiting Middleware (Optional)
+    # -------------------------------------------------------------------------
+    # Uncomment to enable edge rate limiting
+    # Note: Application already has rate limiting via slowapi
+    #
+    # rate-limit:
+    #   rateLimit:
+    #     average: 100
+    #     burst: 50
+    #     period: 1m
+
+    # -------------------------------------------------------------------------
+    # IP Whitelist Middleware (Optional)
+    # -------------------------------------------------------------------------
+    # Uncomment to restrict access to specific IPs
+    #
+    # ip-whitelist:
+    #   ipWhiteList:
+    #     sourceRange:
+    #       - "127.0.0.1/32"
+    #       - "10.0.0.0/8"
+    #       - "172.16.0.0/12"
+    #       - "192.168.0.0/16"
+
+    # -------------------------------------------------------------------------
+    # Basic Auth Middleware (for Dashboard)
+    # -------------------------------------------------------------------------
+    # Used to protect Traefik dashboard
+    # Generate password: htpasswd -nb admin your-password
+    dashboard-auth:
+      basicAuth:
+        users:
+          - "${TRAEFIK_DASHBOARD_AUTH:-admin:$$apr1$$placeholder$$placeholder}"

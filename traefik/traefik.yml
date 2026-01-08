@@ -1,0 +1,114 @@
+# =============================================================================
+# Traefik Static Configuration
+# =============================================================================
+#
+# This file contains the static (startup) configuration for Traefik.
+# Changes require a Traefik restart to take effect.
+#
+# Dynamic configuration (middlewares, routers) is in ./dynamic/
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Global Settings
+# -----------------------------------------------------------------------------
+global:
+  checkNewVersion: false
+  sendAnonymousUsage: false
+
+# -----------------------------------------------------------------------------
+# API / Dashboard
+# -----------------------------------------------------------------------------
+# Dashboard is disabled by default for security.
+# Enable via TRAEFIK_DASHBOARD=true environment variable.
+api:
+  dashboard: true
+  insecure: false  # Require authentication
+
+# -----------------------------------------------------------------------------
+# Entry Points
+# -----------------------------------------------------------------------------
+entryPoints:
+  # HTTP - redirects to HTTPS
+  web:
+    address: ":80"
+    http:
+      redirections:
+        entryPoint:
+          to: websecure
+          scheme: https
+          permanent: true
+
+  # HTTPS - main entry point
+  websecure:
+    address: ":443"
+    http:
+      tls:
+        certResolver: letsencrypt
+      middlewares:
+        - security-headers@file
+
+# -----------------------------------------------------------------------------
+# Certificate Resolvers (Let's Encrypt)
+# -----------------------------------------------------------------------------
+certificatesResolvers:
+  letsencrypt:
+    acme:
+      # Email for Let's Encrypt notifications
+      email: "${ACME_EMAIL}"
+
+      # Certificate storage file
+      storage: /etc/traefik/acme.json
+
+      # Use production server (comment out for staging/testing)
+      # Staging: https://acme-staging-v02.api.letsencrypt.org/directory
+      # Production: https://acme-v02.api.letsencrypt.org/directory
+      caServer: https://acme-v02.api.letsencrypt.org/directory
+
+      # HTTP Challenge (requires port 80 accessible)
+      httpChallenge:
+        entryPoint: web
+
+# -----------------------------------------------------------------------------
+# Providers
+# -----------------------------------------------------------------------------
+providers:
+  # Docker provider - auto-discovers services via labels
+  docker:
+    endpoint: "unix:///var/run/docker.sock"
+    exposedByDefault: false  # Only expose services with traefik.enable=true
+    network: shattered-network
+
+  # File provider - loads dynamic config from directory
+  file:
+    directory: /etc/traefik/dynamic
+    watch: true
+
+# -----------------------------------------------------------------------------
+# Logging
+# -----------------------------------------------------------------------------
+log:
+  level: INFO
+  format: common
+
+accessLog:
+  format: common
+  filters:
+    statusCodes:
+      - "400-599"  # Only log errors
+
+# -----------------------------------------------------------------------------
+# TLS Options (applied globally)
+# -----------------------------------------------------------------------------
+# Enforce modern TLS settings
+tls:
+  options:
+    default:
+      minVersion: VersionTLS12
+      sniStrict: true
+      cipherSuites:
+        - TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384
+        - TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384
+        - TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256
+        - TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256
+        - TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305
+        - TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305

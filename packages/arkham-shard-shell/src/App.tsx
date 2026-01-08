@@ -59,7 +59,8 @@ import { ParsePage, ChunksPage } from './pages/parse';
 import { EmbedPage } from './pages/embed';
 import { ContradictionsPage } from './pages/contradictions';
 import { AnomaliesPage } from './pages/anomalies';
-import { SettingsPage } from './pages/settings';
+import { SettingsPage, UsersPage, AuditPage } from './pages/settings';
+import { AdminRoute } from './components/auth/ProtectedRoute';
 
 // Wave 1 shard imports
 import { GraphPage } from './pages/graph';
@@ -153,6 +154,8 @@ export function App() {
                   <Route path="/settings/models" element={<SettingsPage />} />
                   <Route path="/settings/advanced" element={<SettingsPage />} />
                   <Route path="/settings/shards" element={<SettingsPage />} />
+                  <Route path="/settings/users" element={<AdminRoute><UsersPage /></AdminRoute>} />
+                  <Route path="/settings/audit" element={<AdminRoute><AuditPage /></AdminRoute>} />
 
                   {/* Wave 1 shards */}
                   {/* Graph shard */}

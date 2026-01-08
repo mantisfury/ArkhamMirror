@@ -1,9 +1,11 @@
 """Authentication routes."""
 
 import logging
-from typing import List
+from datetime import datetime
+from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi.responses import Response
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 from fastapi_users.password import PasswordHelper
@@ -24,6 +26,15 @@ from .schemas import (
     TenantCreate,
     SetupRequest,
     SetupResponse,
+)
+from .audit import (
+    log_audit_event,
+    get_audit_events,
+    get_audit_stats,
+    export_audit_events,
+    ensure_audit_schema,
+    AuditListResponse,
+    AuditStats,
 )
 
 logger = logging.getLogger(__name__)
@@ -84,6 +95,7 @@ async def check_setup_required(session: AsyncSession = Depends(get_async_session
 
 @router.post("/setup", response_model=SetupResponse)
 async def initial_setup(
+    http_request: Request,
     request: SetupRequest,
     session: AsyncSession = Depends(get_async_session),
 ):
@@ -136,6 +148,21 @@ async def initial_setup(
     await session.refresh(tenant)
 
     logger.info(f"Initial setup completed: tenant={tenant.slug}, admin={admin.email}")
+
+    # Ensure audit table exists and log setup
+    await ensure_audit_schema(session)
+    await log_audit_event(
+        session,
+        event_type="tenant.created",
+        action="create",
+        tenant_id=tenant.id,
+        user_id=admin.id,
+        target_type="tenant",
+        target_id=str(tenant.id),
+        details={"tenant_name": tenant.name, "tenant_slug": tenant.slug, "admin_email": admin.email},
+        ip_address=http_request.client.host if http_request.client else None,
+        user_agent=http_request.headers.get("user-agent"),
+    )
 
     return SetupResponse(
         tenant=TenantRead.model_validate(tenant),
@@ -199,6 +226,7 @@ async def list_tenant_users(
 
 @router.post("/tenant/users", response_model=UserRead)
 async def create_tenant_user(
+    request: Request,
     data: UserCreate,
     user: User = Depends(require_admin),
     session: AsyncSession = Depends(get_async_session),
@@ -236,11 +264,26 @@ async def create_tenant_user(
 
     logger.info(f"User {new_user.email} created in tenant {user.tenant_id}")
 
+    # Audit log
+    await log_audit_event(
+        session,
+        event_type="user.created",
+        action="create",
+        tenant_id=user.tenant_id,
+        user_id=user.id,
+        target_type="user",
+        target_id=str(new_user.id),
+        details={"email": new_user.email, "role": new_user.role},
+        ip_address=request.client.host if request.client else None,
+        user_agent=request.headers.get("user-agent"),
+    )
+
     return UserRead.model_validate(new_user)
 
 
 @router.patch("/tenant/users/{user_id}", response_model=UserRead)
 async def update_tenant_user(
+    request: Request,
     user_id: str,
     data: UserUpdate,
     user: User = Depends(require_admin),
@@ -262,22 +305,77 @@ async def update_tenant_user(
     if not target_user:
         raise HTTPException(status_code=404, detail="User not found")
 
+    # Track changes for audit
+    changes = {}
+    old_role = target_user.role
+    old_active = target_user.is_active
+
     # Update fields
     if data.display_name is not None:
+        changes["display_name"] = data.display_name
         target_user.display_name = data.display_name
     if data.role is not None and data.role in ["admin", "analyst", "viewer"]:
+        if data.role != old_role:
+            changes["role"] = {"from": old_role, "to": data.role}
         target_user.role = data.role
     if data.is_active is not None:
+        if data.is_active != old_active:
+            changes["is_active"] = {"from": old_active, "to": data.is_active}
         target_user.is_active = data.is_active
 
     await session.commit()
     await session.refresh(target_user)
+
+    # Audit log - different event types based on what changed
+    if "role" in changes:
+        await log_audit_event(
+            session,
+            event_type="user.role.changed",
+            action="update",
+            tenant_id=user.tenant_id,
+            user_id=user.id,
+            target_type="user",
+            target_id=str(target_user.id),
+            details={"email": target_user.email, **changes["role"]},
+            ip_address=request.client.host if request.client else None,
+            user_agent=request.headers.get("user-agent"),
+        )
+
+    if "is_active" in changes:
+        event_type = "user.reactivated" if data.is_active else "user.deactivated"
+        await log_audit_event(
+            session,
+            event_type=event_type,
+            action="update",
+            tenant_id=user.tenant_id,
+            user_id=user.id,
+            target_type="user",
+            target_id=str(target_user.id),
+            details={"email": target_user.email},
+            ip_address=request.client.host if request.client else None,
+            user_agent=request.headers.get("user-agent"),
+        )
+
+    if changes and "role" not in changes and "is_active" not in changes:
+        await log_audit_event(
+            session,
+            event_type="user.updated",
+            action="update",
+            tenant_id=user.tenant_id,
+            user_id=user.id,
+            target_type="user",
+            target_id=str(target_user.id),
+            details={"email": target_user.email, "changes": changes},
+            ip_address=request.client.host if request.client else None,
+            user_agent=request.headers.get("user-agent"),
+        )
 
     return UserRead.model_validate(target_user)
 
 
 @router.delete("/tenant/users/{user_id}")
 async def delete_tenant_user(
+    request: Request,
     user_id: str,
     user: User = Depends(require_admin),
     session: AsyncSession = Depends(get_async_session),
@@ -302,9 +400,141 @@ async def delete_tenant_user(
     if not target_user:
         raise HTTPException(status_code=404, detail="User not found")
 
+    # Store info for audit before deletion
+    deleted_email = target_user.email
+    deleted_id = str(target_user.id)
+
     await session.delete(target_user)
     await session.commit()
 
-    logger.info(f"User {target_user.email} deleted from tenant {user.tenant_id}")
+    logger.info(f"User {deleted_email} deleted from tenant {user.tenant_id}")
+
+    # Audit log
+    await log_audit_event(
+        session,
+        event_type="user.deleted",
+        action="delete",
+        tenant_id=user.tenant_id,
+        user_id=user.id,
+        target_type="user",
+        target_id=deleted_id,
+        details={"email": deleted_email},
+        ip_address=request.client.host if request.client else None,
+        user_agent=request.headers.get("user-agent"),
+    )
 
     return {"status": "deleted", "user_id": user_id}
+
+
+# --- Audit Logging Endpoints ---
+
+@router.get("/audit", response_model=AuditListResponse)
+async def list_audit_events(
+    request: Request,
+    event_type: Optional[str] = None,
+    user_id: Optional[str] = None,
+    target_type: Optional[str] = None,
+    from_date: Optional[datetime] = None,
+    to_date: Optional[datetime] = None,
+    limit: int = Query(50, le=500),
+    offset: int = 0,
+    user: User = Depends(require_admin),
+    session: AsyncSession = Depends(get_async_session),
+):
+    """
+    List audit events for current tenant.
+
+    Requires admin role. Supports filtering by event type, user, target, and date range.
+    """
+    import uuid as uuid_mod
+
+    target_user_id = None
+    if user_id:
+        try:
+            target_user_id = uuid_mod.UUID(user_id)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid user ID format")
+
+    events, total = await get_audit_events(
+        session,
+        tenant_id=user.tenant_id,
+        event_type=event_type,
+        user_id=target_user_id,
+        target_type=target_type,
+        from_date=from_date,
+        to_date=to_date,
+        limit=limit,
+        offset=offset,
+    )
+
+    return AuditListResponse(
+        events=events,
+        total=total,
+        limit=limit,
+        offset=offset,
+    )
+
+
+@router.get("/audit/stats", response_model=AuditStats)
+async def audit_statistics(
+    user: User = Depends(require_admin),
+    session: AsyncSession = Depends(get_async_session),
+):
+    """Get audit event statistics for current tenant."""
+    return await get_audit_stats(session, user.tenant_id)
+
+
+@router.get("/audit/export")
+async def export_audit(
+    format: str = Query("csv", pattern="^(csv|json)$"),
+    from_date: Optional[datetime] = None,
+    to_date: Optional[datetime] = None,
+    user: User = Depends(require_admin),
+    session: AsyncSession = Depends(get_async_session),
+):
+    """
+    Export audit events as CSV or JSON.
+
+    Use query parameters to filter by date range.
+    """
+    content = await export_audit_events(
+        session,
+        tenant_id=user.tenant_id,
+        format=format,
+        from_date=from_date,
+        to_date=to_date,
+    )
+
+    if format == "json":
+        return Response(
+            content=content,
+            media_type="application/json",
+            headers={"Content-Disposition": "attachment; filename=audit_events.json"}
+        )
+
+    return Response(
+        content=content,
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=audit_events.csv"}
+    )
+
+
+@router.get("/audit/event-types")
+async def list_event_types(
+    user: User = Depends(require_admin),
+    session: AsyncSession = Depends(get_async_session),
+):
+    """Get list of unique event types in audit log."""
+    from sqlalchemy import text
+
+    result = await session.execute(
+        text("""
+            SELECT DISTINCT event_type
+            FROM arkham_auth.audit_events
+            WHERE tenant_id = :tid
+            ORDER BY event_type
+        """),
+        {"tid": str(user.tenant_id)}
+    )
+
+    return {"event_types": [row[0] for row in result.fetchall()]}

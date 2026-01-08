@@ -17,6 +17,17 @@ from .dependencies import (
 from .models import User, Tenant, UserRole
 from .schemas import UserRead, UserCreate, UserUpdate, TenantRead, TenantCreate
 from .router import router as auth_router
+from .audit import (
+    log_audit_event,
+    get_audit_events,
+    get_audit_stats,
+    export_audit_events,
+    ensure_audit_schema,
+    AuditEventCreate,
+    AuditEventRead,
+    AuditListResponse,
+    AuditStats,
+)
 
 __all__ = [
     # Dependencies
@@ -44,4 +55,14 @@ __all__ = [
     "TenantCreate",
     # Router
     "auth_router",
+    # Audit
+    "log_audit_event",
+    "get_audit_events",
+    "get_audit_stats",
+    "export_audit_events",
+    "ensure_audit_schema",
+    "AuditEventCreate",
+    "AuditEventRead",
+    "AuditListResponse",
+    "AuditStats",
 ]
