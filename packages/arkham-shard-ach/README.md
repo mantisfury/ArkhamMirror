@@ -1,243 +1,383 @@
-# ACH Shard - Analysis of Competing Hypotheses
+# arkham-shard-ach
 
-An ArkhamFrame shard implementing the Analysis of Competing Hypotheses (ACH) intelligence analysis methodology. This shard serves as the **reference implementation** for SHATTERED shard standards.
+> Analysis of Competing Hypotheses with AI-powered analysis, premortem, and scenario planning
+
+**Version:** 0.1.0
+**Category:** Analysis
+**Frame Requirement:** >=0.1.0
 
 ## Overview
 
-The ACH method helps intelligence analysts systematically evaluate multiple competing hypotheses by rating how consistent each piece of evidence is with each hypothesis. This approach reduces cognitive bias by focusing on disconfirming evidence rather than confirming evidence.
+The ACH shard implements Analysis of Competing Hypotheses, a structured analytic technique used in intelligence analysis. It provides matrix-based evaluation of hypotheses against evidence, enhanced with AI-powered features including devil's advocate challenges, premortem analysis, corpus-based evidence extraction, and cone of plausibility scenario planning.
+
+### Key Capabilities
+
+1. **Matrix Management** - Create and manage ACH matrices with hypotheses and evidence
+2. **Consistency Scoring** - Calculate hypothesis scores based on evidence ratings
+3. **AI Analysis** - LLM-powered hypothesis suggestions, evidence extraction, and insights
+4. **Premortem Analysis** - Failure mode identification for hypotheses
+5. **Scenario Planning** - Cone of plausibility with branching futures
+6. **Corpus Search** - Extract evidence from document corpus via vector search
+7. **Export** - Export to JSON, CSV, HTML, PDF, Markdown
 
 ## Features
 
-### Core ACH Functionality
-- **Matrix Management**: Create and manage ACH matrices with hypotheses and evidence
-- **Consistency Rating**: Rate evidence against hypotheses (++, +, N, -, --, N/A)
-- **Automated Scoring**: Calculate hypothesis scores based on inconsistency counts
-- **Diagnosticity Analysis**: Identify which evidence best differentiates hypotheses
-- **Sensitivity Analysis**: Assess how uncertain evidence affects conclusions
-- **Multi-Format Export**: Export matrices to JSON, CSV, HTML, and Markdown
+### Matrix Management
+- Create, update, delete matrices
+- Add/remove hypotheses and evidence
+- Rate evidence consistency against hypotheses
+- Track matrix status (active, archived, completed)
+- Link documents to matrices for corpus search scope
 
-### AI-Powered Features (requires LLM service)
-- **Hypothesis Suggestions**: Generate hypotheses from a focus question
-- **Evidence Suggestions**: Suggest diagnostic evidence to gather
-- **Rating Suggestions**: AI-assisted rating of evidence against hypotheses
-- **Devil's Advocate Mode**: Challenge leading hypotheses with counter-arguments
-- **Analysis Insights**: Comprehensive AI analysis of matrix state
-- **Milestone Suggestions**: Future indicators that would confirm/refute hypotheses
-- **Evidence Extraction**: Extract evidence from document text
+### Consistency Ratings
+
+| Rating | Symbol | Description |
+|--------|--------|-------------|
+| `++` | Strongly Consistent | Evidence strongly supports hypothesis |
+| `+` | Consistent | Evidence supports hypothesis |
+| `N` | Neutral | Evidence neither supports nor contradicts |
+| `-` | Inconsistent | Evidence contradicts hypothesis |
+| `--` | Strongly Inconsistent | Evidence strongly contradicts hypothesis |
+| `NA` | Not Applicable | Evidence not relevant to hypothesis |
+
+### Evidence Types
+- `fact` - Verified factual information
+- `document` - From document corpus
+- `testimony` - Witness statements
+- `circumstantial` - Indirect evidence
+- `assumption` - Working assumptions
+
+### AI-Powered Features
+
+#### Hypothesis Suggestions
+Generate new hypotheses based on focus question and context.
+
+#### Evidence Suggestions
+Suggest diagnostic evidence that distinguishes between hypotheses.
+
+#### Rating Suggestions
+AI-generated consistency ratings with explanations.
+
+#### Devil's Advocate
+Challenge the leading hypothesis with counter-arguments.
+
+#### Analysis Insights
+Comprehensive analysis including:
+- Leading hypothesis assessment
+- Key distinguishing evidence
+- Evidence gaps
+- Cognitive bias warnings
+- Recommendations
+
+#### Milestone Suggestions
+Generate observable future indicators for hypotheses.
+
+### Premortem Analysis
+Assumes a hypothesis is WRONG and identifies:
+- Failure modes with likelihood
+- Early warning indicators
+- Mitigation actions
+- Key risks
+- Convert failure modes to new hypotheses or milestones
+
+### Cone of Plausibility (Scenarios)
+Generate branching scenario trees showing possible futures:
+- Multiple depth levels
+- Probability assignments
+- Key drivers and trigger conditions
+- Status tracking (active, occurred, ruled_out)
+- Convert scenarios to hypotheses
+
+### Corpus Search
+Search document corpus for evidence:
+- Vector similarity search
+- LLM classification of relevance
+- Duplicate detection
+- Accept extracted evidence into matrix
+- Auto-rate evidence by relevance
 
 ## Installation
 
 ```bash
-pip install arkham-shard-ach
+pip install -e packages/arkham-shard-ach
 ```
 
-The shard will be auto-discovered by ArkhamFrame on startup.
+The shard auto-registers via entry point on Frame startup.
 
 ## API Endpoints
 
-All endpoints are prefixed with `/api/ach`.
+### Matrix CRUD
 
-### Matrix Management
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/api/ach/matrix` | Create matrix |
+| GET | `/api/ach/matrix/{id}` | Get matrix |
+| PUT | `/api/ach/matrix/{id}` | Update matrix |
+| DELETE | `/api/ach/matrix/{id}` | Delete matrix |
+| GET | `/api/ach/matrices` | List matrices |
+| GET | `/api/ach/matrices/count` | Matrix count (badge) |
 
-- `POST /matrix` - Create new matrix
-- `GET /matrix/{id}` - Get matrix by ID (full structured data)
-- `PUT /matrix/{id}` - Update matrix
-- `DELETE /matrix/{id}` - Delete matrix
-- `GET /matrices` - List matrices (with optional filters)
-- `GET /matrices/count` - Get count of active matrices (for badge)
+### Linked Documents
 
-### Hypothesis Management
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/ach/matrix/{id}/documents` | Get linked documents |
+| POST | `/api/ach/matrix/{id}/documents` | Link documents |
+| DELETE | `/api/ach/matrix/{id}/documents/{doc_id}` | Unlink document |
 
-- `POST /hypothesis` - Add hypothesis to matrix
-- `DELETE /hypothesis/{matrix_id}/{hypothesis_id}` - Remove hypothesis
+### Hypotheses and Evidence
 
-### Evidence Management
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/api/ach/hypothesis` | Add hypothesis |
+| DELETE | `/api/ach/hypothesis/{matrix_id}/{id}` | Remove hypothesis |
+| GET | `/api/ach/hypotheses` | List all hypotheses |
+| POST | `/api/ach/evidence` | Add evidence |
+| DELETE | `/api/ach/evidence/{matrix_id}/{id}` | Remove evidence |
+| GET | `/api/ach/evidence` | List all evidence |
+| PUT | `/api/ach/rating` | Update rating |
 
-- `POST /evidence` - Add evidence to matrix
-- `DELETE /evidence/{matrix_id}/{evidence_id}` - Remove evidence
+### Scoring and Analysis
 
-### Rating and Scoring
-
-- `PUT /rating` - Update evidence-hypothesis rating
-- `POST /score` - Calculate/recalculate scores
-
-### Analysis
-
-- `POST /devils-advocate` - Generate devil's advocate challenge (basic)
-- `GET /diagnosticity/{matrix_id}` - Get diagnosticity report
-- `GET /sensitivity/{matrix_id}` - Get sensitivity analysis
-- `GET /evidence-gaps/{matrix_id}` - Identify evidence gaps
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/api/ach/score` | Calculate scores |
+| GET | `/api/ach/diagnosticity/{id}` | Diagnosticity report |
+| GET | `/api/ach/sensitivity/{id}` | Sensitivity analysis |
+| GET | `/api/ach/evidence-gaps/{id}` | Evidence gaps |
+| POST | `/api/ach/devils-advocate` | Devil's advocate challenge |
 
 ### Export
 
-- `GET /export/{matrix_id}?format=json|csv|html|markdown` - Export matrix
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/ach/export/{id}?format=json` | Export matrix |
 
-### AI Endpoints (require LLM service)
+### AI Features
 
-- `GET /ai/status` - Check AI availability
-- `POST /ai/hypotheses` - Suggest hypotheses from focus question
-- `POST /ai/evidence` - Suggest diagnostic evidence
-- `POST /ai/ratings` - Suggest ratings for evidence
-- `POST /ai/insights` - Get comprehensive analysis insights
-- `POST /ai/milestones` - Suggest future indicators
-- `POST /ai/devils-advocate` - Full structured devil's advocate challenge
-- `POST /ai/extract-evidence` - Extract evidence from document text
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/ach/ai/status` | AI availability |
+| POST | `/api/ach/ai/hypotheses` | Suggest hypotheses |
+| POST | `/api/ach/ai/evidence` | Suggest evidence |
+| POST | `/api/ach/ai/ratings` | Suggest ratings |
+| POST | `/api/ach/ai/insights` | Analysis insights |
+| POST | `/api/ach/ai/milestones` | Suggest milestones |
+| POST | `/api/ach/ai/devils-advocate` | Full devil's advocate |
+| POST | `/api/ach/ai/extract-evidence` | Extract from text |
+| POST | `/api/ach/ai/junior-analyst` | AI Junior Analyst (streaming) |
 
-## Usage Example
+### Corpus Search
 
-```python
-import httpx
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/ach/ai/corpus/status` | Corpus availability |
+| POST | `/api/ach/ai/corpus-search` | Search for hypothesis |
+| POST | `/api/ach/ai/corpus-search-all` | Search all hypotheses |
+| POST | `/api/ach/ai/accept-corpus-evidence` | Accept evidence |
 
-async with httpx.AsyncClient(base_url="http://localhost:8100") as client:
-    # Create matrix
-    response = await client.post("/api/ach/matrix", json={
-        "title": "Stolen Documents Analysis",
-        "description": "Who stole the classified documents?",
-    })
-    matrix_id = response.json()["matrix_id"]
+### Premortem
 
-    # Get AI-suggested hypotheses
-    ai_hyp = await client.post("/api/ach/ai/hypotheses", json={
-        "focus_question": "Who stole the classified documents?",
-        "context": "Documents went missing from secure facility",
-    })
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/api/ach/ai/premortem` | Run premortem |
+| GET | `/api/ach/matrix/{id}/premortems` | List premortems |
+| GET | `/api/ach/premortem/{id}` | Get premortem |
+| DELETE | `/api/ach/premortem/{id}` | Delete premortem |
+| POST | `/api/ach/premortem/convert` | Convert failure mode |
 
-    # Add hypotheses (from AI or manually)
-    await client.post("/api/ach/hypothesis", json={
-        "matrix_id": matrix_id,
-        "title": "Insider Threat",
-        "description": "Documents stolen by employee with access",
-    })
+### Scenarios (Cone of Plausibility)
 
-    await client.post("/api/ach/hypothesis", json={
-        "matrix_id": matrix_id,
-        "title": "External Breach",
-        "description": "Hackers gained remote access",
-    })
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/api/ach/ai/scenarios` | Generate scenario tree |
+| GET | `/api/ach/matrix/{id}/scenarios` | List scenario trees |
+| GET | `/api/ach/scenarios/{id}` | Get scenario tree |
+| DELETE | `/api/ach/scenarios/{id}` | Delete tree |
+| POST | `/api/ach/scenarios/branch` | Add branches |
+| PUT | `/api/ach/scenarios/{tree_id}/nodes/{node_id}` | Update node |
+| POST | `/api/ach/scenarios/convert` | Convert to hypothesis |
 
-    # Add evidence
-    e1 = await client.post("/api/ach/evidence", json={
-        "matrix_id": matrix_id,
-        "description": "Security logs show access during business hours",
-        "source": "Security audit report",
-        "evidence_type": "document",
-        "credibility": 0.9,
-        "relevance": 0.9,
-    })
-    evidence_id = e1.json()["evidence_id"]
+## API Examples
 
-    # Get AI-suggested ratings
-    ratings = await client.post("/api/ach/ai/ratings", json={
-        "matrix_id": matrix_id,
-        "evidence_id": evidence_id,
-    })
+### Create Matrix
 
-    # Apply ratings (from AI or manually)
-    await client.put("/api/ach/rating", json={
-        "matrix_id": matrix_id,
-        "evidence_id": evidence_id,
-        "hypothesis_id": hypothesis_id,
-        "rating": "++",
-        "reasoning": "Business hours access strongly supports insider threat",
-    })
-
-    # Calculate scores
-    scores = await client.post(f"/api/ach/score?matrix_id={matrix_id}")
-    print(scores.json())
-
-    # Get AI analysis insights
-    insights = await client.post("/api/ach/ai/insights", json={
-        "matrix_id": matrix_id,
-    })
-    print(insights.json()["insights"])
-
-    # Export report
-    export = await client.get(f"/api/ach/export/{matrix_id}?format=html")
+```json
+POST /api/ach/matrix
+{
+  "title": "Source Attribution Analysis",
+  "description": "Determining the origin of the intelligence leak",
+  "project_id": "proj_123"
+}
 ```
 
-## Consistency Ratings
+### Add Hypothesis
 
-| Rating | Label | Description |
-|--------|-------|-------------|
-| `++` | Highly Consistent | Evidence strongly supports hypothesis |
-| `+` | Consistent | Evidence supports hypothesis |
-| `N` | Neutral | Evidence neither supports nor refutes |
-| `-` | Inconsistent | Evidence refutes hypothesis |
-| `--` | Highly Inconsistent | Evidence strongly refutes hypothesis |
-| `N/A` | Not Applicable | Evidence not relevant to hypothesis |
-
-## Evidence Types
-
-- `fact` - Established facts
-- `testimony` - Witness statements
-- `document` - Documentary evidence
-- `physical` - Physical evidence
-- `circumstantial` - Circumstantial evidence
-- `inference` - Logical inferences
-
-## Scoring Methodology
-
-The ACH method focuses on **disconfirming evidence**:
-
-1. Count inconsistencies (- and --) for each hypothesis
-2. Calculate weighted consistency score (using evidence credibility and relevance)
-3. Rank hypotheses by inconsistency count (lower = better)
-
-The hypothesis with the **fewest inconsistencies** is typically the best supported.
-
-## Shell UI
-
-The shard includes custom UI pages in the Shell:
-- **Matrix List** - View and filter all matrices
-- **New Matrix Wizard** - Step-by-step matrix creation with AI assistance
-- **Matrix Editor** - Full matrix editing with ratings grid
-
-## Dependencies
-
-```toml
-dependencies = [
-    "arkham-frame>=0.1.0",
-    "pydantic>=2.0.0",
-]
+```json
+POST /api/ach/hypothesis
+{
+  "matrix_id": "matrix_abc",
+  "title": "Insider Threat",
+  "description": "The leak originated from an internal employee"
+}
 ```
 
-Optional:
-- LLM service (from frame) - Enables AI-powered features
+### Add Evidence and Rate
+
+```json
+POST /api/ach/evidence
+{
+  "matrix_id": "matrix_abc",
+  "description": "Access logs show employee A accessed the files",
+  "source": "IT Security Report",
+  "evidence_type": "fact",
+  "credibility": 0.9,
+  "relevance": 0.8
+}
+
+PUT /api/ach/rating
+{
+  "matrix_id": "matrix_abc",
+  "evidence_id": "ev_123",
+  "hypothesis_id": "hyp_456",
+  "rating": "++",
+  "reasoning": "Direct evidence of access",
+  "confidence": 0.9
+}
+```
+
+### Corpus Search for Evidence
+
+```json
+POST /api/ach/ai/corpus-search
+{
+  "matrix_id": "matrix_abc",
+  "hypothesis_id": "hyp_456",
+  "chunk_limit": 30,
+  "min_similarity": 0.5
+}
+```
+
+### Run Premortem
+
+```json
+POST /api/ach/ai/premortem
+{
+  "matrix_id": "matrix_abc",
+  "hypothesis_id": "hyp_456"
+}
+```
+
+Response includes failure modes, early warning indicators, and mitigation actions.
+
+### Generate Scenario Tree
+
+```json
+POST /api/ach/ai/scenarios
+{
+  "matrix_id": "matrix_abc",
+  "title": "Possible Outcomes",
+  "situation_summary": "Current evidence points to...",
+  "max_depth": 2
+}
+```
 
 ## Events
 
-The shard publishes these events via the Frame EventBus:
+### Published Events
 
-| Event | Payload |
+| Event | Description |
+|-------|-------------|
+| `ach.matrix.created` | Matrix created |
+| `ach.matrix.updated` | Matrix updated |
+| `ach.matrix.deleted` | Matrix deleted |
+| `ach.hypothesis.added` | Hypothesis added |
+| `ach.hypothesis.removed` | Hypothesis removed |
+| `ach.evidence.added` | Evidence added |
+| `ach.evidence.removed` | Evidence removed |
+| `ach.rating.updated` | Rating changed |
+| `ach.analysis.completed` | Analysis finished |
+| `ach.premortem.created` | Premortem generated |
+| `ach.premortem.deleted` | Premortem deleted |
+| `ach.scenario_tree.created` | Scenarios generated |
+| `ach.scenario_tree.updated` | Scenarios updated |
+| `ach.scenario_tree.deleted` | Scenarios deleted |
+| `ach.scenario.converted` | Scenario to hypothesis |
+
+### Subscribed Events
+
+| Event | Handler |
 |-------|---------|
-| `ach.matrix.created` | `{matrix_id, title, created_by}` |
-| `ach.matrix.updated` | `{matrix_id, title}` |
-| `ach.matrix.deleted` | `{matrix_id}` |
-| `ach.hypothesis.added` | `{matrix_id, hypothesis_id, title}` |
-| `ach.hypothesis.removed` | `{matrix_id, hypothesis_id}` |
-| `ach.evidence.added` | `{matrix_id, evidence_id, description}` |
-| `ach.evidence.removed` | `{matrix_id, evidence_id}` |
-| `ach.rating.updated` | `{matrix_id, evidence_id, hypothesis_id, rating}` |
-| `ach.score.calculated` | `{matrix_id, hypothesis_count}` |
+| `llm.analysis.completed` | Process LLM results |
+| `document.processed` | Link processed documents |
 
-## Production Compliance
+## UI Routes
 
-This shard is compliant with `shard_manifest_schema_prod.md` and serves as the **reference implementation** for all SHATTERED shards.
+| Route | Description |
+|-------|-------------|
+| `/ach` | ACH main page |
+| `/ach/matrices` | All matrices list |
+| `/ach/new` | Create new analysis |
+| `/ach/scenarios` | Scenario planning |
 
-See [production.md](production.md) for the compliance audit report.
+## Dependencies
 
-## Documentation
+### Required Services
+- **database** - Matrix, evidence, premortem persistence
+- **events** - Event publishing
 
-- [production.md](production.md) - Production compliance report
-- [IMPLEMENTATION_SUMMARY.md](IMPLEMENTATION_SUMMARY.md) - Technical implementation details
-- [INTEGRATION_GUIDE.md](INTEGRATION_GUIDE.md) - How to integrate with this shard
-- [CLAUDE.md](../../CLAUDE.md) - Project-wide shard standards
+### Optional Services
+- **llm** - AI-powered analysis, suggestions, premortem
+- **vectors** - Corpus evidence search
+
+## URL State
+
+| Parameter | Description |
+|-----------|-------------|
+| `matrixId` | Active matrix ID |
+| `hypothesisId` | Selected hypothesis |
+| `tab` | Active tab (matrix, evidence, analysis) |
+| `view` | View mode (grid, list, summary) |
+
+### Local Storage Keys
+- `matrix_zoom` - Zoom level preference
+- `show_tooltips` - Tooltip visibility
+
+## Export Formats
+
+| Format | Content Type | Description |
+|--------|--------------|-------------|
+| `json` | application/json | Full matrix data |
+| `csv` | text/csv | Evidence and ratings table |
+| `html` | text/html | Formatted HTML report |
+| `pdf` | application/pdf | Professional PDF report |
+| `markdown` | text/markdown | Markdown document |
+
+## Scoring Methodology
+
+The ACH scoring algorithm:
+1. Counts inconsistencies per hypothesis
+2. Weights by evidence credibility and relevance
+3. Normalizes scores to 0-1 range
+4. Ranks hypotheses (lowest inconsistency = highest rank)
+
+The leading hypothesis has the **fewest inconsistencies** with the evidence, not the most consistencies.
+
+## Development
+
+```bash
+# Run tests
+pytest packages/arkham-shard-ach/tests/
+
+# Type checking
+mypy packages/arkham-shard-ach/
+```
 
 ## References
 
-- Richards J. Heuer Jr., "Psychology of Intelligence Analysis"
-- CIA Center for the Study of Intelligence
+- Heuer, R.J. (1999). Psychology of Intelligence Analysis
+- CIA Tradecraft Primer: Structured Analytic Techniques
 
 ## License
 
-Part of the SHATTERED project.
+MIT

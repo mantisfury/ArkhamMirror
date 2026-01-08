@@ -1,381 +1,453 @@
-# Graph Shard
+# arkham-shard-graph
 
-Entity relationship visualization and graph analysis for ArkhamFrame.
+> Entity relationship graph analysis and visualization
 
 **Version:** 0.1.0
 **Category:** Visualize
 **Frame Requirement:** >=0.1.0
 
+## Overview
+
+The Graph shard provides entity relationship graph construction, analysis, and visualization for SHATTERED. It builds graphs from document co-occurrences and entity relationships, supports multiple layout algorithms, offers graph analytics (centrality, community detection, path finding), and integrates data from other shards for comprehensive network analysis.
+
+### Key Capabilities
+
+1. **Graph Visualization** - Interactive entity relationship graphs
+2. **Path Finding** - Find shortest paths between entities
+3. **Centrality Analysis** - PageRank, betweenness, eigenvector, HITS, closeness
+4. **Community Detection** - Identify clusters and communities
+5. **Graph Export** - Export to GEXF, GraphML, JSON, CSV
+6. **Subgraph Extraction** - Extract ego networks and subgraphs
+7. **Temporal Analysis** - Graph evolution over time
+8. **Flow Analysis** - Information flow and cascade detection
+9. **Causal Inference** - Causal graph analysis
+10. **Geo-Spatial** - Geographic entity mapping
+
 ## Features
 
-- **Entity Graph Building**: Construct relationship graphs from documents and entities
-- **Graph Queries**: Shortest path, connected components, neighborhood exploration
-- **Centrality Metrics**: Degree, betweenness, PageRank analysis
-- **Community Detection**: Identify clusters and communities in entity networks
-- **Graph Export**: Export graphs in multiple formats (JSON, GraphML, GEXF)
-- **Subgraph Extraction**: Extract entity-centric subgraphs for focused analysis
-- **Path Finding**: Find connections between entities across documents
-- **Graph Statistics**: Comprehensive graph metrics and analysis
+### Graph Building
+- Build from document co-occurrences
+- Entity relationship extraction
+- Cross-shard data integration
+- Configurable minimum co-occurrence threshold
+
+### Layout Algorithms
+- **Force-Directed** - Physics simulation (frontend)
+- **Hierarchical** - Sugiyama layered layout
+- **Radial** - Concentric circles from center
+- **Circular** - All nodes on circle
+- **Tree** - Reingold-Tilford layout
+- **Bipartite** - Two-column by entity type
+- **Grid** - Simple grid arrangement
+
+### Centrality Metrics
+- PageRank
+- Betweenness centrality
+- Eigenvector centrality
+- HITS (hub/authority)
+- Closeness centrality
+
+### Composite Scoring
+Combines multiple signals for entity importance:
+- Centrality scores
+- Frequency (TF-IDF style)
+- Recency (exponential decay)
+- Credibility (source reliability)
+- Corroboration (independent sources)
+
+### Cross-Shard Integration
+Integrate data from other shards as nodes/edges:
+- Claims as nodes
+- ACH evidence and hypotheses
+- Provenance artifacts
+- Timeline events
+- Contradictions as edges
+- Pattern matches as edges
+- Credibility weight adjustments
+
+### Temporal Analysis
+- Generate time-series snapshots
+- Track network evolution
+- Identify growth patterns
+- Visualize temporal changes
+
+### Relationship Types
+50+ relationship types organized by category:
+- **Organizational**: works_for, owns, member_of, reports_to
+- **Personal**: married_to, child_of, knows, friend_of
+- **Interaction**: communicated_with, met_with, transacted_with
+- **Spatial**: located_in, visited, resides_in
+- **Temporal**: preceded_by, followed_by, concurrent_with
+- **Analysis**: contradicts, supports, evidence_for
 
 ## Installation
 
 ```bash
-pip install arkham-shard-graph
+pip install -e packages/arkham-shard-graph
 ```
 
-The shard is automatically discovered by ArkhamFrame via entry points.
+The shard auto-registers via entry point on Frame startup.
 
 ## API Endpoints
 
-### POST /api/graph/build
-Build entity relationship graph from documents.
+### Health and Stats
 
-**Request:**
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/graph/stats` | Graph statistics |
+
+### Graph Building
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/api/graph/build` | Build graph from documents |
+| GET | `/api/graph/{project_id}` | Get project graph |
+| POST | `/api/graph/filter` | Filter existing graph |
+
+### Entity Networks
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/graph/entity/{id}` | Get entity details |
+| GET | `/api/graph/ego/{id}` | Get ego network |
+| GET | `/api/graph/ego/{id}/metrics` | Ego network metrics |
+| GET | `/api/graph/neighbors/{id}` | Get entity neighbors |
+
+### Path Finding
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/api/graph/path` | Find shortest path |
+
+### Analytics
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/graph/centrality/{project_id}` | Centrality analysis |
+| POST | `/api/graph/communities` | Community detection |
+| POST | `/api/graph/scores` | Composite scoring |
+| GET | `/api/graph/scores/{project_id}` | Get scores (default config) |
+
+### Layouts
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/api/graph/layout` | Calculate layout |
+| GET | `/api/graph/layout/types` | Available layout types |
+
+### Temporal Analysis
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/graph/temporal/range` | Get time range |
+| POST | `/api/graph/temporal/snapshots` | Generate snapshots |
+| GET | `/api/graph/temporal/snapshot/{ts}` | Snapshot at time |
+| GET | `/api/graph/temporal/evolution` | Evolution metrics |
+
+### Flow Analysis
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/api/graph/flows` | Analyze information flows |
+| GET | `/api/graph/flows/{project_id}` | Get flow analysis |
+
+### Causal Inference
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/api/graph/causal/{project_id}` | Build causal graph |
+| GET | `/api/graph/causal/{project_id}/validate` | Validate DAG |
+| GET | `/api/graph/causal/{project_id}/paths` | Causal paths |
+| GET | `/api/graph/causal/{project_id}/confounders` | Find confounders |
+| POST | `/api/graph/causal/{project_id}/intervention` | Intervention analysis |
+| GET | `/api/graph/causal/{project_id}/ordering` | Topological ordering |
+
+### Geo-Spatial
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/graph/geo/{project_id}` | Geographic nodes |
+| GET | `/api/graph/geo/{project_id}/bounds` | Geographic bounds |
+| GET | `/api/graph/geo/{project_id}/distance` | Distance analysis |
+| GET | `/api/graph/geo/{project_id}/clusters` | Geographic clusters |
+
+### ACH Argumentation
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/graph/argumentation/{matrix_id}` | ACH as graph |
+| GET | `/api/graph/argumentation/matrices/{project_id}` | List matrices |
+
+### Positions and Annotations
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/api/graph/positions` | Save node positions |
+| GET | `/api/graph/positions/{project_id}` | Get positions |
+| DELETE | `/api/graph/positions/{project_id}` | Clear positions |
+| POST | `/api/graph/annotations` | Create annotation |
+| GET | `/api/graph/annotations/{project_id}` | Get annotations |
+| PUT | `/api/graph/annotations/{id}` | Update annotation |
+| DELETE | `/api/graph/annotations/{id}` | Delete annotation |
+
+### Cross-Shard Sources
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/graph/sources/status` | Source availability |
+| POST | `/api/graph/sources/nodes` | Fetch cross-shard nodes |
+| POST | `/api/graph/sources/edges` | Fetch cross-shard edges |
+| GET | `/api/graph/sources/credibility` | Credibility weights |
+
+### Relationship Types
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/graph/relationship-types` | Get all relationship types |
+
+### Export
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/api/graph/export` | Export graph |
+
+### AI Analysis
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/api/graph/ai/junior-analyst` | AI network analysis |
+| POST | `/api/graph/ai/feedback` | Submit feedback |
+
+## API Examples
+
+### Build Graph
+
 ```json
+POST /api/graph/build
 {
-  "project_id": "proj123",
-  "document_ids": ["doc1", "doc2"],
-  "entity_types": ["person", "organization"],
+  "project_id": "proj_123",
+  "entity_types": ["PERSON", "ORGANIZATION", "GPE"],
   "min_co_occurrence": 2,
-  "include_temporal": true
+  "include_document_entities": true,
+  "include_cooccurrences": true,
+  "include_temporal": true,
+  "include_claims": false,
+  "include_ach_evidence": false
 }
 ```
 
-**Response:**
+### Get Ego Network
+
+```bash
+GET /api/graph/ego/{entity_id}?depth=2&min_weight=0.5
+```
+
+Response:
 ```json
 {
-  "project_id": "proj123",
-  "node_count": 150,
-  "edge_count": 342,
-  "graph_id": "graph-abc123",
-  "build_time_ms": 1234.5
+  "center": {"id": "ent_123", "label": "John Smith", "entity_type": "PERSON"},
+  "nodes": [...],
+  "edges": [...],
+  "node_count": 25,
+  "edge_count": 40,
+  "depth": 2
 }
 ```
 
-### GET /api/graph/{project_id}
-Get complete graph for a project.
+### Find Shortest Path
 
-**Response:**
 ```json
+POST /api/graph/path
 {
-  "project_id": "proj123",
-  "nodes": [
-    {
-      "id": "node1",
-      "entity_id": "ent123",
-      "label": "John Doe",
-      "entity_type": "person",
-      "document_count": 15,
-      "properties": {}
-    }
-  ],
-  "edges": [
-    {
-      "source": "node1",
-      "target": "node2",
-      "relationship_type": "works_for",
-      "weight": 0.85,
-      "document_ids": ["doc1", "doc2"]
-    }
-  ],
-  "metadata": {
-    "created_at": "2024-01-15T10:30:00",
-    "entity_count": 150,
-    "relationship_count": 342
-  }
+  "project_id": "proj_123",
+  "source_id": "ent_person_123",
+  "target_id": "ent_org_456",
+  "max_depth": 5
 }
 ```
 
-### GET /api/graph/entity/{entity_id}
-Get subgraph centered on an entity.
-
-**Query Parameters:**
-- `depth`: Maximum distance from entity (default: 2)
-- `max_nodes`: Maximum nodes to return (default: 100)
-- `min_weight`: Minimum edge weight (default: 0.0)
-
-### POST /api/graph/path
-Find shortest path between two entities.
-
-**Request:**
+Response:
 ```json
 {
-  "project_id": "proj123",
-  "source_entity_id": "ent1",
-  "target_entity_id": "ent2",
-  "max_depth": 6
-}
-```
-
-**Response:**
-```json
-{
-  "path_found": true,
+  "found": true,
   "path_length": 3,
-  "path": ["ent1", "ent5", "ent8", "ent2"],
-  "edges": [
-    {
-      "source": "ent1",
-      "target": "ent5",
-      "relationship_type": "mentioned_with",
-      "weight": 0.8
-    }
+  "path": [
+    {"id": "ent_person_123", "label": "John Smith"},
+    {"id": "ent_org_789", "label": "Acme Corp"},
+    {"id": "ent_org_456", "label": "Target Inc"}
   ],
-  "total_weight": 2.4
+  "edges": [...]
 }
 ```
 
-### GET /api/graph/centrality/{project_id}
-Calculate centrality metrics.
+### Centrality Analysis
 
-**Query Parameters:**
-- `metric`: "degree", "betweenness", "pagerank", "all" (default: "all")
-- `limit`: Top N entities to return (default: 50)
+```bash
+GET /api/graph/centrality/{project_id}?metric=pagerank&top_k=20
+```
 
-**Response:**
+Response:
 ```json
 {
-  "project_id": "proj123",
   "metric": "pagerank",
   "results": [
-    {
-      "entity_id": "ent123",
-      "label": "John Doe",
-      "score": 0.0342,
-      "rank": 1
-    }
-  ],
-  "calculated_at": "2024-01-15T10:30:00"
+    {"entity_id": "ent_123", "label": "John Smith", "score": 0.125, "rank": 1},
+    {"entity_id": "ent_456", "label": "Acme Corp", "score": 0.098, "rank": 2}
+  ]
 }
 ```
 
-### POST /api/graph/communities
-Detect communities in graph.
+### Community Detection
 
-**Request:**
 ```json
+POST /api/graph/communities
 {
-  "project_id": "proj123",
+  "project_id": "proj_123",
   "algorithm": "louvain",
-  "min_community_size": 3,
   "resolution": 1.0
 }
 ```
 
-**Response:**
+### Calculate Layout
+
 ```json
+POST /api/graph/layout
 {
-  "project_id": "proj123",
-  "community_count": 12,
-  "communities": [
-    {
-      "id": "comm1",
-      "size": 25,
-      "entity_ids": ["ent1", "ent2", "ent3"],
-      "density": 0.68,
-      "description": "Political figures group"
-    }
-  ],
-  "modularity": 0.72
+  "project_id": "proj_123",
+  "layout_type": "hierarchical",
+  "direction": "TB",
+  "layer_spacing": 100,
+  "node_spacing": 50
 }
 ```
 
-### GET /api/graph/neighbors/{entity_id}
-Get neighbors of an entity.
+### Temporal Snapshots
 
-**Query Parameters:**
-- `project_id`: Project ID (required)
-- `depth`: Hop distance (1 or 2, default: 1)
-- `min_weight`: Minimum edge weight (default: 0.0)
-- `limit`: Maximum neighbors (default: 50)
-
-### POST /api/graph/export
-Export graph in various formats.
-
-**Request:**
 ```json
+POST /api/graph/temporal/snapshots
 {
-  "project_id": "proj123",
-  "format": "graphml",
-  "include_metadata": true,
-  "filter": {
-    "entity_types": ["person", "organization"],
-    "min_edge_weight": 0.3
-  }
+  "project_id": "proj_123",
+  "start_date": "2024-01-01",
+  "end_date": "2024-12-31",
+  "interval_days": 30,
+  "cumulative": true
 }
 ```
 
-**Response:**
+### Composite Scoring
+
 ```json
+POST /api/graph/scores
 {
-  "format": "graphml",
-  "data": "<?xml version=\"1.0\"...>",
-  "node_count": 150,
-  "edge_count": 342,
-  "file_size_bytes": 52341
+  "project_id": "proj_123",
+  "centrality_type": "pagerank",
+  "centrality_weight": 0.3,
+  "frequency_weight": 0.2,
+  "recency_weight": 0.2,
+  "credibility_weight": 0.15,
+  "corroboration_weight": 0.15,
+  "limit": 50
 }
 ```
 
-**Supported Formats:**
-- `json`: Native JSON format
-- `graphml`: XML-based format (Gephi, Cytoscape compatible)
-- `gexf`: Graph Exchange XML Format (Gephi native)
+### Export Graph
 
-### GET /api/graph/stats
-Get comprehensive graph statistics.
-
-**Query Parameters:**
-- `project_id`: Project ID (required)
-
-**Response:**
 ```json
+POST /api/graph/export
 {
-  "project_id": "proj123",
-  "node_count": 150,
-  "edge_count": 342,
-  "density": 0.0305,
-  "avg_degree": 4.56,
-  "avg_clustering": 0.42,
-  "connected_components": 3,
-  "diameter": 8,
-  "avg_path_length": 3.2,
-  "entity_type_distribution": {
-    "person": 85,
-    "organization": 45,
-    "location": 20
-  },
-  "relationship_type_distribution": {
-    "works_for": 120,
-    "mentioned_with": 180,
-    "located_in": 42
-  }
+  "project_id": "proj_123",
+  "format": "gexf",
+  "include_attributes": true
 }
 ```
-
-### POST /api/graph/filter
-Filter graph by criteria.
-
-**Request:**
-```json
-{
-  "project_id": "proj123",
-  "entity_types": ["person", "organization"],
-  "min_degree": 3,
-  "min_edge_weight": 0.5,
-  "relationship_types": ["works_for", "affiliated_with"],
-  "document_ids": ["doc1", "doc2"]
-}
-```
-
-## Usage from Other Shards
-
-```python
-# Get the graph shard
-graph_shard = frame.get_shard("graph")
-
-# Build graph
-await graph_shard.build_graph(
-    project_id="proj123",
-    document_ids=["doc1", "doc2"],
-)
-
-# Find path
-path = await graph_shard.find_path(
-    project_id="proj123",
-    source="ent1",
-    target="ent2",
-)
-
-# Calculate centrality
-centrality = await graph_shard.calculate_centrality(
-    project_id="proj123",
-    metric="pagerank",
-)
-
-# Get neighbors
-neighbors = await graph_shard.get_neighbors(
-    entity_id="ent123",
-    depth=2,
-)
-```
-
-## Architecture
-
-### Graph Builder
-- Constructs entity relationship graphs from document co-occurrences
-- Supports multiple relationship types
-- Configurable edge weighting strategies
-
-### Graph Algorithms
-- **Path Finding**: BFS-based shortest path
-- **Centrality**: Degree, betweenness, PageRank
-- **Community Detection**: Louvain-style modularity optimization
-- **Connected Components**: Union-find algorithm
-
-### Export Formats
-- **JSON**: Native format with full metadata
-- **GraphML**: XML format for Gephi/Cytoscape
-- **GEXF**: Gephi Exchange Format
-
-### Graph Storage
-- In-memory graph structures
-- Optional persistence via Frame database
-- Efficient neighbor lookups via adjacency lists
-
-## Dependencies
-
-- `arkham-frame>=0.1.0`
-- Entities service (for entity data)
-- Documents service (for co-occurrence analysis)
-- Database service (optional, for persistence)
 
 ## Events
 
-**Published:**
-- `graph.graph.built` - When graph construction completes
-- `graph.graph.updated` - When graph is modified
-- `graph.communities.detected` - When community detection completes
-- `graph.path.found` - When path finding completes
+### Published Events
 
-**Subscribed:**
-- `entity.entity.created` - To update graph nodes
-- `entity.entity.merged` - To merge graph nodes
-- `document.document.deleted` - To update edge weights
+| Event | Description |
+|-------|-------------|
+| `graph.graph.built` | Graph constructed |
+| `graph.graph.updated` | Graph updated |
+| `graph.graph.exported` | Graph exported |
+| `graph.communities.detected` | Communities found |
+| `graph.path.found` | Path discovered |
 
-## Configuration
+### Subscribed Events
 
-Graph algorithms can be configured via Frame services:
-- Entity service provides entity data
-- Document service provides co-occurrence data
-- Database service enables persistence
+| Event | Handler |
+|-------|---------|
+| `entities.entity.created` | Add entity to graph |
+| `entities.entity.merged` | Update merged entities |
+| `documents.document.deleted` | Remove document connections |
+
+## UI Routes
+
+| Route | Description |
+|-------|-------------|
+| `/graph` | Graph visualization |
+
+## Dependencies
+
+### Required Services
+- **database** - Graph data storage
+- **events** - Event publishing
+
+### Optional Services
+- **entities** - Entity service for data
+- **documents** - Document service
+
+## URL State
+
+| Parameter | Description |
+|-----------|-------------|
+| `projectId` | Current project |
+| `entityId` | Selected entity |
+| `depth` | Network depth |
+
+## Export Formats
+
+| Format | Description |
+|--------|-------------|
+| `gexf` | Gephi exchange format |
+| `graphml` | GraphML format |
+| `json` | JSON graph format |
+| `csv` | CSV node/edge lists |
+
+## Layout Options
+
+### Hierarchical
+- `direction`: TB, BT, LR, RL
+- `layer_spacing`: Vertical spacing
+- `node_spacing`: Horizontal spacing
+
+### Radial
+- `root_node_id`: Center node
+- `radius_step`: Ring spacing
+
+### Bipartite
+- `left_types`: Entity types for left column
+- `right_types`: Entity types for right column
+
+## Link Analysis Mode
+
+The graph supports an i2 Analyst's Notebook-style link analysis mode:
+- Manual node positioning
+- Save/load positions per project
+- Annotations on nodes and edges
+- Labels, notes, and highlights
+- Export to PNG/SVG
 
 ## Development
 
 ```bash
-# Install in development mode
-pip install -e ".[dev]"
-
 # Run tests
-pytest
+pytest packages/arkham-shard-graph/tests/
 
-# Format code
-black arkham_shard_graph/
+# Type checking
+mypy packages/arkham-shard-graph/
 ```
 
-## Algorithm Details
+## License
 
-### PageRank Calculation
-- Iterative power method
-- Damping factor: 0.85
-- Convergence threshold: 1e-6
-- Maximum iterations: 100
-
-### Community Detection
-- Louvain-inspired modularity optimization
-- Resolution parameter for community size control
-- Two-phase algorithm: modularity maximization + aggregation
-
-### Centrality Metrics
-- **Degree**: Count of connections
-- **Betweenness**: Frequency on shortest paths
-- **PageRank**: Iterative importance measure
+MIT

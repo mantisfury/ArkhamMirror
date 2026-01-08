@@ -1,227 +1,297 @@
-# Anomalies Shard
+# arkham-shard-anomalies
 
-**Anomaly and outlier detection for ArkhamFrame**
+> Anomaly and outlier detection for documents and content
 
-Detects anomalies and outliers across multiple dimensions to help analysts identify unusual documents, patterns, and red flags in their corpus.
+**Version:** 0.1.0
+**Category:** Analysis
+**Frame Requirement:** >=0.1.0
+
+## Overview
+
+The Anomalies shard detects unusual patterns, outliers, and anomalies in documents and content. It identifies content anomalies (semantically distant documents), metadata anomalies (unusual file properties), statistical anomalies (text pattern deviations), and red flags (sensitive content indicators).
+
+### Key Capabilities
+
+1. **Anomaly Detection** - Multiple detection strategies for documents
+2. **Outlier Identification** - Find semantically distant documents
+3. **Pattern Detection** - Identify recurring anomaly patterns
+4. **Status Tracking** - Analyst workflow for triage and review
+5. **AI Analysis** - AI Junior Analyst for anomaly interpretation
 
 ## Features
 
+### Anomaly Types
+- `content` - Semantically distant from corpus
+- `metadata` - Unusual file properties
+- `temporal` - Unexpected dates/timestamps
+- `structural` - Unusual document structure
+- `statistical` - Text pattern deviations
+- `red_flag` - Sensitive content indicators
+
+### Anomaly Status
+- `detected` - Newly detected, awaiting review
+- `confirmed` - Confirmed as legitimate anomaly
+- `dismissed` - Dismissed as normal
+- `false_positive` - Marked as false positive
+
+### Severity Levels
+- `critical` - Requires immediate attention
+- `high` - Significant anomaly
+- `medium` - Notable anomaly
+- `low` - Minor anomaly
+
 ### Detection Strategies
-
-1. **Content Anomalies** - Embedding-based outlier detection
-   - Documents semantically distant from corpus centroid
-   - Configurable distance thresholds
-   - Z-score based severity levels
-
-2. **Statistical Anomalies** - Text pattern analysis
-   - Unusual word counts
-   - Unusual sentence lengths
-   - Unusual word frequency distributions
-   - Character/word ratio anomalies
-
-3. **Metadata Anomalies** - File property analysis
-   - Unusual file sizes
-   - Unexpected creation dates
-   - Missing expected metadata fields
-
-4. **Temporal Anomalies** - Time reference detection
-   - Documents with unexpected date references
-   - Temporal outliers in corpus timeline
-
-5. **Structural Anomalies** - Document structure analysis
-   - Unusual formatting patterns
-   - Unexpected section structures
-
-6. **Red Flags** - Sensitive content detection
-   - Money patterns (amounts, currencies)
-   - Date patterns (multiple formats)
-   - Name patterns (capitalized names)
-   - Sensitive keywords (confidential, secret, etc.)
+- **Content Detection** - Vector similarity to corpus centroid
+- **Metadata Detection** - File size, type, date outliers
+- **Statistical Detection** - Word count, character patterns
+- **Red Flag Detection** - Sensitive keywords and patterns
 
 ### Analyst Workflow
-
-- **Triage**: Review detected anomalies
-- **Status management**: Confirm, dismiss, or mark as false positive
-- **Note taking**: Add context and reasoning
-- **Pattern detection**: Find recurring anomaly patterns
-- **Statistics**: Track detection quality and trends
+- Review detected anomalies
+- Add analyst notes
+- Update status with reasoning
+- Bulk status updates for triage
+- View related anomalies
 
 ## Installation
 
 ```bash
-pip install -e .
+pip install -e packages/arkham-shard-anomalies
 ```
 
-## Usage
-
-### Via API
-
-```python
-import httpx
-
-# Detect anomalies in documents
-response = httpx.post("http://localhost:8000/api/anomalies/detect", json={
-    "project_id": "proj-123",
-    "doc_ids": [],  # Empty = all docs
-    "config": {
-        "z_score_threshold": 3.0,
-        "detect_content": true,
-        "detect_red_flags": true
-    }
-})
-
-# List detected anomalies
-response = httpx.get("http://localhost:8000/api/anomalies/list", params={
-    "limit": 20,
-    "status": "detected",
-    "severity": "high"
-})
-
-# Update anomaly status
-response = httpx.put("http://localhost:8000/api/anomalies/{id}/status", json={
-    "status": "confirmed",
-    "notes": "Legitimate anomaly - requires investigation",
-    "reviewed_by": "analyst-1"
-})
-
-# Get statistics
-response = httpx.get("http://localhost:8000/api/anomalies/stats")
-```
-
-### Via Shard Interface
-
-```python
-# Get the shard from Frame
-anomalies_shard = frame.get_shard("anomalies")
-
-# Check a specific document
-anomalies = await anomalies_shard.check_document(
-    doc_id="doc-123",
-    text="Document content...",
-    metadata={"file_size": 12345, "created_at": "2024-01-01"}
-)
-
-# Get anomalies for a document
-anomalies = await anomalies_shard.get_anomalies_for_document("doc-123")
-
-# Get statistics
-stats = await anomalies_shard.get_statistics()
-```
+The shard auto-registers via entry point on Frame startup.
 
 ## API Endpoints
 
 ### Detection
 
-- `POST /api/anomalies/detect` - Run anomaly detection on corpus
-- `POST /api/anomalies/document/{doc_id}` - Check specific document
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/api/anomalies/detect` | Run detection on documents |
+| POST | `/api/anomalies/document/{id}` | Check single document |
+| GET | `/api/anomalies/outliers` | Get statistical outliers |
+| POST | `/api/anomalies/patterns` | Detect anomaly patterns |
 
-### Retrieval
+### Listing and Filtering
 
-- `GET /api/anomalies/list` - List anomalies (paginated, filtered)
-- `GET /api/anomalies/{id}` - Get specific anomaly
-- `GET /api/anomalies/outliers` - Get statistical outliers
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/anomalies/list` | List anomalies |
+| GET | `/api/anomalies/count` | Get anomaly count |
+| GET | `/api/anomalies/stats` | Get statistics |
 
-### Management
+### Anomaly Management
 
-- `PUT /api/anomalies/{id}/status` - Update status
-- `POST /api/anomalies/{id}/notes` - Add analyst note
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/anomalies/{id}` | Get anomaly details |
+| PUT | `/api/anomalies/{id}/status` | Update status |
+| POST | `/api/anomalies/{id}/notes` | Add analyst note |
+| GET | `/api/anomalies/{id}/notes` | Get notes |
+| GET | `/api/anomalies/{id}/related` | Get related anomalies |
+| POST | `/api/anomalies/bulk-status` | Bulk status update |
 
-### Analysis
+### Context
 
-- `POST /api/anomalies/patterns` - Detect anomaly patterns
-- `GET /api/anomalies/stats` - Get statistics
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/anomalies/document/{id}/preview` | Document preview |
 
-## Configuration
+### AI Analysis
 
-### Detection Config
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/api/anomalies/ai/junior-analyst` | AI analysis (streaming) |
 
-```python
+## API Examples
+
+### Run Detection on Documents
+
+```json
+POST /api/anomalies/detect
 {
-    "z_score_threshold": 3.0,          # Standard deviations for outlier
-    "min_cluster_distance": 0.7,       # Cosine distance threshold
-
-    # Detection toggles
+  "project_id": "proj_123",
+  "doc_ids": ["doc_abc", "doc_def"],
+  "config": {
     "detect_content": true,
     "detect_metadata": true,
-    "detect_temporal": true,
-    "detect_structural": true,
     "detect_statistical": true,
-    "detect_red_flags": true,
-
-    # Red flag patterns
-    "money_patterns": true,
-    "date_patterns": true,
-    "name_patterns": true,
-    "sensitive_keywords": true,
-
-    # Processing
-    "batch_size": 100,
-    "min_confidence": 0.5
+    "detect_red_flags": true
+  }
 }
 ```
 
-## Dependencies
+Response:
+```json
+{
+  "anomalies_detected": 5,
+  "duration_ms": 1523.4,
+  "job_id": "detect-1234567890"
+}
+```
 
-### Required Frame Services
-- **database** - DatabaseService for storing anomalies (schema: arkham_anomalies)
-- **vectors** - VectorService for vector-based outlier detection
-- **events** - EventBus for pub/sub communication
+### List Anomalies with Filtering
 
-### Optional Frame Services
-- **llm** - LLMService for enhanced anomaly explanation
+```bash
+GET /api/anomalies/list?offset=0&limit=20&anomaly_type=content&status=detected&severity=high
+```
+
+Response:
+```json
+{
+  "total": 45,
+  "items": [
+    {
+      "id": "anom_123",
+      "doc_id": "doc_abc",
+      "anomaly_type": "content",
+      "status": "detected",
+      "score": 0.85,
+      "severity": "high",
+      "confidence": 0.92,
+      "explanation": "Document is semantically distant from corpus",
+      "detected_at": "2024-12-15T10:30:00Z"
+    }
+  ],
+  "offset": 0,
+  "limit": 20,
+  "has_more": true,
+  "facets": {
+    "by_type": {"content": 20, "metadata": 15, "red_flag": 10},
+    "by_status": {"detected": 30, "confirmed": 10, "dismissed": 5},
+    "by_severity": {"high": 15, "medium": 20, "low": 10}
+  }
+}
+```
+
+### Update Anomaly Status
+
+```json
+PUT /api/anomalies/{anomaly_id}/status
+{
+  "status": "confirmed",
+  "notes": "Verified as legitimate anomaly - document from external source",
+  "reviewed_by": "analyst_john"
+}
+```
+
+### Add Analyst Note
+
+```json
+POST /api/anomalies/{anomaly_id}/notes
+{
+  "content": "This anomaly correlates with doc_xyz which has similar patterns",
+  "author": "analyst_john"
+}
+```
+
+### Bulk Status Update
+
+```json
+POST /api/anomalies/bulk-status?anomaly_ids=anom_1&anomaly_ids=anom_2&status=dismissed&notes=Batch triage&reviewed_by=analyst_john
+```
+
+### Get Statistics
+
+```bash
+GET /api/anomalies/stats
+```
+
+Response:
+```json
+{
+  "stats": {
+    "total_anomalies": 150,
+    "by_type": {"content": 50, "metadata": 40, "statistical": 30, "red_flag": 30},
+    "by_status": {"detected": 80, "confirmed": 40, "dismissed": 25, "false_positive": 5},
+    "by_severity": {"critical": 10, "high": 40, "medium": 60, "low": 40},
+    "detected_last_24h": 12,
+    "confirmed_last_24h": 5,
+    "dismissed_last_24h": 3,
+    "false_positive_rate": 0.033,
+    "avg_confidence": 0.78,
+    "calculated_at": "2024-12-15T12:00:00Z"
+  }
+}
+```
+
+### Get Outliers
+
+```bash
+GET /api/anomalies/outliers?limit=20&min_z_score=3.0
+```
 
 ## Events
 
 ### Published Events
 
-- `anomalies.anomaly.detected` - Anomalies found in document
-- `anomalies.anomaly.confirmed` - Analyst confirmed anomaly
-- `anomalies.anomaly.dismissed` - Analyst dismissed anomaly
-- `anomalies.pattern.found` - Pattern detected across anomalies
-- `anomalies.stats.updated` - Statistics recalculated
+| Event | Description |
+|-------|-------------|
+| `anomalies.anomaly.detected` | Anomaly detected |
+| `anomalies.anomaly.confirmed` | Anomaly confirmed |
+| `anomalies.anomaly.dismissed` | Anomaly dismissed |
+| `anomalies.pattern.found` | Pattern detected |
+| `anomalies.stats.updated` | Statistics updated |
 
 ### Subscribed Events
 
-- `embed.embedding.created` - Triggers content anomaly detection when embeddings are created
-- `document.processed` - Triggers metadata/statistical detection when documents are processed
+| Event | Handler |
+|-------|---------|
+| `embed.embedding.created` | Check new embeddings |
+| `document.processed` | Run detection on processed docs |
 
-## Data Models
+## UI Routes
 
-### Anomaly
+| Route | Description |
+|-------|-------------|
+| `/anomalies` | Anomalies list |
 
-```python
-{
-    "id": "anom-123",
-    "doc_id": "doc-456",
-    "anomaly_type": "content",  # content, metadata, temporal, structural, statistical, red_flag
-    "status": "detected",        # detected, confirmed, dismissed, false_positive
-    "score": 4.2,               # Anomaly score
-    "severity": "high",         # critical, high, medium, low
-    "confidence": 0.85,         # Detection confidence
-    "explanation": "Document is semantically distant from corpus",
-    "details": {...},           # Technical details
-    "detected_at": "2024-01-01T12:00:00Z",
-    "reviewed_by": "analyst-1",
-    "notes": "Requires investigation"
-}
-```
+## Dependencies
+
+### Required Services
+- **database** - Anomaly storage
+- **vectors** - Embedding-based detection
+- **events** - Event publishing
+
+### Optional Services
+- **llm** - AI-powered analysis
+
+## URL State
+
+| Parameter | Description |
+|-----------|-------------|
+| `status` | Filter by status |
+| `type` | Filter by anomaly type |
+| `severity` | Filter by severity |
+
+## Detection Configuration
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `detect_content` | true | Run content detection |
+| `detect_metadata` | true | Run metadata detection |
+| `detect_statistical` | true | Run statistical detection |
+| `detect_red_flags` | true | Run red flag detection |
+
+## Red Flag Keywords
+
+The shard detects sensitive content patterns including:
+- Classified/confidential markers
+- Financial fraud indicators
+- Legal risk terms
+- Personal data patterns
+- Security concerns
 
 ## Development
 
 ```bash
-# Install dev dependencies
-pip install -e ".[dev]"
-
 # Run tests
-pytest
-
-# Format code
-black arkham_shard_anomalies/
+pytest packages/arkham-shard-anomalies/tests/
 
 # Type checking
-mypy arkham_shard_anomalies/
+mypy packages/arkham-shard-anomalies/
 ```
 
 ## License
 
-Same as ArkhamFrame (MIT)
+MIT

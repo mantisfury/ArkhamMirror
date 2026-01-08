@@ -1,97 +1,91 @@
-# Reports Shard
+# arkham-shard-reports
+
+> Analytical report generation from investigation data
 
 **Version:** 0.1.0
 **Category:** Export
 **Frame Requirement:** >=0.1.0
 
-Analytical report generation shard for ArkhamFrame. Creates comprehensive reports from investigation data including summary reports, entity profiles, timeline reports, and custom analytical outputs.
-
 ## Overview
 
-The Reports shard is a data export and analysis component that:
+The Reports shard generates analytical reports from SHATTERED investigation data. It creates summary reports, entity profiles, timeline reports, contradiction analyses, and ACH reports. Supports templates for custom report formats, scheduled generation, and multiple export formats.
 
-1. **Generates Reports** - Creates analytical reports from investigation data
-2. **Manages Templates** - Provides reusable report templates
-3. **Schedules Reports** - Automates periodic report generation
-4. **Exports Formats** - Supports multiple output formats (HTML, PDF, Markdown, JSON)
-5. **Custom Reports** - Allows custom report creation with parameters
+### Key Capabilities
 
-## Key Features
+1. **Summary Reports** - System overview reports
+2. **Entity Reports** - Entity profile reports
+3. **Timeline Reports** - Temporal analysis reports
+4. **Contradiction Reports** - Contradiction analysis
+5. **ACH Reports** - Analysis of Competing Hypotheses
+6. **Custom Reports** - Template-based generation
+7. **Scheduled Reports** - Recurring generation
+8. **Report Export** - Multiple output formats
+
+## Features
 
 ### Report Types
-- **Summary Reports** - System-wide summaries of documents, entities, claims
-- **Entity Profile Reports** - Detailed profiles of specific entities
-- **Timeline Reports** - Chronological event and document timelines
-- **Contradiction Reports** - Analysis of contradictions and disputes
-- **ACH Analysis Reports** - Analysis of Competing Hypotheses results
-- **Custom Reports** - User-defined reports with custom parameters
-
-### Report Formats
-- **HTML** - Rich formatted HTML reports
-- **PDF** - Print-ready PDF documents
-- **Markdown** - Portable markdown format
-- **JSON** - Machine-readable structured data
+- `summary` - Project summary report
+- `entity_profile` - Entity profile report
+- `timeline` - Timeline analysis report
+- `contradiction` - Contradiction analysis
+- `ach` - ACH matrix report
+- `custom` - Template-based custom report
 
 ### Report Status
-- `pending` - Queued for generation
-- `generating` - Currently being generated
-- `completed` - Successfully generated
-- `failed` - Generation failed with errors
+- `pending` - Report queued
+- `generating` - Report being generated
+- `completed` - Report ready
+- `failed` - Generation failed
 
-### Templates
-- Pre-defined report templates
-- Custom parameter schemas
-- Default format configuration
-- Reusable across multiple generations
+### Report Formats
+- `html` - Interactive HTML
+- `pdf` - PDF document
+- `docx` - Microsoft Word
+- `markdown` - Markdown format
+- `json` - Structured JSON
+
+### Template System
+- Create custom report templates
+- Reusable parameter schemas
+- Shared template library
+- Version control
 
 ### Scheduling
-- Cron-based scheduling
-- Automatic report generation
-- Email delivery (when configured)
-- Retention policies
+- Schedule recurring reports
+- Cron-like scheduling
+- Automatic generation
+- Notification on completion
 
-## Dependencies
+## Installation
 
-### Required Frame Services
-- **database** - Stores reports, templates, and schedules
-- **events** - Publishes report lifecycle events
+```bash
+pip install -e packages/arkham-shard-reports
+```
 
-### Optional Frame Services
-- **llm** - Enables AI-powered report generation and summarization
-- **storage** - Stores generated report files
-- **workers** - Enables background report generation
-
-## Events
-
-### Published Events
-
-| Event | Description |
-|-------|-------------|
-| `reports.report.generated` | Report generation completed |
-| `reports.report.scheduled` | Report scheduled for future generation |
-| `reports.report.failed` | Report generation failed |
-| `reports.template.created` | New report template created |
-| `reports.template.updated` | Report template updated |
-| `reports.schedule.created` | New report schedule created |
-| `reports.schedule.executed` | Scheduled report executed |
-
-### Subscribed Events
-
-The Reports shard does not subscribe to external events. Reports are triggered via API calls or scheduled jobs.
+The shard auto-registers via entry point on Frame startup.
 
 ## API Endpoints
 
-### Reports CRUD
+### Health and Counts
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| GET | `/api/reports/` | List reports with pagination |
-| GET | `/api/reports/{id}` | Get report details |
-| POST | `/api/reports/` | Generate new report |
+| GET | `/api/reports/health` | Health check |
+| GET | `/api/reports/count` | Total count |
+| GET | `/api/reports/pending/count` | Pending count (badge) |
+
+### Report CRUD
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/reports/` | List reports |
+| POST | `/api/reports/` | Create report |
+| GET | `/api/reports/{id}` | Get report |
 | DELETE | `/api/reports/{id}` | Delete report |
+| GET | `/api/reports/{id}/content` | Get report content |
 | GET | `/api/reports/{id}/download` | Download report file |
 
-### Report Status
+### Status Filtered
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
@@ -104,10 +98,11 @@ The Reports shard does not subscribe to external events. Reports are triggered v
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | GET | `/api/reports/templates` | List templates |
-| GET | `/api/reports/templates/{id}` | Get template details |
 | POST | `/api/reports/templates` | Create template |
-| PATCH | `/api/reports/templates/{id}` | Update template |
-| DELETE | `/api/reports/templates/{id}` | Delete template |
+| GET | `/api/reports/templates/{id}` | Get template |
+| GET | `/api/reports/templates/shared` | List shared templates |
+| GET | `/api/reports/templates/shared/{id}` | Get shared template |
+| POST | `/api/reports/from-shared-template` | Create from shared |
 
 ### Schedules
 
@@ -115,200 +110,249 @@ The Reports shard does not subscribe to external events. Reports are triggered v
 |--------|----------|-------------|
 | GET | `/api/reports/schedules` | List schedules |
 | POST | `/api/reports/schedules` | Create schedule |
-| PATCH | `/api/reports/schedules/{id}` | Update schedule |
 | DELETE | `/api/reports/schedules/{id}` | Delete schedule |
 
-### Preview & Generation
+### Preview and Stats
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| POST | `/api/reports/preview` | Preview report without saving |
-| POST | `/api/reports/generate/{template_id}` | Generate from template |
-
-### Statistics
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/api/reports/count` | Total report count |
-| GET | `/api/reports/pending/count` | Pending count (badge) |
+| POST | `/api/reports/preview` | Preview report |
 | GET | `/api/reports/stats` | Report statistics |
 
-## Data Models
+## API Examples
 
-### Report
-```python
-@dataclass
-class Report:
-    id: str
-    report_type: ReportType         # summary, entity_profile, etc.
-    title: str                      # Report title
-    status: ReportStatus            # pending, generating, completed, failed
-    created_at: datetime
-    completed_at: Optional[datetime]
-    parameters: Dict[str, Any]      # Generation parameters
-    output_format: ReportFormat     # html, pdf, markdown, json
-    file_path: Optional[str]        # Path to generated file
-    file_size: Optional[int]        # File size in bytes
-    error: Optional[str]            # Error message if failed
-    metadata: Dict[str, Any]
+### Create Report
+
+```json
+POST /api/reports/
+{
+  "name": "Q4 Investigation Summary",
+  "report_type": "summary",
+  "format": "pdf",
+  "project_id": "proj_123",
+  "parameters": {
+    "date_range": {
+      "start": "2024-10-01",
+      "end": "2024-12-31"
+    },
+    "include_entities": true,
+    "include_timeline": true,
+    "include_contradictions": true
+  }
+}
 ```
 
-### ReportTemplate
-```python
-@dataclass
-class ReportTemplate:
-    id: str
-    name: str
-    report_type: ReportType
-    description: str
-    parameters_schema: Dict[str, Any]  # JSON schema for parameters
-    default_format: ReportFormat
-    template_content: str              # Template markup
-    created_at: datetime
-    updated_at: datetime
+Response:
+```json
+{
+  "id": "rpt_abc123",
+  "name": "Q4 Investigation Summary",
+  "report_type": "summary",
+  "format": "pdf",
+  "status": "pending",
+  "project_id": "proj_123",
+  "created_at": "2024-12-15T10:30:00Z",
+  "generated_at": null,
+  "file_path": null,
+  "file_size": null,
+  "download_url": null
+}
 ```
 
-### ReportSchedule
-```python
-@dataclass
-class ReportSchedule:
-    id: str
-    template_id: str
-    cron_expression: str               # Cron schedule
-    enabled: bool
-    last_run: Optional[datetime]
-    next_run: Optional[datetime]
-    parameters: Dict[str, Any]
-    output_format: ReportFormat
-    retention_days: int                # Keep reports for N days
-```
-
-### GeneratedSection
-```python
-@dataclass
-class GeneratedSection:
-    title: str
-    content: str                       # Section content
-    charts: List[Dict[str, Any]]       # Chart data
-    tables: List[Dict[str, Any]]       # Table data
-    subsections: List[GeneratedSection]
-```
-
-## Database Schema
-
-The shard uses tables `arkham_reports`, `arkham_report_templates`, `arkham_report_schedules`:
-
-```sql
-CREATE TABLE arkham_reports (
-    id TEXT PRIMARY KEY,
-    report_type TEXT NOT NULL,
-    title TEXT NOT NULL,
-    status TEXT DEFAULT 'pending',
-    created_at TEXT,
-    completed_at TEXT,
-    parameters TEXT DEFAULT '{}',
-    output_format TEXT,
-    file_path TEXT,
-    file_size INTEGER,
-    error TEXT,
-    metadata TEXT DEFAULT '{}'
-);
-
-CREATE TABLE arkham_report_templates (
-    id TEXT PRIMARY KEY,
-    name TEXT NOT NULL,
-    report_type TEXT NOT NULL,
-    description TEXT,
-    parameters_schema TEXT DEFAULT '{}',
-    default_format TEXT,
-    template_content TEXT,
-    created_at TEXT,
-    updated_at TEXT
-);
-
-CREATE TABLE arkham_report_schedules (
-    id TEXT PRIMARY KEY,
-    template_id TEXT NOT NULL,
-    cron_expression TEXT NOT NULL,
-    enabled INTEGER DEFAULT 1,
-    last_run TEXT,
-    next_run TEXT,
-    parameters TEXT DEFAULT '{}',
-    output_format TEXT,
-    retention_days INTEGER DEFAULT 30,
-    FOREIGN KEY (template_id) REFERENCES arkham_report_templates(id)
-);
-
--- Indexes
-CREATE INDEX idx_reports_status ON arkham_reports(status);
-CREATE INDEX idx_reports_type ON arkham_reports(report_type);
-CREATE INDEX idx_reports_created ON arkham_reports(created_at);
-CREATE INDEX idx_schedules_template ON arkham_report_schedules(template_id);
-CREATE INDEX idx_schedules_enabled ON arkham_report_schedules(enabled);
-```
-
-## Installation
+### Get Report Content
 
 ```bash
-cd packages/arkham-shard-reports
-pip install -e .
+GET /api/reports/{report_id}/content
 ```
 
-The shard will be auto-discovered by ArkhamFrame on startup.
+Returns rendered report content (HTML for display).
 
-## Use Cases
+### Download Report
 
-### Investigative Journalism
-- Generate weekly summary reports of investigation progress
-- Create entity profiles for key subjects
-- Export timeline reports for article drafts
-- Schedule daily updates for editors
+```bash
+GET /api/reports/{report_id}/download
+```
 
-### Legal Research
-- Generate case summary reports
-- Create entity relationship reports
-- Export contradiction analysis for review
-- Schedule periodic case updates
+Returns report file with appropriate Content-Type.
 
-### Academic Research
-- Generate literature review summaries
-- Create author/entity profiles
-- Export timeline of research developments
-- Schedule monthly progress reports
+### List Reports with Filtering
 
-## Integration with Other Shards
+```bash
+GET /api/reports/?status=completed&report_type=summary&limit=20
+```
 
-### All Shards
-- Reports can aggregate data from any shard
-- Templates can query shard endpoints
-- No direct dependencies required
+### Create Report Template
 
-### Dashboard Shard
-- Reports provide exportable views of dashboard data
-- Scheduled reports for monitoring alerts
+```json
+POST /api/reports/templates
+{
+  "name": "Entity Profile Template",
+  "description": "Standard entity profile report",
+  "report_type": "entity_profile",
+  "template_content": "# {{entity.name}}\n\n## Overview\n{{entity.description}}...",
+  "parameter_schema": {
+    "entity_id": {"type": "string", "required": true},
+    "include_relationships": {"type": "boolean", "default": true}
+  },
+  "default_format": "pdf"
+}
+```
 
-### Timeline Shard
-- Timeline reports use timeline shard data
-- Event chronology in summary reports
+### Create from Shared Template
 
-### ACH Shard
-- ACH analysis reports
-- Hypothesis evaluation summaries
+```json
+POST /api/reports/from-shared-template
+{
+  "template_id": "tpl_shared_123",
+  "name": "John Smith Profile",
+  "parameters": {
+    "entity_id": "ent_person_123",
+    "include_relationships": true
+  }
+}
+```
 
-## Configuration
+### Create Schedule
 
-The shard respects these Frame configurations:
+```json
+POST /api/reports/schedules
+{
+  "name": "Weekly Summary",
+  "template_id": "tpl_summary",
+  "cron_expression": "0 9 * * MON",
+  "parameters": {
+    "date_range": "last_week"
+  },
+  "notification_emails": ["analyst@example.com"]
+}
+```
 
-```yaml
-# In frame config
-reports:
-  max_concurrent_generations: 3     # Max parallel report generation
-  default_retention_days: 30        # Keep reports for 30 days
-  output_directory: "./reports"     # Report storage location
-  enable_scheduling: true           # Allow scheduled reports
-  formats_enabled: [html, pdf, markdown, json]  # Enabled formats
+### Get Statistics
+
+```bash
+GET /api/reports/stats
+```
+
+Response:
+```json
+{
+  "total_reports": 250,
+  "by_status": {
+    "pending": 5,
+    "generating": 2,
+    "completed": 230,
+    "failed": 13
+  },
+  "by_type": {
+    "summary": 100,
+    "entity_profile": 80,
+    "timeline": 40,
+    "ach": 30
+  },
+  "by_format": {
+    "pdf": 150,
+    "html": 60,
+    "docx": 40
+  },
+  "total_templates": 15,
+  "active_schedules": 5,
+  "avg_generation_time_ms": 2345.6
+}
+```
+
+### Preview Report
+
+```json
+POST /api/reports/preview
+{
+  "report_type": "entity_profile",
+  "parameters": {"entity_id": "ent_123"},
+  "max_sections": 3
+}
+```
+
+## Events
+
+### Published Events
+
+| Event | Description |
+|-------|-------------|
+| `reports.report.generated` | Report generation completed |
+| `reports.report.scheduled` | Report scheduled |
+| `reports.report.failed` | Report generation failed |
+| `reports.template.created` | New template created |
+| `reports.template.updated` | Template updated |
+| `reports.schedule.created` | New schedule created |
+| `reports.schedule.executed` | Scheduled report executed |
+
+### Subscribed Events
+
+No subscribed events - triggered by API calls.
+
+## UI Routes
+
+| Route | Description |
+|-------|-------------|
+| `/reports` | All reports list |
+| `/reports/pending` | Pending reports |
+| `/reports/completed` | Completed reports |
+| `/reports/templates` | Template management |
+| `/reports/schedules` | Schedule management |
+
+## Dependencies
+
+### Required Services
+- **database** - Report and template storage
+- **events** - Event publishing
+
+### Optional Services
+- **llm** - AI-powered report generation
+- **storage** - File storage for reports
+- **workers** - Background generation
+
+## URL State
+
+| Parameter | Description |
+|-----------|-------------|
+| `reportId` | Selected report |
+| `templateId` | Selected template |
+| `status` | Filter by status |
+| `view` | Display mode |
+
+### Local Storage Keys
+- `show_parameters` - Expand parameter panels
+- `sort_order` - Report list sort preference
+- `default_format` - Default export format
+
+## Template Syntax
+
+Reports support Jinja2-style templating:
+
+```markdown
+# {{report.title}}
+
+Generated: {{report.generated_at | date}}
+
+## Summary
+{{summary.text}}
+
+{% for entity in entities %}
+### {{entity.name}}
+Type: {{entity.type}}
+Mentions: {{entity.mention_count}}
+{% endfor %}
+```
+
+## Development
+
+```bash
+# Run tests
+pytest packages/arkham-shard-reports/tests/
+
+# Type checking
+mypy packages/arkham-shard-reports/
 ```
 
 ## License
 
-Part of the SHATTERED architecture, licensed under MIT.
+MIT

@@ -1,65 +1,248 @@
-# Claims Shard
+# arkham-shard-claims
+
+> Claim extraction and verification tracking for fact-checking workflows
 
 **Version:** 0.1.0
 **Category:** Analysis
 **Frame Requirement:** >=0.1.0
 
-Claim extraction and tracking shard for ArkhamFrame. Identifies factual assertions from documents for verification, evidence linking, and fact-checking workflows.
-
 ## Overview
 
-The Claims shard is a foundational analysis component that:
+The Claims shard extracts and tracks factual assertions from documents for verification and analysis. It provides the foundation for contradiction detection and fact-checking workflows, with LLM-powered claim extraction and evidence linking.
 
-1. **Extracts Claims** - Identifies factual assertions from document text
-2. **Tracks Verification** - Manages claim verification status and evidence
-3. **Links Evidence** - Connects claims to supporting or refuting documents
-4. **Detects Duplicates** - Finds and merges similar claims across documents
-5. **Enables Fact-Checking** - Provides foundation for contradiction detection
+### Key Capabilities
 
-## Key Features
+1. **Claim Extraction** - Extract factual claims from text using LLM
+2. **Verification Tracking** - Track claim status (unverified, verified, disputed)
+3. **Evidence Linking** - Link supporting and refuting evidence to claims
+4. **Claim Matching** - Find similar/duplicate claims
+5. **AI Analysis** - AI Junior Analyst for claim analysis
+
+## Features
 
 ### Claim Extraction
-- Manual claim creation
-- LLM-powered automatic extraction (when LLM service available)
-- Background batch extraction (when workers service available)
-- Confidence scoring for extracted claims
+- LLM-powered extraction from raw text
+- Extract from documents by ID
+- Track extraction method and model
+- Confidence scoring
 
-### Claim Classification
-- **Status Types:**
-  - `unverified` - Newly extracted, not yet reviewed
-  - `verified` - Confirmed with supporting evidence
-  - `disputed` - Contradicted by other evidence
-  - `retracted` - Claim withdrawn/corrected
-  - `uncertain` - Evidence is inconclusive
+### Claim Types
+- `factual` - Verifiable factual statements
+- `opinion` - Opinions or subjective statements
+- `prediction` - Future predictions
+- `quote` - Direct quotations
+- `statistic` - Statistical claims
 
-- **Claim Types:**
-  - `factual` - Verifiable statement of fact
-  - `opinion` - Subjective statement
-  - `prediction` - Future-oriented claim
-  - `quantitative` - Numerical/statistical claim
-  - `attribution` - Quote or attributed statement
+### Claim Status
+- `unverified` - Not yet verified
+- `verified` - Confirmed as accurate
+- `disputed` - Conflicting evidence exists
+- `false` - Confirmed as false
+- `retracted` - Withdrawn or deleted
 
-### Evidence Linking
-- Link multiple evidence items to a claim
-- Evidence can support or refute
-- Track evidence strength (strong/moderate/weak)
-- Evidence from documents, entities, or external sources
+### Evidence Management
+- Link evidence to claims
+- Track relationship (supports/refutes)
+- Evidence strength levels
+- Multiple evidence types
 
-### Claim Matching
-- Semantic similarity matching (when vectors service available)
-- Find related claims across documents
-- Merge duplicate claims with provenance tracking
+### Evidence Types
+- `document` - From document corpus
+- `external` - External sources
+- `expert` - Expert testimony
+- `data` - Statistical data
+- `testimony` - Witness statements
 
-## Dependencies
+### Evidence Relationships
+- `supports` - Evidence supports claim
+- `refutes` - Evidence contradicts claim
+- `neutral` - Neither supports nor refutes
 
-### Required Frame Services
-- **database** - Stores claims, evidence links, and metadata
-- **events** - Publishes claim lifecycle events
+### Evidence Strength
+- `strong` - Compelling evidence
+- `moderate` - Reasonably convincing
+- `weak` - Limited support
 
-### Optional Frame Services
-- **llm** - Enables AI-powered claim extraction
-- **vectors** - Enables semantic claim matching and similarity search
-- **workers** - Enables background batch extraction
+## Installation
+
+```bash
+pip install -e packages/arkham-shard-claims
+```
+
+The shard auto-registers via entry point on Frame startup.
+
+## API Endpoints
+
+### Count
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/claims/count` | Total claims count (badge) |
+
+### Claim CRUD
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/claims/` | List claims with filtering |
+| POST | `/api/claims/` | Create claim manually |
+| GET | `/api/claims/{id}` | Get claim details |
+| PATCH | `/api/claims/{id}/status` | Update claim status |
+| DELETE | `/api/claims/{id}` | Delete (retract) claim |
+
+### Status Filtered Lists
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/claims/status/unverified` | List unverified claims |
+| GET | `/api/claims/status/verified` | List verified claims |
+| GET | `/api/claims/status/disputed` | List disputed claims |
+
+### Evidence
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/claims/{id}/evidence` | Get claim evidence |
+| POST | `/api/claims/{id}/evidence` | Add evidence |
+| POST | `/api/claims/backfill-evidence` | Backfill source evidence |
+
+### Extraction
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/api/claims/extract` | Extract from text |
+| POST | `/api/claims/extract-from-document/{id}` | Extract from document |
+
+### Similarity and Merging
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/api/claims/{id}/similar` | Find similar claims |
+| POST | `/api/claims/{id}/merge` | Merge duplicate claims |
+
+### By Reference
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/claims/by-document/{id}` | Claims from document |
+| GET | `/api/claims/by-entity/{id}` | Claims about entity |
+
+### Statistics
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/claims/stats/overview` | Comprehensive statistics |
+
+### AI Analysis
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/api/claims/ai/junior-analyst` | AI analysis (streaming) |
+
+## API Examples
+
+### Extract Claims from Text
+
+```json
+POST /api/claims/extract
+{
+  "text": "The company reported revenue of $5.2 billion in Q4 2024. CEO John Smith stated that growth exceeded expectations.",
+  "document_id": "doc_123",
+  "extraction_model": null
+}
+```
+
+Response:
+```json
+{
+  "claims": [
+    {
+      "id": "claim_abc",
+      "text": "The company reported revenue of $5.2 billion in Q4 2024",
+      "claim_type": "statistic",
+      "status": "unverified",
+      "confidence": 0.92,
+      "source_document_id": "doc_123",
+      "entity_ids": ["ent_company"],
+      "evidence_count": 0
+    }
+  ],
+  "extraction_method": "llm",
+  "total_extracted": 2,
+  "processing_time_ms": 1523.5,
+  "errors": []
+}
+```
+
+### Create Manual Claim
+
+```json
+POST /api/claims/
+{
+  "text": "The meeting occurred on March 15, 2024",
+  "claim_type": "factual",
+  "source_document_id": "doc_456",
+  "confidence": 1.0,
+  "entity_ids": []
+}
+```
+
+### Update Claim Status
+
+```json
+PATCH /api/claims/{claim_id}/status
+{
+  "status": "verified",
+  "notes": "Confirmed via official records"
+}
+```
+
+### Add Evidence
+
+```json
+POST /api/claims/{claim_id}/evidence
+{
+  "evidence_type": "document",
+  "reference_id": "doc_789",
+  "relationship": "supports",
+  "strength": "strong",
+  "reference_title": "Official Report",
+  "excerpt": "Revenue for Q4 was $5.2 billion...",
+  "notes": "Primary source confirmation"
+}
+```
+
+### Find Similar Claims
+
+```json
+POST /api/claims/{claim_id}/similar
+{
+  "threshold": 0.8,
+  "limit": 10
+}
+```
+
+### Get Statistics
+
+```bash
+GET /api/claims/stats/overview
+```
+
+Response:
+```json
+{
+  "total_claims": 1250,
+  "by_status": {"unverified": 800, "verified": 350, "disputed": 100},
+  "by_type": {"factual": 900, "statistic": 200, "quote": 150},
+  "by_extraction_method": {"llm": 1100, "manual": 150},
+  "total_evidence": 3200,
+  "evidence_supporting": 2800,
+  "evidence_refuting": 400,
+  "claims_with_evidence": 950,
+  "claims_without_evidence": 300,
+  "avg_confidence": 0.87,
+  "avg_evidence_per_claim": 2.56
+}
+```
 
 ## Events
 
@@ -67,14 +250,14 @@ The Claims shard is a foundational analysis component that:
 
 | Event | Description |
 |-------|-------------|
-| `claims.claim.extracted` | New claim extracted from document |
-| `claims.claim.verified` | Claim verification status changed |
-| `claims.claim.disputed` | Claim marked as disputed |
+| `claims.claim.extracted` | New claim extracted |
+| `claims.claim.verified` | Claim status changed |
+| `claims.claim.disputed` | Claim marked disputed |
 | `claims.claim.merged` | Duplicate claims merged |
-| `claims.evidence.linked` | Evidence linked to claim |
-| `claims.evidence.unlinked` | Evidence removed from claim |
-| `claims.extraction.started` | Batch extraction job started |
-| `claims.extraction.completed` | Batch extraction job finished |
+| `claims.evidence.linked` | Evidence added |
+| `claims.evidence.unlinked` | Evidence removed |
+| `claims.extraction.started` | Batch extraction started |
+| `claims.extraction.completed` | Batch extraction finished |
 
 ### Subscribed Events
 
@@ -84,202 +267,59 @@ The Claims shard is a foundational analysis component that:
 | `parse.entity.created` | Link claims to extracted entities |
 | `contradictions.contradiction.detected` | Mark claims as disputed |
 
-## API Endpoints
+## UI Routes
 
-### Claims CRUD
+| Route | Description |
+|-------|-------------|
+| `/claims` | All claims list |
+| `/claims/unverified` | Unverified claims |
+| `/claims/verified` | Verified claims |
+| `/claims/disputed` | Disputed claims |
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/api/claims/items` | List claims with pagination |
-| GET | `/api/claims/items/{id}` | Get claim details |
-| POST | `/api/claims/items` | Create manual claim |
-| PATCH | `/api/claims/items/{id}` | Update claim |
-| DELETE | `/api/claims/items/{id}` | Delete claim |
+## Dependencies
 
-### Claim Status
+### Required Services
+- **database** - Claim and evidence storage
+- **events** - Event publishing
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| POST | `/api/claims/{id}/verify` | Mark claim as verified |
-| POST | `/api/claims/{id}/dispute` | Mark claim as disputed |
-| POST | `/api/claims/{id}/retract` | Mark claim as retracted |
+### Optional Services
+- **llm** - AI-powered claim extraction
+- **vectors** - Semantic similarity for matching
+- **workers** - Background extraction jobs
 
-### Evidence Management
+## URL State
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/api/claims/{id}/evidence` | Get evidence for claim |
-| POST | `/api/claims/{id}/evidence` | Link evidence to claim |
-| DELETE | `/api/claims/{id}/evidence/{eid}` | Unlink evidence |
+| Parameter | Description |
+|-----------|-------------|
+| `claimId` | Selected claim |
+| `documentId` | Filter by document |
+| `status` | Filter by status |
+| `view` | Display mode |
 
-### Extraction
+### Local Storage Keys
+- `show_evidence` - Evidence panel expansion
+- `sort_order` - Claim list sort preference
+- `confidence_threshold` - Minimum confidence filter
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| POST | `/api/claims/extract` | Extract claims from text |
-| POST | `/api/claims/extract/document/{id}` | Extract from document |
-| POST | `/api/claims/extract/batch` | Batch extraction job |
+## Extraction Methods
 
-### Search & Discovery
+| Method | Description |
+|--------|-------------|
+| `llm` | LLM-powered extraction |
+| `manual` | User-created claims |
+| `imported` | Imported from external source |
+| `rule_based` | Pattern matching extraction |
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/api/claims/search` | Search claims |
-| GET | `/api/claims/similar/{id}` | Find similar claims |
-| POST | `/api/claims/merge` | Merge duplicate claims |
-
-### Statistics
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/api/claims/count` | Badge endpoint |
-| GET | `/api/claims/unverified/count` | Unverified count |
-| GET | `/api/claims/stats` | Claim statistics |
-
-## Data Models
-
-### Claim
-```python
-@dataclass
-class Claim:
-    id: str
-    text: str                    # The claim text
-    claim_type: ClaimType        # factual, opinion, etc.
-    status: ClaimStatus          # unverified, verified, etc.
-    confidence: float            # Extraction confidence (0-1)
-    source_document_id: str      # Document claim was extracted from
-    source_start_char: int       # Position in source document
-    source_end_char: int
-    extracted_by: str            # "manual", "llm", "rule"
-    entities: List[str]          # Linked entity IDs
-    created_at: datetime
-    updated_at: datetime
-    metadata: Dict[str, Any]
-```
-
-### Evidence
-```python
-@dataclass
-class Evidence:
-    id: str
-    claim_id: str
-    evidence_type: EvidenceType  # document, entity, external
-    reference_id: str            # ID of evidence source
-    relationship: str            # "supports" or "refutes"
-    strength: str                # strong, moderate, weak
-    notes: str                   # Analyst notes
-    added_by: str
-    added_at: datetime
-```
-
-## Database Schema
-
-The shard uses PostgreSQL schema `arkham_claims`:
-
-```sql
-CREATE SCHEMA IF NOT EXISTS arkham_claims;
-
--- Main claims table
-CREATE TABLE arkham_claims.claims (
-    id UUID PRIMARY KEY,
-    text TEXT NOT NULL,
-    claim_type VARCHAR(50),
-    status VARCHAR(50) DEFAULT 'unverified',
-    confidence FLOAT,
-    source_document_id UUID,
-    source_start_char INTEGER,
-    source_end_char INTEGER,
-    extracted_by VARCHAR(50),
-    metadata JSONB DEFAULT '{}',
-    created_at TIMESTAMPTZ DEFAULT NOW(),
-    updated_at TIMESTAMPTZ DEFAULT NOW()
-);
-
--- Evidence links
-CREATE TABLE arkham_claims.evidence (
-    id UUID PRIMARY KEY,
-    claim_id UUID REFERENCES arkham_claims.claims(id),
-    evidence_type VARCHAR(50),
-    reference_id UUID,
-    relationship VARCHAR(20),
-    strength VARCHAR(20),
-    notes TEXT,
-    added_by VARCHAR(100),
-    added_at TIMESTAMPTZ DEFAULT NOW()
-);
-
--- Claim-entity links
-CREATE TABLE arkham_claims.claim_entities (
-    claim_id UUID REFERENCES arkham_claims.claims(id),
-    entity_id UUID,
-    PRIMARY KEY (claim_id, entity_id)
-);
-
--- Indexes
-CREATE INDEX idx_claims_status ON arkham_claims.claims(status);
-CREATE INDEX idx_claims_document ON arkham_claims.claims(source_document_id);
-CREATE INDEX idx_claims_type ON arkham_claims.claims(claim_type);
-CREATE INDEX idx_evidence_claim ON arkham_claims.evidence(claim_id);
-```
-
-## Installation
+## Development
 
 ```bash
-cd packages/arkham-shard-claims
-pip install -e .
-```
+# Run tests
+pytest packages/arkham-shard-claims/tests/
 
-The shard will be auto-discovered by ArkhamFrame on startup.
-
-## Use Cases
-
-### Investigative Journalism
-- Extract factual claims from source documents
-- Track verification status across investigation
-- Link supporting evidence for each claim
-- Export verified claims for publication
-
-### Legal Research
-- Identify factual assertions in legal documents
-- Track evidence supporting each claim
-- Detect contradictory statements
-- Export claim chains with provenance
-
-### Academic Research
-- Extract hypotheses and claims from papers
-- Track supporting/refuting evidence
-- Identify claim patterns across literature
-
-## Integration with Other Shards
-
-### Contradictions Shard
-- Claims are the foundation for contradiction detection
-- Contradictions shard compares claims semantically
-- Disputed status set when contradiction detected
-
-### Provenance Shard
-- Tracks claim extraction lineage
-- Records evidence linking history
-- Maintains audit trail for legal use
-
-### Timeline Shard
-- Claims with temporal references
-- Track when claims were made
-- Detect temporal inconsistencies
-
-## Configuration
-
-The shard respects these Frame configurations:
-
-```yaml
-# In frame config
-claims:
-  auto_extract: true              # Auto-extract on document.processed
-  min_confidence: 0.7             # Minimum extraction confidence
-  max_claims_per_document: 100    # Limit per document
-  llm_extraction_model: null      # LLM model for extraction
+# Type checking
+mypy packages/arkham-shard-claims/
 ```
 
 ## License
 
-Part of the SHATTERED architecture, licensed under MIT.
+MIT

@@ -1,371 +1,384 @@
-# Credibility Shard
+# arkham-shard-credibility
 
-**Production-ready source credibility assessment and scoring for ArkhamFrame**
+> Source credibility assessment with deception detection (MOM/POP/MOSES/EVE)
+
+**Version:** 0.1.0
+**Category:** Analysis
+**Frame Requirement:** >=0.1.0
 
 ## Overview
 
-The Credibility Shard provides comprehensive source credibility assessment capabilities for the SHATTERED intelligence analysis platform. It evaluates the reliability and trustworthiness of documents, entities, websites, publications, and other sources using configurable scoring factors and optional AI-powered analysis.
+The Credibility shard provides source reliability assessment and deception detection for SHATTERED. It implements traditional credibility scoring with weighted factors, plus intelligence tradecraft deception detection checklists (MOM, POP, MOSES, EVE).
 
-## Purpose
+### Key Capabilities
 
-Source credibility is fundamental to intelligence analysis. This shard enables:
-
-- **Credibility Scoring**: Assign 0-100 scores to sources with confidence metrics
-- **Factor-Based Assessment**: Evaluate sources across multiple credibility dimensions
-- **Source Type Support**: Assess documents, entities, websites, publications, people, organizations
-- **Assessment Methods**: Manual, automated (LLM), and hybrid approaches
-- **Historical Tracking**: Track credibility changes over time
-- **Threshold Alerts**: Notifications when credibility crosses thresholds
+1. **Credibility Scoring** - Assess source reliability with weighted factors
+2. **Source Assessment** - Track credibility across documents, entities, sources
+3. **Deception Detection** - MOM/POP/MOSES/EVE checklists from intelligence tradecraft
+4. **LLM Analysis** - AI-powered checklist completion
+5. **History Tracking** - Track credibility changes over time
 
 ## Features
 
-### Core Capabilities
+### Credibility Assessment
+- Score sources 0-100 with confidence
+- Multiple weighted factors
+- Aggregate scores per source
+- Assessment history and trends
 
-- **Multi-Source Assessment**: Evaluate diverse source types (documents, entities, websites, etc.)
-- **Factor-Based Scoring**: Configurable credibility factors with weights
-- **0-100 Scoring Scale**: UNRELIABLE (0-20), LOW (21-40), MEDIUM (41-60), HIGH (61-80), VERIFIED (81-100)
-- **Confidence Tracking**: Separate confidence scores for assessment reliability
-- **Method Tracking**: Manual, automated (LLM), or hybrid assessment methods
-- **Source History**: Track all assessments for a given source over time
-- **Score Aggregation**: Combine multiple assessments into aggregate scores
+### Credibility Levels
+- `unreliable` (0-19) - Cannot be trusted
+- `low` (20-39) - Limited reliability
+- `medium` (40-59) - Moderate reliability
+- `high` (60-79) - Generally reliable
+- `verified` (80-100) - Highly reliable
 
-### AI-Powered Assessment (Optional)
+### Source Types
+- `document` - Document sources
+- `entity` - Entity sources (persons, orgs)
+- `claim` - Claim sources
+- `external` - External sources
 
-When LLM service is available:
-- Automated credibility factor extraction
-- Natural language assessment reasoning
-- Bias detection and analysis
-- Cross-source consistency checking
+### Assessment Methods
+- `manual` - Human assessment
+- `automated` - Algorithm-based
+- `llm` - LLM-assisted
+- `hybrid` - Combined methods
 
-### Event Integration
+### Standard Factors
+- Source expertise
+- Track record
+- Corroboration
+- Recency
+- Bias indicators
+- And more configurable factors
 
-**Publishes**:
-- `credibility.assessment.created` - New assessment created
-- `credibility.score.updated` - Score changed
-- `credibility.source.rated` - Source received new rating
-- `credibility.factor.applied` - Credibility factor applied
-- `credibility.analysis.completed` - Automated analysis finished
-- `credibility.threshold.breached` - Score crossed threshold
+### Deception Detection Checklists
 
-**Subscribes**:
-- `document.processed` - Assess newly processed documents
-- `claims.claim.verified` - Boost source credibility from verified claims
-- `claims.claim.disputed` - Reduce source credibility from disputed claims
-- `contradictions.contradiction.detected` - Impact credibility of involved sources
+Intelligence tradecraft checklists for detecting deception:
+
+#### MOM (Motive, Opportunity, Means)
+Assesses whether a source has motive, opportunity, and means to deceive.
+
+#### POP (Past Opposition Practices)
+Reviews historical deception patterns and practices.
+
+#### MOSES (Multiple, Orthogonal Sources)
+Evaluates whether information comes from independent sources.
+
+#### EVE (Evaluation of Evidence)
+Examines evidence quality and potential manipulation.
+
+### Deception Risk Levels
+- `minimal` - Little evidence of deception
+- `low` - Some minor indicators
+- `moderate` - Notable concerns
+- `high` - Strong deception indicators
+- `critical` - High confidence of deception
 
 ## Installation
 
 ```bash
-cd packages/arkham-shard-credibility
-pip install -e .
+pip install -e packages/arkham-shard-credibility
 ```
 
-The shard will be auto-discovered by ArkhamFrame on next startup.
+The shard auto-registers via entry point on Frame startup.
 
 ## API Endpoints
 
-### Core Endpoints
+### Health and Counts
 
-- `GET /api/credibility/health` - Health check
-- `GET /api/credibility/count` - Get assessment count (badge)
-- `GET /api/credibility/` - List assessments (with filtering)
-- `POST /api/credibility/` - Create assessment
-- `GET /api/credibility/{id}` - Get assessment by ID
-- `PUT /api/credibility/{id}` - Update assessment
-- `DELETE /api/credibility/{id}` - Delete assessment
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/credibility/health` | Health check |
+| GET | `/api/credibility/count` | Total assessments count |
+| GET | `/api/credibility/low/count` | Low credibility count (badge) |
 
-### Source Endpoints
+### Assessment CRUD
 
-- `GET /api/credibility/source/{source_type}/{source_id}` - Get source score
-- `POST /api/credibility/calculate` - Calculate score for source
-- `GET /api/credibility/source/{source_type}/{source_id}/history` - Get source history
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/credibility/` | List assessments |
+| POST | `/api/credibility/` | Create assessment |
+| GET | `/api/credibility/{id}` | Get assessment |
+| PUT | `/api/credibility/{id}` | Update assessment |
+| DELETE | `/api/credibility/{id}` | Delete assessment |
 
-### Factor Endpoints
+### By Level
 
-- `GET /api/credibility/factors` - List available credibility factors
-- `POST /api/credibility/factors` - Create custom factor
-- `GET /api/credibility/factors/apply` - Apply factors to assessment
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/credibility/level/{level}` | List by level |
 
-### Statistics
+### Source Analysis
 
-- `GET /api/credibility/stats` - Get credibility statistics
-- `GET /api/credibility/stats/by-source-type` - Statistics by source type
-- `GET /api/credibility/low/count` - Count low-credibility sources (for badge)
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/credibility/source/{type}/{id}` | Get source credibility |
+| GET | `/api/credibility/source/{type}/{id}/history` | Source history |
+| POST | `/api/credibility/calculate` | Calculate credibility |
 
-## Credibility Factors
+### Factors and Statistics
 
-### Standard Factors
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/credibility/factors` | List standard factors |
+| GET | `/api/credibility/stats` | Get statistics |
+| GET | `/api/credibility/stats/by-source-type` | Stats by source type |
 
-The shard includes these standard credibility factors:
+### Deception Detection
 
-**Source Reliability** (weight: 0.25)
-- Track record of accuracy
-- History of corrections/retractions
-- Peer recognition
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/api/credibility/deception` | Create deception assessment |
+| GET | `/api/credibility/deception` | List deception assessments |
+| GET | `/api/credibility/deception/count` | Deception count |
+| GET | `/api/credibility/deception/high-risk` | High risk sources |
+| GET | `/api/credibility/deception/{id}` | Get deception assessment |
+| PUT | `/api/credibility/deception/{id}` | Update assessment |
+| DELETE | `/api/credibility/deception/{id}` | Delete assessment |
 
-**Evidence Quality** (weight: 0.20)
-- Primary vs. secondary sources
-- Documentation completeness
-- Verifiability
+### Deception Checklists
 
-**Bias Assessment** (weight: 0.15)
-- Political/ideological bias
-- Financial conflicts of interest
-- Objectivity indicators
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/credibility/deception/indicators/{type}` | Get checklist indicators |
+| PUT | `/api/credibility/deception/{id}/checklist/{type}` | Update checklist |
+| POST | `/api/credibility/deception/{id}/checklist/{type}/llm` | LLM analysis |
+| POST | `/api/credibility/deception/{id}/recalculate` | Recalculate score |
+| GET | `/api/credibility/deception/source/{type}/{id}` | Source deception history |
 
-**Expertise** (weight: 0.15)
-- Subject matter expertise
-- Professional credentials
-- Domain authority
+### AI Analysis
 
-**Timeliness** (weight: 0.10)
-- Recency of information
-- Update frequency
-- Temporal relevance
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/api/credibility/ai/junior-analyst` | AI analysis (streaming) |
 
-**Independence** (weight: 0.10)
-- Editorial independence
-- Funding transparency
-- Organizational autonomy
+## API Examples
 
-**Transparency** (weight: 0.05)
-- Source disclosure
-- Methodology transparency
-- Correction policies
+### Create Credibility Assessment
 
-### Custom Factors
-
-Create domain-specific factors via API:
-
-```python
-POST /api/credibility/factors
-{
-  "factor_type": "academic_rigor",
-  "weight": 0.20,
-  "description": "Peer review and citation metrics"
-}
-```
-
-## Data Models
-
-### CredibilityAssessment
-
-```python
-{
-  "id": str,
-  "source_type": SourceType,  # DOCUMENT, ENTITY, WEBSITE, etc.
-  "source_id": str,
-  "score": int,  # 0-100
-  "confidence": float,  # 0.0-1.0
-  "factors": [CredibilityFactor],
-  "assessed_by": AssessmentMethod,  # MANUAL, AUTOMATED, HYBRID
-  "assessor_id": str,
-  "notes": str,
-  "metadata": dict,
-  "created_at": datetime,
-  "updated_at": datetime
-}
-```
-
-### CredibilityFactor
-
-```python
-{
-  "factor_type": str,
-  "weight": float,  # 0.0-1.0
-  "score": int,  # 0-100
-  "notes": str
-}
-```
-
-### SourceType Enum
-
-- `DOCUMENT` - Document credibility
-- `ENTITY` - Entity reliability
-- `WEBSITE` - Website trustworthiness
-- `PUBLICATION` - Publication reputation
-- `PERSON` - Individual credibility
-- `ORGANIZATION` - Organizational reliability
-
-### AssessmentMethod Enum
-
-- `MANUAL` - Human analyst assessment
-- `AUTOMATED` - LLM-generated assessment
-- `HYBRID` - Combined human + AI assessment
-
-## Usage Examples
-
-### Create Manual Assessment
-
-```python
+```json
 POST /api/credibility/
 {
-  "source_type": "DOCUMENT",
-  "source_id": "doc-123",
+  "source_type": "document",
+  "source_id": "doc_abc123",
   "score": 75,
-  "confidence": 0.9,
+  "confidence": 0.85,
   "factors": [
-    {
-      "factor_type": "source_reliability",
-      "weight": 0.25,
-      "score": 80,
-      "notes": "Well-established publication"
-    },
-    {
-      "factor_type": "evidence_quality",
-      "weight": 0.20,
-      "score": 70,
-      "notes": "Primary source with citations"
-    }
+    {"factor_type": "expertise", "weight": 0.3, "score": 80, "notes": "Expert author"},
+    {"factor_type": "corroboration", "weight": 0.25, "score": 70, "notes": "Multiple sources"},
+    {"factor_type": "recency", "weight": 0.2, "score": 90, "notes": "Recent publication"}
   ],
-  "assessed_by": "MANUAL",
-  "assessor_id": "analyst-1",
-  "notes": "Reputable source with strong track record"
+  "assessed_by": "manual",
+  "notes": "Generally reliable government report"
 }
 ```
 
 ### Get Source Credibility
 
-```python
-GET /api/credibility/source/DOCUMENT/doc-123
-# Returns aggregate score and all assessments
+```bash
+GET /api/credibility/source/document/doc_abc123
 ```
 
-### Calculate Automated Assessment
+Response:
+```json
+{
+  "source_type": "document",
+  "source_id": "doc_abc123",
+  "avg_score": 72.5,
+  "assessment_count": 2,
+  "latest_score": 75,
+  "latest_confidence": 0.85,
+  "latest_assessment_id": "assess_xyz",
+  "latest_assessed_at": "2024-12-15T10:30:00Z",
+  "level": "high"
+}
+```
 
-```python
+### Calculate Credibility with LLM
+
+```json
 POST /api/credibility/calculate
 {
-  "source_type": "WEBSITE",
-  "source_id": "site-456",
-  "use_llm": true  # Optional: use LLM for analysis
+  "source_type": "document",
+  "source_id": "doc_abc123",
+  "use_llm": true
 }
-# Returns calculated credibility score
 ```
 
-### Filter Low-Credibility Sources
+### Create Deception Assessment
 
-```python
-GET /api/credibility/?max_score=40
-# Returns all assessments with score <= 40
+```json
+POST /api/credibility/deception
+{
+  "source_type": "entity",
+  "source_id": "ent_person_123",
+  "source_name": "John Smith",
+  "affects_credibility": true,
+  "credibility_weight": 0.3
+}
 ```
 
-## Database Schema
+### Get Checklist Indicators
 
-### arkham_credibility.assessments
-
-- `id` - Assessment UUID
-- `source_type` - Type of source (enum)
-- `source_id` - Reference to source
-- `score` - Credibility score (0-100)
-- `confidence` - Assessment confidence (0-1)
-- `factors` - JSON array of factors
-- `assessed_by` - Assessment method (enum)
-- `assessor_id` - Who/what performed assessment
-- `notes` - Assessment notes
-- `metadata` - Additional metadata (JSON)
-- `created_at` - Timestamp
-- `updated_at` - Timestamp
-
-### Indexes
-
-- `idx_assessments_source` - (source_type, source_id)
-- `idx_assessments_score` - (score)
-- `idx_assessments_method` - (assessed_by)
-- `idx_assessments_created` - (created_at DESC)
-
-## Integration Points
-
-### With Claims Shard
-
-- Verified claims boost source credibility
-- Disputed claims reduce source credibility
-- Aggregate claim verification rates inform credibility
-
-### With Contradictions Shard
-
-- Contradictions detected reduce credibility of involved sources
-- Pattern of contradictions indicates unreliable source
-
-### With Documents Shard
-
-- Document credibility assessments available in document viewer
-- Bulk document assessment via worker queues
-
-### With Entities Shard
-
-- Entity credibility assessments for people and organizations
-- Entity network credibility propagation
-
-## Configuration
-
-### Score Thresholds
-
-Configure in Frame settings:
-
-```yaml
-credibility:
-  thresholds:
-    unreliable: 20
-    low: 40
-    medium: 60
-    high: 80
-    verified: 100
-  alert_on_breach: true
-  default_confidence: 0.7
+```bash
+GET /api/credibility/deception/indicators/mom
 ```
 
-### Factor Weights
+Returns standard MOM checklist questions and guidance.
 
-Default weights can be customized per deployment.
+### Update Checklist with Answers
+
+```json
+PUT /api/credibility/deception/{id}/checklist/mom
+{
+  "indicators": [
+    {
+      "id": "mom_1",
+      "checklist": "mom",
+      "question": "Does the source have motive to deceive?",
+      "answer": "Possible financial incentive identified",
+      "strength": "moderate",
+      "confidence": 0.7,
+      "evidence_ids": ["ev_123"],
+      "notes": "Recent business dealings suggest motive"
+    }
+  ],
+  "summary": "Moderate motive indicators present"
+}
+```
+
+### LLM-Assisted Checklist Analysis
+
+```json
+POST /api/credibility/deception/{id}/checklist/mom/llm
+{
+  "context": "Additional context about the source..."
+}
+```
+
+### Get Statistics
+
+```bash
+GET /api/credibility/stats
+```
+
+Response:
+```json
+{
+  "total_assessments": 450,
+  "by_source_type": {"document": 300, "entity": 100, "external": 50},
+  "by_level": {"unreliable": 20, "low": 80, "medium": 150, "high": 150, "verified": 50},
+  "by_method": {"manual": 200, "automated": 150, "llm": 100},
+  "avg_score": 58.5,
+  "avg_confidence": 0.78,
+  "unreliable_count": 20,
+  "low_count": 80,
+  "medium_count": 150,
+  "high_count": 150,
+  "verified_count": 50,
+  "sources_assessed": 380,
+  "avg_assessments_per_source": 1.18
+}
+```
+
+## Events
+
+### Published Events
+
+| Event | Description |
+|-------|-------------|
+| `credibility.assessment.created` | New assessment created |
+| `credibility.score.updated` | Score changed |
+| `credibility.source.rated` | Source credibility rated |
+| `credibility.factor.applied` | Factor applied |
+| `credibility.analysis.completed` | Automated analysis finished |
+| `credibility.threshold.breached` | Score crossed threshold |
+
+### Subscribed Events
+
+| Event | Handler |
+|-------|---------|
+| `document.processed` | Assess new documents |
+| `claims.claim.verified` | Update source credibility |
+| `claims.claim.disputed` | Downgrade source credibility |
+| `contradictions.contradiction.detected` | Impact credibility |
+
+## UI Routes
+
+| Route | Description |
+|-------|-------------|
+| `/credibility` | All assessments |
+| `/credibility/high` | High credibility sources |
+| `/credibility/low` | Low credibility sources |
+| `/credibility/sources` | Source analysis |
+
+## Dependencies
+
+### Required Services
+- **database** - Assessment storage
+- **events** - Event publishing
+
+### Optional Services
+- **llm** - AI-powered assessment
+- **vectors** - Semantic analysis
+- **workers** - Background jobs
+
+## URL State
+
+| Parameter | Description |
+|-----------|-------------|
+| `assessmentId` | Selected assessment |
+| `sourceType` | Filter by source type |
+| `sourceId` | Filter by source |
+| `minScore` | Minimum score filter |
+
+### Local Storage Keys
+- `show_factors` - Factor detail expansion
+- `sort_order` - List sort preference
+- `score_threshold` - Display threshold
+
+## Indicator Strength
+
+| Strength | Description |
+|----------|-------------|
+| `none` | No indication |
+| `weak` | Minor indicator |
+| `moderate` | Notable indicator |
+| `strong` | Strong indicator |
+| `definitive` | Conclusive indicator |
+
+## Scoring Methodology
+
+### Credibility Score
+Weighted average of factor scores:
+- Each factor has weight (0-1) and score (0-100)
+- Overall score = sum(factor_weight * factor_score) / sum(weights)
+- Level determined by score thresholds
+
+### Deception Score
+Average of completed checklist scores:
+- Each checklist calculates score from indicator strengths
+- Overall score = average of completed checklist scores
+- Risk level determined by score and indicator patterns
 
 ## Development
 
-### Run Tests
-
 ```bash
-pytest tests/
+# Run tests
+pytest packages/arkham-shard-credibility/tests/
+
+# Type checking
+mypy packages/arkham-shard-credibility/
 ```
 
-### Test Coverage
+## References
 
-```bash
-pytest --cov=arkham_shard_credibility tests/
-```
-
-## Architecture Compliance
-
-This shard fully complies with:
-- **shard_manifest_schema_prod.md** v1.0
-- **CLAUDE.md** project guidelines
-- **ArkhamFrame** v0.1.0+ requirements
-
-### Compliance Checklist
-
-- [x] Valid manifest structure
-- [x] Correct navigation category (Analysis) and order (33)
-- [x] Event naming: `{shard}.{entity}.{action}`
-- [x] Empty `dependencies.shards: []`
-- [x] Standard capability names
-- [x] Database schema: `arkham_credibility`
-- [x] FastAPI router with `/api/credibility` prefix
-- [x] Health and count endpoints
-- [x] Pydantic models for all data
-- [x] Async/await throughout
-- [x] Proper error handling
-- [x] Full test coverage
+- Richards J. Heuer Jr., "Psychology of Intelligence Analysis"
+- Intelligence Community tradecraft standards
+- MICE (Money, Ideology, Compromise, Ego) framework
 
 ## License
 
-Part of the SHATTERED intelligence analysis platform.
-
-## Version History
-
-| Version | Date | Changes |
-|---------|------|---------|
-| 0.1.0 | 2025-12-26 | Initial production release |
-
----
-
-*Credibility Shard - Production v0.1.0*
-*Part of ArkhamFrame Shard Ecosystem*
+MIT

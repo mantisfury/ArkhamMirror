@@ -1,426 +1,466 @@
-# Timeline Shard
+# arkham-shard-timeline
 
-Temporal event extraction and timeline visualization for ArkhamFrame.
+> Temporal event extraction and timeline visualization
 
 **Version:** 0.1.0
 **Category:** Visualize
 **Frame Requirement:** >=0.1.0
 
+## Overview
+
+The Timeline shard extracts temporal events from documents and constructs unified timelines. It identifies dates, normalizes temporal expressions, detects conflicts between sources, merges timelines across documents, and provides interactive visualization of chronological events.
+
+### Key Capabilities
+
+1. **Timeline Construction** - Build timelines from documents
+2. **Date Extraction** - Extract and parse temporal expressions
+3. **Timeline Visualization** - Interactive timeline display
+4. **Conflict Detection** - Identify chronological contradictions
+5. **Date Normalization** - Normalize varied date formats
+
 ## Features
 
-- **Date Extraction**: Extract dates, times, and temporal references from documents
-- **Format Normalization**: Convert various date formats to ISO standard
-- **Timeline Visualization**: Construct chronological timelines from extracted events
-- **Timeline Merging**: Combine timelines from multiple documents
-- **Conflict Detection**: Identify temporal inconsistencies and contradictions
-- **Entity Timeline**: Track events associated with specific entities
-- **Range Queries**: Filter events by date range
-- **Precision Tracking**: Handle different date precisions (day, month, year, decade)
+### Event Extraction
+- Extract dates and temporal expressions from text
+- Parse relative dates (e.g., "last week", "three days ago")
+- Multiple extraction patterns and formats
+- Confidence scoring for extracted dates
+
+### Event Types
+- `occurrence` - Point-in-time events
+- `period` - Events with duration
+- `deadline` - Due dates
+- `meeting` - Scheduled meetings
+- `milestone` - Project milestones
+- `announcement` - Announcements
+- `birth` / `death` - Life events
+- `start` / `end` - Period boundaries
+
+### Date Precision
+- `year` - Year only (2024)
+- `month` - Year and month (2024-03)
+- `day` - Full date (2024-03-15)
+- `hour` - Date and hour
+- `minute` - Date and time
+- `second` - Precise timestamp
+
+### Timeline Merging
+- Merge timelines from multiple documents
+- Multiple merge strategies
+- Deduplication of similar events
+- Priority-based conflict resolution
+
+### Merge Strategies
+- `chronological` - Order by date
+- `source_priority` - Priority documents first
+- `confidence_weighted` - Highest confidence wins
+
+### Conflict Detection
+- Detect chronological contradictions
+- Identify overlapping events
+- Find sequencing violations
+- Severity-based classification
+
+### Conflict Types
+- `date_mismatch` - Same event, different dates
+- `sequence_violation` - Impossible ordering
+- `overlap` - Conflicting time periods
+- `missing_event` - Referenced but not found
+
+### Conflict Severity
+- `critical` - Major contradiction
+- `high` - Significant conflict
+- `medium` - Notable inconsistency
+- `low` - Minor discrepancy
+
+### Gap Detection
+- Identify temporal gaps in timeline
+- Find missing periods
+- Detect coverage holes
 
 ## Installation
 
 ```bash
-pip install arkham-shard-timeline
+pip install -e packages/arkham-shard-timeline
 ```
 
-The shard is automatically discovered by ArkhamFrame via entry points.
+The shard auto-registers via entry point on Frame startup.
 
 ## API Endpoints
 
-### POST /api/timeline/extract
-Extract timeline events from text or document.
+### Health and Count
 
-**Request:**
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/timeline/health` | Health check |
+| GET | `/api/timeline/count` | Event count (badge) |
+
+### Events CRUD
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/timeline/events` | List all events |
+| PUT | `/api/timeline/events/{id}` | Update event |
+| DELETE | `/api/timeline/events/{id}` | Delete event |
+| DELETE | `/api/timeline/events` | Bulk delete events |
+| POST | `/api/timeline/events/merge` | Merge duplicate events |
+
+### Event Notes
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/api/timeline/events/{id}/notes` | Add note |
+| GET | `/api/timeline/events/{id}/notes` | Get notes |
+| DELETE | `/api/timeline/events/{id}/notes/{note_id}` | Delete note |
+
+### Extraction
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/api/timeline/extract` | Extract from text |
+| POST | `/api/timeline/extract/{doc_id}` | Extract from document |
+
+### Documents
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/timeline/documents` | List documents |
+| GET | `/api/timeline/document/{id}` | Get document timeline |
+| DELETE | `/api/timeline/document/{id}/events` | Delete document events |
+
+### Timeline Operations
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/timeline/range` | Events in date range |
+| GET | `/api/timeline/stats` | Timeline statistics |
+| POST | `/api/timeline/merge` | Merge timelines |
+| POST | `/api/timeline/normalize` | Normalize dates |
+| GET | `/api/timeline/gaps` | Detect gaps |
+
+### Entities
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/timeline/entity/{id}` | Entity timeline |
+| GET | `/api/timeline/entities` | Entities with events |
+
+### Conflicts
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/api/timeline/conflicts` | Detect conflicts |
+| GET | `/api/timeline/conflicts/analyze` | Analyze conflicts |
+
+### AI Analysis
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/api/timeline/ai/junior-analyst` | AI analysis (streaming) |
+
+## API Examples
+
+### Extract Timeline from Text
+
 ```json
+POST /api/timeline/extract
 {
-  "text": "The meeting occurred on January 15, 2024. Three days later, the contract was signed.",
-  "document_id": "doc123",
+  "text": "The meeting was held on March 15, 2024. The project started in January and will conclude by December.",
   "context": {
-    "reference_date": "2024-01-01T00:00:00"
+    "reference_date": "2024-06-01",
+    "timezone": "America/New_York"
   }
 }
 ```
 
-**Response:**
+Response:
 ```json
 {
   "events": [
     {
-      "id": "evt_abc123",
-      "document_id": "doc123",
-      "text": "The meeting occurred on January 15, 2024",
-      "date_start": "2024-01-15T00:00:00",
-      "date_end": null,
+      "id": "evt_123",
+      "text": "The meeting was held on March 15, 2024",
+      "date_start": "2024-03-15T00:00:00",
       "precision": "day",
-      "confidence": 0.95,
-      "entities": [],
-      "event_type": "occurrence",
-      "span": [0, 42]
+      "event_type": "meeting",
+      "confidence": 0.95
+    },
+    {
+      "id": "evt_124",
+      "text": "The project started in January",
+      "date_start": "2024-01-01T00:00:00",
+      "precision": "month",
+      "event_type": "start",
+      "confidence": 0.85
     }
   ],
   "count": 2,
-  "duration_ms": 23.4
+  "duration_ms": 234.5
 }
 ```
 
-### GET /api/timeline/{document_id}
-Get timeline for a specific document.
+### Extract from Document
 
-**Query Parameters:**
-- `start_date` (optional): Filter events after this date
-- `end_date` (optional): Filter events before this date
-- `event_type` (optional): Filter by event type
-- `min_confidence` (optional): Minimum confidence threshold
+```bash
+POST /api/timeline/extract/{document_id}
+```
 
-**Response:**
+### Get Document Timeline
+
+```bash
+GET /api/timeline/document/{document_id}?start_date=2024-01-01&end_date=2024-12-31&event_type=meeting&min_confidence=0.7
+```
+
+Response:
 ```json
 {
-  "document_id": "doc123",
+  "document_id": "doc_abc123",
   "events": [...],
   "count": 15,
   "date_range": {
-    "earliest": "2020-01-01T00:00:00",
-    "latest": "2024-12-31T23:59:59"
+    "earliest": "2024-01-15T00:00:00",
+    "latest": "2024-11-20T00:00:00"
   }
 }
 ```
 
-### POST /api/timeline/merge
-Merge timelines from multiple documents.
+### Merge Multiple Timelines
 
-**Request:**
 ```json
+POST /api/timeline/merge
 {
-  "document_ids": ["doc123", "doc456", "doc789"],
+  "document_ids": ["doc_a", "doc_b", "doc_c"],
   "merge_strategy": "chronological",
   "deduplicate": true,
   "date_range": {
-    "start": "2024-01-01T00:00:00",
-    "end": "2024-12-31T23:59:59"
-  }
+    "start": "2024-01-01",
+    "end": "2024-12-31"
+  },
+  "priority_docs": ["doc_a"]
 }
 ```
 
-**Response:**
+Response:
 ```json
 {
   "events": [...],
-  "count": 47,
+  "count": 45,
   "sources": {
-    "doc123": 15,
-    "doc456": 18,
-    "doc789": 14
+    "doc_a": 20,
+    "doc_b": 15,
+    "doc_c": 10
   },
   "date_range": {
-    "earliest": "2024-01-01T00:00:00",
-    "latest": "2024-12-15T14:30:00"
+    "start": "2024-01-01",
+    "end": "2024-12-31"
   },
-  "duplicates_removed": 12
+  "duplicates_removed": 5
 }
 ```
 
-### GET /api/timeline/range
-Get events within a date range across all documents.
+### Detect Conflicts
 
-**Query Parameters:**
-- `start_date`: Range start date (ISO format)
-- `end_date`: Range end date (ISO format)
-- `document_ids` (optional): Comma-separated document IDs
-- `entity_ids` (optional): Comma-separated entity IDs
-- `event_types` (optional): Comma-separated event types
-- `limit` (optional): Maximum results (default: 100)
-- `offset` (optional): Pagination offset
-
-**Response:**
 ```json
+POST /api/timeline/conflicts
 {
-  "events": [...],
-  "count": 42,
-  "total": 156,
-  "has_more": true
-}
-```
-
-### POST /api/timeline/conflicts
-Find temporal conflicts across documents.
-
-**Request:**
-```json
-{
-  "document_ids": ["doc123", "doc456"],
-  "conflict_types": ["contradiction", "inconsistency", "gap"],
+  "document_ids": ["doc_a", "doc_b"],
+  "conflict_types": ["date_mismatch", "sequence_violation"],
   "tolerance_days": 1
 }
 ```
 
-**Response:**
+Response:
 ```json
 {
   "conflicts": [
     {
-      "id": "conflict_xyz",
-      "type": "contradiction",
+      "id": "conflict_123",
+      "type": "date_mismatch",
       "severity": "high",
-      "events": ["evt_abc", "evt_def"],
-      "description": "Event A claims meeting on Jan 15, Event B claims Jan 17",
-      "documents": ["doc123", "doc456"],
-      "suggested_resolution": "verify_source"
+      "event_a": {"id": "evt_1", "text": "Meeting on March 15"},
+      "event_b": {"id": "evt_2", "text": "Meeting on March 18"},
+      "description": "Same event with different dates"
     }
   ],
   "count": 3,
   "by_type": {
-    "contradiction": 1,
-    "inconsistency": 2,
-    "gap": 0
+    "date_mismatch": 2,
+    "sequence_violation": 1
   }
 }
 ```
 
-### GET /api/timeline/entity/{entity_id}
-Get timeline for a specific entity.
+### Normalize Dates
 
-**Query Parameters:**
-- `start_date` (optional): Filter events after this date
-- `end_date` (optional): Filter events before this date
-- `include_related` (optional): Include related entities (default: false)
-
-**Response:**
 ```json
+POST /api/timeline/normalize
 {
-  "entity_id": "ent_123",
-  "events": [...],
-  "count": 28,
-  "date_range": {
-    "earliest": "2020-03-15T00:00:00",
-    "latest": "2024-11-30T16:45:00"
-  }
-}
-```
-
-### POST /api/timeline/normalize
-Normalize date formats from various inputs.
-
-**Request:**
-```json
-{
-  "dates": [
-    "January 15, 2024",
-    "15/01/2024",
-    "2024-01-15",
-    "mid-2024",
-    "Q3 2024"
-  ],
-  "reference_date": "2024-01-01T00:00:00",
+  "dates": ["March 15, 2024", "last Tuesday", "Q1 2024"],
+  "reference_date": "2024-06-01",
   "prefer_format": "iso"
 }
 ```
 
-**Response:**
+Response:
 ```json
 {
   "normalized": [
-    {
-      "original": "January 15, 2024",
-      "normalized": "2024-01-15T00:00:00",
-      "precision": "day",
-      "confidence": 0.99
-    },
-    {
-      "original": "mid-2024",
-      "normalized": "2024-06-30T12:00:00",
-      "precision": "month",
-      "confidence": 0.7
-    }
+    {"original": "March 15, 2024", "normalized": "2024-03-15", "precision": "day"},
+    {"original": "last Tuesday", "normalized": "2024-05-28", "precision": "day"},
+    {"original": "Q1 2024", "normalized": "2024-01-01", "precision": "quarter"}
   ]
 }
 ```
 
-### GET /api/timeline/stats
-Timeline statistics across all documents.
+### Get Entity Timeline
 
-**Query Parameters:**
-- `document_ids` (optional): Filter by documents
-- `start_date` (optional): Filter range start
-- `end_date` (optional): Filter range end
+```bash
+GET /api/timeline/entity/{entity_id}
+```
 
-**Response:**
+Response:
 ```json
 {
-  "total_events": 1247,
-  "total_documents": 89,
+  "entity_id": "ent_person_123",
+  "events": [...],
+  "count": 25,
   "date_range": {
-    "earliest": "1995-03-12T00:00:00",
-    "latest": "2024-12-20T09:15:00"
-  },
-  "by_precision": {
-    "day": 856,
-    "month": 234,
-    "year": 123,
-    "decade": 34
-  },
-  "by_type": {
-    "occurrence": 678,
-    "reference": 345,
-    "deadline": 156,
-    "period": 68
-  },
-  "avg_confidence": 0.87,
-  "conflicts_detected": 12
+    "earliest": "2020-01-01",
+    "latest": "2024-12-31"
+  }
 }
 ```
 
-## Event Structure
+### Get Statistics
 
-```python
-@dataclass
-class TimelineEvent:
-    id: str                       # Unique event identifier
-    document_id: str              # Source document
-    text: str                     # Original text mentioning the date
-    date_start: datetime          # Normalized start date
-    date_end: Optional[datetime]  # For periods/ranges
-    precision: str                # "day", "month", "year", "decade", "century"
-    confidence: float             # Extraction confidence (0-1)
-    entities: List[str]           # Entity IDs mentioned
-    event_type: str               # "occurrence", "reference", "deadline", "period"
-    span: Optional[Tuple[int, int]]  # Character span in source text
-    metadata: Dict[str, Any]      # Additional context
+```bash
+GET /api/timeline/stats?document_ids=doc_a,doc_b&start_date=2024-01-01
 ```
 
-## Date Parsing
-
-The shard handles various date formats:
-
-**Absolute Dates:**
-- ISO 8601: `2024-01-15`, `2024-01-15T14:30:00`
-- US Format: `01/15/2024`, `January 15, 2024`
-- EU Format: `15/01/2024`, `15 January 2024`
-- Natural: `Jan 15, 2024`, `15th of January 2024`
-
-**Relative Dates:**
-- Simple: `yesterday`, `today`, `tomorrow`
-- Week-based: `last Tuesday`, `next Friday`
-- Numeric: `3 days ago`, `2 weeks from now`
-- Month-based: `last month`, `next quarter`
-
-**Periods:**
-- Quarters: `Q1 2024`, `Q3 2023`
-- Seasons: `summer 2024`, `winter 2023`
-- Decades: `the 1990s`, `mid-90s`
-- Centuries: `the 20th century`, `early 1800s`
-
-**Approximate:**
-- `around 2020`, `circa 1995`
-- `mid-2024`, `late 2023`
-- `early January`, `late December`
-
-## Usage from Other Shards
-
-```python
-# Get the timeline shard
-timeline_shard = frame.get_shard("timeline")
-
-# Extract timeline from document
-events = await timeline_shard.extract_timeline(
-    document_id="doc123",
-)
-
-# Merge timelines
-merged = await timeline_shard.merge_timelines(
-    document_ids=["doc123", "doc456", "doc789"],
-    deduplicate=True,
-)
-
-# Find conflicts
-conflicts = await timeline_shard.detect_conflicts(
-    document_ids=["doc123", "doc456"],
-    tolerance_days=1,
-)
-
-# Get entity timeline
-entity_timeline = await timeline_shard.get_entity_timeline(
-    entity_id="ent_123",
-    start_date=datetime(2024, 1, 1),
-)
+Response:
+```json
+{
+  "total_events": 150,
+  "total_documents": 5,
+  "date_range": {
+    "earliest": "2020-01-15",
+    "latest": "2024-11-30"
+  },
+  "by_precision": {
+    "day": 100,
+    "month": 30,
+    "year": 20
+  },
+  "by_type": {
+    "occurrence": 80,
+    "meeting": 40,
+    "deadline": 30
+  },
+  "avg_confidence": 0.87,
+  "conflicts_detected": 5
+}
 ```
 
-## Architecture
+### Detect Gaps
 
-### Event Extraction Pipeline
+```bash
+GET /api/timeline/gaps?document_ids=doc_a,doc_b&min_gap_days=30
+```
 
-1. **Text Analysis**: Scan document text for temporal patterns
-2. **Pattern Matching**: Apply regex and NLP patterns
-3. **Date Parsing**: Convert to normalized datetime objects
-4. **Precision Detection**: Determine date precision level
-5. **Confidence Scoring**: Assess extraction confidence
-6. **Entity Linking**: Associate with mentioned entities
-7. **Event Classification**: Categorize event type
+### Update Event
 
-### Conflict Detection
+```json
+PUT /api/timeline/events/{event_id}
+{
+  "text": "Updated event description",
+  "date_start": "2024-03-16T10:00:00",
+  "precision": "minute",
+  "confidence": 0.95,
+  "entities": ["ent_123", "ent_456"]
+}
+```
 
-Identifies temporal conflicts:
-- **Contradictions**: Same event with different dates
-- **Inconsistencies**: Illogical date sequences
-- **Gaps**: Missing expected timeline segments
-- **Overlaps**: Incompatible simultaneous events
+### Merge Duplicate Events
 
-### Merging Strategies
-
-- **Chronological**: Sort by date, preserve all events
-- **Deduplicated**: Remove duplicate events
-- **Consolidated**: Merge similar events
-- **Source-prioritized**: Prefer certain documents
-
-## Dependencies
-
-- `arkham-frame>=0.1.0`
-- `python-dateutil>=2.8.0` - Flexible date parsing
-- PostgreSQL - Event storage and indexing
+```json
+POST /api/timeline/events/merge
+{
+  "event_ids": ["evt_1", "evt_2", "evt_3"],
+  "primary_id": "evt_1",
+  "merge_notes": true
+}
+```
 
 ## Events
 
-**Published:**
-- `timeline.timeline.extracted` - When events are extracted from a document
-- `timeline.timeline.merged` - When timelines are merged
-- `timeline.conflict.detected` - When temporal conflicts are found
-- `timeline.entity_timeline.built` - When entity timeline is constructed
+### Published Events
 
-**Subscribed:**
-- `document.document.indexed` - To extract timeline on new documents
-- `document.document.deleted` - To clean up timeline events
-- `entity.entity.created` - To link events with entities
+| Event | Description |
+|-------|-------------|
+| `timeline.timeline.extracted` | Timeline extracted from document |
+| `timeline.timeline.merged` | Timelines merged |
+| `timeline.conflict.detected` | Conflict detected |
+| `timeline.entity_timeline.built` | Entity timeline built |
 
-## Configuration
+### Subscribed Events
 
-Timeline extraction is automatically configured based on available Frame services:
-- `database` service for event storage
-- `entities` service for entity linking
-- `documents` service for document access
+| Event | Handler |
+|-------|---------|
+| `document.document.indexed` | Extract timeline from new doc |
+| `document.document.deleted` | Remove document events |
+| `entity.entity.created` | Link events to entity |
+
+## UI Routes
+
+| Route | Description |
+|-------|-------------|
+| `/timeline` | Timeline visualization |
+
+## Dependencies
+
+### Required Services
+- **database** - Event storage
+- **events** - Event publishing
+
+### Optional Services
+- **documents** - Document access for extraction
+- **entities** - Entity linking
+
+## URL State
+
+| Parameter | Description |
+|-----------|-------------|
+| `documentIds` | Filter by documents |
+| `entityId` | Filter by entity |
+| `startDate` | Date range start |
+| `endDate` | Date range end |
+
+## Extraction Features
+
+### Supported Date Formats
+- ISO 8601: `2024-03-15T10:30:00`
+- US format: `03/15/2024`, `March 15, 2024`
+- European: `15/03/2024`, `15 March 2024`
+- Relative: `yesterday`, `last week`, `3 days ago`
+- Quarters: `Q1 2024`, `first quarter`
+- Fiscal years: `FY2024`
+
+### Entity Linking
+Timeline events can be linked to entities:
+- Extract entity mentions from event text
+- Link existing entities to events
+- Build entity-centric timelines
 
 ## Development
 
 ```bash
-# Install in development mode
-pip install -e ".[dev]"
-
 # Run tests
-pytest
+pytest packages/arkham-shard-timeline/tests/
 
-# Format code
-black arkham_shard_timeline/
+# Type checking
+mypy packages/arkham-shard-timeline/
 ```
 
-## Performance
+## License
 
-- Event extraction: ~100-500 events/second
-- Timeline merging: ~10,000 events/second
-- Conflict detection: ~5,000 comparisons/second
-- Date normalization: ~1,000 dates/second
-
-## Limitations
-
-- Requires clear temporal markers in text
-- Ambiguous dates may need context
-- Relative dates require reference date
-- Complex temporal expressions may be simplified
-- Historical dates before 1900 may have lower confidence
+MIT

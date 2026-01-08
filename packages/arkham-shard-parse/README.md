@@ -1,161 +1,288 @@
-# Parse Shard
+# arkham-shard-parse
 
-Entity extraction and parsing shard for ArkhamFrame.
+> Entity extraction, NER, relationship extraction, and text chunking
+
+**Version:** 0.1.0
+**Category:** Data
+**Frame Requirement:** >=0.1.0
 
 ## Overview
 
-The Parse shard extracts structured information from unstructured text, including entities, dates, locations, and relationships. It processes documents through NER pipelines and prepares text for downstream analysis and embedding.
+The Parse shard handles text analysis and extraction for SHATTERED. It performs Named Entity Recognition (NER), date extraction, location extraction, relationship extraction, coreference resolution, and text chunking. Supports both synchronous parsing for small text and async worker-based parsing for full documents.
 
-**Category**: Data (order 12)
+### Key Capabilities
+
+1. **Entity Extraction** - NER for persons, organizations, locations, dates, etc.
+2. **Relationship Extraction** - Extract relationships between entities
+3. **Text Chunking** - Split documents into embedding-ready segments
+4. **Entity Linking** - Link mentions to canonical entities
+5. **Coreference Resolution** - Resolve pronouns and references
 
 ## Features
 
-- **Named Entity Recognition (NER)** - Extract persons, organizations, locations, dates, and more using spaCy
-- **Date/Time Extraction** - Parse dates in various formats
-- **Location Extraction** - Extract and geocode geographic locations
-- **Relationship Extraction** - Find relationships between entities
-- **Entity Linking** - Map mentions to canonical entities
-- **Coreference Resolution** - Resolve pronouns to entities
-- **Text Chunking** - Split text into embedding-ready chunks
+### Named Entity Recognition (NER)
+- Person names (PERSON)
+- Organizations (ORG)
+- Geopolitical entities (GPE)
+- Locations (LOC)
+- Dates and times (DATE, TIME)
+- Money and quantities (MONEY, QUANTITY)
+- And more entity types
 
-## Capabilities
+### Date Extraction
+- Absolute dates
+- Relative dates
+- Date ranges
+- Temporal expressions
 
-- `entity_extraction` - Extracts entities (NER, dates, locations, entity linking)
-- `background_processing` - Uses worker pools for async processing
+### Relationship Extraction
+- Person-to-organization relationships
+- Person-to-person relationships
+- Entity co-occurrence
+- Contextual relationships
+
+### Text Chunking
+- **Fixed** - Fixed character count chunks
+- **Sentence** - Sentence-boundary aware chunking
+- **Semantic** - Semantic similarity-based chunking
+- Configurable chunk size and overlap
+- Token counting
+
+### Entity Linking
+- Match mentions to canonical entities
+- Create new canonical entities for unmatched mentions
+- Confidence scoring
 
 ## Installation
 
 ```bash
-pip install arkham-shard-parse
+pip install -e packages/arkham-shard-parse
 ```
 
-## Requirements
-
-- Python 3.10+
-- spaCy with `en_core_web_sm` model
-- arkham-frame >= 0.1.0
-
-Install spaCy model:
-
-```bash
-python -m spacy download en_core_web_sm
-```
+The shard auto-registers via entry point on Frame startup.
 
 ## API Endpoints
 
-### Parse Text
+### Text Parsing
 
-```
-POST /api/parse/text
-```
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/api/parse/text` | Parse raw text (sync) |
+| POST | `/api/parse/chunk` | Chunk raw text |
 
-Parse raw text and extract entities.
+### Document Parsing
 
-**Request:**
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/api/parse/document/{id}` | Parse document (async via workers) |
+| POST | `/api/parse/document/{id}/sync` | Parse document (sync) |
+| GET | `/api/parse/entities/{doc_id}` | Get document entities |
+| GET | `/api/parse/chunks/{doc_id}` | Get document chunks |
+
+### Chunk Browser
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/parse/chunks` | List all chunks (paginated) |
+
+### Entity Linking
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/api/parse/link` | Link entity mentions |
+
+### Configuration
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/parse/config/chunking` | Get chunking config |
+| PUT | `/api/parse/config/chunking` | Update chunking config |
+
+### Statistics
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/parse/stats` | Get parsing statistics |
+
+## API Examples
+
+### Parse Raw Text
+
 ```json
+POST /api/parse/text
 {
-  "text": "Apple Inc. announced new products on January 15, 2024.",
+  "text": "John Smith met with Acme Corp CEO Jane Doe on January 15, 2024.",
   "extract_entities": true,
-  "extract_dates": true
+  "extract_dates": true,
+  "extract_locations": true,
+  "extract_relationships": true
 }
 ```
 
-**Response:**
+Response:
 ```json
 {
   "entities": [
-    {
-      "text": "Apple Inc.",
-      "entity_type": "ORG",
-      "confidence": 0.85
-    }
+    {"text": "John Smith", "entity_type": "PERSON", "confidence": 0.95},
+    {"text": "Acme Corp", "entity_type": "ORG", "confidence": 0.92},
+    {"text": "Jane Doe", "entity_type": "PERSON", "confidence": 0.94}
   ],
   "dates": [
-    {
-      "text": "January 15, 2024",
-      "normalized_date": "2024-01-15T00:00:00"
-    }
+    {"text": "January 15, 2024", "normalized": "2024-01-15"}
   ],
-  "total_entities": 1,
+  "locations": [],
+  "relationships": [
+    {"subject": "Jane Doe", "predicate": "CEO_OF", "object": "Acme Corp"}
+  ],
+  "total_entities": 3,
+  "total_dates": 1,
+  "total_locations": 0,
   "processing_time_ms": 45.2
 }
 ```
 
-### Parse Document
-
-```
-POST /api/parse/document/{doc_id}
-```
-
-Parse a full document (async, dispatches to worker).
-
-### Get Entities
-
-```
-GET /api/parse/entities/{doc_id}
-```
-
-Get extracted entities for a document.
-
 ### Chunk Text
 
-```
-POST /api/parse/chunk
-```
-
-Chunk text into embedding-ready segments.
-
-**Request:**
 ```json
+POST /api/parse/chunk
 {
-  "text": "Long text here...",
+  "text": "Long document text here...",
   "chunk_size": 500,
   "overlap": 50,
   "method": "sentence"
 }
 ```
 
-### Link Entities
+### Parse Document (Async)
 
+```bash
+POST /api/parse/document/doc_abc123
 ```
-POST /api/parse/link
+
+Returns immediately with status "processing". Listen for `parse.document.completed` event.
+
+### Parse Document (Sync)
+
+```bash
+POST /api/parse/document/doc_abc123/sync?save_chunks=true
 ```
 
-Link entity mentions to canonical entities.
+Returns full parse results when complete.
 
-## Configuration
+### Update Chunking Configuration
 
-Add to Frame config:
-
-```python
-config = {
-    "parse.spacy_model": "en_core_web_sm",
-    "parse.chunk_size": 500,
-    "parse.chunk_overlap": 50,
-    "parse.chunk_method": "sentence",
+```json
+PUT /api/parse/config/chunking
+{
+  "chunk_size": 750,
+  "chunk_overlap": 100,
+  "chunk_method": "semantic"
 }
 ```
 
+### List All Chunks
+
+```bash
+GET /api/parse/chunks?limit=50&offset=0&document_id=doc_abc123
+```
+
+Response includes chunk text, document info, token counts, and vector IDs.
+
 ## Events
 
-### Published
+### Published Events
 
-- `parse.document.started` - Parsing started
-- `parse.document.completed` - Parsing completed
-- `parse.entities.extracted` - Entities extracted
-- `parse.chunks.created` - Chunks created
+| Event | Description |
+|-------|-------------|
+| `parse.document.started` | Document parsing started |
+| `parse.document.completed` | Document parsing finished |
+| `parse.entities.extracted` | Entities extracted from document |
+| `parse.chunks.created` | Chunks created for document |
+| `parse.config.updated` | Chunking config changed |
 
-### Subscribed
+### Subscribed Events
 
-- `ingest.job.completed` - Auto-parse ingested documents
-- `worker.job.completed` - Handle worker results
+| Event | Handler |
+|-------|---------|
+| `ingest.job.completed` | Auto-parse ingested documents |
+| `worker.job.completed` | Update parse job status |
 
-## Worker Pools
+## Chunking Methods
 
-Uses these worker pools:
+### Fixed
+Simple character-count based chunking. Fast but may split mid-sentence.
 
-- `cpu-ner` - Named entity recognition (spaCy)
-- `cpu-heavy` - Complex text processing
+### Sentence
+Respects sentence boundaries. Better for semantic coherence.
+
+### Semantic
+Uses semantic similarity to group related content. Best quality but slower.
+
+## Configuration
+
+### Chunking Defaults
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `chunk_size` | 500 | Target chunk size in characters |
+| `chunk_overlap` | 50 | Overlap between chunks |
+| `chunk_method` | sentence | Chunking method |
+
+### Validation Rules
+- `chunk_size` must be at least 50 characters
+- `chunk_overlap` must be non-negative
+- `chunk_overlap` must be less than `chunk_size`
+
+## UI Routes
+
+| Route | Description |
+|-------|-------------|
+| `/parse` | Parse & Extract interface |
+
+## Dependencies
+
+### Required Services
+- **database** - Chunk and entity storage
+- **workers** - Background parsing jobs
+- **events** - Event publishing
+
+### Optional Services
+- **documents** - Document content access
+- **entities** - Entity storage
+
+## URL State
+
+| Parameter | Description |
+|-----------|-------------|
+| `documentId` | Document being viewed |
+
+## Statistics
+
+The `/api/parse/stats` endpoint returns:
+- `total_entities` - Total extracted entities
+- `total_chunks` - Total chunks created
+- `total_documents_parsed` - Documents with chunks
+- `entity_types` - Count by entity type
+
+## Architecture Notes
+
+### Worker Integration
+Document parsing dispatches to the `cpu-ner` worker pool for heavy NER processing. The sync endpoint bypasses workers for testing and debugging.
+
+### Event Flow
+1. `ingest.job.completed` triggers auto-parse
+2. Parse shard extracts entities and creates chunks
+3. `parse.document.completed` triggers embed shard for vectorization
+
+## Development
+
+```bash
+# Run tests
+pytest packages/arkham-shard-parse/tests/
+
+# Type checking
+mypy packages/arkham-shard-parse/
+```
 
 ## License
 

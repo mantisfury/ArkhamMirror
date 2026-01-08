@@ -1,223 +1,288 @@
-# Entities Shard
+# arkham-shard-entities
 
-Entity browser and management shard for the SHATTERED/ArkhamFrame architecture.
+> Entity browser with merge, link, and relationship management
+
+**Version:** 0.1.0
+**Category:** Data
+**Frame Requirement:** >=0.1.0
 
 ## Overview
 
-The Entities shard provides a comprehensive interface for browsing, managing, and resolving entities extracted from documents. It supports entity merging, relationship management, and canonical entity resolution.
+The Entities shard provides entity management and resolution capabilities for SHATTERED. It offers browsing, editing, merging of duplicate entities, relationship management, and mention tracking across documents.
+
+### Key Capabilities
+
+1. **Entity Management** - Browse, edit, and delete extracted entities
+2. **Duplicate Detection** - Find and merge similar entities
+3. **Relationship Management** - Create and manage entity relationships
+4. **Mention Tracking** - Track entity occurrences across documents
+5. **AI Analysis** - AI Junior Analyst for entity pattern analysis
 
 ## Features
 
-### Entity Browsing
-- **Type Filtering**: Filter entities by type (PERSON, ORGANIZATION, LOCATION, etc.)
-- **Search**: Search entities by name, aliases, or mention text
-- **Mention Tracking**: View all document mentions for each entity
-- **Detail View**: See complete entity information with metadata
-
 ### Entity Management
-- **Edit Entities**: Update entity names, types, and metadata
-- **Merge Duplicates**: Combine duplicate entities into canonical form
-- **Create Relationships**: Link entities with typed relationships
-- **Canonical Resolution**: Maintain authoritative entity records
+- List entities with pagination, sorting, and filtering
+- Search by entity name
+- Filter by entity type
+- View entity details with mention counts
+- Edit entity name, type, aliases, metadata
+- Delete entities
 
 ### Entity Types
+- `PERSON` - People names
+- `ORGANIZATION` - Companies, institutions
+- `GPE` - Geopolitical entities (countries, cities)
+- `LOCATION` - Geographic locations
+- `DATE` - Dates and times
+- `MONEY` - Monetary values
+- `PRODUCT` - Products and services
+- And more (NER model dependent)
 
-Supported entity types:
-- `PERSON` - Individual people
-- `ORGANIZATION` - Companies, agencies, groups
-- `LOCATION` - Places, addresses, geographic locations
-- `DATE` - Temporal references
-- `MONEY` - Monetary amounts
-- `EVENT` - Named events
-- `PRODUCT` - Products or services
-- `DOCUMENT` - Referenced documents
-- `CONCEPT` - Abstract concepts
-- `OTHER` - Other entity types
+### Duplicate Detection
+- Fuzzy string matching (Levenshtein distance)
+- Vector similarity matching (when vectors service available)
+- Configurable similarity threshold
+- Merge candidate suggestions
+
+### Entity Merging
+- Merge multiple entities into canonical entity
+- Preserve aliases from merged entities
+- Update mention references
+- Batch merge operations
+
+### Relationship Management
+- Create relationships between entities
+- Multiple relationship types
+- Confidence scoring
+- View relationships by entity
 
 ### Relationship Types
+- `WORKS_FOR` - Employment
+- `LOCATED_IN` - Geographic location
+- `MEMBER_OF` - Membership
+- `OWNS` - Ownership
+- `RELATED_TO` - General relationship
+- `MENTIONED_WITH` - Co-occurrence
+- `PARENT_OF` / `CHILD_OF` - Hierarchical
+- `SAME_AS` - Identity
+- `PART_OF` - Component
+- `OTHER` - Custom
 
-Supported relationship types:
-- `WORKS_FOR` - Employment relationship
-- `LOCATED_IN` - Geographic relationship
-- `MEMBER_OF` - Membership relationship
-- `OWNS` - Ownership relationship
-- `RELATED_TO` - Generic relationship
-- `MENTIONED_WITH` - Co-occurrence relationship
+## Installation
+
+```bash
+pip install -e packages/arkham-shard-entities
+```
+
+The shard auto-registers via entry point on Frame startup.
 
 ## API Endpoints
 
-### Entity Management
+### Health and Count
 
-```
-GET    /api/entities/items              # List entities with pagination/filtering
-GET    /api/entities/items/{id}         # Get entity details
-PUT    /api/entities/items/{id}         # Update entity
-DELETE /api/entities/items/{id}         # Delete entity
-GET    /api/entities/count               # Get total entity count
-```
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/entities/health` | Health check |
+| GET | `/api/entities/count` | Entity count (badge) |
 
-### Entity Merging
+### Entity CRUD
 
-```
-GET    /api/entities/duplicates         # Get potential duplicate entities
-POST   /api/entities/merge              # Merge entities into canonical form
-GET    /api/entities/merge-suggestions  # Get AI-suggested merges (requires vectors)
-```
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/entities/items` | List entities |
+| GET | `/api/entities/items/{id}` | Get entity |
+| PUT | `/api/entities/items/{id}` | Update entity |
+| DELETE | `/api/entities/items/{id}` | Delete entity |
+
+### Duplicate Detection
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/entities/duplicates` | Find potential duplicates |
+| GET | `/api/entities/merge-suggestions` | AI-suggested merges |
+| POST | `/api/entities/merge` | Merge entities |
+| POST | `/api/entities/batch/merge` | Batch merge |
 
 ### Relationships
 
-```
-GET    /api/entities/relationships              # List relationships
-POST   /api/entities/relationships              # Create relationship
-DELETE /api/entities/relationships/{id}         # Delete relationship
-GET    /api/entities/{id}/relationships         # Get entity relationships
-```
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/entities/relationships` | List relationships |
+| GET | `/api/entities/relationships/types` | Get relationship types |
+| GET | `/api/entities/relationships/stats` | Relationship statistics |
+| POST | `/api/entities/relationships` | Create relationship |
+| DELETE | `/api/entities/relationships/{id}` | Delete relationship |
+| GET | `/api/entities/{id}/relationships` | Get entity's relationships |
 
 ### Mentions
 
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/entities/{id}/mentions` | Get entity mentions |
+
+### AI Analysis
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/api/entities/ai/junior-analyst` | AI analysis (streaming) |
+
+## API Examples
+
+### List Entities with Filtering
+
+```bash
+GET /api/entities/items?page=1&page_size=20&filter=PERSON&q=john
 ```
-GET    /api/entities/{id}/mentions      # Get all mentions for entity
+
+Response:
+```json
+{
+  "items": [
+    {
+      "id": "ent_123",
+      "name": "John Smith",
+      "entity_type": "PERSON",
+      "canonical_id": null,
+      "aliases": ["J. Smith", "Johnny Smith"],
+      "metadata": {},
+      "mention_count": 15,
+      "created_at": "2024-12-15T10:30:00Z",
+      "updated_at": "2024-12-15T10:30:00Z"
+    }
+  ],
+  "total": 1,
+  "page": 1,
+  "page_size": 20
+}
 ```
+
+### Find Duplicates
+
+```bash
+GET /api/entities/duplicates?entity_type=PERSON&threshold=0.8&limit=50
+```
+
+Response:
+```json
+[
+  {
+    "entity_a": {"id": "ent_123", "name": "John Smith", "entity_type": "PERSON"},
+    "entity_b": {"id": "ent_456", "name": "Jon Smith", "entity_type": "PERSON"},
+    "similarity_score": 0.92,
+    "reason": "Very similar names (possible typo)",
+    "common_mentions": 0,
+    "common_documents": 0
+  }
+]
+```
+
+### Merge Entities
+
+```json
+POST /api/entities/merge
+{
+  "entity_ids": ["ent_123", "ent_456", "ent_789"],
+  "canonical_id": "ent_123",
+  "canonical_name": "John Smith"
+}
+```
+
+### Create Relationship
+
+```json
+POST /api/entities/relationships
+{
+  "source_id": "ent_person_123",
+  "target_id": "ent_org_456",
+  "relationship_type": "WORKS_FOR",
+  "confidence": 0.95,
+  "metadata": {"position": "CEO"}
+}
+```
+
+### Get Entity Mentions
+
+```bash
+GET /api/entities/ent_123/mentions?page=1&page_size=50
+```
+
+Response includes document IDs, mention text, and offsets.
 
 ## Events
 
 ### Published Events
 
-- `entities.entity.viewed` - Entity detail page viewed
-- `entities.entity.merged` - Entities merged into canonical form
-- `entities.entity.edited` - Entity metadata updated
-- `entities.relationship.created` - Relationship created between entities
-- `entities.relationship.deleted` - Relationship removed
+| Event | Description |
+|-------|-------------|
+| `entities.entity.viewed` | Entity detail viewed |
+| `entities.entity.merged` | Entities merged |
+| `entities.entity.edited` | Entity updated |
+| `entities.entity.deleted` | Entity deleted |
+| `entities.relationship.created` | Relationship created |
+| `entities.relationship.deleted` | Relationship deleted |
 
 ### Subscribed Events
 
-- `parse.entity.created` - New entity extracted from document
-- `parse.entity.updated` - Entity mention updated
+| Event | Handler |
+|-------|---------|
+| `parse.entity.created` | Track new extracted entities |
+| `parse.entity.updated` | Update entity information |
+
+## UI Routes
+
+| Route | Description |
+|-------|-------------|
+| `/entities` | All entities list |
+| `/entities/merge` | Merge duplicates interface |
+| `/entities/relationships` | Relationships view |
 
 ## Dependencies
 
 ### Required Services
-- **database**: Entity storage and persistence
-- **events**: Event publishing for entity changes
+- **database** - Entity storage and persistence
+- **events** - Event publishing
 
 ### Optional Services
-- **vectors**: Similarity-based merge suggestions (enables smart duplicate detection)
-- **entities**: Frame's EntityService (provides advanced entity resolution features)
+- **vectors** - Vector similarity for merge suggestions
+- **entities** - Frame's EntityService for advanced features
 
-## UI Routes
+## URL State
 
-### Main Routes
-- `/entities` - Entity browser (list view)
-- `/entities/:id` - Entity detail view
+| Parameter | Description |
+|-----------|-------------|
+| `entityId` | Active entity ID |
+| `view` | View mode (list, detail, merge, relationships) |
+| `filter` | Entity type filter |
 
-### Sub-routes
-- `/entities/merge` - Merge duplicates interface
-- `/entities/relationships` - Relationship browser
+### Local Storage Keys
+- `column_widths` - Column width preferences
+- `show_merged` - Show merged entities toggle
+- `sort_preference` - Default sort preference
 
-## Installation
+## Similarity Algorithms
 
-```bash
-cd packages/arkham-shard-entities
-pip install -e .
-```
+### String Similarity
+Uses Levenshtein (edit) distance normalized by string length:
+- Exact match = 1.0
+- Substring containment = 0.95 * (shorter/longer)
+- Edit distance = 1.0 - (distance/max_length)
 
-The shard will be automatically discovered by ArkhamFrame on next restart.
-
-## Usage
-
-### Browsing Entities
-
-```python
-# Via API
-GET /api/entities/items?page=1&page_size=20&filter=PERSON&sort=name
-```
-
-### Merging Entities
-
-```python
-# Merge duplicate entities
-POST /api/entities/merge
-{
-  "entity_ids": ["entity-1", "entity-2", "entity-3"],
-  "canonical_id": "entity-1",  # Which entity to keep
-  "canonical_name": "John Smith"
-}
-```
-
-### Creating Relationships
-
-```python
-# Create relationship between entities
-POST /api/entities/relationships
-{
-  "source_id": "entity-1",
-  "target_id": "entity-2",
-  "relationship_type": "WORKS_FOR",
-  "confidence": 0.9
-}
-```
-
-## Database Schema
-
-Entities are stored in the `arkham_entities` schema:
-
-```sql
--- Entities table
-arkham_entities.entities (
-  id UUID PRIMARY KEY,
-  name TEXT NOT NULL,
-  entity_type TEXT NOT NULL,
-  canonical_id UUID,  -- Points to canonical entity if merged
-  aliases TEXT[],
-  metadata JSONB,
-  created_at TIMESTAMPTZ,
-  updated_at TIMESTAMPTZ
-)
-
--- Entity mentions (links to documents)
-arkham_entities.mentions (
-  id UUID PRIMARY KEY,
-  entity_id UUID REFERENCES entities(id),
-  document_id UUID,
-  mention_text TEXT,
-  confidence FLOAT,
-  start_offset INT,
-  end_offset INT
-)
-
--- Entity relationships
-arkham_entities.relationships (
-  id UUID PRIMARY KEY,
-  source_id UUID REFERENCES entities(id),
-  target_id UUID REFERENCES entities(id),
-  relationship_type TEXT,
-  confidence FLOAT,
-  metadata JSONB
-)
-```
+### Vector Similarity
+When vectors service is available:
+- Embeds both entity names
+- Calculates cosine similarity
+- Falls back to string similarity on failure
 
 ## Development
 
-### Testing
-
 ```bash
-pytest tests/
+# Run tests
+pytest packages/arkham-shard-entities/tests/
+
+# Type checking
+mypy packages/arkham-shard-entities/
 ```
-
-### Type Checking
-
-```bash
-mypy arkham_shard_entities/
-```
-
-## Architecture Notes
-
-- **No Shard Dependencies**: This shard does NOT import other shards directly
-- **Event-Driven**: Listens to parse shard events via EventBus only
-- **Frame Services**: Uses Frame's database and event services
-- **Canonical Entities**: Merged entities maintain references to canonical entity
-- **Mention Tracking**: Preserves all original mentions even after merge
 
 ## License
 
-Part of the SHATTERED project.
+MIT

@@ -1,264 +1,305 @@
-# Embed Shard
+# arkham-shard-embed
 
-Document embeddings and vector operations for ArkhamFrame.
+> Document embeddings, vector operations, and model management
+
+**Version:** 0.1.0
+**Category:** Search
+**Frame Requirement:** >=0.1.0
+
+## Overview
+
+The Embed shard handles vector embedding generation and management for SHATTERED. It generates embeddings for text and documents, stores them in Qdrant, and provides similarity search and nearest neighbor queries. Supports multiple embedding models with project-scoped vector collections.
+
+### Key Capabilities
+
+1. **Embedding Generation** - Generate vector embeddings for text and documents
+2. **Similarity Search** - Calculate similarity between texts
+3. **Nearest Neighbor Search** - Find similar documents in vector space
+4. **Model Management** - Switch between embedding models with dimension handling
+5. **GPU Acceleration** - Hardware-accelerated embedding generation
 
 ## Features
 
-- **Text Embedding**: Generate embeddings for single texts or batches
-- **Document Embedding**: Automatically embed document chunks
-- **Vector Storage**: Store and retrieve embeddings in Qdrant
-- **Similarity Search**: Find similar texts and documents
-- **Model Management**: Support for multiple embedding models with lazy loading
-- **Caching**: LRU cache for frequently embedded texts
-- **GPU Acceleration**: Automatic GPU detection with CPU fallback
+### Embedding Generation
+- Single text embedding (sync)
+- Batch text embedding
+- Document chunk embedding (async via workers)
+- Multi-document batch embedding
+- Embedding caching for performance
+
+### Vector Operations
+- Cosine similarity calculation
+- Nearest neighbor search with filters
+- Project-scoped vector collections
+- Multiple collection support (documents, chunks, entities)
+
+### Model Management
+- Multiple embedding models supported
+- Model switching with automatic dimension handling
+- Collection recreation on dimension change
+- Model info and statistics
+
+### Supported Models
+
+| Model | Dimensions | Max Length | Description |
+|-------|------------|------------|-------------|
+| `all-MiniLM-L6-v2` | 384 | 512 | Lightweight, fast (default) |
+| `all-mpnet-base-v2` | 768 | 512 | High quality, balanced |
+| `BAAI/bge-m3` | 1024 | 8192 | Multilingual, highest quality |
+| `paraphrase-MiniLM-L6-v2` | 384 | 512 | Paraphrase detection |
+
+### Cache Management
+- LRU cache for embeddings
+- Cache statistics
+- Cache clearing
 
 ## Installation
 
 ```bash
-pip install arkham-shard-embed
+pip install -e packages/arkham-shard-embed
 ```
 
-## Configuration
-
-Set these environment variables to configure the shard:
-
-- `EMBED_MODEL` - Embedding model name (default: `BAAI/bge-m3`)
-- `EMBED_DEVICE` - Device for inference (default: `auto`)
-- `EMBED_BATCH_SIZE` - Batch size for processing (default: `32`)
-- `EMBED_CACHE_SIZE` - LRU cache size (default: `1000`)
-
-## Supported Models
-
-### BAAI/bge-m3 (Default)
-- Dimensions: 1024
-- Multilingual support
-- High-quality embeddings
-- Size: ~2.2GB
-
-### all-MiniLM-L6-v2 (Fallback)
-- Dimensions: 384
-- Fast and lightweight
-- Good for resource-constrained environments
-- Size: ~80MB
+The shard auto-registers via entry point on Frame startup.
 
 ## API Endpoints
 
-### POST /api/embed/text
-Embed a single text and return the vector immediately.
+### Text Embedding
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/api/embed/text` | Embed single text |
+| POST | `/api/embed/batch` | Embed multiple texts |
+
+### Document Embedding
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/api/embed/document/{id}` | Queue document for embedding |
+| GET | `/api/embed/document/{id}` | Get document embeddings |
+| GET | `/api/embed/documents/available` | List documents with embedding status |
+| POST | `/api/embed/documents/batch` | Queue multiple documents |
+
+### Similarity and Search
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/api/embed/similarity` | Calculate text similarity |
+| POST | `/api/embed/nearest` | Find nearest neighbors |
+
+### Model Management
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/embed/models` | List available models |
+| GET | `/api/embed/model/current` | Get current model info |
+| GET | `/api/embed/model/available` | List all supported models |
+| GET | `/api/embed/model/collections` | Get vector collection info |
+| POST | `/api/embed/model/check-switch` | Check model switch impact |
+| POST | `/api/embed/model/switch` | Switch embedding model |
+
+### Configuration and Cache
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/api/embed/config` | Update embedding config |
+| GET | `/api/embed/cache/stats` | Get cache statistics |
+| POST | `/api/embed/cache/clear` | Clear embedding cache |
+
+## API Examples
+
+### Embed Single Text
 
 ```json
+POST /api/embed/text
 {
-  "text": "Your text here",
-  "doc_id": "optional-doc-id",
-  "chunk_id": "optional-chunk-id",
+  "text": "This is a sample document for embedding.",
+  "doc_id": "doc_123",
+  "chunk_id": "chunk_001",
   "use_cache": true
 }
 ```
 
-### POST /api/embed/batch
-Embed multiple texts efficiently in a batch.
-
+Response:
 ```json
 {
-  "texts": ["Text 1", "Text 2", "Text 3"],
+  "embedding": [0.023, -0.156, 0.089, ...],
+  "dimensions": 384,
+  "model": "all-MiniLM-L6-v2",
+  "doc_id": "doc_123",
+  "chunk_id": "chunk_001",
+  "text_length": 43,
+  "success": true
+}
+```
+
+### Batch Embed Texts
+
+```json
+POST /api/embed/batch
+{
+  "texts": [
+    "First document text",
+    "Second document text",
+    "Third document text"
+  ],
   "batch_size": 32
 }
 ```
 
-### POST /api/embed/document/{doc_id}
-Queue an async job to embed all chunks of a document.
+### Queue Document for Embedding
+
+```bash
+POST /api/embed/document/doc_abc123
+```
+
+Queues all chunks of the document for embedding via the `gpu-embed` worker pool.
+
+### Find Nearest Neighbors
 
 ```json
+POST /api/embed/nearest
 {
-  "doc_id": "document-id",
-  "force": false,
-  "chunk_size": 512,
-  "chunk_overlap": 50
+  "query": "search query text",
+  "limit": 10,
+  "min_similarity": 0.5,
+  "collection": "documents",
+  "filters": {"project_id": "proj_123"}
 }
 ```
 
-### GET /api/embed/document/{doc_id}
-Retrieve existing embeddings for a document.
-
-### POST /api/embed/similarity
-Calculate similarity between two texts.
+### Calculate Similarity
 
 ```json
+POST /api/embed/similarity
 {
-  "text1": "First text",
-  "text2": "Second text",
+  "text1": "The quick brown fox",
+  "text2": "A fast brown fox",
   "method": "cosine"
 }
 ```
 
-Supported methods: `cosine`, `euclidean`, `dot`
-
-### POST /api/embed/nearest
-Find nearest neighbors in vector space.
-
+Response:
 ```json
 {
-  "query": "Query text or embedding vector",
-  "limit": 10,
-  "min_similarity": 0.5,
-  "collection": "documents",
-  "filters": {}
+  "similarity": 0.89,
+  "method": "cosine",
+  "success": true
 }
 ```
 
-### GET /api/embed/models
-List available embedding models.
-
-### POST /api/embed/config
-Update embedding configuration at runtime.
+### Check Model Switch Impact
 
 ```json
+POST /api/embed/model/check-switch
 {
-  "batch_size": 64,
-  "cache_size": 2000
+  "model": "BAAI/bge-m3"
 }
 ```
 
-### GET /api/embed/cache/stats
-Get cache statistics (hits, misses, size).
+Response shows if wipe is required and affected collections.
 
-### POST /api/embed/cache/clear
-Clear the embedding cache.
+### Switch Embedding Model
 
-## Usage from Other Shards
-
-Other shards can access embedding functionality through the public API:
-
-```python
-# Get the embed shard
-embed_shard = frame.get_shard("embed")
-
-# Embed a single text
-embedding = await embed_shard.embed_text("Your text here")
-
-# Embed multiple texts
-embeddings = await embed_shard.embed_batch(["Text 1", "Text 2", "Text 3"])
-
-# Find similar vectors
-results = await embed_shard.find_similar(
-    query="Query text",
-    collection="documents",
-    limit=10,
-    min_similarity=0.7
-)
-
-# Store an embedding
-vector_id = await embed_shard.store_embedding(
-    embedding=embedding,
-    payload={"doc_id": "123", "text": "Original text"},
-    collection="documents"
-)
-
-# Get model information
-model_info = embed_shard.get_model_info()
+```json
+POST /api/embed/model/switch
+{
+  "model": "BAAI/bge-m3",
+  "confirm_wipe": true
+}
 ```
 
-## Dependencies
-
-### Required Frame Services
-- **vectors** - VectorService for storing embeddings in Qdrant
-- **workers** - WorkerService for background embedding jobs (uses `gpu-embed` pool)
-- **events** - EventBus for pub/sub communication
-
-### Optional Frame Services
-- **documents** - DocumentService for auto-embedding document chunks
+**Warning:** If dimensions differ, all vector collections will be wiped!
 
 ## Events
 
 ### Published Events
 
-- `embed.embedding.created` - Embedding created and stored
-- `embed.batch.completed` - Batch embedding operation completed
-- `embed.model.loaded` - Embedding model loaded into memory
+| Event | Description |
+|-------|-------------|
+| `embed.embedding.created` | New embedding generated |
+| `embed.batch.completed` | Batch embedding finished |
+| `embed.model.loaded` | Embedding model loaded |
+| `embed.model.switched` | Model switched |
+| `embed.text.completed` | Text embedding completed |
 
 ### Subscribed Events
 
-- `document.ingested` - Auto-queue embedding for new documents
-- `document.processed` - Trigger embedding after document processing
+| Event | Handler |
+|-------|---------|
+| `document.ingested` | Auto-embed new documents |
+| `document.processed` | Embed processed documents |
+| `parse.document.completed` | Embed parsed document chunks |
 
-## Architecture
+## Project-Scoped Collections
 
-### Components
+When a project is active, collection names are automatically scoped:
+- `documents` becomes `project_{id}_documents`
+- `chunks` becomes `project_{id}_chunks`
+- `entities` becomes `project_{id}_entities`
 
-1. **EmbeddingManager** (`embedder.py`)
-   - Model loading and management
-   - Text embedding (single and batch)
-   - Similarity calculations
-   - Text chunking
-   - Cache management
+This allows different projects to use different embedding models.
 
-2. **VectorStore** (`storage.py`)
-   - Qdrant vector storage wrapper
-   - Collection management
-   - Vector upsert, search, delete operations
-   - Batch operations
+## UI Routes
 
-3. **API Router** (`api.py`)
-   - FastAPI endpoints
-   - Request/response models
-   - Error handling
-   - Event emission
+| Route | Description |
+|-------|-------------|
+| `/embed` | Embeddings management interface |
 
-4. **EmbedShard** (`shard.py`)
-   - Main shard class
-   - Service initialization
-   - Event handling
-   - Public API for other shards
+## Dependencies
 
-### Processing Pipeline
+### Required Services
+- **vectors** - Qdrant vector store
+- **workers** - Background embedding jobs
+- **events** - Event publishing
 
-1. **Synchronous Embedding** (for immediate results)
-   ```
-   API Request -> EmbeddingManager -> Return Embedding
-   ```
+### Optional Services
+- **documents** - Document access for batch embedding
 
-2. **Asynchronous Document Embedding** (for large documents)
-   ```
-   API Request -> Worker Queue -> EmbedWorker -> VectorStore
-   ```
+## Configuration
 
-3. **Auto-Embedding on Ingestion**
-   ```
-   documents.ingested Event -> Queue Embed Job -> Worker Pool
-   ```
+### Embedding Config
 
-## Performance
+| Setting | Description |
+|---------|-------------|
+| `batch_size` | Batch size for embedding |
+| `cache_size` | LRU cache size |
+| `device` | Device for model (cpu/cuda) |
 
-### Lazy Loading
-Models are loaded on first use to minimize startup time and memory usage.
+### Model Info
 
-### Batch Processing
-The `embed_batch` endpoint uses the model's native batch processing for better performance.
+Each model provides:
+- `name` - Model identifier
+- `dimensions` - Vector dimensions
+- `max_length` - Maximum input length
+- `size_mb` - Model size
+- `device` - Current device
+- `loaded` - Whether model is loaded
+
+## Architecture Notes
+
+### Worker Integration
+Document embedding is processed by the `gpu-embed` worker pool. Jobs include all chunk texts and IDs for batch processing.
+
+### Dimension Changes
+When switching to a model with different dimensions:
+1. All vector collections must be wiped
+2. Collections are recreated with new dimensions
+3. All documents need re-embedding
+4. Requires `confirm_wipe: true` in request
 
 ### Caching
-Frequently embedded texts are cached using LRU cache to avoid recomputation.
-
-### GPU Acceleration
-Automatically detects and uses CUDA or MPS when available, with CPU fallback.
+Embeddings are cached using an LRU cache keyed by text hash. This significantly speeds up repeated queries for the same text.
 
 ## Development
 
-### Run Tests
 ```bash
-pytest tests/
-```
+# Run tests
+pytest packages/arkham-shard-embed/tests/
 
-### Build Package
-```bash
-pip install build
-python -m build
-```
-
-### Install in Development Mode
-```bash
-pip install -e .
+# Type checking
+mypy packages/arkham-shard-embed/
 ```
 
 ## License
 
-Part of the ArkhamFrame project.
+MIT

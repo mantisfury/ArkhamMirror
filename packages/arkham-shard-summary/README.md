@@ -1,527 +1,333 @@
-# Summary Shard
+# arkham-shard-summary
 
-Auto-summarization of documents, collections, and analysis results using LLM.
+> Auto-summarization of documents, collections, and analysis results using LLM
+
+**Version:** 0.1.0
+**Category:** Analysis
+**Frame Requirement:** >=0.1.0
 
 ## Overview
 
-The Summary Shard provides comprehensive auto-summarization capabilities for the SHATTERED architecture. It can generate summaries of varying types and lengths, with LLM-powered generation and graceful degradation to extractive summarization when LLM is unavailable.
+The Summary shard provides AI-powered summarization for documents, collections, and analysis results. It uses LLM services to generate concise summaries, supports batch processing, and can automatically summarize new documents as they are ingested.
 
-**Category**: Analysis
-**Order**: 39
-**Version**: 0.1.0
-**Status**: Production-ready
+### Key Capabilities
+
+1. **Summarization** - Generate summaries of text
+2. **LLM Enrichment** - AI-powered content generation
+3. **Multi-Document Summary** - Summarize document collections
+4. **Batch Processing** - Background batch summarization
 
 ## Features
 
-### Core Capabilities
+### Summary Types
+- `brief` - Short 1-2 sentence summary
+- `standard` - Paragraph-length summary
+- `detailed` - Multi-paragraph comprehensive summary
+- `key_points` - Bullet point key takeaways
+- `executive` - Executive summary format
+- `technical` - Technical focus summary
 
-- **Multiple Summary Types**:
-  - Brief: 1-2 sentence overview
-  - Detailed: Comprehensive multi-paragraph summary
-  - Executive: Key findings and recommendations
-  - Bullet Points: Structured key points
-  - Abstract: Academic-style abstract
+### Source Types
+Summarize content from various sources:
+- Documents
+- Entities
+- Projects
+- Claims
+- Timeline events
 
-- **Flexible Length Control**:
-  - Very Short (~50 words)
-  - Short (~100 words)
-  - Medium (~250 words)
-  - Long (~500 words)
-  - Very Long (~1000 words)
+### Batch Processing
+- Process multiple documents at once
+- Background job execution
+- Progress tracking
+- Error handling
 
-- **Multi-Source Summarization**:
-  - Single documents
-  - Document collections
-  - Entity-related documents
-  - Projects
-  - Claim sets
-  - Timelines
-  - Analysis results
-
-- **Advanced Features**:
-  - Focus areas (emphasize specific topics)
-  - Topic exclusion
-  - Key point extraction
-  - Auto-generated titles
-  - Quality metrics (confidence, completeness)
-  - Batch processing
-  - Event-driven auto-summarization
-
-### LLM Integration
-
-The shard integrates with the Frame's LLM service for AI-powered summarization:
-
-- Uses LLM when available for high-quality abstractive summaries
-- Gracefully degrades to extractive summarization when LLM unavailable
-- Supports custom prompts and templates
-- Configurable model parameters
-
-### Graceful Degradation
-
-When LLM service is unavailable:
-
-- Automatically falls back to extractive summarization
-- Uses sentence extraction heuristics
-- Still provides key points and titles
-- Lower confidence scores to indicate fallback mode
-- All API endpoints remain functional
+### Auto-Summarization
+- Automatically summarize new documents
+- Configurable summary type
+- Event-driven triggers
 
 ## Installation
 
 ```bash
-cd packages/arkham-shard-summary
-pip install -e .
+pip install -e packages/arkham-shard-summary
 ```
 
-The shard will be auto-discovered by the Frame on next startup.
+The shard auto-registers via entry point on Frame startup.
 
 ## API Endpoints
 
-### Health & Capabilities
+### Health and Status
 
-```http
-GET /api/summary/health
-```
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/summary/health` | Health check |
+| GET | `/api/summary/count` | Summary count (badge) |
+| GET | `/api/summary/capabilities` | Available capabilities |
+| GET | `/api/summary/types` | Available summary types |
+| GET | `/api/summary/stats` | Statistics |
 
-Returns service status and LLM availability.
+### Summary CRUD
 
-```http
-GET /api/summary/capabilities
-```
-
-Shows available features based on service availability.
-
-```http
-GET /api/summary/types
-```
-
-Lists available summary types with descriptions.
-
-### Summary Management
-
-```http
-GET /api/summary/
-```
-
-List all summaries with pagination and filtering.
-
-**Query Parameters**:
-- `page` (default: 1): Page number
-- `page_size` (default: 20, max: 100): Items per page
-- `summary_type`: Filter by summary type
-- `source_type`: Filter by source type
-- `source_id`: Filter by source ID
-- `status`: Filter by status
-- `q`: Search in summary content
-
-**Response**:
-```json
-{
-  "items": [...],
-  "total": 42,
-  "page": 1,
-  "page_size": 20
-}
-```
-
-```http
-POST /api/summary/
-```
-
-Generate a new summary.
-
-**Request Body**:
-```json
-{
-  "source_type": "document",
-  "source_ids": ["doc-123"],
-  "summary_type": "detailed",
-  "target_length": "medium",
-  "focus_areas": ["key findings", "methodology"],
-  "exclude_topics": ["acknowledgments"],
-  "include_key_points": true,
-  "include_title": true,
-  "tags": ["important"]
-}
-```
-
-**Response**:
-```json
-{
-  "summary_id": "sum-456",
-  "status": "completed",
-  "content": "The document discusses...",
-  "key_points": ["Point 1", "Point 2"],
-  "title": "Document Summary",
-  "token_count": 250,
-  "word_count": 200,
-  "processing_time_ms": 1234.5,
-  "confidence": 1.0
-}
-```
-
-```http
-GET /api/summary/{summary_id}
-```
-
-Get a specific summary by ID.
-
-```http
-DELETE /api/summary/{summary_id}
-```
-
-Delete a summary.
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/summary/` | List summaries |
+| POST | `/api/summary/` | Create summary |
+| GET | `/api/summary/{id}` | Get summary |
+| DELETE | `/api/summary/{id}` | Delete summary |
 
 ### Document Summaries
 
-```http
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/summary/document/{doc_id}` | Get document summary |
+| POST | `/api/summary/quick-summary/{doc_id}` | Quick summary |
+
+### Batch Operations
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/api/summary/batch` | Batch summarize |
+
+### Source Listings
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/summary/sources/documents` | List documents |
+| GET | `/api/summary/sources/entities` | List entities |
+| GET | `/api/summary/sources/projects` | List projects |
+| GET | `/api/summary/sources/claims` | List claims |
+| GET | `/api/summary/sources/timeline` | List timeline events |
+
+## API Examples
+
+### Create Summary
+
+```json
+POST /api/summary/
+{
+  "source_type": "document",
+  "source_id": "doc_abc123",
+  "summary_type": "standard",
+  "max_length": 500,
+  "focus_areas": ["key findings", "recommendations"]
+}
+```
+
+Response:
+```json
+{
+  "id": "sum_xyz789",
+  "source_type": "document",
+  "source_id": "doc_abc123",
+  "summary_type": "standard",
+  "content": "This document presents an analysis of...",
+  "word_count": 125,
+  "created_at": "2024-12-15T10:30:00Z",
+  "model_used": "claude-3-sonnet"
+}
+```
+
+### Quick Summary
+
+```bash
+POST /api/summary/quick-summary/{doc_id}?summary_type=brief
+```
+
+Returns a quick summary without storing it.
+
+### Get Document Summary
+
+```bash
 GET /api/summary/document/{doc_id}
 ```
 
-Get or generate summary for a specific document.
+Returns existing summary or generates new one.
 
-**Query Parameters**:
-- `summary_type` (default: "detailed"): Type of summary
-- `regenerate` (default: false): Force regeneration
+### Batch Summarize
 
-**Behavior**:
-- Returns existing summary if found
-- Generates new summary if not found or `regenerate=true`
-
-### Batch Processing
-
-```http
+```json
 POST /api/summary/batch
+{
+  "source_type": "document",
+  "source_ids": ["doc_1", "doc_2", "doc_3", "doc_4", "doc_5"],
+  "summary_type": "key_points",
+  "max_length": 300
+}
 ```
 
-Generate summaries for multiple sources in batch.
-
-**Request Body**:
+Response:
 ```json
 {
-  "requests": [
+  "job_id": "batch_abc123",
+  "total_items": 5,
+  "status": "processing",
+  "completed": 0,
+  "failed": 0
+}
+```
+
+### List Summaries with Filtering
+
+```bash
+GET /api/summary/?source_type=document&summary_type=standard&limit=20
+```
+
+### Get Capabilities
+
+```bash
+GET /api/summary/capabilities
+```
+
+Response:
+```json
+{
+  "llm_available": true,
+  "model_name": "claude-3-sonnet",
+  "supported_types": ["brief", "standard", "detailed", "key_points", "executive"],
+  "max_input_length": 100000,
+  "batch_processing": true,
+  "auto_summarize": true
+}
+```
+
+### Get Summary Types
+
+```bash
+GET /api/summary/types
+```
+
+Response:
+```json
+{
+  "types": [
     {
-      "source_type": "document",
-      "source_ids": ["doc-1"],
-      "summary_type": "brief"
+      "id": "brief",
+      "name": "Brief",
+      "description": "Short 1-2 sentence summary",
+      "typical_length": "50-100 words"
     },
     {
-      "source_type": "document",
-      "source_ids": ["doc-2"],
-      "summary_type": "detailed"
+      "id": "standard",
+      "name": "Standard",
+      "description": "Paragraph-length summary",
+      "typical_length": "150-300 words"
+    },
+    {
+      "id": "detailed",
+      "name": "Detailed",
+      "description": "Comprehensive multi-paragraph summary",
+      "typical_length": "500-1000 words"
     }
-  ],
-  "parallel": false,
-  "stop_on_error": false
+  ]
 }
 ```
 
-**Response**:
-```json
-{
-  "total": 2,
-  "successful": 2,
-  "failed": 0,
-  "summaries": [...],
-  "errors": [],
-  "total_processing_time_ms": 2500
-}
-```
+### Get Statistics
 
-### Statistics
-
-```http
-GET /api/summary/count
-```
-
-Get total summary count (for navigation badge).
-
-```http
+```bash
 GET /api/summary/stats
 ```
 
-Get aggregate statistics about all summaries.
-
-**Response**:
+Response:
 ```json
 {
-  "total_summaries": 42,
+  "total_summaries": 250,
   "by_type": {
-    "detailed": 20,
-    "brief": 15,
-    "executive": 7
+    "brief": 80,
+    "standard": 100,
+    "detailed": 40,
+    "key_points": 30
   },
-  "by_source_type": {
-    "document": 30,
-    "documents": 10,
-    "project": 2
+  "by_source": {
+    "document": 200,
+    "entity": 30,
+    "project": 20
   },
-  "by_status": {
-    "completed": 40,
-    "pending": 2
-  },
-  "avg_confidence": 0.95,
-  "avg_word_count": 234.5,
-  "avg_processing_time_ms": 1234.5,
-  "generated_last_24h": 10
+  "avg_generation_time_ms": 2345,
+  "total_tokens_used": 150000
 }
 ```
+
+### List Document Sources
+
+```bash
+GET /api/summary/sources/documents?has_summary=false&limit=50
+```
+
+Returns documents that can be summarized, optionally filtered by whether they already have summaries.
 
 ## Events
 
 ### Published Events
 
-- `summary.summary.created`: New summary generated
-- `summary.summary.updated`: Summary regenerated
-- `summary.summary.deleted`: Summary removed
-- `summary.batch.started`: Batch summarization started
-- `summary.batch.completed`: Batch summarization finished
-- `summary.batch.failed`: Batch summarization failed
-
-**Event Payload Example**:
-```python
-{
-  "summary_id": "sum-123",
-  "source_type": "document",
-  "source_ids": ["doc-456"],
-  "summary_type": "detailed",
-  "word_count": 250
-}
-```
+| Event | Description |
+|-------|-------------|
+| `summary.summary.created` | New summary generated |
+| `summary.summary.updated` | Summary regenerated |
+| `summary.summary.deleted` | Summary removed |
+| `summary.batch.started` | Batch summarization started |
+| `summary.batch.completed` | Batch summarization finished |
+| `summary.batch.failed` | Batch summarization failed |
 
 ### Subscribed Events
 
-- `document.processed`: Auto-summarize newly processed documents
-- `documents.document.created`: Auto-summarize newly created documents
+| Event | Handler |
+|-------|---------|
+| `document.processed` | Auto-summarize new documents |
+| `documents.document.created` | Auto-summarize new documents |
 
-## Usage Examples
+## UI Routes
 
-### Python API
-
-```python
-from arkham_shard_summary import SummaryRequest, SummaryType, SourceType, SummaryLength
-
-# Get shard instance from frame
-summary_shard = frame.get_shard("summary")
-
-# Generate a summary
-request = SummaryRequest(
-    source_type=SourceType.DOCUMENT,
-    source_ids=["doc-123"],
-    summary_type=SummaryType.DETAILED,
-    target_length=SummaryLength.MEDIUM,
-    focus_areas=["key findings"],
-    include_key_points=True,
-)
-
-result = await summary_shard.generate_summary(request)
-print(f"Summary: {result.content}")
-print(f"Key Points: {result.key_points}")
-
-# List summaries for a document
-filter = SummaryFilter(
-    source_type=SourceType.DOCUMENT,
-    source_id="doc-123",
-)
-summaries = await summary_shard.list_summaries(filter)
-
-# Batch summarization
-batch_request = BatchSummaryRequest(
-    requests=[request1, request2, request3],
-    parallel=True,
-)
-batch_result = await summary_shard.generate_batch_summaries(batch_request)
-print(f"Successful: {batch_result.successful}/{batch_result.total}")
-```
-
-### REST API
-
-```bash
-# Generate a brief summary
-curl -X POST http://localhost:8100/api/summary/ \
-  -H "Content-Type: application/json" \
-  -d '{
-    "source_type": "document",
-    "source_ids": ["doc-123"],
-    "summary_type": "brief",
-    "target_length": "short"
-  }'
-
-# Get summary for a document
-curl http://localhost:8100/api/summary/document/doc-123?summary_type=detailed
-
-# List all detailed summaries
-curl "http://localhost:8100/api/summary/?summary_type=detailed&page=1&page_size=20"
-
-# Get statistics
-curl http://localhost:8100/api/summary/stats
-```
-
-## Data Models
-
-### Summary
-
-Main summary object stored in the system.
-
-**Fields**:
-- `id`: Unique identifier
-- `summary_type`: Type of summary (brief, detailed, executive, etc.)
-- `status`: Status (pending, generating, completed, failed, stale)
-- `source_type`: Type of source (document, documents, entity, etc.)
-- `source_ids`: IDs of source items
-- `content`: The summary text
-- `key_points`: Extracted key points
-- `title`: Auto-generated title
-- `model_used`: LLM model used (or "extractive")
-- `token_count`: Approximate token count
-- `word_count`: Word count
-- `target_length`: Target length (very_short, short, medium, long, very_long)
-- `confidence`: Confidence in summary (0-1)
-- `completeness`: Coverage of source (0-1)
-- `focus_areas`: Specific topics focused on
-- `exclude_topics`: Topics excluded
-- `processing_time_ms`: Time to generate
-- `created_at`, `updated_at`: Timestamps
-- `metadata`: Additional metadata
-- `tags`: User-defined tags
-
-### SummaryType Enum
-
-- `BRIEF`: Short 1-2 sentence summary
-- `DETAILED`: Comprehensive multi-paragraph summary
-- `EXECUTIVE`: Executive summary with key findings
-- `BULLET_POINTS`: Key points as bullet list
-- `ABSTRACT`: Academic-style abstract
-
-### SourceType Enum
-
-- `DOCUMENT`: Single document
-- `DOCUMENTS`: Collection of documents
-- `ENTITY`: Entity with related documents
-- `PROJECT`: Entire project
-- `CLAIM_SET`: Set of related claims
-- `TIMELINE`: Timeline of events
-- `ANALYSIS`: Analysis result (ACH, etc.)
-
-### SummaryLength Enum
-
-- `VERY_SHORT`: ~50 words
-- `SHORT`: ~100 words
-- `MEDIUM`: ~250 words
-- `LONG`: ~500 words
-- `VERY_LONG`: ~1000 words
-
-## Configuration
-
-The shard supports configuration through environment variables or Frame config:
-
-```yaml
-# config.yaml
-summary:
-  auto_summarize: true          # Auto-summarize new documents
-  default_type: detailed         # Default summary type
-  default_length: medium         # Default target length
-  batch_size: 10                 # Batch processing size
-  enable_cache: true             # Cache generated summaries
-```
+| Route | Description |
+|-------|-------------|
+| `/summary` | All summaries |
+| `/summary/documents` | Document summaries |
+| `/summary/collections` | Collection summaries |
+| `/summary/generate` | Generate new summary |
 
 ## Dependencies
 
 ### Required Services
-
-- `database`: Stores summaries and metadata
-- `events`: Event publishing and subscription
+- **database** - Summary storage
+- **events** - Event publishing
 
 ### Optional Services
+- **llm** - AI summarization (highly recommended)
+- **workers** - Background batch processing
 
-- `llm`: LLM service for AI-powered summarization (highly recommended)
-- `workers`: Background job processing for batch operations
+## URL State
 
-### Shard Dependencies
+| Parameter | Description |
+|-----------|-------------|
+| `summaryId` | Selected summary |
+| `sourceId` | Source document/entity |
+| `type` | Summary type filter |
 
-**None** - This shard has no dependencies on other shards, following the SHATTERED architecture principle.
+### Local Storage Keys
+- `default_type` - Preferred summary type
+- `max_length` - Preferred max length
+- `auto_summarize` - Auto-summarize on document creation
 
-## Performance
+## Summary Quality
 
-### Typical Processing Times
+Summary quality depends on:
+- LLM model availability and quality
+- Input document length and structure
+- Selected summary type
+- Focus areas specified
 
-- Brief summary (LLM): ~500-1000ms
-- Detailed summary (LLM): ~1500-3000ms
-- Extractive summary: ~100-300ms
-- Batch processing: Parallel for speed
-
-### Optimization Tips
-
-1. Use appropriate summary type and length
-2. Enable batch processing for multiple summaries
-3. Use extractive mode when speed > quality
-4. Cache summaries and regenerate only when source changes
-5. Use focus areas to reduce processing scope
-
-## Troubleshooting
-
-### LLM Service Unavailable
-
-**Symptom**: Summaries are shorter and lower confidence
-
-**Solution**: The shard automatically falls back to extractive summarization. Check:
-- LLM service is running
-- LLM model is loaded
-- Frame LLM service configuration
-
-### Poor Summary Quality
-
-**Symptom**: Summary doesn't capture key points
-
-**Solutions**:
-- Use `focus_areas` to emphasize important topics
-- Try different summary types
-- Increase target length
-- Verify LLM service is available (extractive mode has lower quality)
-
-### Batch Processing Slow
-
-**Symptom**: Batch operations take too long
-
-**Solutions**:
-- Enable parallel processing in batch request
-- Use workers service for background processing
-- Reduce batch size
-- Use brief summaries instead of detailed
+Without LLM service, fallback extractive summarization is used.
 
 ## Development
 
-### Running Tests
-
 ```bash
-cd packages/arkham-shard-summary
-pytest tests/
+# Run tests
+pytest packages/arkham-shard-summary/tests/
+
+# Type checking
+mypy packages/arkham-shard-summary/
 ```
-
-### Test Coverage
-
-- Unit tests for models
-- Shard initialization tests
-- API endpoint tests
-- LLM integration tests (with mocks)
-- Graceful degradation tests
-
-## Compliance
-
-This shard is fully compliant with:
-- Shard Manifest Schema Production v1.0
-- ArkhamFrame v0.1.0 interface
-- Event naming conventions
-- Navigation category standards
 
 ## License
 
-Part of the SHATTERED project.
-
-## See Also
-
-- [Shard Manifest Schema](../../../docs/shard_manifest_schema_prod.md)
-- [New Shards Plan](../../../docs/new_shards_plan.md)
-- [ArkhamFrame Documentation](../../arkham-frame/README.md)
-- [Claims Shard](../arkham-shard-claims/README.md) - Can summarize claim sets
-- [Reports Shard](../arkham-shard-reports/README.md) - Uses summaries in reports
+MIT

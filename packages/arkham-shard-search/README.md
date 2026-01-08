@@ -1,45 +1,105 @@
-# ArkhamFrame Search Shard
+# arkham-shard-search
 
-Semantic and keyword search for ArkhamMirror documents.
+> Semantic and keyword search for documents
+
+**Version:** 0.1.0
+**Category:** Search
+**Frame Requirement:** >=0.1.0
+
+## Overview
+
+The Search shard provides comprehensive search capabilities for SHATTERED documents and content. It supports semantic search (vector similarity), keyword search (full-text), and hybrid search combining both approaches with configurable weights. Features include autocomplete suggestions, similar document discovery, and AI-assisted search chat.
+
+### Key Capabilities
+
+1. **Semantic Search** - Vector similarity search using embeddings
+2. **Keyword Search** - PostgreSQL full-text search with BM25
+3. **Hybrid Search** - Combined semantic + keyword with weights
+4. **Similarity Search** - Find similar documents
+5. **Autocomplete Suggestions** - Query suggestions
 
 ## Features
 
-- **Semantic Search**: Vector similarity search using Qdrant
-- **Keyword Search**: Full-text search using PostgreSQL
-- **Hybrid Search**: Combines semantic and keyword with configurable weights
-- **Similarity Search**: Find documents similar to a given document
-- **Autocomplete**: Query suggestions for search-as-you-type
-- **Advanced Filtering**: Filter by date, entities, projects, file types, tags
-- **Result Ranking**: Multiple ranking strategies including recency and entity-based
+### Search Modes
+- `hybrid` - Combines semantic and keyword (default)
+- `semantic` - Vector similarity only
+- `keyword` - Full-text search only
+
+### Search Features
+- Configurable semantic/keyword weights
+- Filter by project, document type, date range
+- Sort by relevance, date, name
+- Pagination support
+- Result facets
+- Query suggestions
+
+### Similarity Search
+- Find documents similar to a given document
+- Uses vector embeddings
+- Configurable result count
+
+### AI Chat Search
+- Conversational search interface
+- Context-aware follow-up queries
+- Source attribution
+- Streaming responses
 
 ## Installation
 
 ```bash
-pip install arkham-shard-search
+pip install -e packages/arkham-shard-search
 ```
 
-The shard is automatically discovered by ArkhamFrame via entry points.
+The shard auto-registers via entry point on Frame startup.
 
 ## API Endpoints
 
-### POST /api/search
-Main search endpoint supporting all modes.
+### Search
 
-**Request:**
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/api/search/` | Main search endpoint |
+| POST | `/api/search/semantic` | Semantic search only |
+| POST | `/api/search/keyword` | Keyword search only |
+
+### Discovery
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/search/suggest` | Query suggestions |
+| POST | `/api/search/similar/{doc_id}` | Find similar docs |
+
+### Configuration
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/search/config` | Get search config |
+| GET | `/api/search/filters` | Available filters |
+
+### AI Features
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/api/search/ai/junior-analyst` | AI analysis |
+| POST | `/api/search/chat` | Conversational search |
+| POST | `/api/search/ai/feedback` | Submit feedback |
+
+## API Examples
+
+### Hybrid Search
+
 ```json
+POST /api/search/
 {
-  "query": "search query",
+  "query": "financial fraud investigation",
   "mode": "hybrid",
   "filters": {
+    "project_id": "proj_123",
+    "document_type": ["pdf", "docx"],
     "date_range": {
-      "start": "2024-01-01T00:00:00",
-      "end": "2024-12-31T23:59:59"
-    },
-    "entity_ids": ["ent123", "ent456"],
-    "project_ids": ["proj1"],
-    "file_types": ["pdf", "docx"],
-    "tags": ["important"],
-    "min_score": 0.5
+      "start": "2024-01-01",
+      "end": "2024-12-31"
+    }
   },
   "limit": 20,
   "offset": 0,
@@ -50,182 +110,235 @@ Main search endpoint supporting all modes.
 }
 ```
 
-**Response:**
+Response:
 ```json
 {
-  "query": "search query",
+  "query": "financial fraud investigation",
   "mode": "hybrid",
-  "total": 42,
+  "total": 45,
   "items": [
     {
-      "doc_id": "doc123",
-      "chunk_id": "chunk456",
-      "title": "Document Title",
-      "excerpt": "Relevant excerpt...",
-      "score": 0.85,
-      "file_type": "pdf",
-      "created_at": "2024-01-15T10:30:00",
-      "page_number": 3,
-      "highlights": ["...matching text..."],
-      "entities": ["ent123", "ent456"],
-      "project_ids": ["proj1"],
-      "metadata": {}
+      "id": "doc_abc123",
+      "title": "Q3 Financial Review",
+      "filename": "q3_review.pdf",
+      "snippet": "...investigation revealed significant discrepancies in the financial...",
+      "score": 0.92,
+      "semantic_score": 0.95,
+      "keyword_score": 0.85,
+      "document_type": "pdf",
+      "created_at": "2024-10-15T14:30:00Z",
+      "highlights": ["investigation", "financial"]
     }
   ],
-  "duration_ms": 45.2,
-  "facets": {},
+  "duration_ms": 125.5,
+  "facets": {
+    "document_type": {"pdf": 30, "docx": 15},
+    "project": {"proj_123": 45}
+  },
   "offset": 0,
   "limit": 20,
   "has_more": true
 }
 ```
 
-### POST /api/search/semantic
-Vector-only semantic search.
+### Semantic Search
 
-### POST /api/search/keyword
-Text-only keyword search.
+```json
+POST /api/search/semantic
+{
+  "query": "documents about corporate fraud",
+  "limit": 10,
+  "semantic_weight": 1.0,
+  "keyword_weight": 0.0
+}
+```
 
-### GET /api/search/suggest?q=prefix&limit=10
-Autocomplete suggestions.
+### Keyword Search
 
-**Response:**
+```json
+POST /api/search/keyword
+{
+  "query": "\"quarterly report\" AND fraud",
+  "limit": 10
+}
+```
+
+### Query Suggestions
+
+```bash
+GET /api/search/suggest?q=fin&limit=5
+```
+
+Response:
 ```json
 {
   "suggestions": [
-    {
-      "text": "suggested term",
-      "score": 0.9,
-      "type": "term"
-    }
+    {"text": "financial fraud", "count": 25},
+    {"text": "financial report", "count": 18},
+    {"text": "financial analysis", "count": 12}
   ]
 }
 ```
 
-### POST /api/search/similar/{doc_id}
-Find similar documents.
+### Find Similar Documents
 
-**Request:**
 ```json
+POST /api/search/similar/doc_abc123
 {
   "limit": 10,
-  "min_similarity": 0.5,
-  "filters": {}
+  "min_score": 0.7
 }
 ```
 
-**Response:**
+Response:
 ```json
 {
-  "doc_id": "doc123",
-  "similar": [...],
+  "doc_id": "doc_abc123",
+  "similar": [
+    {
+      "id": "doc_xyz789",
+      "title": "Q4 Financial Review",
+      "similarity": 0.89
+    }
+  ],
   "total": 8
 }
 ```
 
-### GET /api/search/filters?q=query
-Get available filter options with counts.
+### Get Search Configuration
 
-## Usage from Other Shards
-
-```python
-# Get the search shard
-search_shard = frame.get_shard("search")
-
-# Perform search
-results = await search_shard.search(
-    query="investigation",
-    mode="hybrid",
-    limit=20,
-)
-
-# Find similar documents
-similar = await search_shard.find_similar(
-    doc_id="doc123",
-    limit=10,
-    min_similarity=0.7,
-)
+```bash
+GET /api/search/config
 ```
 
-## Architecture
+Response:
+```json
+{
+  "embedding_dimensions": 1536,
+  "semantic_weight": 0.7,
+  "keyword_weight": 0.3,
+  "bm25_enabled": true,
+  "engines": {
+    "semantic": true,
+    "keyword": true,
+    "hybrid": true
+  }
+}
+```
 
-### Search Engines
+### Get Available Filters
 
-- **SemanticSearchEngine**: Vector similarity via Qdrant
-- **KeywordSearchEngine**: Full-text via PostgreSQL ts_vector
-- **HybridSearchEngine**: Reciprocal Rank Fusion (RRF) merging
+```bash
+GET /api/search/filters
+```
 
-### Ranking Strategies
+Response:
+```json
+{
+  "available": {
+    "project_id": ["proj_1", "proj_2", "proj_3"],
+    "document_type": ["pdf", "docx", "txt", "html"],
+    "entity_types": ["PERSON", "ORGANIZATION", "GPE"],
+    "status": ["processed", "pending", "failed"]
+  }
+}
+```
 
-- Relevance (default)
-- Date/recency
-- Entity-based boosting
-- Exact match boosting
-- Result diversification
+### Chat Search
 
-### Filters
+```json
+POST /api/search/chat
+{
+  "message": "What documents mention financial irregularities?",
+  "session_id": "chat_abc123",
+  "conversation_history": [
+    {"role": "user", "content": "Search for fraud cases"},
+    {"role": "assistant", "content": "I found 15 documents..."}
+  ]
+}
+```
 
-- Date range
-- Entity IDs
-- Project IDs
-- File types
-- Tags
-- Minimum score threshold
-
-## Dependencies
-
-- `arkham-frame>=0.1.0`
-- Qdrant vector store (for semantic search)
-- PostgreSQL (for keyword search)
+Returns streaming response with search results and AI-generated summary.
 
 ## Events
 
-**Published:**
-- `search.query.executed` - When a search is performed
-- `search.results.returned` - When results are returned
-- `search.suggestions.generated` - When autocomplete suggestions are generated
+### Published Events
 
-**Subscribed:**
-- `document.indexed` - To invalidate caches
-- `document.deleted` - To clean up caches
-- `embed.completed` - When new embeddings are available
+| Event | Description |
+|-------|-------------|
+| `search.query.executed` | Search query executed |
+| `search.results.returned` | Results returned |
+| `search.suggestions.generated` | Suggestions generated |
 
-## Navigation
+### Subscribed Events
 
-- **Category:** Search
-- **Order:** 20 (primary search shard)
-- **Route:** `/search`
+| Event | Handler |
+|-------|---------|
+| `document.indexed` | Invalidate caches |
+| `document.deleted` | Clean up caches |
+| `embed.completed` | New embeddings available |
 
-### Sub-routes
+## UI Routes
 
-| Route | Label | Description |
-|-------|-------|-------------|
-| `/search/semantic` | Semantic Search | Vector similarity search |
-| `/search/keyword` | Keyword Search | Full-text search |
+| Route | Description |
+|-------|-------------|
+| `/search` | Main search interface |
+| `/search/semantic` | Semantic search |
+| `/search/keyword` | Keyword search |
 
-## Production Compliance
+## Dependencies
 
-This shard is compliant with `shard_manifest_schema_prod.md`.
+### Required Services
+- **database** - Keyword search (PostgreSQL full-text)
+- **vectors** - Semantic search (Qdrant)
+- **events** - Event publishing
 
-See [production.md](production.md) for the compliance audit report.
+### Optional Services
+- **llm** - Query expansion, NLP
+- **documents** - Document metadata lookup
+- **entities** - Entity-based filtering
 
-## Configuration
+## URL State
 
-Search engines are automatically configured based on available Frame services:
+| Parameter | Description |
+|-----------|-------------|
+| `q` | Search query |
+| `mode` | Search mode (hybrid, semantic, keyword) |
+| `project` | Project filter |
 
-- `vectors` service enables semantic search
-- `database` service enables keyword search
-- Both services enable hybrid search
+### Local Storage Keys
+- `search_mode_default` - Preferred search mode
+- `results_per_page` - Results limit preference
+
+## Search Weights
+
+The hybrid search combines semantic and keyword scores:
+- `semantic_weight` - Weight for vector similarity (default: 0.7)
+- `keyword_weight` - Weight for BM25 (default: 0.3)
+
+Final score = (semantic_score * semantic_weight) + (keyword_score * keyword_weight)
+
+Weights are automatically adjusted based on embedding model dimensions for optimal performance.
+
+## Sort Options
+
+| Sort By | Description |
+|---------|-------------|
+| `relevance` | Combined search score |
+| `date` | Document date |
+| `name` | Document name |
+| `created_at` | Creation timestamp |
 
 ## Development
 
 ```bash
-# Install in development mode
-pip install -e ".[dev]"
-
 # Run tests
-pytest
+pytest packages/arkham-shard-search/tests/
 
-# Format code
-black arkham_shard_search/
+# Type checking
+mypy packages/arkham-shard-search/
 ```
+
+## License
+
+MIT

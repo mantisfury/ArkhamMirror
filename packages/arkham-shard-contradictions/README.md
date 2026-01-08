@@ -1,233 +1,313 @@
-# ArkhamFrame Contradictions Shard
+# arkham-shard-contradictions
 
-Multi-document contradiction detection for investigative journalism.
+> Contradiction detection engine for multi-document analysis
+
+**Version:** 0.1.0
+**Category:** Analysis
+**Frame Requirement:** >=0.1.0
 
 ## Overview
 
-The Contradictions Shard provides sophisticated multi-stage analysis to detect contradictions between documents:
+The Contradictions shard detects conflicting claims between documents. It extracts claims from documents, finds semantically similar claim pairs, and verifies contradictions using LLM analysis. Supports chain detection for identifying linked contradictions across multiple documents.
 
-1. **Claim Extraction**: Extracts factual claims from document text
-2. **Semantic Matching**: Uses embeddings to find similar claims across documents
-3. **LLM Verification**: Verifies if similar claims actually contradict
-4. **Severity Scoring**: Classifies contradictions by severity and type
+### Key Capabilities
+
+1. **Multi-Document Analysis** - Compare documents for contradictions
+2. **Claim Extraction** - Extract factual claims from text
+3. **Semantic Matching** - Find similar claims via vector embeddings
+4. **LLM Verification** - AI-powered contradiction confirmation
+5. **Chain Detection** - Find linked contradictions across documents
+6. **AI Analysis** - AI Junior Analyst for contradiction interpretation
 
 ## Features
 
-### Detection Strategies
+### Contradiction Detection
+- Pairwise document comparison
+- Batch analysis of multiple pairs
+- LLM-powered claim extraction
+- Simple heuristic extraction fallback
+- Configurable similarity threshold
 
-- **Direct Contradiction**: "X happened" vs "X did not happen"
-- **Temporal Contradiction**: Different dates/times for same event
-- **Numeric Contradiction**: Different figures or amounts
-- **Entity Contradiction**: Different people/places attributed
-- **Logical Contradiction**: Logically incompatible statements
-- **Contextual Contradiction**: Contradictory in specific context
+### Contradiction Types
+- `direct` - Direct factual contradiction
+- `temporal` - Timeline inconsistency
+- `quantitative` - Numeric disagreement
+- `causal` - Cause/effect conflict
+- `attributive` - Attribution conflict
 
-### Analyst Workflow
+### Contradiction Status
+- `detected` - Newly detected
+- `investigating` - Under review
+- `confirmed` - Verified contradiction
+- `dismissed` - False positive
 
-- Confirm detected contradictions
-- Dismiss false positives
-- Add investigative notes
-- Track status (detected → investigating → confirmed/dismissed)
+### Severity Levels
+- `critical` - Major factual conflict
+- `high` - Significant contradiction
+- `medium` - Notable inconsistency
+- `low` - Minor discrepancy
 
 ### Chain Detection
+Finds linked contradictions:
+- A contradicts B, B contradicts C
+- Builds contradiction networks
+- Assigns chain severity
 
-Automatically detects contradiction chains where:
-- Document A contradicts Document B
-- Document B contradicts Document C
-- Creates linked chain of related contradictions
+### Analyst Workflow
+- Review detected contradictions
+- Update status with notes
+- Bulk status updates
+- Chain visualization
 
 ## Installation
 
 ```bash
-pip install arkham-shard-contradictions
+pip install -e packages/arkham-shard-contradictions
 ```
+
+The shard auto-registers via entry point on Frame startup.
 
 ## API Endpoints
 
-### Analyze Documents
+### Analysis
 
-```http
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/api/contradictions/analyze` | Analyze two documents |
+| POST | `/api/contradictions/batch` | Batch analyze pairs |
+| POST | `/api/contradictions/claims` | Extract claims from text |
+
+### Listing and Filtering
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/contradictions/list` | List all contradictions |
+| GET | `/api/contradictions/document/{id}` | Get by document |
+| GET | `/api/contradictions/count` | Total count |
+| GET | `/api/contradictions/pending/count` | Pending count (badge) |
+| GET | `/api/contradictions/stats` | Statistics |
+
+### Contradiction Management
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/contradictions/{id}` | Get details |
+| PUT | `/api/contradictions/{id}/status` | Update status |
+| POST | `/api/contradictions/{id}/notes` | Add notes |
+| DELETE | `/api/contradictions/{id}` | Delete |
+| POST | `/api/contradictions/bulk-status` | Bulk status update |
+
+### Chains
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/api/contradictions/detect-chains` | Detect chains |
+| GET | `/api/contradictions/chains` | List chains |
+| GET | `/api/contradictions/chains/{id}` | Get chain details |
+
+### AI Analysis
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/api/contradictions/ai/junior-analyst` | AI analysis (streaming) |
+
+## API Examples
+
+### Analyze Two Documents
+
+```json
 POST /api/contradictions/analyze
 {
-  "doc_a_id": "doc1",
-  "doc_b_id": "doc2",
-  "threshold": 0.7,
+  "doc_a_id": "doc_report_q1",
+  "doc_b_id": "doc_report_q2",
+  "threshold": 0.75,
   "use_llm": true
 }
 ```
 
-### Get Document Contradictions
-
-```http
-GET /api/contradictions/document/{doc_id}?include_chains=false
+Response:
+```json
+{
+  "doc_a_id": "doc_report_q1",
+  "doc_b_id": "doc_report_q2",
+  "contradictions": [
+    {
+      "id": "contra_123",
+      "doc_a_id": "doc_report_q1",
+      "doc_b_id": "doc_report_q2",
+      "claim_a": "Revenue increased by 15% in Q1",
+      "claim_b": "Revenue declined by 3% in the first quarter",
+      "contradiction_type": "quantitative",
+      "severity": "high",
+      "status": "detected",
+      "explanation": "Direct contradiction on Q1 revenue change",
+      "confidence_score": 0.92
+    }
+  ],
+  "count": 1
+}
 ```
 
-### List Contradictions
+### Batch Analysis
 
-```http
-GET /api/contradictions/list?page=1&page_size=50&status=detected&severity=high
+```json
+POST /api/contradictions/batch
+{
+  "document_pairs": [
+    ["doc_a", "doc_b"],
+    ["doc_a", "doc_c"],
+    ["doc_b", "doc_c"]
+  ],
+  "threshold": 0.75,
+  "use_llm": true
+}
+```
+
+### Extract Claims from Text
+
+```json
+POST /api/contradictions/claims
+{
+  "text": "The company reported revenue of $5.2 billion. Profits increased by 12%.",
+  "document_id": "doc_123",
+  "use_llm": true
+}
 ```
 
 ### Update Status
 
-```http
+```json
 PUT /api/contradictions/{id}/status
 {
   "status": "confirmed",
-  "notes": "Verified against original sources",
-  "analyst_id": "analyst_1"
+  "analyst_id": "analyst_john",
+  "notes": "Verified contradiction between Q1 and Q2 reports"
 }
 ```
 
-### Add Notes
+### Bulk Status Update
 
-```http
-POST /api/contradictions/{id}/notes
+```json
+POST /api/contradictions/bulk-status
 {
-  "notes": "Follow up needed with source X",
-  "analyst_id": "analyst_1"
+  "contradiction_ids": ["contra_1", "contra_2", "contra_3"],
+  "status": "dismissed",
+  "analyst_id": "analyst_john",
+  "notes": "Batch dismissed - different reporting periods"
 }
 ```
 
-### Extract Claims
+### Detect Chains
 
-```http
-POST /api/contradictions/claims
+```bash
+POST /api/contradictions/detect-chains
+```
+
+Response:
+```json
 {
-  "text": "Document text to analyze...",
-  "document_id": "doc1",
-  "use_llm": true
+  "chains_detected": 2,
+  "chains": [
+    {
+      "id": "chain_abc",
+      "contradiction_count": 3,
+      "contradictions": ["contra_1", "contra_2", "contra_3"]
+    }
+  ]
 }
 ```
 
 ### Get Statistics
 
-```http
+```bash
 GET /api/contradictions/stats
 ```
 
-### Detect Chains
-
-```http
-POST /api/contradictions/detect-chains
+Response:
+```json
+{
+  "total_contradictions": 45,
+  "by_status": {"detected": 20, "confirmed": 15, "dismissed": 10},
+  "by_severity": {"critical": 5, "high": 15, "medium": 15, "low": 10},
+  "by_type": {"direct": 20, "temporal": 10, "quantitative": 15},
+  "chain_count": 3
+}
 ```
-
-### List Chains
-
-```http
-GET /api/contradictions/chains
-```
-
-## Dependencies
-
-### Required Frame Services
-- **database** - DatabaseService for storing contradictions (schema: arkham_contradictions)
-- **events** - EventBus for pub/sub communication
-- **vectors** - VectorService for semantic similarity matching
-
-### Optional Frame Services
-- **llm** - LLMService for enhanced contradiction verification (falls back to heuristic detection)
 
 ## Events
 
 ### Published Events
 
-- `contradictions.contradiction.detected` - New contradiction detected
-- `contradictions.contradiction.confirmed` - Analyst confirmed contradiction
-- `contradictions.contradiction.dismissed` - Analyst dismissed false positive
-- `contradictions.chain.detected` - Contradiction chain detected
-- `contradictions.status.updated` - Status changed
+| Event | Description |
+|-------|-------------|
+| `contradictions.detected` | Contradictions found |
+| `contradictions.confirmed` | Contradiction confirmed |
+| `contradictions.dismissed` | Contradiction dismissed |
+| `contradictions.chain_detected` | Chain detected |
+| `contradictions.status_updated` | Status changed |
+| `contradictions.bulk_status_updated` | Bulk update |
 
 ### Subscribed Events
 
-- `document.ingested` - Triggers background analysis against existing documents
-- `document.updated` - May trigger re-analysis if content changed
-- `llm.analysis.completed` - Processes LLM verification results
+| Event | Handler |
+|-------|---------|
+| `documents.document.created` | Auto-analyze new docs |
+| `documents.document.updated` | Re-analyze updated docs |
+| `embed.document.completed` | Analyze after embedding |
 
-## Usage Example
+## UI Routes
 
-```python
-from arkham_frame import ArkhamFrame
-
-# Initialize Frame
-frame = ArkhamFrame()
-await frame.initialize()
-
-# Get contradictions shard
-contradictions = frame.get_shard("contradictions")
-
-# Analyze two documents
-results = await contradictions.analyze_pair(
-    doc_a_id="witness_statement_1",
-    doc_b_id="witness_statement_2",
-    threshold=0.7,
-    use_llm=True
-)
-
-# Get statistics
-stats = contradictions.get_statistics()
-print(f"Total contradictions: {stats['total_contradictions']}")
-print(f"High severity: {stats['by_severity']['high']}")
-
-# Detect chains
-chains = await contradictions.detect_chains()
-print(f"Found {len(chains)} contradiction chains")
-```
-
-## Detection Process
-
-### Stage 1: Claim Extraction
-
-Extracts factual claims from documents using:
-- Simple sentence splitting (fast, no dependencies)
-- LLM-based extraction (more accurate, requires LLM service)
-
-### Stage 2: Semantic Matching
-
-Finds similar claim pairs using:
-- Embedding-based cosine similarity (requires embedding service)
-- Keyword overlap (fallback method)
-
-Configurable similarity threshold (default: 0.7)
-
-### Stage 3: Verification
-
-Verifies contradictions using:
-- LLM analysis (most accurate, requires LLM service)
-- Heuristic patterns (fast, no dependencies):
-  - Negation detection ("did" vs "did not")
-  - Numeric differences (different amounts)
-  - Temporal conflicts (different dates)
-
-### Stage 4: Severity Scoring
-
-Classifies by severity:
-- **High**: Direct contradictions, clear negations
-- **Medium**: Numeric/temporal contradictions
-- **Low**: Contextual contradictions, ambiguous cases
+| Route | Description |
+|-------|-------------|
+| `/contradictions` | Contradictions list |
 
 ## Dependencies
 
-- `arkham-frame>=0.1.0`
-- `pydantic>=2.0.0`
-- `numpy>=1.24.0`
+### Required Services
+- **database** - Contradiction storage
+- **events** - Event publishing
+- **vectors** - Semantic similarity matching
+
+### Optional Services
+- **llm** - AI-powered extraction and verification
+
+## URL State
+
+| Parameter | Description |
+|-----------|-------------|
+| `status` | Filter by status |
+| `severity` | Filter by severity |
+| `documentId` | Filter by document |
+
+## Detection Process
+
+1. **Claim Extraction**: Extract factual claims from both documents
+   - LLM extraction (more accurate, slower)
+   - Simple heuristic extraction (fast fallback)
+
+2. **Semantic Matching**: Find similar claim pairs
+   - Embed claims using vector service
+   - Filter by similarity threshold
+
+3. **Contradiction Verification**: Verify each potential contradiction
+   - LLM analysis of claim pair
+   - Classify contradiction type
+   - Assign severity and confidence
+
+4. **Storage**: Persist detected contradictions
+   - Link to source documents
+   - Track for analyst review
 
 ## Development
 
 ```bash
-# Install dev dependencies
-pip install -e ".[dev]"
-
 # Run tests
-pytest
+pytest packages/arkham-shard-contradictions/tests/
 
-# Format code
-black .
-
-# Type check
-mypy .
+# Type checking
+mypy packages/arkham-shard-contradictions/
 ```
 
 ## License
 
-See LICENSE file in repository root.
+MIT

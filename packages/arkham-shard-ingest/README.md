@@ -1,145 +1,286 @@
 # arkham-shard-ingest
 
-Document ingestion shard for ArkhamFrame.
+> Document ingestion and file processing with intelligent routing
+
+**Version:** 0.1.0
+**Category:** Data
+**Frame Requirement:** >=0.1.0
+
+## Overview
+
+The Ingest shard handles file uploads and processing for SHATTERED. It classifies incoming files, assesses image quality, and routes them through the appropriate worker pipeline (OCR, parsing, embedding). Supports single file uploads, batch uploads, and filesystem path ingestion.
+
+### Key Capabilities
+
+1. **File Classification** - Automatic categorization of documents, images, audio, archives
+2. **Image Quality Assessment** - DPI, skew, contrast, noise analysis for OCR routing
+3. **Intelligent Routing** - Routes files to appropriate workers based on type and quality
+4. **Batch Processing** - Upload multiple files as tracked batches with staggered dispatch
+5. **Database Persistence** - Jobs, batches, and checksums persisted across restarts
 
 ## Features
 
-- **Document Storage**: Upload files via API or ingest from filesystem paths
-- **File Classification**: Automatic file type detection (documents, images, audio, archives)
-- **Image Analysis**: CLEAN/FIXABLE/MESSY quality assessment for smart OCR routing
-- **Background Processing**: Routes files through appropriate worker pool pipelines
-- **Batch Processing**: Handle multiple files as tracked batches
-- **Priority Queue**: User uploads prioritized over batch imports
+### File Processing
+- Single file upload via HTTP multipart
+- Batch upload with tracking
+- Filesystem path ingestion (file or directory)
+- Recursive directory scanning
+- Checksum-based deduplication
 
-## Capabilities
+### Image Quality Analysis
+- DPI detection and classification
+- Skew angle measurement
+- Contrast ratio analysis
+- Noise detection
+- Layout complexity assessment (simple, table, mixed, complex)
+- Blank page detection and skipping
+- Automatic downscaling for memory optimization
 
-- `document_storage` - Stores and manages document files
-- `background_processing` - Uses worker pools for async processing
-- `file_classification` - Automatic file type and quality detection
-- `image_analysis` - Image quality assessment
-- `batch_processing` - Bulk file operations
+### OCR Routing Modes
+- **auto** - Intelligent routing based on quality assessment
+- **paddle_only** - Force PaddleOCR for all images
+- **qwen_only** - Force Qwen VL for all images
+
+### Job Management
+- Priority levels: user (highest), batch, reprocess
+- Job status tracking: pending, queued, processing, completed, failed, dead
+- Retry failed jobs (up to 3 retries)
+- Queue statistics and monitoring
+
+### Configurable Settings
+- Max/min file size limits
+- Deduplication toggle
+- Image downscaling toggle
+- Blank page skipping
+- OCR confidence threshold
+- OCR cache with configurable TTL
 
 ## Installation
 
 ```bash
-pip install arkham-shard-ingest
+pip install -e packages/arkham-shard-ingest
 ```
 
-Or for development:
+The shard auto-registers via entry point on Frame startup.
 
-```bash
-cd packages/arkham-shard-ingest
-pip install -e .
-```
+## API Endpoints
 
-## Usage
+### Upload Endpoints
 
-The shard is auto-discovered by ArkhamFrame when installed.
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/api/ingest/upload` | Upload single file |
+| POST | `/api/ingest/upload/batch` | Upload multiple files as batch |
+| POST | `/api/ingest/ingest-path` | Ingest from filesystem path |
 
-### API Endpoints
+### Job Management
 
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/api/ingest/upload` | POST | Upload single file |
-| `/api/ingest/upload/batch` | POST | Upload multiple files |
-| `/api/ingest/ingest-path` | POST | Ingest from filesystem |
-| `/api/ingest/job/{id}` | GET | Get job status |
-| `/api/ingest/batch/{id}` | GET | Get batch status |
-| `/api/ingest/job/{id}/retry` | POST | Retry failed job |
-| `/api/ingest/queue` | GET | Queue statistics |
-| `/api/ingest/pending` | GET | List pending jobs |
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/ingest/job/{job_id}` | Get job status |
+| POST | `/api/ingest/job/{job_id}/retry` | Retry failed job |
+| GET | `/api/ingest/batch/{batch_id}` | Get batch status |
+| GET | `/api/ingest/pending` | List pending jobs |
 
-### Example: Upload a File
+### Queue Statistics
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/ingest/queue` | Get queue statistics |
+
+### Settings
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/ingest/settings` | Get current settings |
+| PATCH | `/api/ingest/settings` | Update settings |
+
+## API Examples
+
+### Upload Single File
 
 ```bash
 curl -X POST http://localhost:8100/api/ingest/upload \
   -F "file=@document.pdf" \
-  -F "priority=user"
+  -F "priority=user" \
+  -F "ocr_mode=auto"
 ```
 
 Response:
 ```json
 {
-  "job_id": "abc123",
+  "job_id": "job_abc123",
   "filename": "document.pdf",
   "category": "document",
   "status": "queued",
-  "route": ["cpu-extract"]
+  "route": ["cpu-parse", "gpu-embed"],
+  "quality": null
 }
 ```
 
-### Example: Upload Image with Quality Info
+### Upload Batch
 
 ```bash
-curl -X POST http://localhost:8100/api/ingest/upload \
-  -F "file=@scan.png"
+curl -X POST http://localhost:8100/api/ingest/upload/batch \
+  -F "files=@doc1.pdf" \
+  -F "files=@doc2.pdf" \
+  -F "files=@image.png" \
+  -F "priority=batch" \
+  -F "ocr_mode=auto"
 ```
 
-Response:
+### Ingest from Path
+
 ```json
+POST /api/ingest/ingest-path
 {
-  "job_id": "def456",
-  "filename": "scan.png",
-  "category": "image",
-  "status": "queued",
-  "route": ["cpu-image", "gpu-paddle"],
-  "quality": {
-    "classification": "fixable",
-    "issues": ["low_dpi:96", "skewed:3.2deg"],
-    "dpi": 96,
-    "skew": 3.2,
-    "contrast": 0.72,
-    "layout": "simple"
+  "path": "/data/documents",
+  "recursive": true,
+  "priority": "batch",
+  "ocr_mode": "auto"
+}
+```
+
+### Get Queue Statistics
+
+```json
+GET /api/ingest/queue
+
+{
+  "pending": 15,
+  "processing": 3,
+  "completed": 142,
+  "failed": 2,
+  "by_priority": {
+    "user": 5,
+    "batch": 12,
+    "reprocess": 1
   }
 }
 ```
 
-## Image Quality Classification
+### Update Settings
 
-Images are classified into three categories:
-
-| Classification | Criteria | Processing Route |
-|---------------|----------|------------------|
-| **CLEAN** | High DPI, no skew, good contrast | Direct to PaddleOCR |
-| **FIXABLE** | Minor issues (1-2 problems) | Preprocess, then PaddleOCR |
-| **MESSY** | Multiple issues or complex layout | Heavy preprocess, Qwen-VL |
-
-Quality checks (all under 5ms):
-- DPI < 150: Needs upscaling
-- Skew > 2 degrees: Needs deskewing
-- Contrast < 0.4: Needs enhancement
-- Layout complexity: simple/table/mixed/complex
+```json
+PATCH /api/ingest/settings
+{
+  "ingest_enable_deduplication": true,
+  "ingest_max_file_size_mb": 200,
+  "ocr_confidence_threshold": 0.85
+}
+```
 
 ## Events
 
-The shard publishes these events:
+### Published Events
 
-| Event | When |
-|-------|------|
-| `ingest.file.received` | File uploaded |
-| `ingest.file.classified` | Type/quality determined |
-| `ingest.file.queued` | Job dispatched to workers |
-| `ingest.job.completed` | Processing finished |
-| `ingest.job.failed` | Processing failed (after retries) |
+| Event | Description |
+|-------|-------------|
+| `ingest.file.received` | File received and classified |
+| `ingest.file.classified` | File quality assessed |
+| `ingest.file.queued` | File dispatched to workers |
+| `ingest.job.started` | Job processing started |
+| `ingest.job.completed` | Job completed successfully |
+| `ingest.job.failed` | Job failed |
+| `ingest.batch.queued` | Batch dispatched |
+| `ingest.settings.updated` | Settings changed |
 
-## Worker Pools Used
+### Subscribed Events
 
-| Pool | Purpose |
-|------|---------|
-| `cpu-light` | Quality classification |
-| `cpu-image` | Image preprocessing |
-| `cpu-extract` | Document text extraction |
-| `gpu-paddle` | PaddleOCR |
-| `gpu-qwen` | Qwen-VL (smart OCR) |
+| Event | Handler |
+|-------|---------|
+| `worker.job.completed` | Update job status |
+| `worker.job.failed` | Handle job failure |
 
-## Configuration
+## Data Models
 
-In Frame config:
+### File Categories
+- `document` - PDF, DOC, DOCX, TXT, etc.
+- `image` - PNG, JPG, TIFF, etc.
+- `audio` - MP3, WAV, etc.
+- `archive` - ZIP, TAR, etc.
+- `unknown` - Unrecognized types
 
-```yaml
-ingest:
-  storage_path: ./DataSilo/documents
-  temp_path: ./DataSilo/temp/ingest
-  max_file_size_mb: 100
-  allowed_extensions: [.pdf, .docx, .png, .jpg, ...]
+### Image Quality Classifications
+- `clean` - Direct to OCR, no preprocessing needed
+- `fixable` - Light preprocessing required
+- `messy` - Heavy preprocessing or smart OCR needed
+
+### Job Priority
+- `user` (1) - User-initiated uploads (highest priority)
+- `batch` (2) - Batch imports
+- `reprocess` (3) - Re-processing requests
+
+### Job Status
+- `pending` - Awaiting dispatch
+- `queued` - In worker queue
+- `processing` - Being processed
+- `completed` - Successfully finished
+- `failed` - Failed (can retry)
+- `dead` - Failed after all retries
+
+## Configuration Settings
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `ingest_ocr_mode` | auto | OCR routing mode |
+| `ingest_max_file_size_mb` | 100 | Maximum file size |
+| `ingest_min_file_size_bytes` | 100 | Minimum file size |
+| `ingest_enable_validation` | true | Validate files on upload |
+| `ingest_enable_deduplication` | true | Skip duplicate files |
+| `ingest_enable_downscale` | true | Downscale high-DPI images |
+| `ingest_skip_blank_pages` | true | Skip blank pages |
+| `ocr_parallel_pages` | 4 | Pages processed in parallel |
+| `ocr_confidence_threshold` | 0.8 | Minimum OCR confidence |
+| `ocr_enable_escalation` | true | Escalate low-confidence to VLM |
+| `ocr_enable_cache` | true | Cache OCR results |
+| `ocr_cache_ttl_days` | 7 | Cache expiration |
+
+## UI Routes
+
+| Route | Description |
+|-------|-------------|
+| `/ingest` | Ingest page with upload interface |
+
+## Dependencies
+
+### Required Services
+- **database** - Job and batch persistence
+- **storage** - File storage
+- **workers** - Processing queues
+- **events** - Event publishing
+
+### Optional Services
+- **vectors** - For embedding results
+
+## URL State
+
+| Parameter | Description |
+|-----------|-------------|
+| `jobId` | Selected job |
+| `batchId` | Selected batch |
+
+## Architecture Notes
+
+### Batch Staggering
+For large batches (>10 files), jobs are dispatched with 0.5s delays every 10 jobs to prevent GPU memory overload.
+
+### Worker Routing
+Files are routed to worker pools based on type:
+- Documents: `cpu-parse` -> `gpu-embed`
+- Images (clean): `gpu-ocr-paddle` -> `cpu-parse` -> `gpu-embed`
+- Images (messy): `gpu-ocr-qwen` -> `cpu-parse` -> `gpu-embed`
+
+## Development
+
+```bash
+# Run tests
+pytest packages/arkham-shard-ingest/tests/
+
+# Type checking
+mypy packages/arkham-shard-ingest/
 ```
+
+## License
+
+MIT
