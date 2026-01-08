@@ -355,11 +355,18 @@ class SummaryShard(ArkhamShard):
         if summary_id in self._summaries:
             return self._summaries[summary_id]
 
-        # Query database
-        row = await self._db.fetch_one(
-            "SELECT * FROM arkham_summaries WHERE id = :id",
-            {"id": summary_id}
-        )
+        # Filter by tenant_id for multi-tenancy
+        tenant_id = self.get_tenant_id_or_none()
+        if tenant_id:
+            row = await self._db.fetch_one(
+                "SELECT * FROM arkham_summaries WHERE id = :id AND tenant_id = :tenant_id",
+                {"id": summary_id, "tenant_id": str(tenant_id)}
+            )
+        else:
+            row = await self._db.fetch_one(
+                "SELECT * FROM arkham_summaries WHERE id = :id",
+                {"id": summary_id}
+            )
 
         if row:
             summary = self._row_to_summary(row)
@@ -381,6 +388,12 @@ class SummaryShard(ArkhamShard):
         # Build query with filters
         query = "SELECT * FROM arkham_summaries WHERE 1=1"
         params: Dict[str, Any] = {}
+
+        # Filter by tenant_id for multi-tenancy
+        tenant_id = self.get_tenant_id_or_none()
+        if tenant_id:
+            query += " AND tenant_id = :tenant_id"
+            params["tenant_id"] = str(tenant_id)
 
         if filter:
             if filter.summary_type:
@@ -417,11 +430,18 @@ class SummaryShard(ArkhamShard):
         if not self._db:
             raise RuntimeError("Shard not initialized")
 
-        # Delete from database
-        result = await self._db.execute(
-            "DELETE FROM arkham_summaries WHERE id = :id",
-            {"id": summary_id}
-        )
+        # Filter by tenant_id for multi-tenancy
+        tenant_id = self.get_tenant_id_or_none()
+        if tenant_id:
+            await self._db.execute(
+                "DELETE FROM arkham_summaries WHERE id = :id AND tenant_id = :tenant_id",
+                {"id": summary_id, "tenant_id": str(tenant_id)}
+            )
+        else:
+            await self._db.execute(
+                "DELETE FROM arkham_summaries WHERE id = :id",
+                {"id": summary_id}
+            )
 
         # Remove from cache
         if summary_id in self._summaries:
@@ -441,7 +461,15 @@ class SummaryShard(ArkhamShard):
         if not self._db:
             raise RuntimeError("Shard not initialized")
 
-        row = await self._db.fetch_one("SELECT COUNT(*) as count FROM arkham_summaries")
+        # Filter by tenant_id for multi-tenancy
+        tenant_id = self.get_tenant_id_or_none()
+        if tenant_id:
+            row = await self._db.fetch_one(
+                "SELECT COUNT(*) as count FROM arkham_summaries WHERE tenant_id = :tenant_id",
+                {"tenant_id": str(tenant_id)}
+            )
+        else:
+            row = await self._db.fetch_one("SELECT COUNT(*) as count FROM arkham_summaries")
         return row["count"] if row else 0
 
     async def get_statistics(self) -> SummaryStatistics:
@@ -462,44 +490,55 @@ class SummaryShard(ArkhamShard):
                 stats.avg_processing_time_ms = sum(s.processing_time_ms for s in summaries) / len(summaries)
             return stats
 
+        # Filter by tenant_id for multi-tenancy
+        tenant_id = self.get_tenant_id_or_none()
+        tenant_filter = " WHERE tenant_id = :tenant_id" if tenant_id else ""
+        tenant_filter_and = " AND tenant_id = :tenant_id" if tenant_id else ""
+        params = {"tenant_id": str(tenant_id)} if tenant_id else {}
+
         try:
             # Get total count
             total_row = await self._db.fetch_one(
-                "SELECT COUNT(*) as count FROM arkham_summaries"
+                f"SELECT COUNT(*) as count FROM arkham_summaries{tenant_filter}",
+                params
             )
             stats.total_summaries = total_row["count"] if total_row else 0
 
             # Get counts by type
             type_rows = await self._db.fetch_all(
-                "SELECT summary_type, COUNT(*) as count FROM arkham_summaries GROUP BY summary_type"
+                f"SELECT summary_type, COUNT(*) as count FROM arkham_summaries{tenant_filter} GROUP BY summary_type",
+                params
             )
             for row in type_rows:
                 stats.by_type[row["summary_type"]] = row["count"]
 
             # Get counts by source type
             source_rows = await self._db.fetch_all(
-                "SELECT source_type, COUNT(*) as count FROM arkham_summaries GROUP BY source_type"
+                f"SELECT source_type, COUNT(*) as count FROM arkham_summaries{tenant_filter} GROUP BY source_type",
+                params
             )
             for row in source_rows:
                 stats.by_source_type[row["source_type"]] = row["count"]
 
             # Get counts by status
             status_rows = await self._db.fetch_all(
-                "SELECT status, COUNT(*) as count FROM arkham_summaries GROUP BY status"
+                f"SELECT status, COUNT(*) as count FROM arkham_summaries{tenant_filter} GROUP BY status",
+                params
             )
             for row in status_rows:
                 stats.by_status[row["status"]] = row["count"]
 
             # Get counts by model
             model_rows = await self._db.fetch_all(
-                "SELECT model_used, COUNT(*) as count FROM arkham_summaries WHERE model_used IS NOT NULL GROUP BY model_used"
+                f"SELECT model_used, COUNT(*) as count FROM arkham_summaries WHERE model_used IS NOT NULL{tenant_filter_and} GROUP BY model_used",
+                params
             )
             for row in model_rows:
                 stats.by_model[row["model_used"]] = row["count"]
 
             # Get averages
             avg_row = await self._db.fetch_one(
-                """
+                f"""
                 SELECT
                     AVG(confidence) as avg_confidence,
                     AVG(completeness) as avg_completeness,
@@ -508,8 +547,9 @@ class SummaryShard(ArkhamShard):
                     SUM(word_count) as total_words,
                     SUM(token_count) as total_tokens
                 FROM arkham_summaries
-                WHERE status = 'completed'
-                """
+                WHERE status = 'completed'{tenant_filter_and}
+                """,
+                params
             )
             if avg_row:
                 stats.avg_confidence = float(avg_row["avg_confidence"] or 0)
@@ -521,13 +561,14 @@ class SummaryShard(ArkhamShard):
 
             # Get recent activity (last 24 hours)
             recent_row = await self._db.fetch_one(
-                """
+                f"""
                 SELECT
                     COUNT(*) FILTER (WHERE status = 'completed') as generated,
                     COUNT(*) FILTER (WHERE status = 'failed') as failed
                 FROM arkham_summaries
-                WHERE created_at >= NOW() - INTERVAL '24 hours'
-                """
+                WHERE created_at >= NOW() - INTERVAL '24 hours'{tenant_filter_and}
+                """,
+                params
             )
             if recent_row:
                 stats.generated_last_24h = int(recent_row["generated"] or 0)
@@ -1331,6 +1372,8 @@ Length: {length_map.get(request.target_length, "medium-length")}
 
         if self._db:
             import json
+            # Include tenant_id for multi-tenancy
+            tenant_id = self.get_tenant_id_or_none()
             await self._db.execute(
                 """
                 INSERT INTO arkham_summaries (
@@ -1338,19 +1381,20 @@ Length: {length_map.get(request.target_length, "medium-length")}
                     content, key_points, title, model_used, token_count, word_count,
                     target_length, confidence, completeness, focus_areas, exclude_topics,
                     processing_time_ms, error_message, created_at, updated_at,
-                    source_updated_at, metadata, tags
+                    source_updated_at, metadata, tags, tenant_id
                 ) VALUES (
                     :id, :summary_type, :status, :source_type, :source_ids, :source_titles,
                     :content, :key_points, :title, :model_used, :token_count, :word_count,
                     :target_length, :confidence, :completeness, :focus_areas, :exclude_topics,
                     :processing_time_ms, :error_message, :created_at, :updated_at,
-                    :source_updated_at, :metadata, :tags
+                    :source_updated_at, :metadata, :tags, :tenant_id
                 )
                 ON CONFLICT (id) DO UPDATE SET
                     content = EXCLUDED.content,
                     key_points = EXCLUDED.key_points,
                     title = EXCLUDED.title,
-                    updated_at = EXCLUDED.updated_at
+                    updated_at = EXCLUDED.updated_at,
+                    tenant_id = EXCLUDED.tenant_id
                 """,
                 {
                     "id": summary.id,
@@ -1377,6 +1421,7 @@ Length: {length_map.get(request.target_length, "medium-length")}
                     "source_updated_at": summary.source_updated_at,
                     "metadata": json.dumps(summary.metadata),
                     "tags": json.dumps(summary.tags),
+                    "tenant_id": str(tenant_id) if tenant_id else None,
                 }
             )
 
@@ -1434,6 +1479,33 @@ Length: {length_map.get(request.target_length, "medium-length")}
         await self._db.execute("""
             CREATE INDEX IF NOT EXISTS idx_arkham_summaries_created_at
             ON arkham_summaries(created_at DESC)
+        """)
+
+        # ===========================================
+        # Multi-tenancy Migration
+        # ===========================================
+        await self._db.execute("""
+            DO $$
+            DECLARE
+                tables_to_update TEXT[] := ARRAY['arkham_summaries'];
+                tbl TEXT;
+            BEGIN
+                FOREACH tbl IN ARRAY tables_to_update LOOP
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = 'public'
+                        AND table_name = tbl
+                        AND column_name = 'tenant_id'
+                    ) THEN
+                        EXECUTE format('ALTER TABLE %I ADD COLUMN tenant_id UUID', tbl);
+                    END IF;
+                END LOOP;
+            END $$;
+        """)
+
+        await self._db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_arkham_summaries_tenant
+            ON arkham_summaries(tenant_id)
         """)
 
         logger.info("Summary database schema created")
@@ -1560,18 +1632,36 @@ Length: {length_map.get(request.target_length, "medium-length")}
 
         try:
             import json
-            row = await self._db.fetch_one(
-                """
-                SELECT id FROM arkham_summaries
-                WHERE source_type = :source_type
-                AND source_ids @> :source_id
-                LIMIT 1
-                """,
-                {
-                    "source_type": source_type.value,
-                    "source_id": json.dumps([source_id])
-                }
-            )
+            # Filter by tenant_id for multi-tenancy
+            tenant_id = self.get_tenant_id_or_none()
+            if tenant_id:
+                row = await self._db.fetch_one(
+                    """
+                    SELECT id FROM arkham_summaries
+                    WHERE source_type = :source_type
+                    AND source_ids @> :source_id
+                    AND tenant_id = :tenant_id
+                    LIMIT 1
+                    """,
+                    {
+                        "source_type": source_type.value,
+                        "source_id": json.dumps([source_id]),
+                        "tenant_id": str(tenant_id)
+                    }
+                )
+            else:
+                row = await self._db.fetch_one(
+                    """
+                    SELECT id FROM arkham_summaries
+                    WHERE source_type = :source_type
+                    AND source_ids @> :source_id
+                    LIMIT 1
+                    """,
+                    {
+                        "source_type": source_type.value,
+                        "source_id": json.dumps([source_id])
+                    }
+                )
             return row is not None
         except Exception as e:
             logger.debug(f"Error checking existing summary: {e}")

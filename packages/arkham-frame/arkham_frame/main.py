@@ -5,6 +5,7 @@ The main entry point for the Frame REST API.
 """
 
 from contextlib import asynccontextmanager
+import os
 from pathlib import Path
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -112,6 +113,21 @@ async def lifespan(app: FastAPI):
     await frame.shutdown()
 
 
+def get_cors_origins() -> list[str]:
+    """Get allowed CORS origins from environment or defaults."""
+    origins_env = os.environ.get("CORS_ORIGINS", "")
+    if origins_env:
+        return [o.strip() for o in origins_env.split(",") if o.strip()]
+
+    # Default: allow localhost for development
+    return [
+        "http://localhost:5173",
+        "http://localhost:8100",
+        "http://127.0.0.1:5173",
+        "http://127.0.0.1:8100",
+    ]
+
+
 # Create FastAPI app
 app = FastAPI(
     title="ArkhamFrame",
@@ -120,13 +136,24 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# CORS middleware
+# Security middleware
+from .middleware import SecurityHeadersMiddleware, limiter, rate_limit_handler, TenantContextMiddleware
+from slowapi.errors import RateLimitExceeded
+
+app.add_middleware(SecurityHeadersMiddleware)
+app.add_middleware(TenantContextMiddleware)
+
+# Rate limiting
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, rate_limit_handler)
+
+# CORS middleware - configurable via CORS_ORIGINS env var
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=get_cors_origins(),
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "X-Tenant-ID"],
 )
 
 
@@ -134,6 +161,10 @@ app.add_middleware(
 from .api import health, projects, shards, events, frame as frame_api
 from .api import export, notifications, scheduler
 # NOTE: templates import removed - templates shard handles /api/templates routes
+
+# Authentication routes (must be before other protected routes)
+from .auth import auth_router
+app.include_router(auth_router)
 
 app.include_router(health.router, tags=["Health"])
 # NOTE: Frame's documents router removed - documents shard handles /api/documents routes

@@ -127,11 +127,18 @@ class SettingsShard(ArkhamShard):
         if key in self._settings_cache:
             return self._settings_cache[key]
 
-        # Query database
-        row = await self._db.fetch_one(
-            "SELECT * FROM arkham_settings WHERE key = :key",
-            {"key": key}
-        )
+        # Query database - settings can be tenant-specific or global (NULL tenant_id)
+        tenant_id = self.get_tenant_id_or_none()
+        if tenant_id:
+            row = await self._db.fetch_one(
+                "SELECT * FROM arkham_settings WHERE key = :key AND (tenant_id = :tenant_id OR tenant_id IS NULL)",
+                {"key": key, "tenant_id": str(tenant_id)}
+            )
+        else:
+            row = await self._db.fetch_one(
+                "SELECT * FROM arkham_settings WHERE key = :key",
+                {"key": key}
+            )
 
         if row:
             setting = self._row_to_setting(row)
@@ -177,31 +184,48 @@ class SettingsShard(ArkhamShard):
             value = validation.coerced_value
 
         old_value = existing.value
+        tenant_id = self.get_tenant_id_or_none()
 
         # Update in database
-        await self._db.execute(
-            """
-            UPDATE arkham_settings
-            SET value = :value, modified_at = :modified_at
-            WHERE key = :key
-            """,
-            {
-                "key": key,
-                "value": json.dumps(value),
-                "modified_at": datetime.utcnow(),
-            }
-        )
+        if tenant_id:
+            await self._db.execute(
+                """
+                UPDATE arkham_settings
+                SET value = :value, modified_at = :modified_at
+                WHERE key = :key AND (tenant_id = :tenant_id OR tenant_id IS NULL)
+                """,
+                {
+                    "key": key,
+                    "value": json.dumps(value),
+                    "modified_at": datetime.utcnow(),
+                    "tenant_id": str(tenant_id),
+                }
+            )
+        else:
+            await self._db.execute(
+                """
+                UPDATE arkham_settings
+                SET value = :value, modified_at = :modified_at
+                WHERE key = :key
+                """,
+                {
+                    "key": key,
+                    "value": json.dumps(value),
+                    "modified_at": datetime.utcnow(),
+                }
+            )
 
         # Record change in history
         await self._db.execute(
             """
-            INSERT INTO arkham_settings_changes (setting_key, old_value, new_value)
-            VALUES (:key, :old_value, :new_value)
+            INSERT INTO arkham_settings_changes (setting_key, old_value, new_value, tenant_id)
+            VALUES (:key, :old_value, :new_value, :tenant_id)
             """,
             {
                 "key": key,
                 "old_value": json.dumps(old_value),
                 "new_value": json.dumps(value),
+                "tenant_id": str(tenant_id) if tenant_id else None,
             }
         )
 
@@ -260,14 +284,26 @@ class SettingsShard(ArkhamShard):
         if not self._db:
             raise RuntimeError("Shard not initialized")
 
-        rows = await self._db.fetch_all(
-            """
-            SELECT * FROM arkham_settings
-            WHERE category = :category AND is_hidden = FALSE
-            ORDER BY display_order
-            """,
-            {"category": category}
-        )
+        tenant_id = self.get_tenant_id_or_none()
+        if tenant_id:
+            rows = await self._db.fetch_all(
+                """
+                SELECT * FROM arkham_settings
+                WHERE category = :category AND is_hidden = FALSE
+                AND (tenant_id = :tenant_id OR tenant_id IS NULL)
+                ORDER BY display_order
+                """,
+                {"category": category, "tenant_id": str(tenant_id)}
+            )
+        else:
+            rows = await self._db.fetch_all(
+                """
+                SELECT * FROM arkham_settings
+                WHERE category = :category AND is_hidden = FALSE
+                ORDER BY display_order
+                """,
+                {"category": category}
+            )
 
         settings = [self._row_to_setting(row) for row in rows]
 
@@ -300,6 +336,11 @@ class SettingsShard(ArkhamShard):
         # Build query with filters
         query = "SELECT * FROM arkham_settings WHERE is_hidden = FALSE"
         params: Dict[str, Any] = {}
+
+        tenant_id = self.get_tenant_id_or_none()
+        if tenant_id:
+            query += " AND (tenant_id = :tenant_id OR tenant_id IS NULL)"
+            params["tenant_id"] = str(tenant_id)
 
         if category:
             query += " AND category = :category"
@@ -659,6 +700,47 @@ class SettingsShard(ArkhamShard):
         await self._db.execute("""
             CREATE INDEX IF NOT EXISTS idx_arkham_settings_category
             ON arkham_settings(category)
+        """)
+
+        # ===========================================
+        # Multi-tenancy Migration
+        # ===========================================
+        await self._db.execute("""
+            DO $$
+            DECLARE
+                tables_to_update TEXT[] := ARRAY[
+                    'arkham_settings',
+                    'arkham_settings_profiles',
+                    'arkham_settings_changes'
+                ];
+                tbl TEXT;
+            BEGIN
+                FOREACH tbl IN ARRAY tables_to_update LOOP
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = 'public'
+                        AND table_name = tbl
+                        AND column_name = 'tenant_id'
+                    ) THEN
+                        EXECUTE format('ALTER TABLE %I ADD COLUMN tenant_id UUID', tbl);
+                    END IF;
+                END LOOP;
+            END $$;
+        """)
+
+        await self._db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_arkham_settings_tenant
+            ON arkham_settings(tenant_id)
+        """)
+
+        await self._db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_arkham_settings_profiles_tenant
+            ON arkham_settings_profiles(tenant_id)
+        """)
+
+        await self._db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_arkham_settings_changes_tenant
+            ON arkham_settings_changes(tenant_id)
         """)
 
         logger.info("Settings database schema created")

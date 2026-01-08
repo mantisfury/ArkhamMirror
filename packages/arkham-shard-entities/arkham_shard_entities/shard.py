@@ -232,6 +232,41 @@ class EntitiesShard(ArkhamShard):
             ON arkham_entity_relationships(target_id)
         """)
 
+        # ===========================================
+        # Multi-tenancy Migration
+        # ===========================================
+        await self._db.execute("""
+            DO $$
+            DECLARE
+                tables_to_update TEXT[] := ARRAY[
+                    'arkham_entities',
+                    'arkham_entity_mentions',
+                    'arkham_entity_relationships'
+                ];
+                tbl TEXT;
+            BEGIN
+                FOREACH tbl IN ARRAY tables_to_update LOOP
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = 'public'
+                        AND table_name = tbl
+                        AND column_name = 'tenant_id'
+                    ) THEN
+                        EXECUTE format('ALTER TABLE %I ADD COLUMN tenant_id UUID', tbl);
+                    END IF;
+                END LOOP;
+            END $$;
+        """)
+
+        await self._db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_arkham_entities_tenant
+            ON arkham_entities(tenant_id)
+        """)
+        await self._db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_arkham_entity_mentions_tenant
+            ON arkham_entity_mentions(tenant_id)
+        """)
+
         logger.info("Entities database schema created")
 
     def _parse_jsonb(self, value: Any, default: Any = None) -> Any:
@@ -498,6 +533,12 @@ class EntitiesShard(ArkhamShard):
         query = "SELECT * FROM arkham_entities WHERE 1=1"
         params: Dict[str, Any] = {}
 
+        # Add tenant filtering if tenant context is available
+        tenant_id = self.get_tenant_id_or_none()
+        if tenant_id:
+            query += " AND tenant_id = :tenant_id"
+            params["tenant_id"] = str(tenant_id)
+
         # Filter out merged entities by default
         if not show_merged:
             query += " AND canonical_id IS NULL"
@@ -565,10 +606,17 @@ class EntitiesShard(ArkhamShard):
         if not self._db:
             raise RuntimeError("Entities Shard not initialized")
 
-        row = await self._db.fetch_one(
-            "SELECT * FROM arkham_entities WHERE id = :id",
-            {"id": entity_id}
-        )
+        # Build query with tenant filtering
+        query = "SELECT * FROM arkham_entities WHERE id = :id"
+        params: Dict[str, Any] = {"id": entity_id}
+
+        # Add tenant filtering if tenant context is available
+        tenant_id = self.get_tenant_id_or_none()
+        if tenant_id:
+            query += " AND tenant_id = :tenant_id"
+            params["tenant_id"] = str(tenant_id)
+
+        row = await self._db.fetch_one(query, params)
 
         if row:
             entity = self._row_to_entity(row)
@@ -590,14 +638,22 @@ class EntitiesShard(ArkhamShard):
         if not self._db:
             raise RuntimeError("Entities Shard not initialized")
 
-        rows = await self._db.fetch_all(
-            """
+        # Build query with tenant filtering
+        query = """
             SELECT * FROM arkham_entity_mentions
             WHERE entity_id = :entity_id
-            ORDER BY created_at DESC
-            """,
-            {"entity_id": entity_id}
-        )
+        """
+        params: Dict[str, Any] = {"entity_id": entity_id}
+
+        # Add tenant filtering if tenant context is available
+        tenant_id = self.get_tenant_id_or_none()
+        if tenant_id:
+            query += " AND tenant_id = :tenant_id"
+            params["tenant_id"] = str(tenant_id)
+
+        query += " ORDER BY created_at DESC"
+
+        rows = await self._db.fetch_all(query, params)
 
         mentions = []
         for row in rows:
@@ -748,15 +804,23 @@ class EntitiesShard(ArkhamShard):
         if not self._db:
             raise RuntimeError("Entities Shard not initialized")
 
-        rows = await self._db.fetch_all(
-            """
+        # Build query with tenant filtering
+        query = """
             SELECT entity_type, COUNT(*) as count
             FROM arkham_entities
             WHERE canonical_id IS NULL
-            GROUP BY entity_type
-            ORDER BY count DESC
-            """
-        )
+        """
+        params: Dict[str, Any] = {}
+
+        # Add tenant filtering if tenant context is available
+        tenant_id = self.get_tenant_id_or_none()
+        if tenant_id:
+            query += " AND tenant_id = :tenant_id"
+            params["tenant_id"] = str(tenant_id)
+
+        query += " GROUP BY entity_type ORDER BY count DESC"
+
+        rows = await self._db.fetch_all(query, params)
 
         stats = {}
         total = 0
@@ -851,7 +915,7 @@ class EntitiesShard(ArkhamShard):
             raise RuntimeError("Entities Shard not initialized")
 
         query = """
-            SELECT r.*, 
+            SELECT r.*,
                    s.name as source_name, s.entity_type as source_type,
                    t.name as target_name, t.entity_type as target_type
             FROM arkham_entity_relationships r
@@ -860,6 +924,12 @@ class EntitiesShard(ArkhamShard):
             WHERE 1=1
         """
         params: Dict[str, Any] = {}
+
+        # Add tenant filtering if tenant context is available
+        tenant_id = self.get_tenant_id_or_none()
+        if tenant_id:
+            query += " AND r.tenant_id = :tenant_id"
+            params["tenant_id"] = str(tenant_id)
 
         if relationship_type:
             query += " AND r.relationship_type = :rel_type"
@@ -918,7 +988,7 @@ class EntitiesShard(ArkhamShard):
             where_clause = "(r.source_id = :entity_id OR r.target_id = :entity_id)"
 
         query = f"""
-            SELECT r.*, 
+            SELECT r.*,
                    s.name as source_name, s.entity_type as source_type,
                    t.name as target_name, t.entity_type as target_type
             FROM arkham_entity_relationships r
@@ -927,6 +997,12 @@ class EntitiesShard(ArkhamShard):
             WHERE {where_clause}
         """
         params: Dict[str, Any] = {"entity_id": entity_id}
+
+        # Add tenant filtering if tenant context is available
+        tenant_id = self.get_tenant_id_or_none()
+        if tenant_id:
+            query += " AND r.tenant_id = :tenant_id"
+            params["tenant_id"] = str(tenant_id)
 
         if relationship_type:
             query += " AND r.relationship_type = :rel_type"

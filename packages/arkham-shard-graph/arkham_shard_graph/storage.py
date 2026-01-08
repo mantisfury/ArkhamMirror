@@ -4,7 +4,7 @@ import json
 import logging
 import uuid
 from datetime import datetime
-from typing import Any
+from typing import Any, Callable
 
 from .models import Graph, GraphNode, GraphEdge
 
@@ -34,15 +34,24 @@ class GraphStorage:
     Provides in-memory caching with database persistence.
     """
 
-    def __init__(self, db_service=None):
+    def __init__(self, db_service=None, get_tenant_id: Callable[[], Any] | None = None):
         """
         Initialize graph storage.
 
         Args:
             db_service: Database service for persistence
+            get_tenant_id: Optional callback to get current tenant_id for multi-tenancy
         """
         self.db_service = db_service
         self._cache: dict[str, Graph] = {}  # In-memory cache: project_id -> Graph
+        self._get_tenant_id = get_tenant_id
+
+    def _get_current_tenant_id(self) -> str | None:
+        """Get current tenant_id if available."""
+        if self._get_tenant_id:
+            tenant_id = self._get_tenant_id()
+            return str(tenant_id) if tenant_id else None
+        return None
 
     async def save_graph(self, graph: Graph) -> None:
         """
@@ -131,10 +140,16 @@ class GraphStorage:
         # Check database
         if self.db_service:
             try:
-                result = await self.db_service.fetch_one(
-                    "SELECT id FROM arkham_graph.graphs WHERE project_id = :project_id",
-                    {"project_id": project_id}
-                )
+                query = "SELECT id FROM arkham_graph.graphs WHERE project_id = :project_id"
+                params: dict[str, Any] = {"project_id": project_id}
+
+                # Add tenant filtering if tenant context is available
+                tenant_id = self._get_current_tenant_id()
+                if tenant_id:
+                    query += " AND tenant_id = :tenant_id"
+                    params["tenant_id"] = tenant_id
+
+                result = await self.db_service.fetch_one(query, params)
                 return result is not None
             except Exception as e:
                 logger.error(f"Error checking graph existence: {e}")
@@ -168,15 +183,25 @@ class GraphStorage:
             return graphs
 
         try:
-            rows = await self.db_service.fetch_all(
-                """
+            query = """
                 SELECT id, project_id, node_count, edge_count, created_at, updated_at, metadata
                 FROM arkham_graph.graphs
+                WHERE 1=1
+            """
+            params: dict[str, Any] = {"limit": limit, "offset": offset}
+
+            # Add tenant filtering if tenant context is available
+            tenant_id = self._get_current_tenant_id()
+            if tenant_id:
+                query += " AND tenant_id = :tenant_id"
+                params["tenant_id"] = tenant_id
+
+            query += """
                 ORDER BY updated_at DESC
                 LIMIT :limit OFFSET :offset
-                """,
-                {"limit": limit, "offset": offset}
-            )
+            """
+
+            rows = await self.db_service.fetch_all(query, params)
             return [
                 {
                     "id": row["id"],
@@ -211,81 +236,123 @@ class GraphStorage:
         graph_id = f"graph-{graph.project_id}"
         now = datetime.utcnow()
 
+        # Get tenant_id for multi-tenancy
+        tenant_id = self._get_current_tenant_id()
+
+        # Build query with optional tenant filtering
+        check_query = "SELECT id FROM arkham_graph.graphs WHERE project_id = :project_id"
+        check_params: dict[str, Any] = {"project_id": graph.project_id}
+        if tenant_id:
+            check_query += " AND tenant_id = :tenant_id"
+            check_params["tenant_id"] = tenant_id
+
         # Check if graph exists
-        existing = await self.db_service.fetch_one(
-            "SELECT id FROM arkham_graph.graphs WHERE project_id = :project_id",
-            {"project_id": graph.project_id}
-        )
+        existing = await self.db_service.fetch_one(check_query, check_params)
 
         if existing:
             # Delete existing nodes and edges (cascade will handle it)
-            await self.db_service.execute(
-                "DELETE FROM arkham_graph.graphs WHERE project_id = :project_id",
-                {"project_id": graph.project_id}
-            )
+            delete_query = "DELETE FROM arkham_graph.graphs WHERE project_id = :project_id"
+            delete_params: dict[str, Any] = {"project_id": graph.project_id}
+            if tenant_id:
+                delete_query += " AND tenant_id = :tenant_id"
+                delete_params["tenant_id"] = tenant_id
+            await self.db_service.execute(delete_query, delete_params)
 
-        # Insert graph record
-        await self.db_service.execute(
-            """
-            INSERT INTO arkham_graph.graphs (id, project_id, node_count, edge_count, created_at, updated_at, metadata)
-            VALUES (:id, :project_id, :node_count, :edge_count, :created_at, :updated_at, :metadata)
-            """,
-            {
-                "id": graph_id,
-                "project_id": graph.project_id,
-                "node_count": len(graph.nodes),
-                "edge_count": len(graph.edges),
-                "created_at": graph.created_at or now,
-                "updated_at": now,
-                "metadata": json.dumps(graph.metadata or {}),
-            }
-        )
+        # Insert graph record with tenant_id
+        insert_params: dict[str, Any] = {
+            "id": graph_id,
+            "project_id": graph.project_id,
+            "node_count": len(graph.nodes),
+            "edge_count": len(graph.edges),
+            "created_at": graph.created_at or now,
+            "updated_at": now,
+            "metadata": json.dumps(graph.metadata or {}),
+        }
+
+        if tenant_id:
+            await self.db_service.execute(
+                """
+                INSERT INTO arkham_graph.graphs (id, project_id, node_count, edge_count, created_at, updated_at, metadata, tenant_id)
+                VALUES (:id, :project_id, :node_count, :edge_count, :created_at, :updated_at, :metadata, :tenant_id)
+                """,
+                {**insert_params, "tenant_id": tenant_id}
+            )
+        else:
+            await self.db_service.execute(
+                """
+                INSERT INTO arkham_graph.graphs (id, project_id, node_count, edge_count, created_at, updated_at, metadata)
+                VALUES (:id, :project_id, :node_count, :edge_count, :created_at, :updated_at, :metadata)
+                """,
+                insert_params
+            )
 
         # Insert nodes in batches
         if graph.nodes:
             for node in graph.nodes:
-                await self.db_service.execute(
-                    """
-                    INSERT INTO arkham_graph.nodes
-                    (id, graph_id, entity_id, entity_type, label, document_count, degree, properties, created_at)
-                    VALUES (:id, :graph_id, :entity_id, :entity_type, :label, :document_count, :degree, :properties, :created_at)
-                    """,
-                    {
-                        "id": node.id,
-                        "graph_id": graph_id,
-                        "entity_id": node.entity_id,
-                        "entity_type": node.entity_type,
-                        "label": node.label,
-                        "document_count": node.document_count,
-                        "degree": node.degree,
-                        "properties": json.dumps(node.properties or {}),
-                        "created_at": node.created_at or now,
-                    }
-                )
+                node_params: dict[str, Any] = {
+                    "id": node.id,
+                    "graph_id": graph_id,
+                    "entity_id": node.entity_id,
+                    "entity_type": node.entity_type,
+                    "label": node.label,
+                    "document_count": node.document_count,
+                    "degree": node.degree,
+                    "properties": json.dumps(node.properties or {}),
+                    "created_at": node.created_at or now,
+                }
+                if tenant_id:
+                    await self.db_service.execute(
+                        """
+                        INSERT INTO arkham_graph.nodes
+                        (id, graph_id, entity_id, entity_type, label, document_count, degree, properties, created_at, tenant_id)
+                        VALUES (:id, :graph_id, :entity_id, :entity_type, :label, :document_count, :degree, :properties, :created_at, :tenant_id)
+                        """,
+                        {**node_params, "tenant_id": tenant_id}
+                    )
+                else:
+                    await self.db_service.execute(
+                        """
+                        INSERT INTO arkham_graph.nodes
+                        (id, graph_id, entity_id, entity_type, label, document_count, degree, properties, created_at)
+                        VALUES (:id, :graph_id, :entity_id, :entity_type, :label, :document_count, :degree, :properties, :created_at)
+                        """,
+                        node_params
+                    )
 
         # Insert edges in batches
         if graph.edges:
             for edge in graph.edges:
                 edge_id = f"edge-{uuid.uuid4().hex[:8]}"
-                await self.db_service.execute(
-                    """
-                    INSERT INTO arkham_graph.edges
-                    (id, graph_id, source_id, target_id, relationship_type, weight, co_occurrence_count, document_ids, properties, created_at)
-                    VALUES (:id, :graph_id, :source_id, :target_id, :relationship_type, :weight, :co_occurrence_count, :document_ids, :properties, :created_at)
-                    """,
-                    {
-                        "id": edge_id,
-                        "graph_id": graph_id,
-                        "source_id": edge.source,
-                        "target_id": edge.target,
-                        "relationship_type": edge.relationship_type,
-                        "weight": edge.weight,
-                        "co_occurrence_count": edge.co_occurrence_count,
-                        "document_ids": json.dumps(edge.document_ids or []),
-                        "properties": json.dumps(edge.properties or {}),
-                        "created_at": edge.created_at or now,
-                    }
-                )
+                edge_params: dict[str, Any] = {
+                    "id": edge_id,
+                    "graph_id": graph_id,
+                    "source_id": edge.source,
+                    "target_id": edge.target,
+                    "relationship_type": edge.relationship_type,
+                    "weight": edge.weight,
+                    "co_occurrence_count": edge.co_occurrence_count,
+                    "document_ids": json.dumps(edge.document_ids or []),
+                    "properties": json.dumps(edge.properties or {}),
+                    "created_at": edge.created_at or now,
+                }
+                if tenant_id:
+                    await self.db_service.execute(
+                        """
+                        INSERT INTO arkham_graph.edges
+                        (id, graph_id, source_id, target_id, relationship_type, weight, co_occurrence_count, document_ids, properties, created_at, tenant_id)
+                        VALUES (:id, :graph_id, :source_id, :target_id, :relationship_type, :weight, :co_occurrence_count, :document_ids, :properties, :created_at, :tenant_id)
+                        """,
+                        {**edge_params, "tenant_id": tenant_id}
+                    )
+                else:
+                    await self.db_service.execute(
+                        """
+                        INSERT INTO arkham_graph.edges
+                        (id, graph_id, source_id, target_id, relationship_type, weight, co_occurrence_count, document_ids, properties, created_at)
+                        VALUES (:id, :graph_id, :source_id, :target_id, :relationship_type, :weight, :co_occurrence_count, :document_ids, :properties, :created_at)
+                        """,
+                        edge_params
+                    )
 
         logger.debug(f"Persisted graph {graph_id}: {len(graph.nodes)} nodes, {len(graph.edges)} edges")
 
@@ -302,26 +369,37 @@ class GraphStorage:
         if not self.db_service:
             return None
 
-        # Load graph metadata
-        graph_row = await self.db_service.fetch_one(
-            "SELECT id, project_id, node_count, edge_count, created_at, updated_at, metadata FROM arkham_graph.graphs WHERE project_id = :project_id",
-            {"project_id": project_id}
-        )
+        # Get tenant_id for multi-tenancy
+        tenant_id = self._get_current_tenant_id()
+
+        # Load graph metadata with tenant filtering
+        query = "SELECT id, project_id, node_count, edge_count, created_at, updated_at, metadata FROM arkham_graph.graphs WHERE project_id = :project_id"
+        params: dict[str, Any] = {"project_id": project_id}
+
+        if tenant_id:
+            query += " AND tenant_id = :tenant_id"
+            params["tenant_id"] = tenant_id
+
+        graph_row = await self.db_service.fetch_one(query, params)
 
         if not graph_row:
             return None
 
         graph_id = graph_row["id"]
 
-        # Load nodes
-        node_rows = await self.db_service.fetch_all(
-            """
+        # Load nodes with tenant filtering
+        nodes_query = """
             SELECT id, entity_id, entity_type, label, document_count, degree, properties, centrality_score, community_id, created_at
             FROM arkham_graph.nodes
             WHERE graph_id = :graph_id
-            """,
-            {"graph_id": graph_id}
-        )
+        """
+        nodes_params: dict[str, Any] = {"graph_id": graph_id}
+
+        if tenant_id:
+            nodes_query += " AND tenant_id = :tenant_id"
+            nodes_params["tenant_id"] = tenant_id
+
+        node_rows = await self.db_service.fetch_all(nodes_query, nodes_params)
 
         nodes = []
         for row in node_rows:
@@ -337,15 +415,19 @@ class GraphStorage:
             )
             nodes.append(node)
 
-        # Load edges
-        edge_rows = await self.db_service.fetch_all(
-            """
+        # Load edges with tenant filtering
+        edges_query = """
             SELECT id, source_id, target_id, relationship_type, weight, co_occurrence_count, document_ids, properties, created_at
             FROM arkham_graph.edges
             WHERE graph_id = :graph_id
-            """,
-            {"graph_id": graph_id}
-        )
+        """
+        edges_params: dict[str, Any] = {"graph_id": graph_id}
+
+        if tenant_id:
+            edges_query += " AND tenant_id = :tenant_id"
+            edges_params["tenant_id"] = tenant_id
+
+        edge_rows = await self.db_service.fetch_all(edges_query, edges_params)
 
         edges = []
         for row in edge_rows:
@@ -384,11 +466,18 @@ class GraphStorage:
         if not self.db_service:
             return
 
-        # Delete graph (cascade will delete nodes and edges)
-        await self.db_service.execute(
-            "DELETE FROM arkham_graph.graphs WHERE project_id = :project_id",
-            {"project_id": project_id}
-        )
+        # Get tenant_id for multi-tenancy
+        tenant_id = self._get_current_tenant_id()
+
+        # Delete graph (cascade will delete nodes and edges) with tenant filtering
+        query = "DELETE FROM arkham_graph.graphs WHERE project_id = :project_id"
+        params: dict[str, Any] = {"project_id": project_id}
+
+        if tenant_id:
+            query += " AND tenant_id = :tenant_id"
+            params["tenant_id"] = tenant_id
+
+        await self.db_service.execute(query, params)
 
         logger.debug(f"Deleted graph from DB for project {project_id}")
 
@@ -398,10 +487,16 @@ class GraphStorage:
             return len(self._cache)
 
         try:
-            result = await self.db_service.fetch_one(
-                "SELECT COUNT(*) as count FROM arkham_graph.graphs",
-                {}
-            )
+            query = "SELECT COUNT(*) as count FROM arkham_graph.graphs WHERE 1=1"
+            params: dict[str, Any] = {}
+
+            # Add tenant filtering if tenant context is available
+            tenant_id = self._get_current_tenant_id()
+            if tenant_id:
+                query += " AND tenant_id = :tenant_id"
+                params["tenant_id"] = tenant_id
+
+            result = await self.db_service.fetch_one(query, params)
             return result["count"] if result else 0
         except Exception as e:
             logger.error(f"Error counting graphs: {e}")

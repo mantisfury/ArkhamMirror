@@ -190,6 +190,38 @@ class PatternsShard(ArkhamShard):
             CREATE INDEX IF NOT EXISTS idx_pattern_matches_source ON arkham_pattern_matches(source_type, source_id)
         """)
 
+        # ===========================================
+        # Multi-tenancy Migration
+        # ===========================================
+        await self._db.execute("""
+            DO $$
+            DECLARE
+                tables_to_update TEXT[] := ARRAY['arkham_patterns', 'arkham_pattern_matches'];
+                tbl TEXT;
+            BEGIN
+                FOREACH tbl IN ARRAY tables_to_update LOOP
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = 'public'
+                        AND table_name = tbl
+                        AND column_name = 'tenant_id'
+                    ) THEN
+                        EXECUTE format('ALTER TABLE %I ADD COLUMN tenant_id UUID', tbl);
+                    END IF;
+                END LOOP;
+            END $$;
+        """)
+
+        await self._db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_arkham_patterns_tenant
+            ON arkham_patterns(tenant_id)
+        """)
+
+        await self._db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_arkham_pattern_matches_tenant
+            ON arkham_pattern_matches(tenant_id)
+        """)
+
         logger.debug("Patterns schema created/verified")
 
     # === Event Subscriptions ===
@@ -295,10 +327,14 @@ class PatternsShard(ArkhamShard):
         if not self._db:
             return None
 
-        row = await self._db.fetch_one(
-            "SELECT * FROM arkham_patterns WHERE id = :pattern_id",
-            {"pattern_id": pattern_id},
-        )
+        query = "SELECT * FROM arkham_patterns WHERE id = :pattern_id"
+        params = {"pattern_id": pattern_id}
+        tenant_id = self.get_tenant_id_or_none()
+        if tenant_id:
+            query += " AND tenant_id = :tenant_id"
+            params["tenant_id"] = str(tenant_id)
+
+        row = await self._db.fetch_one(query, params)
         return self._row_to_pattern(row) if row else None
 
     async def list_patterns(
@@ -315,6 +351,11 @@ class PatternsShard(ArkhamShard):
 
         query = "SELECT * FROM arkham_patterns WHERE 1=1"
         params: Dict[str, Any] = {}
+
+        tenant_id = self.get_tenant_id_or_none()
+        if tenant_id:
+            query += " AND tenant_id = :tenant_id"
+            params["tenant_id"] = str(tenant_id)
 
         if filter:
             if filter.pattern_type:
@@ -510,13 +551,18 @@ class PatternsShard(ArkhamShard):
         if not self._db:
             return []
 
-        rows = await self._db.fetch_all(
-            """SELECT * FROM arkham_pattern_matches
-               WHERE pattern_id = :pattern_id
-               ORDER BY matched_at DESC
-               LIMIT :limit OFFSET :offset""",
-            {"pattern_id": pattern_id, "limit": limit, "offset": offset},
-        )
+        query = """SELECT * FROM arkham_pattern_matches
+               WHERE pattern_id = :pattern_id"""
+        params = {"pattern_id": pattern_id, "limit": limit, "offset": offset}
+
+        tenant_id = self.get_tenant_id_or_none()
+        if tenant_id:
+            query += " AND tenant_id = :tenant_id"
+            params["tenant_id"] = str(tenant_id)
+
+        query += " ORDER BY matched_at DESC LIMIT :limit OFFSET :offset"
+
+        rows = await self._db.fetch_all(query, params)
         return [self._row_to_match(row) for row in rows]
 
     async def remove_match(self, pattern_id: str, match_id: str) -> bool:
@@ -835,42 +881,57 @@ class PatternsShard(ArkhamShard):
         if not self._db:
             return PatternStatistics()
 
+        # Build tenant filter
+        tenant_filter = ""
+        params: Dict[str, Any] = {}
+        tenant_id = self.get_tenant_id_or_none()
+        if tenant_id:
+            tenant_filter = " WHERE tenant_id = :tenant_id"
+            params["tenant_id"] = str(tenant_id)
+
         # Total patterns
         total = await self._db.fetch_one(
-            "SELECT COUNT(*) as count FROM arkham_patterns"
+            f"SELECT COUNT(*) as count FROM arkham_patterns{tenant_filter}",
+            params
         )
         total_patterns = total["count"] if total else 0
 
         # By type
         type_rows = await self._db.fetch_all(
-            "SELECT pattern_type, COUNT(*) as count FROM arkham_patterns GROUP BY pattern_type"
+            f"SELECT pattern_type, COUNT(*) as count FROM arkham_patterns{tenant_filter} GROUP BY pattern_type",
+            params
         )
         by_type = {row["pattern_type"]: row["count"] for row in type_rows}
 
         # By status
         status_rows = await self._db.fetch_all(
-            "SELECT status, COUNT(*) as count FROM arkham_patterns GROUP BY status"
+            f"SELECT status, COUNT(*) as count FROM arkham_patterns{tenant_filter} GROUP BY status",
+            params
         )
         by_status = {row["status"]: row["count"] for row in status_rows}
 
         # By detection method
         method_rows = await self._db.fetch_all(
-            "SELECT detection_method, COUNT(*) as count FROM arkham_patterns GROUP BY detection_method"
+            f"SELECT detection_method, COUNT(*) as count FROM arkham_patterns{tenant_filter} GROUP BY detection_method",
+            params
         )
         by_method = {row["detection_method"]: row["count"] for row in method_rows}
 
         # Total matches
         matches = await self._db.fetch_one(
-            "SELECT COUNT(*) as count FROM arkham_pattern_matches"
+            f"SELECT COUNT(*) as count FROM arkham_pattern_matches{tenant_filter}",
+            params
         )
         total_matches = matches["count"] if matches else 0
 
         # Averages
         avg_conf = await self._db.fetch_one(
-            "SELECT AVG(confidence) as avg FROM arkham_patterns"
+            f"SELECT AVG(confidence) as avg FROM arkham_patterns{tenant_filter}",
+            params
         )
         avg_matches = await self._db.fetch_one(
-            "SELECT AVG(match_count) as avg FROM arkham_patterns"
+            f"SELECT AVG(match_count) as avg FROM arkham_patterns{tenant_filter}",
+            params
         )
 
         return PatternStatistics(
@@ -891,16 +952,19 @@ class PatternsShard(ArkhamShard):
         if not self._db:
             return 0
 
-        if status:
-            result = await self._db.fetch_one(
-                "SELECT COUNT(*) as count FROM arkham_patterns WHERE status = :status",
-                {"status": status},
-            )
-        else:
-            result = await self._db.fetch_one(
-                "SELECT COUNT(*) as count FROM arkham_patterns"
-            )
+        query = "SELECT COUNT(*) as count FROM arkham_patterns WHERE 1=1"
+        params: Dict[str, Any] = {}
 
+        tenant_id = self.get_tenant_id_or_none()
+        if tenant_id:
+            query += " AND tenant_id = :tenant_id"
+            params["tenant_id"] = str(tenant_id)
+
+        if status:
+            query += " AND status = :status"
+            params["status"] = status
+
+        result = await self._db.fetch_one(query, params)
         return result["count"] if result else 0
 
     async def get_match_count(self, pattern_id: str) -> int:
@@ -908,10 +972,15 @@ class PatternsShard(ArkhamShard):
         if not self._db:
             return 0
 
-        result = await self._db.fetch_one(
-            "SELECT COUNT(*) as count FROM arkham_pattern_matches WHERE pattern_id = :pattern_id",
-            {"pattern_id": pattern_id},
-        )
+        query = "SELECT COUNT(*) as count FROM arkham_pattern_matches WHERE pattern_id = :pattern_id"
+        params = {"pattern_id": pattern_id}
+
+        tenant_id = self.get_tenant_id_or_none()
+        if tenant_id:
+            query += " AND tenant_id = :tenant_id"
+            params["tenant_id"] = str(tenant_id)
+
+        result = await self._db.fetch_one(query, params)
         return result["count"] if result else 0
 
     # === Private Helper Methods ===

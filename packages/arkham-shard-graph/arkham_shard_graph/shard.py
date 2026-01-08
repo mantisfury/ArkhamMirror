@@ -182,6 +182,7 @@ class GraphShard(ArkhamShard):
 
         self.storage = GraphStorage(
             db_service=self._db_service,
+            get_tenant_id=self.get_tenant_id_or_none,
         )
 
         # Initialize API
@@ -587,6 +588,54 @@ class GraphShard(ArkhamShard):
 
         try:
             await self._db_service.execute(GRAPH_SCHEMA_SQL)
+
+            # ===========================================
+            # Multi-tenancy Migration
+            # ===========================================
+            await self._db_service.execute("""
+                DO $$
+                DECLARE
+                    tables_to_update TEXT[] := ARRAY['graphs', 'nodes', 'edges', 'user_positions', 'annotations'];
+                    tbl TEXT;
+                BEGIN
+                    FOREACH tbl IN ARRAY tables_to_update LOOP
+                        IF NOT EXISTS (
+                            SELECT 1 FROM information_schema.columns
+                            WHERE table_schema = 'arkham_graph'
+                            AND table_name = tbl
+                            AND column_name = 'tenant_id'
+                        ) THEN
+                            EXECUTE format('ALTER TABLE arkham_graph.%I ADD COLUMN tenant_id UUID', tbl);
+                        END IF;
+                    END LOOP;
+                END $$;
+            """)
+
+            await self._db_service.execute("""
+                CREATE INDEX IF NOT EXISTS idx_graph_graphs_tenant
+                ON arkham_graph.graphs(tenant_id)
+            """)
+
+            await self._db_service.execute("""
+                CREATE INDEX IF NOT EXISTS idx_graph_nodes_tenant
+                ON arkham_graph.nodes(tenant_id)
+            """)
+
+            await self._db_service.execute("""
+                CREATE INDEX IF NOT EXISTS idx_graph_edges_tenant
+                ON arkham_graph.edges(tenant_id)
+            """)
+
+            await self._db_service.execute("""
+                CREATE INDEX IF NOT EXISTS idx_graph_user_positions_tenant
+                ON arkham_graph.user_positions(tenant_id)
+            """)
+
+            await self._db_service.execute("""
+                CREATE INDEX IF NOT EXISTS idx_graph_annotations_tenant
+                ON arkham_graph.annotations(tenant_id)
+            """)
+
             logger.info("Graph database schema created/verified")
         except Exception as e:
             logger.error(f"Failed to create graph schema: {e}", exc_info=True)

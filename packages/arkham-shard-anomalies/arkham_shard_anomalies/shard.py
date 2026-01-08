@@ -209,6 +209,43 @@ class AnomaliesShard(ArkhamShard):
             CREATE INDEX IF NOT EXISTS idx_anomaly_notes_anomaly ON arkham_anomaly_notes(anomaly_id)
         """)
 
+        # ===========================================
+        # Multi-tenancy Migration
+        # ===========================================
+        await self._db_service.execute("""
+            DO $$
+            DECLARE
+                tables_to_update TEXT[] := ARRAY['arkham_anomalies', 'arkham_anomaly_notes', 'arkham_anomaly_patterns'];
+                tbl TEXT;
+            BEGIN
+                FOREACH tbl IN ARRAY tables_to_update LOOP
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = 'public'
+                        AND table_name = tbl
+                        AND column_name = 'tenant_id'
+                    ) THEN
+                        EXECUTE format('ALTER TABLE %I ADD COLUMN tenant_id UUID', tbl);
+                    END IF;
+                END LOOP;
+            END $$;
+        """)
+
+        await self._db_service.execute("""
+            CREATE INDEX IF NOT EXISTS idx_arkham_anomalies_tenant
+            ON arkham_anomalies(tenant_id)
+        """)
+
+        await self._db_service.execute("""
+            CREATE INDEX IF NOT EXISTS idx_arkham_anomaly_notes_tenant
+            ON arkham_anomaly_notes(tenant_id)
+        """)
+
+        await self._db_service.execute("""
+            CREATE INDEX IF NOT EXISTS idx_arkham_anomaly_patterns_tenant
+            ON arkham_anomaly_patterns(tenant_id)
+        """)
+
         logger.debug("Anomalies schema created/verified")
 
     def get_routes(self):
@@ -638,9 +675,17 @@ class AnomaliesShard(ArkhamShard):
 
         # Get doc_ids if not provided
         if not doc_ids and self._db_service:
-            rows = await self._db_service.fetch_all(
-                "SELECT id FROM arkham_documents LIMIT 1000"
-            )
+            query = "SELECT id FROM arkham_documents WHERE 1=1"
+            params: Dict[str, Any] = {}
+
+            # Add tenant filtering if tenant context is available
+            tenant_id = self.get_tenant_id_or_none()
+            if tenant_id:
+                query += " AND tenant_id = :tenant_id"
+                params["tenant_id"] = str(tenant_id)
+
+            query += " LIMIT 1000"
+            rows = await self._db_service.fetch_all(query, params)
             doc_ids = [row["id"] for row in rows] if rows else []
 
         if not doc_ids:

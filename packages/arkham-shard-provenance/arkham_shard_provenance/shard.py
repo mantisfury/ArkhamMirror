@@ -327,6 +327,71 @@ class ProvenanceShard(ArkhamShard):
             ON arkham_provenance_lineage(ancestor_id)
         """)
 
+        # ===========================================
+        # Multi-tenancy Migration
+        # ===========================================
+        await self._db.execute("""
+            DO $$
+            DECLARE
+                tables_to_update TEXT[] := ARRAY[
+                    'arkham_provenance_records',
+                    'arkham_provenance_chains',
+                    'arkham_provenance_artifacts',
+                    'arkham_provenance_links',
+                    'arkham_provenance_lineage',
+                    'arkham_provenance_transformations',
+                    'arkham_provenance_audit'
+                ];
+                tbl TEXT;
+            BEGIN
+                FOREACH tbl IN ARRAY tables_to_update LOOP
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = 'public'
+                        AND table_name = tbl
+                        AND column_name = 'tenant_id'
+                    ) THEN
+                        EXECUTE format('ALTER TABLE %I ADD COLUMN tenant_id UUID', tbl);
+                    END IF;
+                END LOOP;
+            END $$;
+        """)
+
+        await self._db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_provenance_records_tenant
+            ON arkham_provenance_records(tenant_id)
+        """)
+
+        await self._db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_provenance_chains_tenant
+            ON arkham_provenance_chains(tenant_id)
+        """)
+
+        await self._db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_provenance_artifacts_tenant
+            ON arkham_provenance_artifacts(tenant_id)
+        """)
+
+        await self._db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_provenance_links_tenant
+            ON arkham_provenance_links(tenant_id)
+        """)
+
+        await self._db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_provenance_lineage_tenant
+            ON arkham_provenance_lineage(tenant_id)
+        """)
+
+        await self._db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_provenance_transformations_tenant
+            ON arkham_provenance_transformations(tenant_id)
+        """)
+
+        await self._db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_provenance_audit_tenant
+            ON arkham_provenance_audit(tenant_id)
+        """)
+
         logger.info("Provenance database schema created")
 
     def _parse_jsonb(self, value: Any, default: Any = None) -> Any:
@@ -480,14 +545,20 @@ class ProvenanceShard(ArkhamShard):
         if not self._db:
             raise RuntimeError("Shard not initialized")
 
-        query = "SELECT * FROM arkham_provenance_records"
+        where_clauses = []
         params: Dict[str, Any] = {}
 
+        tenant_id = self.get_tenant_id_or_none()
+        if tenant_id:
+            where_clauses.append("tenant_id = :tenant_id")
+            params["tenant_id"] = str(tenant_id)
+
         if entity_type:
-            query += " WHERE entity_type = :entity_type"
+            where_clauses.append("entity_type = :entity_type")
             params["entity_type"] = entity_type
 
-        query += " ORDER BY created_at DESC LIMIT :limit OFFSET :offset"
+        where_clause = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+        query = f"SELECT * FROM arkham_provenance_records {where_clause} ORDER BY created_at DESC LIMIT :limit OFFSET :offset"
         params["limit"] = limit
         params["offset"] = offset
 
@@ -507,10 +578,17 @@ class ProvenanceShard(ArkhamShard):
         if not self._db:
             raise RuntimeError("Shard not initialized")
 
-        row = await self._db.fetch_one(
-            "SELECT * FROM arkham_provenance_records WHERE id = :id",
-            {"id": id}
-        )
+        tenant_id = self.get_tenant_id_or_none()
+        if tenant_id:
+            row = await self._db.fetch_one(
+                "SELECT * FROM arkham_provenance_records WHERE id = :id AND tenant_id = :tenant_id",
+                {"id": id, "tenant_id": str(tenant_id)}
+            )
+        else:
+            row = await self._db.fetch_one(
+                "SELECT * FROM arkham_provenance_records WHERE id = :id",
+                {"id": id}
+            )
 
         if row:
             return self._row_to_record(row)
@@ -534,13 +612,23 @@ class ProvenanceShard(ArkhamShard):
         if not self._db:
             raise RuntimeError("Shard not initialized")
 
-        row = await self._db.fetch_one(
-            """
-            SELECT * FROM arkham_provenance_records
-            WHERE entity_type = :entity_type AND entity_id = :entity_id
-            """,
-            {"entity_type": entity_type, "entity_id": entity_id}
-        )
+        tenant_id = self.get_tenant_id_or_none()
+        if tenant_id:
+            row = await self._db.fetch_one(
+                """
+                SELECT * FROM arkham_provenance_records
+                WHERE entity_type = :entity_type AND entity_id = :entity_id AND tenant_id = :tenant_id
+                """,
+                {"entity_type": entity_type, "entity_id": entity_id, "tenant_id": str(tenant_id)}
+            )
+        else:
+            row = await self._db.fetch_one(
+                """
+                SELECT * FROM arkham_provenance_records
+                WHERE entity_type = :entity_type AND entity_id = :entity_id
+                """,
+                {"entity_type": entity_type, "entity_id": entity_id}
+            )
 
         if row:
             return self._row_to_record(row)
@@ -559,14 +647,25 @@ class ProvenanceShard(ArkhamShard):
         if not self._db:
             raise RuntimeError("Shard not initialized")
 
-        rows = await self._db.fetch_all(
-            """
-            SELECT * FROM arkham_provenance_transformations
-            WHERE record_id = :record_id
-            ORDER BY transformed_at DESC
-            """,
-            {"record_id": record_id}
-        )
+        tenant_id = self.get_tenant_id_or_none()
+        if tenant_id:
+            rows = await self._db.fetch_all(
+                """
+                SELECT * FROM arkham_provenance_transformations
+                WHERE record_id = :record_id AND tenant_id = :tenant_id
+                ORDER BY transformed_at DESC
+                """,
+                {"record_id": record_id, "tenant_id": str(tenant_id)}
+            )
+        else:
+            rows = await self._db.fetch_all(
+                """
+                SELECT * FROM arkham_provenance_transformations
+                WHERE record_id = :record_id
+                ORDER BY transformed_at DESC
+                """,
+                {"record_id": record_id}
+            )
 
         return [self._row_to_transformation(row) for row in rows]
 
@@ -583,14 +682,25 @@ class ProvenanceShard(ArkhamShard):
         if not self._db:
             raise RuntimeError("Shard not initialized")
 
-        rows = await self._db.fetch_all(
-            """
-            SELECT * FROM arkham_provenance_audit
-            WHERE record_id = :record_id
-            ORDER BY occurred_at DESC
-            """,
-            {"record_id": record_id}
-        )
+        tenant_id = self.get_tenant_id_or_none()
+        if tenant_id:
+            rows = await self._db.fetch_all(
+                """
+                SELECT * FROM arkham_provenance_audit
+                WHERE record_id = :record_id AND tenant_id = :tenant_id
+                ORDER BY occurred_at DESC
+                """,
+                {"record_id": record_id, "tenant_id": str(tenant_id)}
+            )
+        else:
+            rows = await self._db.fetch_all(
+                """
+                SELECT * FROM arkham_provenance_audit
+                WHERE record_id = :record_id
+                ORDER BY occurred_at DESC
+                """,
+                {"record_id": record_id}
+            )
 
         return [self._row_to_audit(row) for row in rows]
 
@@ -625,12 +735,13 @@ class ProvenanceShard(ArkhamShard):
         from datetime import datetime
 
         transformation_id = str(uuid.uuid4())
+        tenant_id = self.get_tenant_id_or_none()
 
         await self._db.execute(
             """
             INSERT INTO arkham_provenance_transformations
-            (id, record_id, transformation_type, input_hash, output_hash, transformer, parameters)
-            VALUES (:id, :record_id, :transformation_type, :input_hash, :output_hash, :transformer, :parameters)
+            (id, record_id, transformation_type, input_hash, output_hash, transformer, parameters, tenant_id)
+            VALUES (:id, :record_id, :transformation_type, :input_hash, :output_hash, :transformer, :parameters, :tenant_id)
             """,
             {
                 "id": transformation_id,
@@ -640,6 +751,7 @@ class ProvenanceShard(ArkhamShard):
                 "output_hash": output_hash,
                 "transformer": transformer,
                 "parameters": json.dumps(parameters or {}),
+                "tenant_id": str(tenant_id) if tenant_id else None,
             }
         )
 
@@ -688,12 +800,13 @@ class ProvenanceShard(ArkhamShard):
         import json
 
         audit_id = str(uuid.uuid4())
+        tenant_id = self.get_tenant_id_or_none()
 
         await self._db.execute(
             """
             INSERT INTO arkham_provenance_audit
-            (id, record_id, action, actor, details)
-            VALUES (:id, :record_id, :action, :actor, :details)
+            (id, record_id, action, actor, details, tenant_id)
+            VALUES (:id, :record_id, :action, :actor, :details, :tenant_id)
             """,
             {
                 "id": audit_id,
@@ -701,6 +814,7 @@ class ProvenanceShard(ArkhamShard):
                 "action": action,
                 "actor": actor,
                 "details": json.dumps(details or {}),
+                "tenant_id": str(tenant_id) if tenant_id else None,
             }
         )
 
@@ -736,42 +850,71 @@ class ProvenanceShard(ArkhamShard):
         import json
 
         artifact_id = str(uuid.uuid4())
+        tenant_id = self.get_tenant_id_or_none()
 
         # Check if artifact already exists for this entity
-        existing = await self._db.fetch_one(
-            """
-            SELECT id FROM arkham_provenance_artifacts
-            WHERE entity_id = :entity_id AND entity_table = :entity_table
-            """,
-            {"entity_id": entity_id, "entity_table": entity_table}
-        )
+        if tenant_id:
+            existing = await self._db.fetch_one(
+                """
+                SELECT id FROM arkham_provenance_artifacts
+                WHERE entity_id = :entity_id AND entity_table = :entity_table AND tenant_id = :tenant_id
+                """,
+                {"entity_id": entity_id, "entity_table": entity_table, "tenant_id": str(tenant_id)}
+            )
+        else:
+            existing = await self._db.fetch_one(
+                """
+                SELECT id FROM arkham_provenance_artifacts
+                WHERE entity_id = :entity_id AND entity_table = :entity_table
+                """,
+                {"entity_id": entity_id, "entity_table": entity_table}
+            )
 
         if existing:
             # Update existing artifact
-            await self._db.execute(
-                """
-                UPDATE arkham_provenance_artifacts
-                SET title = COALESCE(:title, title),
-                    hash = COALESCE(:hash, hash),
-                    metadata = metadata || :metadata
-                WHERE entity_id = :entity_id AND entity_table = :entity_table
-                """,
-                {
-                    "title": title,
-                    "hash": content_hash,
-                    "metadata": json.dumps(metadata or {}),
-                    "entity_id": entity_id,
-                    "entity_table": entity_table,
-                }
-            )
+            if tenant_id:
+                await self._db.execute(
+                    """
+                    UPDATE arkham_provenance_artifacts
+                    SET title = COALESCE(:title, title),
+                        hash = COALESCE(:hash, hash),
+                        metadata = metadata || :metadata
+                    WHERE entity_id = :entity_id AND entity_table = :entity_table AND tenant_id = :tenant_id
+                    """,
+                    {
+                        "title": title,
+                        "hash": content_hash,
+                        "metadata": json.dumps(metadata or {}),
+                        "entity_id": entity_id,
+                        "entity_table": entity_table,
+                        "tenant_id": str(tenant_id),
+                    }
+                )
+            else:
+                await self._db.execute(
+                    """
+                    UPDATE arkham_provenance_artifacts
+                    SET title = COALESCE(:title, title),
+                        hash = COALESCE(:hash, hash),
+                        metadata = metadata || :metadata
+                    WHERE entity_id = :entity_id AND entity_table = :entity_table
+                    """,
+                    {
+                        "title": title,
+                        "hash": content_hash,
+                        "metadata": json.dumps(metadata or {}),
+                        "entity_id": entity_id,
+                        "entity_table": entity_table,
+                    }
+                )
             artifact_id = existing["id"]
         else:
             # Insert new artifact
             await self._db.execute(
                 """
                 INSERT INTO arkham_provenance_artifacts
-                (id, artifact_type, entity_id, entity_table, title, hash, metadata)
-                VALUES (:id, :artifact_type, :entity_id, :entity_table, :title, :hash, :metadata)
+                (id, artifact_type, entity_id, entity_table, title, hash, metadata, tenant_id)
+                VALUES (:id, :artifact_type, :entity_id, :entity_table, :title, :hash, :metadata, :tenant_id)
                 """,
                 {
                     "id": artifact_id,
@@ -781,6 +924,7 @@ class ProvenanceShard(ArkhamShard):
                     "title": title,
                     "hash": content_hash,
                     "metadata": json.dumps(metadata or {}),
+                    "tenant_id": str(tenant_id) if tenant_id else None,
                 }
             )
 
@@ -800,10 +944,17 @@ class ProvenanceShard(ArkhamShard):
         if not self._db:
             raise RuntimeError("Shard not initialized")
 
-        row = await self._db.fetch_one(
-            "SELECT * FROM arkham_provenance_artifacts WHERE id = :id",
-            {"id": artifact_id}
-        )
+        tenant_id = self.get_tenant_id_or_none()
+        if tenant_id:
+            row = await self._db.fetch_one(
+                "SELECT * FROM arkham_provenance_artifacts WHERE id = :id AND tenant_id = :tenant_id",
+                {"id": artifact_id, "tenant_id": str(tenant_id)}
+            )
+        else:
+            row = await self._db.fetch_one(
+                "SELECT * FROM arkham_provenance_artifacts WHERE id = :id",
+                {"id": artifact_id}
+            )
         return self._row_to_artifact(row) if row else None
 
     async def get_artifact_by_entity(
@@ -815,13 +966,23 @@ class ProvenanceShard(ArkhamShard):
         if not self._db:
             raise RuntimeError("Shard not initialized")
 
-        row = await self._db.fetch_one(
-            """
-            SELECT * FROM arkham_provenance_artifacts
-            WHERE entity_id = :entity_id AND entity_table = :entity_table
-            """,
-            {"entity_id": entity_id, "entity_table": entity_table}
-        )
+        tenant_id = self.get_tenant_id_or_none()
+        if tenant_id:
+            row = await self._db.fetch_one(
+                """
+                SELECT * FROM arkham_provenance_artifacts
+                WHERE entity_id = :entity_id AND entity_table = :entity_table AND tenant_id = :tenant_id
+                """,
+                {"entity_id": entity_id, "entity_table": entity_table, "tenant_id": str(tenant_id)}
+            )
+        else:
+            row = await self._db.fetch_one(
+                """
+                SELECT * FROM arkham_provenance_artifacts
+                WHERE entity_id = :entity_id AND entity_table = :entity_table
+                """,
+                {"entity_id": entity_id, "entity_table": entity_table}
+            )
         return self._row_to_artifact(row) if row else None
 
     async def list_artifacts(
@@ -834,25 +995,28 @@ class ProvenanceShard(ArkhamShard):
         if not self._db:
             raise RuntimeError("Shard not initialized")
 
+        where_clauses = []
+        params: Dict[str, Any] = {"limit": limit, "offset": offset}
+
+        tenant_id = self.get_tenant_id_or_none()
+        if tenant_id:
+            where_clauses.append("tenant_id = :tenant_id")
+            params["tenant_id"] = str(tenant_id)
+
         if artifact_type:
-            rows = await self._db.fetch_all(
-                """
-                SELECT * FROM arkham_provenance_artifacts
-                WHERE artifact_type = :artifact_type
-                ORDER BY created_at DESC
-                LIMIT :limit OFFSET :offset
-                """,
-                {"artifact_type": artifact_type, "limit": limit, "offset": offset}
-            )
-        else:
-            rows = await self._db.fetch_all(
-                """
-                SELECT * FROM arkham_provenance_artifacts
-                ORDER BY created_at DESC
-                LIMIT :limit OFFSET :offset
-                """,
-                {"limit": limit, "offset": offset}
-            )
+            where_clauses.append("artifact_type = :artifact_type")
+            params["artifact_type"] = artifact_type
+
+        where_clause = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+        rows = await self._db.fetch_all(
+            f"""
+            SELECT * FROM arkham_provenance_artifacts
+            {where_clause}
+            ORDER BY created_at DESC
+            LIMIT :limit OFFSET :offset
+            """,
+            params
+        )
 
         return [self._row_to_artifact(row) for row in rows]
 
@@ -861,9 +1025,13 @@ class ProvenanceShard(ArkhamShard):
         if not self._db:
             raise RuntimeError("Shard not initialized")
 
+        tenant_id = self.get_tenant_id_or_none()
+        tenant_filter = " WHERE tenant_id = :tenant_id" if tenant_id else ""
+        params = {"tenant_id": str(tenant_id)} if tenant_id else {}
+
         result = await self._db.fetch_one(
-            "SELECT COUNT(*) as count FROM arkham_provenance_artifacts",
-            {}
+            f"SELECT COUNT(*) as count FROM arkham_provenance_artifacts{tenant_filter}",
+            params
         )
         return result["count"] if result else 0
 
@@ -901,12 +1069,13 @@ class ProvenanceShard(ArkhamShard):
         import json
 
         chain_id = str(uuid.uuid4())
+        tenant_id = self.get_tenant_id_or_none()
 
         await self._db.execute(
             """
             INSERT INTO arkham_provenance_chains
-            (id, title, description, chain_type, project_id, root_artifact_id, created_by, metadata)
-            VALUES (:id, :title, :description, :chain_type, :project_id, :root_artifact_id, :created_by, :metadata)
+            (id, title, description, chain_type, project_id, root_artifact_id, created_by, metadata, tenant_id)
+            VALUES (:id, :title, :description, :chain_type, :project_id, :root_artifact_id, :created_by, :metadata, :tenant_id)
             """,
             {
                 "id": chain_id,
@@ -917,6 +1086,7 @@ class ProvenanceShard(ArkhamShard):
                 "root_artifact_id": root_artifact_id,
                 "created_by": created_by,
                 "metadata": json.dumps(metadata or {}),
+                "tenant_id": str(tenant_id) if tenant_id else None,
             }
         )
 
@@ -935,16 +1105,29 @@ class ProvenanceShard(ArkhamShard):
         if not self._db:
             raise RuntimeError("Shard not initialized")
 
-        row = await self._db.fetch_one(
-            """
-            SELECT c.*, COUNT(l.id) as link_count
-            FROM arkham_provenance_chains c
-            LEFT JOIN arkham_provenance_links l ON l.chain_id = c.id
-            WHERE c.id = :id
-            GROUP BY c.id
-            """,
-            {"id": chain_id}
-        )
+        tenant_id = self.get_tenant_id_or_none()
+        if tenant_id:
+            row = await self._db.fetch_one(
+                """
+                SELECT c.*, COUNT(l.id) as link_count
+                FROM arkham_provenance_chains c
+                LEFT JOIN arkham_provenance_links l ON l.chain_id = c.id
+                WHERE c.id = :id AND c.tenant_id = :tenant_id
+                GROUP BY c.id
+                """,
+                {"id": chain_id, "tenant_id": str(tenant_id)}
+            )
+        else:
+            row = await self._db.fetch_one(
+                """
+                SELECT c.*, COUNT(l.id) as link_count
+                FROM arkham_provenance_chains c
+                LEFT JOIN arkham_provenance_links l ON l.chain_id = c.id
+                WHERE c.id = :id
+                GROUP BY c.id
+                """,
+                {"id": chain_id}
+            )
         return self._row_to_chain(row) if row else None
 
     async def list_chains(
@@ -960,7 +1143,12 @@ class ProvenanceShard(ArkhamShard):
             raise RuntimeError("Shard not initialized")
 
         conditions = []
-        params = {"limit": limit, "offset": offset}
+        params: Dict[str, Any] = {"limit": limit, "offset": offset}
+
+        tenant_id = self.get_tenant_id_or_none()
+        if tenant_id:
+            conditions.append("c.tenant_id = :tenant_id")
+            params["tenant_id"] = str(tenant_id)
 
         if project_id:
             conditions.append("c.project_id = :project_id")
@@ -1006,7 +1194,12 @@ class ProvenanceShard(ArkhamShard):
         import json
 
         updates = ["updated_at = CURRENT_TIMESTAMP"]
-        params = {"id": chain_id}
+        params: Dict[str, Any] = {"id": chain_id}
+
+        tenant_id = self.get_tenant_id_or_none()
+        tenant_filter = " AND tenant_id = :tenant_id" if tenant_id else ""
+        if tenant_id:
+            params["tenant_id"] = str(tenant_id)
 
         if title is not None:
             updates.append("title = :title")
@@ -1028,7 +1221,7 @@ class ProvenanceShard(ArkhamShard):
             f"""
             UPDATE arkham_provenance_chains
             SET {', '.join(updates)}
-            WHERE id = :id
+            WHERE id = :id{tenant_filter}
             """,
             params
         )
@@ -1054,14 +1247,23 @@ class ProvenanceShard(ArkhamShard):
         if not chain:
             return False
 
+        tenant_id = self.get_tenant_id_or_none()
+        tenant_filter = " AND tenant_id = :tenant_id" if tenant_id else ""
+        params: Dict[str, Any] = {"chain_id": chain_id}
+        if tenant_id:
+            params["tenant_id"] = str(tenant_id)
+
         # Delete chain (links are cascade deleted if using FK)
         await self._db.execute(
-            "DELETE FROM arkham_provenance_links WHERE chain_id = :chain_id",
-            {"chain_id": chain_id}
+            f"DELETE FROM arkham_provenance_links WHERE chain_id = :chain_id{tenant_filter}",
+            params
         )
+        params_chain = {"id": chain_id}
+        if tenant_id:
+            params_chain["tenant_id"] = str(tenant_id)
         await self._db.execute(
-            "DELETE FROM arkham_provenance_chains WHERE id = :id",
-            {"id": chain_id}
+            f"DELETE FROM arkham_provenance_chains WHERE id = :id{tenant_filter}",
+            params_chain
         )
 
         if self._event_bus:
@@ -1078,9 +1280,13 @@ class ProvenanceShard(ArkhamShard):
         if not self._db:
             raise RuntimeError("Shard not initialized")
 
+        tenant_id = self.get_tenant_id_or_none()
+        tenant_filter = " WHERE tenant_id = :tenant_id" if tenant_id else ""
+        params = {"tenant_id": str(tenant_id)} if tenant_id else {}
+
         result = await self._db.fetch_one(
-            "SELECT COUNT(*) as count FROM arkham_provenance_chains",
-            {}
+            f"SELECT COUNT(*) as count FROM arkham_provenance_chains{tenant_filter}",
+            params
         )
         return result["count"] if result else 0
 
@@ -1093,10 +1299,16 @@ class ProvenanceShard(ArkhamShard):
         if not self._db:
             raise RuntimeError("Shard not initialized")
 
+        tenant_id = self.get_tenant_id_or_none()
+        tenant_filter = " AND tenant_id = :tenant_id" if tenant_id else ""
+        params: Dict[str, Any] = {"chain_id": chain_id}
+        if tenant_id:
+            params["tenant_id"] = str(tenant_id)
+
         # Get all links
         links = await self._db.fetch_all(
-            "SELECT * FROM arkham_provenance_links WHERE chain_id = :chain_id",
-            {"chain_id": chain_id}
+            f"SELECT * FROM arkham_provenance_links WHERE chain_id = :chain_id{tenant_filter}",
+            params
         )
 
         issues = []
@@ -1128,13 +1340,16 @@ class ProvenanceShard(ArkhamShard):
 
         # Mark all links as verified if no issues
         if verified and verified_by:
+            verify_params: Dict[str, Any] = {"verified_by": verified_by, "chain_id": chain_id}
+            if tenant_id:
+                verify_params["tenant_id"] = str(tenant_id)
             await self._db.execute(
-                """
+                f"""
                 UPDATE arkham_provenance_links
                 SET verified = 1, verified_by = :verified_by, verified_at = CURRENT_TIMESTAMP
-                WHERE chain_id = :chain_id
+                WHERE chain_id = :chain_id{tenant_filter}
                 """,
-                {"verified_by": verified_by, "chain_id": chain_id}
+                verify_params
             )
 
         if self._event_bus:
@@ -1180,12 +1395,13 @@ class ProvenanceShard(ArkhamShard):
             raise ValueError(f"Target artifact {target_artifact_id} not found")
 
         link_id = str(uuid.uuid4())
+        tenant_id = self.get_tenant_id_or_none()
 
         await self._db.execute(
             """
             INSERT INTO arkham_provenance_links
-            (id, chain_id, source_artifact_id, target_artifact_id, link_type, confidence, metadata)
-            VALUES (:id, :chain_id, :source_artifact_id, :target_artifact_id, :link_type, :confidence, :metadata)
+            (id, chain_id, source_artifact_id, target_artifact_id, link_type, confidence, metadata, tenant_id)
+            VALUES (:id, :chain_id, :source_artifact_id, :target_artifact_id, :link_type, :confidence, :metadata, :tenant_id)
             """,
             {
                 "id": link_id,
@@ -1195,6 +1411,7 @@ class ProvenanceShard(ArkhamShard):
                 "link_type": link_type,
                 "confidence": confidence,
                 "metadata": json.dumps(metadata or {}),
+                "tenant_id": str(tenant_id) if tenant_id else None,
             }
         )
 
@@ -1215,18 +1432,32 @@ class ProvenanceShard(ArkhamShard):
             )
 
         # Return the created link with artifact details
-        row = await self._db.fetch_one(
-            """
-            SELECT l.*,
-                   sa.title as source_title, sa.artifact_type as source_type,
-                   ta.title as target_title, ta.artifact_type as target_type
-            FROM arkham_provenance_links l
-            JOIN arkham_provenance_artifacts sa ON sa.id = l.source_artifact_id
-            JOIN arkham_provenance_artifacts ta ON ta.id = l.target_artifact_id
-            WHERE l.id = :id
-            """,
-            {"id": link_id}
-        )
+        if tenant_id:
+            row = await self._db.fetch_one(
+                """
+                SELECT l.*,
+                       sa.title as source_title, sa.artifact_type as source_type,
+                       ta.title as target_title, ta.artifact_type as target_type
+                FROM arkham_provenance_links l
+                JOIN arkham_provenance_artifacts sa ON sa.id = l.source_artifact_id
+                JOIN arkham_provenance_artifacts ta ON ta.id = l.target_artifact_id
+                WHERE l.id = :id AND l.tenant_id = :tenant_id
+                """,
+                {"id": link_id, "tenant_id": str(tenant_id)}
+            )
+        else:
+            row = await self._db.fetch_one(
+                """
+                SELECT l.*,
+                       sa.title as source_title, sa.artifact_type as source_type,
+                       ta.title as target_title, ta.artifact_type as target_type
+                FROM arkham_provenance_links l
+                JOIN arkham_provenance_artifacts sa ON sa.id = l.source_artifact_id
+                JOIN arkham_provenance_artifacts ta ON ta.id = l.target_artifact_id
+                WHERE l.id = :id
+                """,
+                {"id": link_id}
+            )
         return self._row_to_link(row) if row else {"id": link_id, "chain_id": chain_id}
 
     async def get_chain_links(self, chain_id: str) -> List[Dict[str, Any]]:
@@ -1234,19 +1465,35 @@ class ProvenanceShard(ArkhamShard):
         if not self._db:
             raise RuntimeError("Shard not initialized")
 
-        rows = await self._db.fetch_all(
-            """
-            SELECT l.*,
-                   sa.title as source_title, sa.artifact_type as source_type,
-                   ta.title as target_title, ta.artifact_type as target_type
-            FROM arkham_provenance_links l
-            JOIN arkham_provenance_artifacts sa ON sa.id = l.source_artifact_id
-            JOIN arkham_provenance_artifacts ta ON ta.id = l.target_artifact_id
-            WHERE l.chain_id = :chain_id
-            ORDER BY l.created_at
-            """,
-            {"chain_id": chain_id}
-        )
+        tenant_id = self.get_tenant_id_or_none()
+        if tenant_id:
+            rows = await self._db.fetch_all(
+                """
+                SELECT l.*,
+                       sa.title as source_title, sa.artifact_type as source_type,
+                       ta.title as target_title, ta.artifact_type as target_type
+                FROM arkham_provenance_links l
+                JOIN arkham_provenance_artifacts sa ON sa.id = l.source_artifact_id
+                JOIN arkham_provenance_artifacts ta ON ta.id = l.target_artifact_id
+                WHERE l.chain_id = :chain_id AND l.tenant_id = :tenant_id
+                ORDER BY l.created_at
+                """,
+                {"chain_id": chain_id, "tenant_id": str(tenant_id)}
+            )
+        else:
+            rows = await self._db.fetch_all(
+                """
+                SELECT l.*,
+                       sa.title as source_title, sa.artifact_type as source_type,
+                       ta.title as target_title, ta.artifact_type as target_type
+                FROM arkham_provenance_links l
+                JOIN arkham_provenance_artifacts sa ON sa.id = l.source_artifact_id
+                JOIN arkham_provenance_artifacts ta ON ta.id = l.target_artifact_id
+                WHERE l.chain_id = :chain_id
+                ORDER BY l.created_at
+                """,
+                {"chain_id": chain_id}
+            )
         return [self._row_to_link(row) for row in rows]
 
     async def remove_link(self, link_id: str) -> bool:
@@ -1254,18 +1501,24 @@ class ProvenanceShard(ArkhamShard):
         if not self._db:
             raise RuntimeError("Shard not initialized")
 
+        tenant_id = self.get_tenant_id_or_none()
+        tenant_filter = " AND tenant_id = :tenant_id" if tenant_id else ""
+        params: Dict[str, Any] = {"id": link_id}
+        if tenant_id:
+            params["tenant_id"] = str(tenant_id)
+
         # Get link details for event
         link = await self._db.fetch_one(
-            "SELECT * FROM arkham_provenance_links WHERE id = :id",
-            {"id": link_id}
+            f"SELECT * FROM arkham_provenance_links WHERE id = :id{tenant_filter}",
+            params
         )
 
         if not link:
             return False
 
         await self._db.execute(
-            "DELETE FROM arkham_provenance_links WHERE id = :id",
-            {"id": link_id}
+            f"DELETE FROM arkham_provenance_links WHERE id = :id{tenant_filter}",
+            params
         )
 
         # Update lineage cache for affected artifact
@@ -1292,34 +1545,54 @@ class ProvenanceShard(ArkhamShard):
 
         import json
 
+        tenant_id = self.get_tenant_id_or_none()
+        tenant_filter = " AND tenant_id = :tenant_id" if tenant_id else ""
+        params: Dict[str, Any] = {
+            "verified_by": verified_by,
+            "notes_metadata": json.dumps({"verification_notes": notes}) if notes else "{}",
+            "id": link_id,
+        }
+        if tenant_id:
+            params["tenant_id"] = str(tenant_id)
+
         await self._db.execute(
-            """
+            f"""
             UPDATE arkham_provenance_links
             SET verified = 1,
                 verified_by = :verified_by,
                 verified_at = CURRENT_TIMESTAMP,
                 metadata = metadata || :notes_metadata
-            WHERE id = :id
+            WHERE id = :id{tenant_filter}
             """,
-            {
-                "verified_by": verified_by,
-                "notes_metadata": json.dumps({"verification_notes": notes}) if notes else "{}",
-                "id": link_id,
-            }
+            params
         )
 
-        row = await self._db.fetch_one(
-            """
-            SELECT l.*,
-                   sa.title as source_title, sa.artifact_type as source_type,
-                   ta.title as target_title, ta.artifact_type as target_type
-            FROM arkham_provenance_links l
-            JOIN arkham_provenance_artifacts sa ON sa.id = l.source_artifact_id
-            JOIN arkham_provenance_artifacts ta ON ta.id = l.target_artifact_id
-            WHERE l.id = :id
-            """,
-            {"id": link_id}
-        )
+        if tenant_id:
+            row = await self._db.fetch_one(
+                """
+                SELECT l.*,
+                       sa.title as source_title, sa.artifact_type as source_type,
+                       ta.title as target_title, ta.artifact_type as target_type
+                FROM arkham_provenance_links l
+                JOIN arkham_provenance_artifacts sa ON sa.id = l.source_artifact_id
+                JOIN arkham_provenance_artifacts ta ON ta.id = l.target_artifact_id
+                WHERE l.id = :id AND l.tenant_id = :tenant_id
+                """,
+                {"id": link_id, "tenant_id": str(tenant_id)}
+            )
+        else:
+            row = await self._db.fetch_one(
+                """
+                SELECT l.*,
+                       sa.title as source_title, sa.artifact_type as source_type,
+                       ta.title as target_title, ta.artifact_type as target_type
+                FROM arkham_provenance_links l
+                JOIN arkham_provenance_artifacts sa ON sa.id = l.source_artifact_id
+                JOIN arkham_provenance_artifacts ta ON ta.id = l.target_artifact_id
+                WHERE l.id = :id
+                """,
+                {"id": link_id}
+            )
 
         if row and self._event_bus:
             await self._event_bus.emit(
@@ -1340,10 +1613,16 @@ class ProvenanceShard(ArkhamShard):
         import uuid
         import json
 
+        tenant_id = self.get_tenant_id_or_none()
+        tenant_filter = " AND tenant_id = :tenant_id" if tenant_id else ""
+        params: Dict[str, Any] = {"artifact_id": artifact_id}
+        if tenant_id:
+            params["tenant_id"] = str(tenant_id)
+
         # Clear existing lineage for this artifact
         await self._db.execute(
-            "DELETE FROM arkham_provenance_lineage WHERE artifact_id = :artifact_id",
-            {"artifact_id": artifact_id}
+            f"DELETE FROM arkham_provenance_lineage WHERE artifact_id = :artifact_id{tenant_filter}",
+            params
         )
 
         # BFS to find all ancestors
@@ -1358,13 +1637,16 @@ class ProvenanceShard(ArkhamShard):
             visited.add(current_id)
 
             # Find all sources (artifacts that link TO this one)
+            source_params: Dict[str, Any] = {"target_id": current_id}
+            if tenant_id:
+                source_params["tenant_id"] = str(tenant_id)
             sources = await self._db.fetch_all(
-                """
+                f"""
                 SELECT DISTINCT source_artifact_id
                 FROM arkham_provenance_links
-                WHERE target_artifact_id = :target_id
+                WHERE target_artifact_id = :target_id{tenant_filter}
                 """,
-                {"target_id": current_id}
+                source_params
             )
 
             for row in sources:
@@ -1376,8 +1658,8 @@ class ProvenanceShard(ArkhamShard):
                 await self._db.execute(
                     """
                     INSERT INTO arkham_provenance_lineage
-                    (id, artifact_id, ancestor_id, depth, path)
-                    VALUES (:id, :artifact_id, :ancestor_id, :depth, :path)
+                    (id, artifact_id, ancestor_id, depth, path, tenant_id)
+                    VALUES (:id, :artifact_id, :ancestor_id, :depth, :path, :tenant_id)
                     """,
                     {
                         "id": lineage_id,
@@ -1385,6 +1667,7 @@ class ProvenanceShard(ArkhamShard):
                         "ancestor_id": source_id,
                         "depth": depth + 1,
                         "path": json.dumps(new_path),
+                        "tenant_id": str(tenant_id) if tenant_id else None,
                     }
                 )
 
@@ -1397,33 +1680,42 @@ class ProvenanceShard(ArkhamShard):
 
         import json
 
+        tenant_id = self.get_tenant_id_or_none()
+        tenant_filter = " AND l.tenant_id = :tenant_id" if tenant_id else ""
+
         # Get the artifact
         artifact = await self.get_artifact(artifact_id)
         if not artifact:
             return {"nodes": [], "edges": [], "root": None}
 
         # Get all ancestors from cache
+        ancestor_params: Dict[str, Any] = {"artifact_id": artifact_id}
+        if tenant_id:
+            ancestor_params["tenant_id"] = str(tenant_id)
         ancestors = await self._db.fetch_all(
-            """
+            f"""
             SELECT l.*, a.title, a.artifact_type, a.entity_id
             FROM arkham_provenance_lineage l
             JOIN arkham_provenance_artifacts a ON a.id = l.ancestor_id
-            WHERE l.artifact_id = :artifact_id
+            WHERE l.artifact_id = :artifact_id{tenant_filter}
             ORDER BY l.depth
             """,
-            {"artifact_id": artifact_id}
+            ancestor_params
         )
 
         # Get all descendants (artifacts that have this one as ancestor)
+        descendant_params: Dict[str, Any] = {"artifact_id": artifact_id}
+        if tenant_id:
+            descendant_params["tenant_id"] = str(tenant_id)
         descendants = await self._db.fetch_all(
-            """
+            f"""
             SELECT l.artifact_id, l.depth, a.title, a.artifact_type, a.entity_id
             FROM arkham_provenance_lineage l
             JOIN arkham_provenance_artifacts a ON a.id = l.artifact_id
-            WHERE l.ancestor_id = :artifact_id
+            WHERE l.ancestor_id = :artifact_id{tenant_filter}
             ORDER BY l.depth
             """,
-            {"artifact_id": artifact_id}
+            descendant_params
         )
 
         # Build nodes
@@ -1462,15 +1754,19 @@ class ProvenanceShard(ArkhamShard):
             # Build a query with placeholders
             id_list = list(seen_ids)
             placeholders = ", ".join([f":id_{i}" for i in range(len(id_list))])
-            params = {f"id_{i}": id_list[i] for i in range(len(id_list))}
+            edge_params: Dict[str, Any] = {f"id_{i}": id_list[i] for i in range(len(id_list))}
+
+            tenant_filter_edges = " AND tenant_id = :tenant_id" if tenant_id else ""
+            if tenant_id:
+                edge_params["tenant_id"] = str(tenant_id)
 
             edges_rows = await self._db.fetch_all(
                 f"""
                 SELECT id, source_artifact_id, target_artifact_id, link_type, confidence
                 FROM arkham_provenance_links
-                WHERE source_artifact_id IN ({placeholders}) AND target_artifact_id IN ({placeholders})
+                WHERE source_artifact_id IN ({placeholders}) AND target_artifact_id IN ({placeholders}){tenant_filter_edges}
                 """,
-                params
+                edge_params
             )
 
             edges = [{
@@ -1500,23 +1796,31 @@ class ProvenanceShard(ArkhamShard):
             raise RuntimeError("Shard not initialized")
 
         chain_title = "Auto-tracked Provenance"
+        tenant_id = self.get_tenant_id_or_none()
+        tenant_filter = " AND tenant_id = :tenant_id" if tenant_id else ""
 
         # Check for existing
         if project_id:
+            params: Dict[str, Any] = {"title": chain_title, "project_id": project_id}
+            if tenant_id:
+                params["tenant_id"] = str(tenant_id)
             existing = await self._db.fetch_one(
-                """
+                f"""
                 SELECT * FROM arkham_provenance_chains
-                WHERE title = :title AND project_id = :project_id
+                WHERE title = :title AND project_id = :project_id{tenant_filter}
                 """,
-                {"title": chain_title, "project_id": project_id}
+                params
             )
         else:
+            params_none: Dict[str, Any] = {"title": chain_title}
+            if tenant_id:
+                params_none["tenant_id"] = str(tenant_id)
             existing = await self._db.fetch_one(
-                """
+                f"""
                 SELECT * FROM arkham_provenance_chains
-                WHERE title = :title AND project_id IS NULL
+                WHERE title = :title AND project_id IS NULL{tenant_filter}
                 """,
-                {"title": chain_title}
+                params_none
             )
 
         if existing:
@@ -1788,11 +2092,12 @@ class ProvenanceShard(ArkhamShard):
             from datetime import datetime
 
             record_id = str(uuid.uuid4())
+            tenant_id = self.get_tenant_id_or_none()
             await self._db.execute(
                 """
                 INSERT INTO arkham_provenance_records
-                (id, entity_type, entity_id, source_type, source_id, imported_by, metadata)
-                VALUES (:id, :entity_type, :entity_id, :source_type, :source_id, :imported_by, :metadata)
+                (id, entity_type, entity_id, source_type, source_id, imported_by, metadata, tenant_id)
+                VALUES (:id, :entity_type, :entity_id, :source_type, :source_id, :imported_by, :metadata, :tenant_id)
                 ON CONFLICT (id) DO NOTHING
                 """,
                 {
@@ -1807,6 +2112,7 @@ class ProvenanceShard(ArkhamShard):
                         "payload": payload,
                         "processed_at": datetime.utcnow().isoformat(),
                     }),
+                    "tenant_id": str(tenant_id) if tenant_id else None,
                 }
             )
             logger.info(f"[PROVENANCE] Created record {record_id} for {event_type} on {source_id}")

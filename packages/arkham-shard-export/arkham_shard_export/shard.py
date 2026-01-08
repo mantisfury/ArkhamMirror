@@ -143,6 +143,33 @@ class ExportShard(ArkhamShard):
             CREATE INDEX IF NOT EXISTS idx_export_jobs_target ON arkham_export_jobs(target)
         """)
 
+        # ===========================================
+        # Multi-tenancy Migration
+        # ===========================================
+        await self._db.execute("""
+            DO $$
+            DECLARE
+                tables_to_update TEXT[] := ARRAY['arkham_export_jobs'];
+                tbl TEXT;
+            BEGIN
+                FOREACH tbl IN ARRAY tables_to_update LOOP
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = 'public'
+                        AND table_name = tbl
+                        AND column_name = 'tenant_id'
+                    ) THEN
+                        EXECUTE format('ALTER TABLE %I ADD COLUMN tenant_id UUID', tbl);
+                    END IF;
+                END LOOP;
+            END $$;
+        """)
+
+        await self._db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_export_jobs_tenant
+            ON arkham_export_jobs(tenant_id)
+        """)
+
         logger.debug("Export schema created/verified")
 
     # === Public API Methods ===
@@ -204,10 +231,18 @@ class ExportShard(ArkhamShard):
         if not self._db:
             return None
 
-        row = await self._db.fetch_one(
-            "SELECT * FROM arkham_export_jobs WHERE id = ?",
-            [job_id],
-        )
+        # Filter by tenant_id for multi-tenancy
+        tenant_id = self.get_tenant_id_or_none()
+        if tenant_id:
+            row = await self._db.fetch_one(
+                "SELECT * FROM arkham_export_jobs WHERE id = ? AND tenant_id = ?",
+                [job_id, str(tenant_id)],
+            )
+        else:
+            row = await self._db.fetch_one(
+                "SELECT * FROM arkham_export_jobs WHERE id = ?",
+                [job_id],
+            )
         return self._row_to_job(row) if row else None
 
     async def list_jobs(
@@ -222,6 +257,12 @@ class ExportShard(ArkhamShard):
 
         query = "SELECT * FROM arkham_export_jobs WHERE 1=1"
         params = []
+
+        # Filter by tenant_id for multi-tenancy
+        tenant_id = self.get_tenant_id_or_none()
+        if tenant_id:
+            query += " AND tenant_id = ?"
+            params.append(str(tenant_id))
 
         if filter:
             if filter.status:
@@ -287,46 +328,81 @@ class ExportShard(ArkhamShard):
         if not self._db:
             return ExportStatistics()
 
+        # Filter by tenant_id for multi-tenancy
+        tenant_id = self.get_tenant_id_or_none()
+        tenant_filter = ""
+        tenant_params = []
+        if tenant_id:
+            tenant_filter = " WHERE tenant_id = ?"
+            tenant_params = [str(tenant_id)]
+
         # Total jobs
         total = await self._db.fetch_one(
-            "SELECT COUNT(*) as count FROM arkham_export_jobs"
+            f"SELECT COUNT(*) as count FROM arkham_export_jobs{tenant_filter}",
+            tenant_params,
         )
         total_jobs = total["count"] if total else 0
 
         # By status
         status_rows = await self._db.fetch_all(
-            "SELECT status, COUNT(*) as count FROM arkham_export_jobs GROUP BY status"
+            f"SELECT status, COUNT(*) as count FROM arkham_export_jobs{tenant_filter} GROUP BY status",
+            tenant_params,
         )
         by_status = {row["status"]: row["count"] for row in status_rows}
 
         # By format
         format_rows = await self._db.fetch_all(
-            "SELECT format, COUNT(*) as count FROM arkham_export_jobs GROUP BY format"
+            f"SELECT format, COUNT(*) as count FROM arkham_export_jobs{tenant_filter} GROUP BY format",
+            tenant_params,
         )
         by_format = {row["format"]: row["count"] for row in format_rows}
 
         # By target
         target_rows = await self._db.fetch_all(
-            "SELECT target, COUNT(*) as count FROM arkham_export_jobs GROUP BY target"
+            f"SELECT target, COUNT(*) as count FROM arkham_export_jobs{tenant_filter} GROUP BY target",
+            tenant_params,
         )
         by_target = {row["target"]: row["count"] for row in target_rows}
 
         # Aggregates
-        totals = await self._db.fetch_one("""
-            SELECT
-                SUM(record_count) as total_records,
-                SUM(file_size) as total_size,
-                AVG(processing_time_ms) as avg_time
-            FROM arkham_export_jobs
-            WHERE status = 'completed'
-        """)
+        if tenant_id:
+            totals = await self._db.fetch_one(
+                """
+                SELECT
+                    SUM(record_count) as total_records,
+                    SUM(file_size) as total_size,
+                    AVG(processing_time_ms) as avg_time
+                FROM arkham_export_jobs
+                WHERE status = 'completed' AND tenant_id = ?
+                """,
+                [str(tenant_id)],
+            )
+        else:
+            totals = await self._db.fetch_one("""
+                SELECT
+                    SUM(record_count) as total_records,
+                    SUM(file_size) as total_size,
+                    AVG(processing_time_ms) as avg_time
+                FROM arkham_export_jobs
+                WHERE status = 'completed'
+            """)
 
         # Oldest pending
-        oldest = await self._db.fetch_one("""
-            SELECT MIN(created_at) as oldest
-            FROM arkham_export_jobs
-            WHERE status = 'pending'
-        """)
+        if tenant_id:
+            oldest = await self._db.fetch_one(
+                """
+                SELECT MIN(created_at) as oldest
+                FROM arkham_export_jobs
+                WHERE status = 'pending' AND tenant_id = ?
+                """,
+                [str(tenant_id)],
+            )
+        else:
+            oldest = await self._db.fetch_one("""
+                SELECT MIN(created_at) as oldest
+                FROM arkham_export_jobs
+                WHERE status = 'pending'
+            """)
 
         return ExportStatistics(
             total_jobs=total_jobs,
@@ -348,15 +424,30 @@ class ExportShard(ArkhamShard):
         if not self._db:
             return 0
 
+        # Filter by tenant_id for multi-tenancy
+        tenant_id = self.get_tenant_id_or_none()
+
         if status:
-            result = await self._db.fetch_one(
-                "SELECT COUNT(*) as count FROM arkham_export_jobs WHERE status = ?",
-                [status],
-            )
+            if tenant_id:
+                result = await self._db.fetch_one(
+                    "SELECT COUNT(*) as count FROM arkham_export_jobs WHERE status = ? AND tenant_id = ?",
+                    [status, str(tenant_id)],
+                )
+            else:
+                result = await self._db.fetch_one(
+                    "SELECT COUNT(*) as count FROM arkham_export_jobs WHERE status = ?",
+                    [status],
+                )
         else:
-            result = await self._db.fetch_one(
-                "SELECT COUNT(*) as count FROM arkham_export_jobs WHERE status = 'pending'"
-            )
+            if tenant_id:
+                result = await self._db.fetch_one(
+                    "SELECT COUNT(*) as count FROM arkham_export_jobs WHERE status = 'pending' AND tenant_id = ?",
+                    [str(tenant_id)],
+                )
+            else:
+                result = await self._db.fetch_one(
+                    "SELECT COUNT(*) as count FROM arkham_export_jobs WHERE status = 'pending'"
+                )
 
         return result["count"] if result else 0
 
@@ -1441,6 +1532,9 @@ class ExportShard(ArkhamShard):
         if not self._db:
             return
 
+        # Get tenant_id for multi-tenancy
+        tenant_id = self.get_tenant_id_or_none()
+
         # Serialize options
         options_json = "{}"
         if job.options:
@@ -1479,25 +1573,40 @@ class ExportShard(ArkhamShard):
             job.processing_time_ms,
             job.created_by,
             json.dumps(job.metadata),
+            str(tenant_id) if tenant_id else None,
         )
 
         if update:
-            await self._db.execute("""
-                UPDATE arkham_export_jobs SET
-                    format=?, target=?, status=?, created_at=?, started_at=?,
-                    completed_at=?, file_path=?, file_size=?, download_url=?,
-                    expires_at=?, error=?, filters=?, options=?,
-                    record_count=?, processing_time_ms=?, created_by=?, metadata=?
-                WHERE id=?
-            """, data[1:] + (job.id,))
+            # For updates, also filter by tenant_id
+            if tenant_id:
+                await self._db.execute("""
+                    UPDATE arkham_export_jobs SET
+                        format=?, target=?, status=?, created_at=?, started_at=?,
+                        completed_at=?, file_path=?, file_size=?, download_url=?,
+                        expires_at=?, error=?, filters=?, options=?,
+                        record_count=?, processing_time_ms=?, created_by=?, metadata=?,
+                        tenant_id=?
+                    WHERE id=? AND tenant_id=?
+                """, data[1:] + (job.id, str(tenant_id)))
+            else:
+                await self._db.execute("""
+                    UPDATE arkham_export_jobs SET
+                        format=?, target=?, status=?, created_at=?, started_at=?,
+                        completed_at=?, file_path=?, file_size=?, download_url=?,
+                        expires_at=?, error=?, filters=?, options=?,
+                        record_count=?, processing_time_ms=?, created_by=?, metadata=?,
+                        tenant_id=?
+                    WHERE id=?
+                """, data[1:] + (job.id,))
         else:
             await self._db.execute("""
                 INSERT INTO arkham_export_jobs (
                     id, format, target, status, created_at, started_at,
                     completed_at, file_path, file_size, download_url,
                     expires_at, error, filters, options,
-                    record_count, processing_time_ms, created_by, metadata
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    record_count, processing_time_ms, created_by, metadata,
+                    tenant_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, data)
 
     def _row_to_job(self, row: Dict[str, Any]) -> ExportJob:

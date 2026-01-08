@@ -247,6 +247,12 @@ class TemplatesShard(ArkhamShard):
         where_clauses = []
         params: Dict[str, Any] = {}
 
+        # Filter by tenant_id for multi-tenancy
+        tenant_id = self.get_tenant_id_or_none()
+        if tenant_id:
+            where_clauses.append("tenant_id = :tenant_id")
+            params["tenant_id"] = str(tenant_id)
+
         if filters:
             if filters.template_type:
                 where_clauses.append("template_type = :template_type")
@@ -389,11 +395,20 @@ class TemplatesShard(ArkhamShard):
         if not template:
             return False
 
-        # Delete from database (CASCADE will handle versions)
-        await self._db.execute(
-            "DELETE FROM arkham_templates WHERE id = :id",
-            {"id": template_id}
-        )
+        # Filter by tenant_id for multi-tenancy
+        tenant_id = self.get_tenant_id_or_none()
+        if tenant_id:
+            # Delete from database (CASCADE will handle versions)
+            await self._db.execute(
+                "DELETE FROM arkham_templates WHERE id = :id AND tenant_id = :tenant_id",
+                {"id": template_id, "tenant_id": str(tenant_id)}
+            )
+        else:
+            # Delete from database (CASCADE will handle versions)
+            await self._db.execute(
+                "DELETE FROM arkham_templates WHERE id = :id",
+                {"id": template_id}
+            )
 
         # Publish event
         if self._event_bus:
@@ -540,14 +555,26 @@ class TemplatesShard(ArkhamShard):
         if not self._db:
             raise RuntimeError("Shard not initialized")
 
-        rows = await self._db.fetch_all(
-            """
-            SELECT * FROM arkham_template_versions
-            WHERE template_id = :template_id
-            ORDER BY version_number DESC
-            """,
-            {"template_id": template_id}
-        )
+        # Filter by tenant_id for multi-tenancy
+        tenant_id = self.get_tenant_id_or_none()
+        if tenant_id:
+            rows = await self._db.fetch_all(
+                """
+                SELECT * FROM arkham_template_versions
+                WHERE template_id = :template_id AND tenant_id = :tenant_id
+                ORDER BY version_number DESC
+                """,
+                {"template_id": template_id, "tenant_id": str(tenant_id)}
+            )
+        else:
+            rows = await self._db.fetch_all(
+                """
+                SELECT * FROM arkham_template_versions
+                WHERE template_id = :template_id
+                ORDER BY version_number DESC
+                """,
+                {"template_id": template_id}
+            )
 
         return [self._row_to_version(row) for row in rows]
 
@@ -569,13 +596,24 @@ class TemplatesShard(ArkhamShard):
         if not self._db:
             raise RuntimeError("Shard not initialized")
 
-        row = await self._db.fetch_one(
-            """
-            SELECT * FROM arkham_template_versions
-            WHERE id = :id AND template_id = :template_id
-            """,
-            {"id": version_id, "template_id": template_id}
-        )
+        # Filter by tenant_id for multi-tenancy
+        tenant_id = self.get_tenant_id_or_none()
+        if tenant_id:
+            row = await self._db.fetch_one(
+                """
+                SELECT * FROM arkham_template_versions
+                WHERE id = :id AND template_id = :template_id AND tenant_id = :tenant_id
+                """,
+                {"id": version_id, "template_id": template_id, "tenant_id": str(tenant_id)}
+            )
+        else:
+            row = await self._db.fetch_one(
+                """
+                SELECT * FROM arkham_template_versions
+                WHERE id = :id AND template_id = :template_id
+                """,
+                {"id": version_id, "template_id": template_id}
+            )
 
         if not row:
             return None
@@ -775,46 +813,52 @@ class TemplatesShard(ArkhamShard):
         if not self._db:
             raise RuntimeError("Shard not initialized")
 
+        # Filter by tenant_id for multi-tenancy
+        tenant_id = self.get_tenant_id_or_none()
+        tenant_filter = " WHERE tenant_id = :tenant_id" if tenant_id else ""
+        tenant_filter_and = " AND tenant_id = :tenant_id" if tenant_id else ""
+        params = {"tenant_id": str(tenant_id)} if tenant_id else {}
+
         # Count total and active/inactive
         total_row = await self._db.fetch_one(
-            "SELECT COUNT(*) as count FROM arkham_templates",
-            {}
+            f"SELECT COUNT(*) as count FROM arkham_templates{tenant_filter}",
+            params
         )
         total_templates = total_row["count"] if total_row else 0
 
         active_row = await self._db.fetch_one(
-            "SELECT COUNT(*) as count FROM arkham_templates WHERE is_active = TRUE",
-            {}
+            f"SELECT COUNT(*) as count FROM arkham_templates WHERE is_active = TRUE{tenant_filter_and}",
+            params
         )
         active_templates = active_row["count"] if active_row else 0
         inactive_templates = total_templates - active_templates
 
         # Count by type
         type_rows = await self._db.fetch_all(
-            """
+            f"""
             SELECT template_type, COUNT(*) as count
-            FROM arkham_templates
+            FROM arkham_templates{tenant_filter}
             GROUP BY template_type
             """,
-            {}
+            params
         )
         by_type = {row["template_type"]: row["count"] for row in type_rows}
 
         # Recent templates (last 5)
         recent_rows = await self._db.fetch_all(
-            """
-            SELECT * FROM arkham_templates
+            f"""
+            SELECT * FROM arkham_templates{tenant_filter}
             ORDER BY created_at DESC
             LIMIT 5
             """,
-            {}
+            params
         )
         recent = [self._row_to_template(row) for row in recent_rows]
 
         # Total versions
         versions_row = await self._db.fetch_one(
-            "SELECT COUNT(*) as count FROM arkham_template_versions",
-            {}
+            f"SELECT COUNT(*) as count FROM arkham_template_versions{tenant_filter}",
+            params
         )
         total_versions = versions_row["count"] if versions_row else 0
 
@@ -841,16 +885,31 @@ class TemplatesShard(ArkhamShard):
         if not self._db:
             raise RuntimeError("Shard not initialized")
 
+        # Filter by tenant_id for multi-tenancy
+        tenant_id = self.get_tenant_id_or_none()
+
         if active_only:
-            row = await self._db.fetch_one(
-                "SELECT COUNT(*) as count FROM arkham_templates WHERE is_active = TRUE",
-                {}
-            )
+            if tenant_id:
+                row = await self._db.fetch_one(
+                    "SELECT COUNT(*) as count FROM arkham_templates WHERE is_active = TRUE AND tenant_id = :tenant_id",
+                    {"tenant_id": str(tenant_id)}
+                )
+            else:
+                row = await self._db.fetch_one(
+                    "SELECT COUNT(*) as count FROM arkham_templates WHERE is_active = TRUE",
+                    {}
+                )
         else:
-            row = await self._db.fetch_one(
-                "SELECT COUNT(*) as count FROM arkham_templates",
-                {}
-            )
+            if tenant_id:
+                row = await self._db.fetch_one(
+                    "SELECT COUNT(*) as count FROM arkham_templates WHERE tenant_id = :tenant_id",
+                    {"tenant_id": str(tenant_id)}
+                )
+            else:
+                row = await self._db.fetch_one(
+                    "SELECT COUNT(*) as count FROM arkham_templates",
+                    {}
+                )
 
         return row["count"] if row else 0
 
@@ -864,14 +923,19 @@ class TemplatesShard(ArkhamShard):
         if not self._db:
             raise RuntimeError("Shard not initialized")
 
+        # Filter by tenant_id for multi-tenancy
+        tenant_id = self.get_tenant_id_or_none()
+        tenant_filter = " WHERE tenant_id = :tenant_id" if tenant_id else ""
+        params = {"tenant_id": str(tenant_id)} if tenant_id else {}
+
         # Get counts by type
         type_rows = await self._db.fetch_all(
-            """
+            f"""
             SELECT template_type, COUNT(*) as count
-            FROM arkham_templates
+            FROM arkham_templates{tenant_filter}
             GROUP BY template_type
             """,
-            {}
+            params
         )
         type_counts = {row["template_type"]: row["count"] for row in type_rows}
 
@@ -941,6 +1005,38 @@ class TemplatesShard(ArkhamShard):
             ON arkham_template_versions(template_id)
         """)
 
+        # ===========================================
+        # Multi-tenancy Migration
+        # ===========================================
+        await self._db.execute("""
+            DO $$
+            DECLARE
+                tables_to_update TEXT[] := ARRAY['arkham_templates', 'arkham_template_versions'];
+                tbl TEXT;
+            BEGIN
+                FOREACH tbl IN ARRAY tables_to_update LOOP
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = 'public'
+                        AND table_name = tbl
+                        AND column_name = 'tenant_id'
+                    ) THEN
+                        EXECUTE format('ALTER TABLE %I ADD COLUMN tenant_id UUID', tbl);
+                    END IF;
+                END LOOP;
+            END $$;
+        """)
+
+        await self._db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_arkham_templates_tenant
+            ON arkham_templates(tenant_id)
+        """)
+
+        await self._db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_arkham_template_versions_tenant
+            ON arkham_template_versions(tenant_id)
+        """)
+
         logger.info("Templates database schema created")
 
     async def _save_template(self, template: Template) -> None:
@@ -961,6 +1057,9 @@ class TemplatesShard(ArkhamShard):
             for p in template.placeholders
         ])
 
+        # Include tenant_id for multi-tenancy
+        tenant_id = self.get_tenant_id_or_none()
+
         # Check if template exists
         existing = await self._db.fetch_one(
             "SELECT id FROM arkham_templates WHERE id = :id",
@@ -968,48 +1067,81 @@ class TemplatesShard(ArkhamShard):
         )
 
         if existing:
-            # Update
-            await self._db.execute(
-                """
-                UPDATE arkham_templates SET
-                    name = :name,
-                    template_type = :template_type,
-                    description = :description,
-                    content = :content,
-                    placeholders = :placeholders,
-                    version = :version,
-                    is_active = :is_active,
-                    metadata = :metadata,
-                    updated_at = :updated_at,
-                    updated_by = :updated_by
-                WHERE id = :id
-                """,
-                {
-                    "id": template.id,
-                    "name": template.name,
-                    "template_type": template.template_type.value,
-                    "description": template.description,
-                    "content": template.content,
-                    "placeholders": placeholders_json,
-                    "version": template.version,
-                    "is_active": template.is_active,
-                    "metadata": json.dumps(template.metadata),
-                    "updated_at": template.updated_at,
-                    "updated_by": template.updated_by,
-                }
-            )
+            # Update with tenant_id filter
+            if tenant_id:
+                await self._db.execute(
+                    """
+                    UPDATE arkham_templates SET
+                        name = :name,
+                        template_type = :template_type,
+                        description = :description,
+                        content = :content,
+                        placeholders = :placeholders,
+                        version = :version,
+                        is_active = :is_active,
+                        metadata = :metadata,
+                        updated_at = :updated_at,
+                        updated_by = :updated_by,
+                        tenant_id = :tenant_id
+                    WHERE id = :id AND tenant_id = :tenant_id
+                    """,
+                    {
+                        "id": template.id,
+                        "name": template.name,
+                        "template_type": template.template_type.value,
+                        "description": template.description,
+                        "content": template.content,
+                        "placeholders": placeholders_json,
+                        "version": template.version,
+                        "is_active": template.is_active,
+                        "metadata": json.dumps(template.metadata),
+                        "updated_at": template.updated_at,
+                        "updated_by": template.updated_by,
+                        "tenant_id": str(tenant_id),
+                    }
+                )
+            else:
+                await self._db.execute(
+                    """
+                    UPDATE arkham_templates SET
+                        name = :name,
+                        template_type = :template_type,
+                        description = :description,
+                        content = :content,
+                        placeholders = :placeholders,
+                        version = :version,
+                        is_active = :is_active,
+                        metadata = :metadata,
+                        updated_at = :updated_at,
+                        updated_by = :updated_by
+                    WHERE id = :id
+                    """,
+                    {
+                        "id": template.id,
+                        "name": template.name,
+                        "template_type": template.template_type.value,
+                        "description": template.description,
+                        "content": template.content,
+                        "placeholders": placeholders_json,
+                        "version": template.version,
+                        "is_active": template.is_active,
+                        "metadata": json.dumps(template.metadata),
+                        "updated_at": template.updated_at,
+                        "updated_by": template.updated_by,
+                    }
+                )
         else:
-            # Insert
+            # Insert with tenant_id
             await self._db.execute(
                 """
                 INSERT INTO arkham_templates (
                     id, name, template_type, description, content,
                     placeholders, version, is_active, metadata,
-                    created_at, updated_at, created_by, updated_by
+                    created_at, updated_at, created_by, updated_by, tenant_id
                 ) VALUES (
                     :id, :name, :template_type, :description, :content,
                     :placeholders, :version, :is_active, :metadata,
-                    :created_at, :updated_at, :created_by, :updated_by
+                    :created_at, :updated_at, :created_by, :updated_by, :tenant_id
                 )
                 """,
                 {
@@ -1026,6 +1158,7 @@ class TemplatesShard(ArkhamShard):
                     "updated_at": template.updated_at,
                     "created_by": template.created_by,
                     "updated_by": template.updated_by,
+                    "tenant_id": str(tenant_id) if tenant_id else None,
                 }
             )
 
@@ -1034,10 +1167,18 @@ class TemplatesShard(ArkhamShard):
         if not self._db:
             return None
 
-        row = await self._db.fetch_one(
-            "SELECT * FROM arkham_templates WHERE id = :id",
-            {"id": template_id}
-        )
+        # Filter by tenant_id for multi-tenancy
+        tenant_id = self.get_tenant_id_or_none()
+        if tenant_id:
+            row = await self._db.fetch_one(
+                "SELECT * FROM arkham_templates WHERE id = :id AND tenant_id = :tenant_id",
+                {"id": template_id, "tenant_id": str(tenant_id)}
+            )
+        else:
+            row = await self._db.fetch_one(
+                "SELECT * FROM arkham_templates WHERE id = :id",
+                {"id": template_id}
+            )
 
         if not row:
             return None
@@ -1144,14 +1285,16 @@ class TemplatesShard(ArkhamShard):
             for p in version.placeholders
         ])
 
+        # Include tenant_id for multi-tenancy
+        tenant_id = self.get_tenant_id_or_none()
         await self._db.execute(
             """
             INSERT INTO arkham_template_versions (
                 id, template_id, version_number, content,
-                placeholders, created_at, created_by, changes
+                placeholders, created_at, created_by, changes, tenant_id
             ) VALUES (
                 :id, :template_id, :version_number, :content,
-                :placeholders, :created_at, :created_by, :changes
+                :placeholders, :created_at, :created_by, :changes, :tenant_id
             )
             """,
             {
@@ -1163,6 +1306,7 @@ class TemplatesShard(ArkhamShard):
                 "created_at": version.created_at,
                 "created_by": version.created_by,
                 "changes": version.changes,
+                "tenant_id": str(tenant_id) if tenant_id else None,
             }
         )
 

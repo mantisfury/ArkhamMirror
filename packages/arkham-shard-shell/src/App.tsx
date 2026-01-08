@@ -4,33 +4,41 @@
  * Provider nesting order (from UI_SHELL_IMPL_REF):
  * <BrowserRouter>
  *   <ThemeProvider>
- *     <ShellProvider>
- *       <ToastProvider>
- *         <ConfirmProvider>
- *           <BadgeProvider>
- *             <Routes>
- *               <Shell>
- *                 <Outlet />
- *               </Shell>
- *             </Routes>
- *           </BadgeProvider>
- *         </ConfirmProvider>
- *       </ToastProvider>
- *     </ShellProvider>
+ *     <AuthProvider>
+ *       <ShellProvider>
+ *         <ToastProvider>
+ *           <ConfirmProvider>
+ *             <BadgeProvider>
+ *               <Routes>
+ *                 <Shell>
+ *                   <Outlet />
+ *                 </Shell>
+ *               </Routes>
+ *             </BadgeProvider>
+ *           </ConfirmProvider>
+ *         </ToastProvider>
+ *       </ShellProvider>
+ *     </AuthProvider>
  *   </ThemeProvider>
  * </BrowserRouter>
  */
 
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { ThemeProvider } from './context/ThemeContext';
+import { AuthProvider } from './context/AuthContext';
 import { ShellProvider } from './context/ShellContext';
 import { ToastProvider } from './context/ToastContext';
 import { ConfirmProvider } from './context/ConfirmContext';
 import { BadgeProvider } from './context/BadgeContext';
 import { ProjectProvider } from './context/ProjectContext';
 import { Shell } from './components/layout/Shell';
+import { ProtectedRoute } from './components/auth/ProtectedRoute';
 import { GenericShardPage } from './pages/generic';
 import { useStartPage } from './hooks';
+
+// Auth pages (outside shell)
+import { LoginPage } from './pages/auth/LoginPage';
+import { SetupPage } from './pages/auth/SetupPage';
 
 /**
  * StartPageRedirect - Redirects to the user's configured start page.
@@ -82,14 +90,19 @@ export function App() {
   return (
     <BrowserRouter>
       <ThemeProvider>
-        <ShellProvider>
-          <ProjectProvider>
-            <ToastProvider>
-              <ConfirmProvider>
-                <BadgeProvider>
-                  <Routes>
-                {/* Shell layout wrapper */}
-                <Route element={<Shell />}>
+        <AuthProvider>
+          <ShellProvider>
+            <ProjectProvider>
+              <ToastProvider>
+                <ConfirmProvider>
+                  <BadgeProvider>
+                    <Routes>
+                      {/* Auth routes (outside shell, no sidebar) */}
+                      <Route path="/login" element={<LoginPage />} />
+                      <Route path="/setup" element={<SetupPage />} />
+
+                      {/* Protected Shell layout wrapper */}
+                      <Route element={<ProtectedRoute><Shell /></ProtectedRoute>}>
                   {/* Default redirect to user's configured start page */}
                   <Route path="/" element={<StartPageRedirect />} />
 
@@ -203,7 +216,8 @@ export function App() {
             </ToastProvider>
           </ProjectProvider>
         </ShellProvider>
-      </ThemeProvider>
-    </BrowserRouter>
+      </AuthProvider>
+    </ThemeProvider>
+  </BrowserRouter>
   );
 }

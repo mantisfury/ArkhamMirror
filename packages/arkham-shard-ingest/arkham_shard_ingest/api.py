@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import os
 from pathlib import Path
 from typing import Annotated
 
@@ -9,6 +10,68 @@ from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel
 
 from .models import JobPriority, JobStatus
+
+
+# --- Path Traversal Protection ---
+
+ALLOWED_INGEST_PATHS: list[Path] = []
+
+
+def init_allowed_paths() -> None:
+    """Initialize allowed ingest paths from environment."""
+    global ALLOWED_INGEST_PATHS
+
+    default_paths = [
+        Path("/app/data_silo/imports"),
+        Path("/app/data_silo/documents"),
+        Path("/app/uploads"),
+        Path("/app/data_silo"),
+    ]
+
+    # Add paths from environment variable
+    env_paths = os.environ.get("INGEST_ALLOWED_PATHS", "")
+    if env_paths:
+        for p in env_paths.split(","):
+            if p.strip():
+                default_paths.append(Path(p.strip()))
+
+    # Only keep paths that exist and resolve them
+    ALLOWED_INGEST_PATHS = [p.resolve() for p in default_paths if p.exists()]
+
+
+def validate_ingest_path(user_path: Path) -> Path:
+    """
+    Validate that path is within allowed directories.
+
+    Raises HTTPException 403 if path is not allowed.
+    """
+    # Initialize on first call if not done
+    if not ALLOWED_INGEST_PATHS:
+        init_allowed_paths()
+
+    resolved = user_path.resolve()
+
+    # Check against allowed paths
+    for allowed in ALLOWED_INGEST_PATHS:
+        try:
+            resolved.relative_to(allowed)
+            return resolved
+        except ValueError:
+            continue
+
+    # Allow data_silo as fallback (common Docker mount)
+    data_silo = Path("/app/data_silo").resolve()
+    if data_silo.exists():
+        try:
+            resolved.relative_to(data_silo)
+            return resolved
+        except ValueError:
+            pass
+
+    raise HTTPException(
+        status_code=403,
+        detail="Access denied: Path must be within allowed directories"
+    )
 
 # Batch staggering configuration
 BATCH_STAGGER_THRESHOLD = 10  # Start staggering after this many jobs
@@ -260,7 +323,9 @@ async def ingest_from_path(request: IngestPathRequest):
     if not _intake_manager:
         raise HTTPException(status_code=503, detail="Ingest service not initialized")
 
-    path = Path(request.path)
+    # Validate path is within allowed directories (prevents path traversal)
+    path = validate_ingest_path(Path(request.path))
+
     if not path.exists():
         raise HTTPException(status_code=404, detail=f"Path not found: {path}")
 

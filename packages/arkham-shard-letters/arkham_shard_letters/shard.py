@@ -173,6 +173,38 @@ class LettersShard(ArkhamShard):
             CREATE INDEX IF NOT EXISTS idx_templates_type ON arkham_letter_templates(letter_type)
         """)
 
+        # ===========================================
+        # Multi-tenancy Migration
+        # ===========================================
+        await self._db.execute("""
+            DO $$
+            DECLARE
+                tables_to_update TEXT[] := ARRAY['arkham_letters', 'arkham_letter_templates'];
+                tbl TEXT;
+            BEGIN
+                FOREACH tbl IN ARRAY tables_to_update LOOP
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = 'public'
+                        AND table_name = tbl
+                        AND column_name = 'tenant_id'
+                    ) THEN
+                        EXECUTE format('ALTER TABLE %I ADD COLUMN tenant_id UUID', tbl);
+                    END IF;
+                END LOOP;
+            END $$;
+        """)
+
+        await self._db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_letters_tenant
+            ON arkham_letters(tenant_id)
+        """)
+
+        await self._db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_letter_templates_tenant
+            ON arkham_letter_templates(tenant_id)
+        """)
+
         logger.debug("Letters schema created/verified")
 
     # === Public API Methods - Letters ===
@@ -229,10 +261,18 @@ class LettersShard(ArkhamShard):
         if not self._db:
             return None
 
-        row = await self._db.fetch_one(
-            "SELECT * FROM arkham_letters WHERE id = ?",
-            [letter_id],
-        )
+        # Filter by tenant_id for multi-tenancy
+        tenant_id = self.get_tenant_id_or_none()
+        if tenant_id:
+            row = await self._db.fetch_one(
+                "SELECT * FROM arkham_letters WHERE id = ? AND tenant_id = ?",
+                [letter_id, str(tenant_id)],
+            )
+        else:
+            row = await self._db.fetch_one(
+                "SELECT * FROM arkham_letters WHERE id = ?",
+                [letter_id],
+            )
         return self._row_to_letter(row) if row else None
 
     async def list_letters(
@@ -247,6 +287,12 @@ class LettersShard(ArkhamShard):
 
         query = "SELECT * FROM arkham_letters WHERE 1=1"
         params = []
+
+        # Filter by tenant_id for multi-tenancy
+        tenant_id = self.get_tenant_id_or_none()
+        if tenant_id:
+            query += " AND tenant_id = ?"
+            params.append(str(tenant_id))
 
         if filter:
             if filter.status:
@@ -336,7 +382,7 @@ class LettersShard(ArkhamShard):
         if not self._db:
             return False
 
-        # Get letter to delete exported files
+        # Get letter to delete exported files (get_letter already filters by tenant)
         letter = await self.get_letter(letter_id)
         if not letter:
             return False
@@ -348,11 +394,18 @@ class LettersShard(ArkhamShard):
             except Exception as e:
                 logger.warning(f"Failed to delete letter file: {e}")
 
-        # Delete from database
-        await self._db.execute(
-            "DELETE FROM arkham_letters WHERE id = ?",
-            [letter_id],
-        )
+        # Delete from database with tenant filter
+        tenant_id = self.get_tenant_id_or_none()
+        if tenant_id:
+            await self._db.execute(
+                "DELETE FROM arkham_letters WHERE id = ? AND tenant_id = ?",
+                [letter_id, str(tenant_id)],
+            )
+        else:
+            await self._db.execute(
+                "DELETE FROM arkham_letters WHERE id = ?",
+                [letter_id],
+            )
 
         return True
 
@@ -361,15 +414,30 @@ class LettersShard(ArkhamShard):
         if not self._db:
             return 0
 
+        # Filter by tenant_id for multi-tenancy
+        tenant_id = self.get_tenant_id_or_none()
+
         if status:
-            result = await self._db.fetch_one(
-                "SELECT COUNT(*) as count FROM arkham_letters WHERE status = ?",
-                [status],
-            )
+            if tenant_id:
+                result = await self._db.fetch_one(
+                    "SELECT COUNT(*) as count FROM arkham_letters WHERE status = ? AND tenant_id = ?",
+                    [status, str(tenant_id)],
+                )
+            else:
+                result = await self._db.fetch_one(
+                    "SELECT COUNT(*) as count FROM arkham_letters WHERE status = ?",
+                    [status],
+                )
         else:
-            result = await self._db.fetch_one(
-                "SELECT COUNT(*) as count FROM arkham_letters"
-            )
+            if tenant_id:
+                result = await self._db.fetch_one(
+                    "SELECT COUNT(*) as count FROM arkham_letters WHERE tenant_id = ?",
+                    [str(tenant_id)],
+                )
+            else:
+                result = await self._db.fetch_one(
+                    "SELECT COUNT(*) as count FROM arkham_letters"
+                )
 
         return result["count"] if result else 0
 
@@ -433,10 +501,18 @@ class LettersShard(ArkhamShard):
         if not self._db:
             return None
 
-        row = await self._db.fetch_one(
-            "SELECT * FROM arkham_letter_templates WHERE id = ?",
-            [template_id],
-        )
+        # Filter by tenant_id for multi-tenancy
+        tenant_id = self.get_tenant_id_or_none()
+        if tenant_id:
+            row = await self._db.fetch_one(
+                "SELECT * FROM arkham_letter_templates WHERE id = ? AND tenant_id = ?",
+                [template_id, str(tenant_id)],
+            )
+        else:
+            row = await self._db.fetch_one(
+                "SELECT * FROM arkham_letter_templates WHERE id = ?",
+                [template_id],
+            )
         return self._row_to_template(row) if row else None
 
     async def list_templates(
@@ -451,6 +527,12 @@ class LettersShard(ArkhamShard):
 
         query = "SELECT * FROM arkham_letter_templates WHERE 1=1"
         params = []
+
+        # Filter by tenant_id for multi-tenancy
+        tenant_id = self.get_tenant_id_or_none()
+        if tenant_id:
+            query += " AND tenant_id = ?"
+            params.append(str(tenant_id))
 
         if letter_type:
             query += " AND letter_type = ?"
@@ -508,10 +590,18 @@ class LettersShard(ArkhamShard):
         if not self._db:
             return False
 
-        await self._db.execute(
-            "DELETE FROM arkham_letter_templates WHERE id = ?",
-            [template_id],
-        )
+        # Filter by tenant_id for multi-tenancy
+        tenant_id = self.get_tenant_id_or_none()
+        if tenant_id:
+            await self._db.execute(
+                "DELETE FROM arkham_letter_templates WHERE id = ? AND tenant_id = ?",
+                [template_id, str(tenant_id)],
+            )
+        else:
+            await self._db.execute(
+                "DELETE FROM arkham_letter_templates WHERE id = ?",
+                [template_id],
+            )
         return True
 
     # === Template Application ===
@@ -647,33 +737,43 @@ class LettersShard(ArkhamShard):
         if not self._db:
             return LetterStatistics()
 
+        # Filter by tenant_id for multi-tenancy
+        tenant_id = self.get_tenant_id_or_none()
+        tenant_filter = " WHERE tenant_id = ?" if tenant_id else ""
+        params = [str(tenant_id)] if tenant_id else []
+
         # Total letters
         total = await self._db.fetch_one(
-            "SELECT COUNT(*) as count FROM arkham_letters"
+            f"SELECT COUNT(*) as count FROM arkham_letters{tenant_filter}",
+            params,
         )
         total_letters = total["count"] if total else 0
 
         # By status
         status_rows = await self._db.fetch_all(
-            "SELECT status, COUNT(*) as count FROM arkham_letters GROUP BY status"
+            f"SELECT status, COUNT(*) as count FROM arkham_letters{tenant_filter} GROUP BY status",
+            params,
         )
         by_status = {row["status"]: row["count"] for row in status_rows}
 
         # By type
         type_rows = await self._db.fetch_all(
-            "SELECT letter_type, COUNT(*) as count FROM arkham_letters GROUP BY letter_type"
+            f"SELECT letter_type, COUNT(*) as count FROM arkham_letters{tenant_filter} GROUP BY letter_type",
+            params,
         )
         by_type = {row["letter_type"]: row["count"] for row in type_rows}
 
         # Templates
         templates = await self._db.fetch_one(
-            "SELECT COUNT(*) as count FROM arkham_letter_templates"
+            f"SELECT COUNT(*) as count FROM arkham_letter_templates{tenant_filter}",
+            params,
         )
         total_templates = templates["count"] if templates else 0
 
         # Template types
         template_type_rows = await self._db.fetch_all(
-            "SELECT letter_type, COUNT(*) as count FROM arkham_letter_templates GROUP BY letter_type"
+            f"SELECT letter_type, COUNT(*) as count FROM arkham_letter_templates{tenant_filter} GROUP BY letter_type",
+            params,
         )
         by_template_type = {row["letter_type"]: row["count"] for row in template_type_rows}
 
@@ -1110,6 +1210,7 @@ class LettersShard(ArkhamShard):
             return
 
         import json
+        tenant_id = self.get_tenant_id_or_none()
         data = (
             letter.id,
             letter.title,
@@ -1134,20 +1235,34 @@ class LettersShard(ArkhamShard):
             letter.last_export_path,
             letter.last_exported_at.isoformat() if letter.last_exported_at else None,
             json.dumps(letter.metadata),
+            str(tenant_id) if tenant_id else None,
         )
 
         if update:
-            await self._db.execute("""
-                UPDATE arkham_letters SET
-                    title=?, letter_type=?, status=?, content=?, template_id=?,
-                    recipient_name=?, recipient_address=?, recipient_email=?,
-                    sender_name=?, sender_address=?, sender_email=?,
-                    subject=?, reference_number=?, re_line=?,
-                    created_at=?, updated_at=?, finalized_at=?, sent_at=?,
-                    last_export_format=?, last_export_path=?, last_exported_at=?,
-                    metadata=?
-                WHERE id=?
-            """, data[1:] + (letter.id,))
+            if tenant_id:
+                await self._db.execute("""
+                    UPDATE arkham_letters SET
+                        title=?, letter_type=?, status=?, content=?, template_id=?,
+                        recipient_name=?, recipient_address=?, recipient_email=?,
+                        sender_name=?, sender_address=?, sender_email=?,
+                        subject=?, reference_number=?, re_line=?,
+                        created_at=?, updated_at=?, finalized_at=?, sent_at=?,
+                        last_export_format=?, last_export_path=?, last_exported_at=?,
+                        metadata=?, tenant_id=?
+                    WHERE id=? AND tenant_id=?
+                """, data[1:] + (letter.id, str(tenant_id)))
+            else:
+                await self._db.execute("""
+                    UPDATE arkham_letters SET
+                        title=?, letter_type=?, status=?, content=?, template_id=?,
+                        recipient_name=?, recipient_address=?, recipient_email=?,
+                        sender_name=?, sender_address=?, sender_email=?,
+                        subject=?, reference_number=?, re_line=?,
+                        created_at=?, updated_at=?, finalized_at=?, sent_at=?,
+                        last_export_format=?, last_export_path=?, last_exported_at=?,
+                        metadata=?
+                    WHERE id=?
+                """, data[1:-1] + (letter.id,))
         else:
             await self._db.execute("""
                 INSERT INTO arkham_letters (
@@ -1157,8 +1272,8 @@ class LettersShard(ArkhamShard):
                     subject, reference_number, re_line,
                     created_at, updated_at, finalized_at, sent_at,
                     last_export_format, last_export_path, last_exported_at,
-                    metadata
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    metadata, tenant_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, data)
 
     async def _save_template(self, template: LetterTemplate, update: bool = False) -> None:
@@ -1167,6 +1282,7 @@ class LettersShard(ArkhamShard):
             return
 
         import json
+        tenant_id = self.get_tenant_id_or_none()
         data = (
             template.id,
             template.name,
@@ -1182,18 +1298,30 @@ class LettersShard(ArkhamShard):
             template.created_at.isoformat(),
             template.updated_at.isoformat(),
             json.dumps(template.metadata),
+            str(tenant_id) if tenant_id else None,
         )
 
         if update:
-            await self._db.execute("""
-                UPDATE arkham_letter_templates SET
-                    name=?, letter_type=?, description=?,
-                    content_template=?, subject_template=?,
-                    placeholders=?, required_placeholders=?,
-                    default_sender_name=?, default_sender_address=?, default_sender_email=?,
-                    created_at=?, updated_at=?, metadata=?
-                WHERE id=?
-            """, data[1:] + (template.id,))
+            if tenant_id:
+                await self._db.execute("""
+                    UPDATE arkham_letter_templates SET
+                        name=?, letter_type=?, description=?,
+                        content_template=?, subject_template=?,
+                        placeholders=?, required_placeholders=?,
+                        default_sender_name=?, default_sender_address=?, default_sender_email=?,
+                        created_at=?, updated_at=?, metadata=?, tenant_id=?
+                    WHERE id=? AND tenant_id=?
+                """, data[1:] + (template.id, str(tenant_id)))
+            else:
+                await self._db.execute("""
+                    UPDATE arkham_letter_templates SET
+                        name=?, letter_type=?, description=?,
+                        content_template=?, subject_template=?,
+                        placeholders=?, required_placeholders=?,
+                        default_sender_name=?, default_sender_address=?, default_sender_email=?,
+                        created_at=?, updated_at=?, metadata=?
+                    WHERE id=?
+                """, data[1:-1] + (template.id,))
         else:
             await self._db.execute("""
                 INSERT INTO arkham_letter_templates (
@@ -1201,8 +1329,8 @@ class LettersShard(ArkhamShard):
                     content_template, subject_template,
                     placeholders, required_placeholders,
                     default_sender_name, default_sender_address, default_sender_email,
-                    created_at, updated_at, metadata
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    created_at, updated_at, metadata, tenant_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, data)
 
     def _row_to_letter(self, row: Dict[str, Any]) -> Letter:

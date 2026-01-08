@@ -224,6 +224,44 @@ class DocumentsShard(ArkhamShard):
             ON arkham_document_views(user_id)
         """)
 
+        # ===========================================
+        # Multi-tenancy Migration
+        # ===========================================
+        # Add tenant_id columns to all tables
+        await self._db.execute("""
+            DO $$
+            DECLARE
+                tables_to_update TEXT[][] := ARRAY[
+                    ARRAY['arkham_frame', 'documents'],
+                    ARRAY['public', 'arkham_document_views'],
+                    ARRAY['public', 'arkham_document_metadata_fields'],
+                    ARRAY['public', 'arkham_document_user_prefs']
+                ];
+                tbl TEXT[];
+            BEGIN
+                FOREACH tbl SLICE 1 IN ARRAY tables_to_update LOOP
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = tbl[1]
+                        AND table_name = tbl[2]
+                        AND column_name = 'tenant_id'
+                    ) THEN
+                        EXECUTE format('ALTER TABLE %I.%I ADD COLUMN tenant_id UUID', tbl[1], tbl[2]);
+                    END IF;
+                END LOOP;
+            END $$;
+        """)
+
+        # Create tenant_id indexes
+        await self._db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_arkham_frame_documents_tenant
+            ON arkham_frame.documents(tenant_id)
+        """)
+        await self._db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_arkham_document_views_tenant
+            ON arkham_document_views(tenant_id)
+        """)
+
         logger.info("Documents shard database schema created")
 
     # --- Helper Methods ---
@@ -377,6 +415,12 @@ class DocumentsShard(ArkhamShard):
         query = "SELECT * FROM arkham_frame.documents WHERE 1=1"
         params: Dict[str, Any] = {}
 
+        # Add tenant filtering if tenant context is available
+        tenant_id = self.get_tenant_id_or_none()
+        if tenant_id:
+            query += " AND tenant_id = :tenant_id"
+            params["tenant_id"] = str(tenant_id)
+
         if search:
             query += " AND (filename ILIKE :search)"
             params["search"] = f"%{search}%"
@@ -435,11 +479,17 @@ class DocumentsShard(ArkhamShard):
         if not self._db:
             raise RuntimeError("Shard not initialized")
 
-        # Query Frame's arkham_frame.documents table
-        row = await self._db.fetch_one(
-            "SELECT * FROM arkham_frame.documents WHERE id = :id",
-            {"id": document_id}
-        )
+        # Query Frame's arkham_frame.documents table with tenant filtering
+        query = "SELECT * FROM arkham_frame.documents WHERE id = :id"
+        params: Dict[str, Any] = {"id": document_id}
+
+        # Add tenant filtering if tenant context is available
+        tenant_id = self.get_tenant_id_or_none()
+        if tenant_id:
+            query += " AND tenant_id = :tenant_id"
+            params["tenant_id"] = str(tenant_id)
+
+        row = await self._db.fetch_one(query, params)
 
         if row:
             # Get entity count for this document

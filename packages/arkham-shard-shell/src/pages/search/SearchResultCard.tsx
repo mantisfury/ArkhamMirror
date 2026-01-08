@@ -5,6 +5,7 @@
  */
 
 import { Icon } from '../../components/common/Icon';
+import { sanitizeHighlight } from '../../utils/sanitize';
 import type { SearchResultItem } from './types';
 
 interface SearchResultCardProps {
@@ -43,7 +44,7 @@ export function SearchResultCard({ result, onView, onFindSimilar, onAskAbout }: 
       return (
         <div
           className="search-result-excerpt"
-          dangerouslySetInnerHTML={{ __html: result.highlights[0] }}
+          dangerouslySetInnerHTML={{ __html: sanitizeHighlight(result.highlights[0]) }}
         />
       );
     }

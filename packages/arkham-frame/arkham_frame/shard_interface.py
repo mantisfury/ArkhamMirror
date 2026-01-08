@@ -9,6 +9,7 @@ Manifest Schema v5 - See SHARD_MANIFEST_SCHEMA_v5.md for full documentation.
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import List, Dict, Optional, Any, Literal, TYPE_CHECKING
+from uuid import UUID
 
 if TYPE_CHECKING:
     from arkham_frame import ArkhamFrame
@@ -414,3 +415,89 @@ class ArkhamShard(ABC):
     def get_api_router(self):
         """Alias for get_routes() for backwards compatibility."""
         return self.get_routes()
+
+    # ============================================
+    # Multi-tenancy Helpers
+    # ============================================
+
+    def get_tenant_id(self) -> UUID:
+        """
+        Get the current tenant ID from context.
+
+        Returns:
+            UUID of the current tenant
+
+        Raises:
+            RuntimeError: If no tenant context is available (e.g., unauthenticated)
+        """
+        from .middleware.tenant import get_current_tenant_id
+
+        tenant_id = get_current_tenant_id()
+        if tenant_id is None:
+            raise RuntimeError("No tenant context available - user not authenticated?")
+        return tenant_id
+
+    def get_tenant_id_or_none(self) -> Optional[UUID]:
+        """
+        Get the current tenant ID from context, or None if not available.
+
+        Use this for queries where tenant filtering is optional (e.g., admin views).
+
+        Returns:
+            UUID of the current tenant, or None
+        """
+        from .middleware.tenant import get_current_tenant_id
+        return get_current_tenant_id()
+
+    async def tenant_query(self, query: str, params: Optional[dict] = None) -> Any:
+        """
+        Execute a query with automatic tenant_id parameter injection.
+
+        The query should use %(tenant_id)s placeholder for tenant filtering.
+
+        Example:
+            results = await self.tenant_query(
+                "SELECT * FROM my_table WHERE tenant_id = %(tenant_id)s",
+                {"other_param": value}
+            )
+
+        Args:
+            query: SQL query with %(tenant_id)s placeholder
+            params: Additional query parameters
+
+        Returns:
+            Query results
+        """
+        params = params or {}
+        params["tenant_id"] = str(self.get_tenant_id())
+        return await self.frame.db.execute(query, params)
+
+    async def tenant_fetch(self, query: str, params: Optional[dict] = None) -> list:
+        """
+        Fetch rows with automatic tenant_id parameter injection.
+
+        Args:
+            query: SQL query with %(tenant_id)s placeholder
+            params: Additional query parameters
+
+        Returns:
+            List of result rows
+        """
+        params = params or {}
+        params["tenant_id"] = str(self.get_tenant_id())
+        return await self.frame.db.fetch(query, params)
+
+    async def tenant_fetchrow(self, query: str, params: Optional[dict] = None) -> Optional[dict]:
+        """
+        Fetch single row with automatic tenant_id parameter injection.
+
+        Args:
+            query: SQL query with %(tenant_id)s placeholder
+            params: Additional query parameters
+
+        Returns:
+            Single result row or None
+        """
+        params = params or {}
+        params["tenant_id"] = str(self.get_tenant_id())
+        return await self.frame.db.fetchrow(query, params)

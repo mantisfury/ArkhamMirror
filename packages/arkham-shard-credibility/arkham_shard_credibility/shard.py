@@ -192,6 +192,38 @@ class CredibilityShard(ArkhamShard):
             CREATE INDEX IF NOT EXISTS idx_deception_risk ON arkham_deception_assessments(risk_level)
         """)
 
+        # ===========================================
+        # Multi-tenancy Migration
+        # ===========================================
+        await self._db.execute("""
+            DO $$
+            DECLARE
+                tables_to_update TEXT[] := ARRAY['arkham_credibility_assessments', 'arkham_deception_assessments'];
+                tbl TEXT;
+            BEGIN
+                FOREACH tbl IN ARRAY tables_to_update LOOP
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = 'public'
+                        AND table_name = tbl
+                        AND column_name = 'tenant_id'
+                    ) THEN
+                        EXECUTE format('ALTER TABLE %I ADD COLUMN tenant_id UUID', tbl);
+                    END IF;
+                END LOOP;
+            END $$;
+        """)
+
+        await self._db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_arkham_credibility_assessments_tenant
+            ON arkham_credibility_assessments(tenant_id)
+        """)
+
+        await self._db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_arkham_deception_assessments_tenant
+            ON arkham_deception_assessments(tenant_id)
+        """)
+
         logger.debug("Credibility schema created/verified")
 
     # === Event Subscriptions ===
@@ -330,10 +362,14 @@ class CredibilityShard(ArkhamShard):
         if not self._db:
             return None
 
-        row = await self._db.fetch_one(
-            "SELECT * FROM arkham_credibility_assessments WHERE id = ?",
-            [assessment_id],
-        )
+        query = "SELECT * FROM arkham_credibility_assessments WHERE id = :id"
+        params = {"id": assessment_id}
+        tenant_id = self.get_tenant_id_or_none()
+        if tenant_id:
+            query += " AND tenant_id = :tenant_id"
+            params["tenant_id"] = str(tenant_id)
+
+        row = await self._db.fetch_one(query, params)
         return self._row_to_assessment(row) if row else None
 
     async def list_assessments(
@@ -347,21 +383,26 @@ class CredibilityShard(ArkhamShard):
             return []
 
         query = "SELECT * FROM arkham_credibility_assessments WHERE 1=1"
-        params = []
+        params = {}
+
+        tenant_id = self.get_tenant_id_or_none()
+        if tenant_id:
+            query += " AND tenant_id = :tenant_id"
+            params["tenant_id"] = str(tenant_id)
 
         if filter:
             if filter.source_type:
-                query += " AND source_type = ?"
-                params.append(filter.source_type.value)
+                query += " AND source_type = :source_type"
+                params["source_type"] = filter.source_type.value
             if filter.source_id:
-                query += " AND source_id = ?"
-                params.append(filter.source_id)
+                query += " AND source_id = :source_id"
+                params["source_id"] = filter.source_id
             if filter.min_score is not None:
-                query += " AND score >= ?"
-                params.append(filter.min_score)
+                query += " AND score >= :min_score"
+                params["min_score"] = filter.min_score
             if filter.max_score is not None:
-                query += " AND score <= ?"
-                params.append(filter.max_score)
+                query += " AND score <= :max_score"
+                params["max_score"] = filter.max_score
             if filter.level:
                 # Map level to score range
                 level_ranges = {
@@ -372,23 +413,25 @@ class CredibilityShard(ArkhamShard):
                     CredibilityLevel.VERIFIED: (81, 100),
                 }
                 min_s, max_s = level_ranges[filter.level]
-                query += " AND score >= ? AND score <= ?"
-                params.extend([min_s, max_s])
+                query += " AND score >= :level_min AND score <= :level_max"
+                params["level_min"] = min_s
+                params["level_max"] = max_s
             if filter.assessed_by:
-                query += " AND assessed_by = ?"
-                params.append(filter.assessed_by.value)
+                query += " AND assessed_by = :assessed_by"
+                params["assessed_by"] = filter.assessed_by.value
             if filter.assessor_id:
-                query += " AND assessor_id = ?"
-                params.append(filter.assessor_id)
+                query += " AND assessor_id = :assessor_id"
+                params["assessor_id"] = filter.assessor_id
             if filter.min_confidence is not None:
-                query += " AND confidence >= ?"
-                params.append(filter.min_confidence)
+                query += " AND confidence >= :min_confidence"
+                params["min_confidence"] = filter.min_confidence
             if filter.max_confidence is not None:
-                query += " AND confidence <= ?"
-                params.append(filter.max_confidence)
+                query += " AND confidence <= :max_confidence"
+                params["max_confidence"] = filter.max_confidence
 
-        query += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
-        params.extend([limit, offset])
+        query += " ORDER BY created_at DESC LIMIT :limit OFFSET :offset"
+        params["limit"] = limit
+        params["offset"] = offset
 
         rows = await self._db.fetch_all(query, params)
         return [self._row_to_assessment(row) for row in rows]
@@ -449,10 +492,14 @@ class CredibilityShard(ArkhamShard):
         if not self._db:
             return False
 
-        await self._db.execute(
-            "DELETE FROM arkham_credibility_assessments WHERE id = ?",
-            [assessment_id],
-        )
+        query = "DELETE FROM arkham_credibility_assessments WHERE id = :id"
+        params = {"id": assessment_id}
+        tenant_id = self.get_tenant_id_or_none()
+        if tenant_id:
+            query += " AND tenant_id = :tenant_id"
+            params["tenant_id"] = str(tenant_id)
+
+        await self._db.execute(query, params)
         return True
 
     async def get_source_credibility(
@@ -465,14 +512,18 @@ class CredibilityShard(ArkhamShard):
             return None
 
         # Get all assessments for this source
-        rows = await self._db.fetch_all(
-            """
+        query = """
             SELECT * FROM arkham_credibility_assessments
-            WHERE source_type = ? AND source_id = ?
-            ORDER BY created_at DESC
-            """,
-            [source_type.value, source_id],
-        )
+            WHERE source_type = :source_type AND source_id = :source_id
+        """
+        params = {"source_type": source_type.value, "source_id": source_id}
+        tenant_id = self.get_tenant_id_or_none()
+        if tenant_id:
+            query += " AND tenant_id = :tenant_id"
+            params["tenant_id"] = str(tenant_id)
+        query += " ORDER BY created_at DESC"
+
+        rows = await self._db.fetch_all(query, params)
 
         if not rows:
             return None
@@ -625,33 +676,51 @@ Return as JSON with factors and overall score."""
         if not self._db:
             return CredibilityStatistics()
 
+        # Build tenant filter
+        tenant_filter = ""
+        tenant_params = {}
+        tenant_id = self.get_tenant_id_or_none()
+        if tenant_id:
+            tenant_filter = " WHERE tenant_id = :tenant_id"
+            tenant_params["tenant_id"] = str(tenant_id)
+
         # Total assessments
         total = await self._db.fetch_one(
-            "SELECT COUNT(*) as count FROM arkham_credibility_assessments"
+            f"SELECT COUNT(*) as count FROM arkham_credibility_assessments{tenant_filter}",
+            tenant_params,
         )
         total_assessments = total["count"] if total else 0
 
         # By source type
         type_rows = await self._db.fetch_all(
-            "SELECT source_type, COUNT(*) as count FROM arkham_credibility_assessments GROUP BY source_type"
+            f"SELECT source_type, COUNT(*) as count FROM arkham_credibility_assessments{tenant_filter} GROUP BY source_type",
+            tenant_params,
         )
         by_source_type = {row["source_type"]: row["count"] for row in type_rows}
 
         # By level (calculate from score ranges)
+        score_filter = tenant_filter if tenant_filter else " WHERE"
+        score_and = " AND" if tenant_filter else ""
+
         unreliable = await self._db.fetch_one(
-            "SELECT COUNT(*) as count FROM arkham_credibility_assessments WHERE score <= 20"
+            f"SELECT COUNT(*) as count FROM arkham_credibility_assessments{score_filter}{score_and} score <= 20",
+            tenant_params,
         )
         low = await self._db.fetch_one(
-            "SELECT COUNT(*) as count FROM arkham_credibility_assessments WHERE score > 20 AND score <= 40"
+            f"SELECT COUNT(*) as count FROM arkham_credibility_assessments{score_filter}{score_and} score > 20 AND score <= 40",
+            tenant_params,
         )
         medium = await self._db.fetch_one(
-            "SELECT COUNT(*) as count FROM arkham_credibility_assessments WHERE score > 40 AND score <= 60"
+            f"SELECT COUNT(*) as count FROM arkham_credibility_assessments{score_filter}{score_and} score > 40 AND score <= 60",
+            tenant_params,
         )
         high = await self._db.fetch_one(
-            "SELECT COUNT(*) as count FROM arkham_credibility_assessments WHERE score > 60 AND score <= 80"
+            f"SELECT COUNT(*) as count FROM arkham_credibility_assessments{score_filter}{score_and} score > 60 AND score <= 80",
+            tenant_params,
         )
         verified = await self._db.fetch_one(
-            "SELECT COUNT(*) as count FROM arkham_credibility_assessments WHERE score > 80"
+            f"SELECT COUNT(*) as count FROM arkham_credibility_assessments{score_filter}{score_and} score > 80",
+            tenant_params,
         )
 
         by_level = {
@@ -664,21 +733,25 @@ Return as JSON with factors and overall score."""
 
         # By method
         method_rows = await self._db.fetch_all(
-            "SELECT assessed_by, COUNT(*) as count FROM arkham_credibility_assessments GROUP BY assessed_by"
+            f"SELECT assessed_by, COUNT(*) as count FROM arkham_credibility_assessments{tenant_filter} GROUP BY assessed_by",
+            tenant_params,
         )
         by_method = {row["assessed_by"]: row["count"] for row in method_rows}
 
         # Averages
         avg_score_row = await self._db.fetch_one(
-            "SELECT AVG(score) as avg FROM arkham_credibility_assessments"
+            f"SELECT AVG(score) as avg FROM arkham_credibility_assessments{tenant_filter}",
+            tenant_params,
         )
         avg_confidence_row = await self._db.fetch_one(
-            "SELECT AVG(confidence) as avg FROM arkham_credibility_assessments"
+            f"SELECT AVG(confidence) as avg FROM arkham_credibility_assessments{tenant_filter}",
+            tenant_params,
         )
 
         # Unique sources
         sources_row = await self._db.fetch_one(
-            "SELECT COUNT(DISTINCT source_type || ':' || source_id) as count FROM arkham_credibility_assessments"
+            f"SELECT COUNT(DISTINCT source_type || ':' || source_id) as count FROM arkham_credibility_assessments{tenant_filter}",
+            tenant_params,
         )
         sources_assessed = sources_row["count"] if sources_row else 0
         avg_per_source = total_assessments / sources_assessed if sources_assessed > 0 else 0.0
@@ -709,7 +782,12 @@ Return as JSON with factors and overall score."""
             return 0
 
         query = "SELECT COUNT(*) as count FROM arkham_credibility_assessments WHERE 1=1"
-        params = []
+        params = {}
+
+        tenant_id = self.get_tenant_id_or_none()
+        if tenant_id:
+            query += " AND tenant_id = :tenant_id"
+            params["tenant_id"] = str(tenant_id)
 
         if level:
             level_ranges = {
@@ -721,12 +799,13 @@ Return as JSON with factors and overall score."""
             }
             if level in level_ranges:
                 min_s, max_s = level_ranges[level]
-                query += " AND score >= ? AND score <= ?"
-                params.extend([min_s, max_s])
+                query += " AND score >= :min_score AND score <= :max_score"
+                params["min_score"] = min_s
+                params["max_score"] = max_s
 
         if source_type:
-            query += " AND source_type = ?"
-            params.append(source_type)
+            query += " AND source_type = :source_type"
+            params["source_type"] = source_type
 
         result = await self._db.fetch_one(query, params)
         return result["count"] if result else 0
@@ -927,10 +1006,14 @@ Return as JSON with factors and overall score."""
         if not self._db:
             return None
 
-        row = await self._db.fetch_one(
-            "SELECT * FROM arkham_deception_assessments WHERE id = ?",
-            [assessment_id],
-        )
+        query = "SELECT * FROM arkham_deception_assessments WHERE id = :id"
+        params = {"id": assessment_id}
+        tenant_id = self.get_tenant_id_or_none()
+        if tenant_id:
+            query += " AND tenant_id = :tenant_id"
+            params["tenant_id"] = str(tenant_id)
+
+        row = await self._db.fetch_one(query, params)
         return self._row_to_deception_assessment(row) if row else None
 
     async def list_deception_assessments(
@@ -947,23 +1030,29 @@ Return as JSON with factors and overall score."""
             return []
 
         query = "SELECT * FROM arkham_deception_assessments WHERE 1=1"
-        params = []
+        params = {}
+
+        tenant_id = self.get_tenant_id_or_none()
+        if tenant_id:
+            query += " AND tenant_id = :tenant_id"
+            params["tenant_id"] = str(tenant_id)
 
         if source_type:
-            query += " AND source_type = ?"
-            params.append(source_type.value)
+            query += " AND source_type = :source_type"
+            params["source_type"] = source_type.value
         if source_id:
-            query += " AND source_id = ?"
-            params.append(source_id)
+            query += " AND source_id = :source_id"
+            params["source_id"] = source_id
         if min_score is not None:
-            query += " AND overall_score >= ?"
-            params.append(min_score)
+            query += " AND overall_score >= :min_score"
+            params["min_score"] = min_score
         if risk_level:
-            query += " AND risk_level = ?"
-            params.append(risk_level)
+            query += " AND risk_level = :risk_level"
+            params["risk_level"] = risk_level
 
-        query += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
-        params.extend([limit, offset])
+        query += " ORDER BY created_at DESC LIMIT :limit OFFSET :offset"
+        params["limit"] = limit
+        params["offset"] = offset
 
         rows = await self._db.fetch_all(query, params)
         return [self._row_to_deception_assessment(row) for row in rows]
@@ -1003,10 +1092,14 @@ Return as JSON with factors and overall score."""
         if not self._db:
             return False
 
-        await self._db.execute(
-            "DELETE FROM arkham_deception_assessments WHERE id = ?",
-            [assessment_id],
-        )
+        query = "DELETE FROM arkham_deception_assessments WHERE id = :id"
+        params = {"id": assessment_id}
+        tenant_id = self.get_tenant_id_or_none()
+        if tenant_id:
+            query += " AND tenant_id = :tenant_id"
+            params["tenant_id"] = str(tenant_id)
+
+        await self._db.execute(query, params)
         return True
 
     async def update_deception_checklist(
@@ -1121,14 +1214,19 @@ Return as JSON with factors and overall score."""
             return 0
 
         query = "SELECT COUNT(*) as count FROM arkham_deception_assessments WHERE 1=1"
-        params = []
+        params = {}
+
+        tenant_id = self.get_tenant_id_or_none()
+        if tenant_id:
+            query += " AND tenant_id = :tenant_id"
+            params["tenant_id"] = str(tenant_id)
 
         if risk_level:
-            query += " AND risk_level = ?"
-            params.append(risk_level)
+            query += " AND risk_level = :risk_level"
+            params["risk_level"] = risk_level
         if min_score is not None:
-            query += " AND overall_score >= ?"
-            params.append(min_score)
+            query += " AND overall_score >= :min_score"
+            params["min_score"] = min_score
 
         result = await self._db.fetch_one(query, params)
         return result["count"] if result else 0

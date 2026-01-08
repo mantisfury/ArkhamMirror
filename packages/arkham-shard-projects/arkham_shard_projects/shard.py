@@ -188,6 +188,42 @@ class ProjectsShard(ArkhamShard):
             CREATE INDEX IF NOT EXISTS idx_activity_project ON arkham_project_activity(project_id)
         """)
 
+        # ===========================================
+        # Multi-tenancy Migration
+        # ===========================================
+        # Add tenant_id columns to all tables
+        await self._db.execute("""
+            DO $$
+            DECLARE
+                tables_to_update TEXT[] := ARRAY[
+                    'arkham_projects',
+                    'arkham_project_members',
+                    'arkham_project_documents',
+                    'arkham_project_activity'
+                ];
+                tbl TEXT;
+            BEGIN
+                FOREACH tbl IN ARRAY tables_to_update LOOP
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = 'public'
+                        AND table_name = tbl
+                        AND column_name = 'tenant_id'
+                    ) THEN
+                        EXECUTE format('ALTER TABLE %I ADD COLUMN tenant_id UUID', tbl);
+                    END IF;
+                END LOOP;
+            END $$;
+        """)
+
+        # Create tenant_id indexes
+        await self._db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_arkham_projects_tenant ON arkham_projects(tenant_id)
+        """)
+        await self._db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_arkham_project_members_tenant ON arkham_project_members(tenant_id)
+        """)
+
         logger.debug("Projects schema created/verified")
 
     # === Event Subscriptions ===
@@ -507,10 +543,17 @@ class ProjectsShard(ArkhamShard):
         if not self._db:
             return None
 
-        row = await self._db.fetch_one(
-            "SELECT * FROM arkham_projects WHERE id = ?",
-            [project_id],
-        )
+        # Build query with tenant filtering
+        query = "SELECT * FROM arkham_projects WHERE id = ?"
+        params = [project_id]
+
+        # Add tenant filtering if tenant context is available
+        tenant_id = self.get_tenant_id_or_none()
+        if tenant_id:
+            query += " AND tenant_id = ?"
+            params.append(str(tenant_id))
+
+        row = await self._db.fetch_one(query, params)
         return self._row_to_project(row) if row else None
 
     async def list_projects(
@@ -525,6 +568,12 @@ class ProjectsShard(ArkhamShard):
 
         query = "SELECT * FROM arkham_projects WHERE 1=1"
         params = []
+
+        # Add tenant filtering if tenant context is available
+        tenant_id = self.get_tenant_id_or_none()
+        if tenant_id:
+            query += " AND tenant_id = ?"
+            params.append(str(tenant_id))
 
         if filter:
             if filter.status:
@@ -789,16 +838,21 @@ class ProjectsShard(ArkhamShard):
         if not self._db:
             return 0
 
-        if status:
-            result = await self._db.fetch_one(
-                "SELECT COUNT(*) as count FROM arkham_projects WHERE status = ?",
-                [status],
-            )
-        else:
-            result = await self._db.fetch_one(
-                "SELECT COUNT(*) as count FROM arkham_projects"
-            )
+        # Build query with tenant filtering
+        query = "SELECT COUNT(*) as count FROM arkham_projects WHERE 1=1"
+        params = []
 
+        # Add tenant filtering if tenant context is available
+        tenant_id = self.get_tenant_id_or_none()
+        if tenant_id:
+            query += " AND tenant_id = ?"
+            params.append(str(tenant_id))
+
+        if status:
+            query += " AND status = ?"
+            params.append(status)
+
+        result = await self._db.fetch_one(query, params)
         return result["count"] if result else 0
 
     # === Private Helper Methods ===

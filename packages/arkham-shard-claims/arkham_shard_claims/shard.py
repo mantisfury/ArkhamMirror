@@ -164,6 +164,38 @@ class ClaimsShard(ArkhamShard):
             CREATE INDEX IF NOT EXISTS idx_evidence_claim ON arkham_claim_evidence(claim_id)
         """)
 
+        # ===========================================
+        # Multi-tenancy Migration
+        # ===========================================
+        await self._db.execute("""
+            DO $$
+            DECLARE
+                tables_to_update TEXT[] := ARRAY['arkham_claims', 'arkham_claim_evidence'];
+                tbl TEXT;
+            BEGIN
+                FOREACH tbl IN ARRAY tables_to_update LOOP
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = 'public'
+                        AND table_name = tbl
+                        AND column_name = 'tenant_id'
+                    ) THEN
+                        EXECUTE format('ALTER TABLE %I ADD COLUMN tenant_id UUID', tbl);
+                    END IF;
+                END LOOP;
+            END $$;
+        """)
+
+        await self._db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_arkham_claims_tenant
+            ON arkham_claims(tenant_id)
+        """)
+
+        await self._db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_arkham_claim_evidence_tenant
+            ON arkham_claim_evidence(tenant_id)
+        """)
+
         logger.debug("Claims schema created/verified")
 
     # === Event Subscriptions ===
@@ -583,10 +615,16 @@ Return ONLY a valid JSON array, no other text. Example format:
         if not self._db:
             return None
 
-        row = await self._db.fetch_one(
-            "SELECT * FROM arkham_claims WHERE id = :claim_id",
-            {"claim_id": claim_id},
-        )
+        query = "SELECT * FROM arkham_claims WHERE id = :claim_id"
+        params = {"claim_id": claim_id}
+
+        # Add tenant filtering if tenant context is available
+        tenant_id = self.get_tenant_id_or_none()
+        if tenant_id:
+            query += " AND tenant_id = :tenant_id"
+            params["tenant_id"] = str(tenant_id)
+
+        row = await self._db.fetch_one(query, params)
         return self._row_to_claim(row) if row else None
 
     async def list_claims(
@@ -601,6 +639,12 @@ Return ONLY a valid JSON array, no other text. Example format:
 
         query = "SELECT * FROM arkham_claims WHERE 1=1"
         params: Dict[str, Any] = {}
+
+        # Add tenant filtering if tenant context is available
+        tenant_id = self.get_tenant_id_or_none()
+        if tenant_id:
+            query += " AND tenant_id = :tenant_id"
+            params["tenant_id"] = str(tenant_id)
 
         if filter:
             if filter.status:
@@ -725,10 +769,18 @@ Return ONLY a valid JSON array, no other text. Example format:
         if not self._db:
             return []
 
-        rows = await self._db.fetch_all(
-            "SELECT * FROM arkham_claim_evidence WHERE claim_id = :claim_id ORDER BY added_at DESC",
-            {"claim_id": claim_id},
-        )
+        query = "SELECT * FROM arkham_claim_evidence WHERE claim_id = :claim_id"
+        params = {"claim_id": claim_id}
+
+        # Add tenant filtering if tenant context is available
+        tenant_id = self.get_tenant_id_or_none()
+        if tenant_id:
+            query += " AND tenant_id = :tenant_id"
+            params["tenant_id"] = str(tenant_id)
+
+        query += " ORDER BY added_at DESC"
+
+        rows = await self._db.fetch_all(query, params)
         return [self._row_to_evidence(row) for row in rows]
 
     async def extract_claims_from_text(
@@ -935,53 +987,71 @@ Return ONLY a valid JSON array, no other text. Example format:
         if not self._db:
             return ClaimStatistics()
 
+        # Add tenant filtering if tenant context is available
+        tenant_id = self.get_tenant_id_or_none()
+        tenant_filter = ""
+        tenant_params: Dict[str, Any] = {}
+        if tenant_id:
+            tenant_filter = " WHERE tenant_id = :tenant_id"
+            tenant_params["tenant_id"] = str(tenant_id)
+
         # Total claims
         total = await self._db.fetch_one(
-            "SELECT COUNT(*) as count FROM arkham_claims"
+            f"SELECT COUNT(*) as count FROM arkham_claims{tenant_filter}",
+            tenant_params
         )
         total_claims = total["count"] if total else 0
 
         # By status
         status_rows = await self._db.fetch_all(
-            "SELECT status, COUNT(*) as count FROM arkham_claims GROUP BY status"
+            f"SELECT status, COUNT(*) as count FROM arkham_claims{tenant_filter} GROUP BY status",
+            tenant_params
         )
         by_status = {row["status"]: row["count"] for row in status_rows}
 
         # By type
         type_rows = await self._db.fetch_all(
-            "SELECT claim_type, COUNT(*) as count FROM arkham_claims GROUP BY claim_type"
+            f"SELECT claim_type, COUNT(*) as count FROM arkham_claims{tenant_filter} GROUP BY claim_type",
+            tenant_params
         )
         by_type = {row["claim_type"]: row["count"] for row in type_rows}
 
         # By extraction method
         method_rows = await self._db.fetch_all(
-            "SELECT extracted_by, COUNT(*) as count FROM arkham_claims GROUP BY extracted_by"
+            f"SELECT extracted_by, COUNT(*) as count FROM arkham_claims{tenant_filter} GROUP BY extracted_by",
+            tenant_params
         )
         by_method = {row["extracted_by"]: row["count"] for row in method_rows}
 
         # Evidence stats
         evidence_total = await self._db.fetch_one(
-            "SELECT COUNT(*) as count FROM arkham_claim_evidence"
+            f"SELECT COUNT(*) as count FROM arkham_claim_evidence{tenant_filter}",
+            tenant_params
         )
         total_evidence = evidence_total["count"] if evidence_total else 0
 
         supporting = await self._db.fetch_one(
-            "SELECT COUNT(*) as count FROM arkham_claim_evidence WHERE relationship = 'supports'"
+            f"SELECT COUNT(*) as count FROM arkham_claim_evidence WHERE relationship = 'supports'{' AND tenant_id = :tenant_id' if tenant_id else ''}",
+            tenant_params
         )
         refuting = await self._db.fetch_one(
-            "SELECT COUNT(*) as count FROM arkham_claim_evidence WHERE relationship = 'refutes'"
+            f"SELECT COUNT(*) as count FROM arkham_claim_evidence WHERE relationship = 'refutes'{' AND tenant_id = :tenant_id' if tenant_id else ''}",
+            tenant_params
         )
 
         with_evidence = await self._db.fetch_one(
-            "SELECT COUNT(*) as count FROM arkham_claims WHERE evidence_count > 0"
+            f"SELECT COUNT(*) as count FROM arkham_claims WHERE evidence_count > 0{' AND tenant_id = :tenant_id' if tenant_id else ''}",
+            tenant_params
         )
 
         # Averages
         avg_conf = await self._db.fetch_one(
-            "SELECT AVG(confidence) as avg FROM arkham_claims"
+            f"SELECT AVG(confidence) as avg FROM arkham_claims{tenant_filter}",
+            tenant_params
         )
         avg_ev = await self._db.fetch_one(
-            "SELECT AVG(evidence_count) as avg FROM arkham_claims"
+            f"SELECT AVG(evidence_count) as avg FROM arkham_claims{tenant_filter}",
+            tenant_params
         )
 
         return ClaimStatistics(
@@ -1003,16 +1073,20 @@ Return ONLY a valid JSON array, no other text. Example format:
         if not self._db:
             return 0
 
-        if status:
-            result = await self._db.fetch_one(
-                "SELECT COUNT(*) as count FROM arkham_claims WHERE status = :status",
-                {"status": status},
-            )
-        else:
-            result = await self._db.fetch_one(
-                "SELECT COUNT(*) as count FROM arkham_claims"
-            )
+        query = "SELECT COUNT(*) as count FROM arkham_claims WHERE 1=1"
+        params: Dict[str, Any] = {}
 
+        # Add tenant filtering if tenant context is available
+        tenant_id = self.get_tenant_id_or_none()
+        if tenant_id:
+            query += " AND tenant_id = :tenant_id"
+            params["tenant_id"] = str(tenant_id)
+
+        if status:
+            query += " AND status = :status"
+            params["status"] = status
+
+        result = await self._db.fetch_one(query, params)
         return result["count"] if result else 0
 
     # === Private Helper Methods ===
@@ -1115,33 +1189,49 @@ Return ONLY a valid JSON array, no other text. Example format:
         if not self._db:
             return
 
+        # Add tenant filtering if tenant context is available
+        tenant_id = self.get_tenant_id_or_none()
+        base_query = "SELECT COUNT(*) as count FROM arkham_claim_evidence WHERE claim_id = :claim_id"
+        params = {"claim_id": claim_id}
+        if tenant_id:
+            base_query_suffix = " AND tenant_id = :tenant_id"
+            params["tenant_id"] = str(tenant_id)
+        else:
+            base_query_suffix = ""
+
         total = await self._db.fetch_one(
-            "SELECT COUNT(*) as count FROM arkham_claim_evidence WHERE claim_id = :claim_id",
-            {"claim_id": claim_id},
+            base_query + base_query_suffix,
+            params,
         )
         supporting = await self._db.fetch_one(
-            "SELECT COUNT(*) as count FROM arkham_claim_evidence WHERE claim_id = :claim_id AND relationship = 'supports'",
-            {"claim_id": claim_id},
+            base_query + " AND relationship = 'supports'" + base_query_suffix,
+            params,
         )
         refuting = await self._db.fetch_one(
-            "SELECT COUNT(*) as count FROM arkham_claim_evidence WHERE claim_id = :claim_id AND relationship = 'refutes'",
-            {"claim_id": claim_id},
+            base_query + " AND relationship = 'refutes'" + base_query_suffix,
+            params,
         )
 
-        await self._db.execute("""
+        update_query = """
             UPDATE arkham_claims SET
                 evidence_count = :evidence_count,
                 supporting_count = :supporting_count,
                 refuting_count = :refuting_count,
                 updated_at = :updated_at
             WHERE id = :id
-        """, {
+        """
+        update_params = {
             "evidence_count": total["count"] if total else 0,
             "supporting_count": supporting["count"] if supporting else 0,
             "refuting_count": refuting["count"] if refuting else 0,
             "updated_at": datetime.utcnow().isoformat(),
             "id": claim_id,
-        })
+        }
+        if tenant_id:
+            update_query = update_query.rstrip() + " AND tenant_id = :tenant_id"
+            update_params["tenant_id"] = str(tenant_id)
+
+        await self._db.execute(update_query, update_params)
 
     async def _link_claims_to_entity(self, entity_id: str, entity_name: str) -> None:
         """Link claims mentioning an entity to that entity."""
@@ -1149,20 +1239,28 @@ Return ONLY a valid JSON array, no other text. Example format:
             return
 
         # Find claims mentioning this entity name
-        claims = await self._db.fetch_all(
-            "SELECT id, entity_ids FROM arkham_claims WHERE text LIKE :pattern",
-            {"pattern": f"%{entity_name}%"},
-        )
+        query = "SELECT id, entity_ids FROM arkham_claims WHERE text LIKE :pattern"
+        params: Dict[str, Any] = {"pattern": f"%{entity_name}%"}
+
+        # Add tenant filtering if tenant context is available
+        tenant_id = self.get_tenant_id_or_none()
+        if tenant_id:
+            query += " AND tenant_id = :tenant_id"
+            params["tenant_id"] = str(tenant_id)
+
+        claims = await self._db.fetch_all(query, params)
 
         import json
         for row in claims:
             entity_ids = json.loads(row["entity_ids"] or "[]")
             if entity_id not in entity_ids:
                 entity_ids.append(entity_id)
-                await self._db.execute(
-                    "UPDATE arkham_claims SET entity_ids = :entity_ids WHERE id = :id",
-                    {"entity_ids": json.dumps(entity_ids), "id": row["id"]},
-                )
+                update_query = "UPDATE arkham_claims SET entity_ids = :entity_ids WHERE id = :id"
+                update_params: Dict[str, Any] = {"entity_ids": json.dumps(entity_ids), "id": row["id"]}
+                if tenant_id:
+                    update_query += " AND tenant_id = :tenant_id"
+                    update_params["tenant_id"] = str(tenant_id)
+                await self._db.execute(update_query, update_params)
 
     def _row_to_claim(self, row: Dict[str, Any]) -> Claim:
         """Convert database row to Claim object."""

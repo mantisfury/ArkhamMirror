@@ -10,6 +10,7 @@ import { Icon } from '../../components/common/Icon';
 import { useToast } from '../../context/ToastContext';
 import { useFetch } from '../../hooks/useFetch';
 import { usePaginatedFetch } from '../../hooks';
+import { sanitizeHtml } from '../../utils/sanitize';
 import './ReportsPage.css';
 
 // Types
@@ -636,7 +637,7 @@ export function ReportsPage() {
               ) : viewingReport.output_format === 'html' ? (
                 <div
                   className="report-html-content"
-                  dangerouslySetInnerHTML={{ __html: reportContent }}
+                  dangerouslySetInnerHTML={{ __html: sanitizeHtml(reportContent) }}
                 />
               ) : (
                 <pre className="report-text-content">{reportContent}</pre>

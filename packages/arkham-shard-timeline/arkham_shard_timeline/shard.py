@@ -220,6 +220,43 @@ class TimelineShard(ArkhamShard):
             ON arkham_timeline_annotations(event_id)
         """)
 
+        # ===========================================
+        # Multi-tenancy Migration
+        # ===========================================
+        await self.database_service.execute("""
+            DO $$
+            DECLARE
+                tables_to_update TEXT[] := ARRAY['arkham_timeline_events', 'arkham_timeline_conflicts', 'arkham_timeline_annotations'];
+                tbl TEXT;
+            BEGIN
+                FOREACH tbl IN ARRAY tables_to_update LOOP
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = 'public'
+                        AND table_name = tbl
+                        AND column_name = 'tenant_id'
+                    ) THEN
+                        EXECUTE format('ALTER TABLE %I ADD COLUMN tenant_id UUID', tbl);
+                    END IF;
+                END LOOP;
+            END $$;
+        """)
+
+        await self.database_service.execute("""
+            CREATE INDEX IF NOT EXISTS idx_arkham_timeline_events_tenant
+            ON arkham_timeline_events(tenant_id)
+        """)
+
+        await self.database_service.execute("""
+            CREATE INDEX IF NOT EXISTS idx_arkham_timeline_conflicts_tenant
+            ON arkham_timeline_conflicts(tenant_id)
+        """)
+
+        await self.database_service.execute("""
+            CREATE INDEX IF NOT EXISTS idx_arkham_timeline_annotations_tenant
+            ON arkham_timeline_annotations(tenant_id)
+        """)
+
         logger.info("Timeline schema created successfully")
 
     async def _on_document_indexed(self, event: dict) -> None:
@@ -632,14 +669,34 @@ class TimelineShard(ArkhamShard):
             return
 
         import json
+
+        # Get tenant_id if available for INSERT operations
+        tenant_id = self.get_tenant_id_or_none()
+
         for event in events:
+            params = {
+                "id": event.id,
+                "document_id": event.document_id,
+                "text": event.text,
+                "date_start": event.date_start,
+                "date_end": event.date_end,
+                "precision": event.precision.value,
+                "confidence": event.confidence,
+                "entities": json.dumps(event.entities),
+                "event_type": event.event_type.value,
+                "span_start": event.span[0] if event.span else None,
+                "span_end": event.span[1] if event.span else None,
+                "metadata": json.dumps(event.metadata),
+                "tenant_id": str(tenant_id) if tenant_id else None,
+            }
+
             await self.database_service.execute(
                 """
                 INSERT INTO arkham_timeline_events
                 (id, document_id, text, date_start, date_end, precision, confidence,
-                 entities, event_type, span_start, span_end, metadata)
+                 entities, event_type, span_start, span_end, metadata, tenant_id)
                 VALUES (:id, :document_id, :text, :date_start, :date_end, :precision,
-                        :confidence, :entities, :event_type, :span_start, :span_end, :metadata)
+                        :confidence, :entities, :event_type, :span_start, :span_end, :metadata, :tenant_id)
                 ON CONFLICT (id) DO UPDATE SET
                     text = EXCLUDED.text,
                     date_start = EXCLUDED.date_start,
@@ -650,22 +707,10 @@ class TimelineShard(ArkhamShard):
                     event_type = EXCLUDED.event_type,
                     span_start = EXCLUDED.span_start,
                     span_end = EXCLUDED.span_end,
-                    metadata = EXCLUDED.metadata
+                    metadata = EXCLUDED.metadata,
+                    tenant_id = EXCLUDED.tenant_id
                 """,
-                {
-                    "id": event.id,
-                    "document_id": event.document_id,
-                    "text": event.text,
-                    "date_start": event.date_start,
-                    "date_end": event.date_end,
-                    "precision": event.precision.value,
-                    "confidence": event.confidence,
-                    "entities": json.dumps(event.entities),
-                    "event_type": event.event_type.value,
-                    "span_start": event.span[0] if event.span else None,
-                    "span_end": event.span[1] if event.span else None,
-                    "metadata": json.dumps(event.metadata),
-                }
+                params
             )
 
         logger.debug(f"Stored {len(events)} timeline events")
@@ -676,14 +721,30 @@ class TimelineShard(ArkhamShard):
             return
 
         import json
+
+        # Get tenant_id if available for INSERT operations
+        tenant_id = self.get_tenant_id_or_none()
+
         for conflict in conflicts:
+            params = {
+                "id": conflict.id,
+                "type": conflict.type.value,
+                "severity": conflict.severity.value,
+                "event_ids": json.dumps(conflict.events),
+                "description": conflict.description,
+                "document_ids": json.dumps(conflict.documents),
+                "suggested_resolution": conflict.suggested_resolution,
+                "metadata": json.dumps(conflict.metadata),
+                "tenant_id": str(tenant_id) if tenant_id else None,
+            }
+
             await self.database_service.execute(
                 """
                 INSERT INTO arkham_timeline_conflicts
                 (id, type, severity, event_ids, description, document_ids,
-                 suggested_resolution, metadata)
+                 suggested_resolution, metadata, tenant_id)
                 VALUES (:id, :type, :severity, :event_ids, :description, :document_ids,
-                        :suggested_resolution, :metadata)
+                        :suggested_resolution, :metadata, :tenant_id)
                 ON CONFLICT (id) DO UPDATE SET
                     type = EXCLUDED.type,
                     severity = EXCLUDED.severity,
@@ -691,18 +752,10 @@ class TimelineShard(ArkhamShard):
                     description = EXCLUDED.description,
                     document_ids = EXCLUDED.document_ids,
                     suggested_resolution = EXCLUDED.suggested_resolution,
-                    metadata = EXCLUDED.metadata
+                    metadata = EXCLUDED.metadata,
+                    tenant_id = EXCLUDED.tenant_id
                 """,
-                {
-                    "id": conflict.id,
-                    "type": conflict.type.value,
-                    "severity": conflict.severity.value,
-                    "event_ids": json.dumps(conflict.events),
-                    "description": conflict.description,
-                    "document_ids": json.dumps(conflict.documents),
-                    "suggested_resolution": conflict.suggested_resolution,
-                    "metadata": json.dumps(conflict.metadata),
-                }
+                params
             )
 
         logger.debug(f"Stored {len(conflicts)} conflicts")
@@ -712,10 +765,18 @@ class TimelineShard(ArkhamShard):
         if not self.database_service:
             return []
 
-        rows = await self.database_service.fetch_all(
-            "SELECT * FROM arkham_timeline_events WHERE document_id = :document_id ORDER BY date_start",
-            {"document_id": document_id}
-        )
+        query = "SELECT * FROM arkham_timeline_events WHERE document_id = :document_id"
+        params = {"document_id": document_id}
+
+        # Add tenant filtering if tenant context is available
+        tenant_id = self.get_tenant_id_or_none()
+        if tenant_id:
+            query += " AND tenant_id = :tenant_id"
+            params["tenant_id"] = str(tenant_id)
+
+        query += " ORDER BY date_start"
+
+        rows = await self.database_service.fetch_all(query, params)
 
         return [self._row_to_event(row) for row in rows]
 
@@ -725,14 +786,21 @@ class TimelineShard(ArkhamShard):
             return []
 
         # Query events where entity_id is in the entities JSONB array
-        rows = await self.database_service.fetch_all(
-            """
+        query = """
             SELECT * FROM arkham_timeline_events
             WHERE entities::jsonb @> :entity_array::jsonb
-            ORDER BY date_start
-            """,
-            {"entity_array": f'["{entity_id}"]'}
-        )
+        """
+        params = {"entity_array": f'["{entity_id}"]'}
+
+        # Add tenant filtering if tenant context is available
+        tenant_id = self.get_tenant_id_or_none()
+        if tenant_id:
+            query += " AND tenant_id = :tenant_id"
+            params["tenant_id"] = str(tenant_id)
+
+        query += " ORDER BY date_start"
+
+        rows = await self.database_service.fetch_all(query, params)
 
         return [self._row_to_event(row) for row in rows]
 

@@ -182,6 +182,43 @@ class ReportsShard(ArkhamShard):
             CREATE INDEX IF NOT EXISTS idx_schedules_enabled ON arkham_report_schedules(enabled)
         """)
 
+        # ===========================================
+        # Multi-tenancy Migration
+        # ===========================================
+        await self._db.execute("""
+            DO $$
+            DECLARE
+                tables_to_update TEXT[] := ARRAY['arkham_reports', 'arkham_report_templates', 'arkham_report_schedules'];
+                tbl TEXT;
+            BEGIN
+                FOREACH tbl IN ARRAY tables_to_update LOOP
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = 'public'
+                        AND table_name = tbl
+                        AND column_name = 'tenant_id'
+                    ) THEN
+                        EXECUTE format('ALTER TABLE %I ADD COLUMN tenant_id UUID', tbl);
+                    END IF;
+                END LOOP;
+            END $$;
+        """)
+
+        await self._db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_reports_tenant
+            ON arkham_reports(tenant_id)
+        """)
+
+        await self._db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_report_templates_tenant
+            ON arkham_report_templates(tenant_id)
+        """)
+
+        await self._db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_report_schedules_tenant
+            ON arkham_report_schedules(tenant_id)
+        """)
+
         logger.debug("Reports schema created/verified")
 
     # === Public API Methods - Reports ===
@@ -248,10 +285,18 @@ class ReportsShard(ArkhamShard):
         if not self._db:
             return None
 
-        row = await self._db.fetch_one(
-            "SELECT * FROM arkham_reports WHERE id = :report_id",
-            {"report_id": report_id},
-        )
+        # Filter by tenant_id for multi-tenancy
+        tenant_id = self.get_tenant_id_or_none()
+        if tenant_id:
+            row = await self._db.fetch_one(
+                "SELECT * FROM arkham_reports WHERE id = :report_id AND tenant_id = :tenant_id",
+                {"report_id": report_id, "tenant_id": str(tenant_id)},
+            )
+        else:
+            row = await self._db.fetch_one(
+                "SELECT * FROM arkham_reports WHERE id = :report_id",
+                {"report_id": report_id},
+            )
         return self._row_to_report(row) if row else None
 
     async def list_reports(
@@ -266,6 +311,12 @@ class ReportsShard(ArkhamShard):
 
         query = "SELECT * FROM arkham_reports WHERE 1=1"
         params: Dict[str, Any] = {}
+
+        # Filter by tenant_id for multi-tenancy
+        tenant_id = self.get_tenant_id_or_none()
+        if tenant_id:
+            query += " AND tenant_id = :tenant_id"
+            params["tenant_id"] = str(tenant_id)
 
         if filter:
             if filter.status:
@@ -293,7 +344,7 @@ class ReportsShard(ArkhamShard):
         if not self._db:
             return False
 
-        # Get report to delete file
+        # Get report to delete file (get_report already filters by tenant)
         report = await self.get_report(report_id)
         if not report:
             return False
@@ -305,11 +356,18 @@ class ReportsShard(ArkhamShard):
             except Exception as e:
                 logger.warning(f"Failed to delete report file: {e}")
 
-        # Delete from database
-        await self._db.execute(
-            "DELETE FROM arkham_reports WHERE id = :id",
-            {"id": report_id},
-        )
+        # Delete from database with tenant filter
+        tenant_id = self.get_tenant_id_or_none()
+        if tenant_id:
+            await self._db.execute(
+                "DELETE FROM arkham_reports WHERE id = :id AND tenant_id = :tenant_id",
+                {"id": report_id, "tenant_id": str(tenant_id)},
+            )
+        else:
+            await self._db.execute(
+                "DELETE FROM arkham_reports WHERE id = :id",
+                {"id": report_id},
+            )
 
         return True
 
@@ -318,15 +376,27 @@ class ReportsShard(ArkhamShard):
         if not self._db:
             return 0
 
+        # Filter by tenant_id for multi-tenancy
+        tenant_id = self.get_tenant_id_or_none()
+        tenant_filter = " AND tenant_id = :tenant_id" if tenant_id else ""
+        params: Dict[str, Any] = {"tenant_id": str(tenant_id)} if tenant_id else {}
+
         if status:
+            params["status"] = status
             result = await self._db.fetch_one(
-                "SELECT COUNT(*) as count FROM arkham_reports WHERE status = :status",
-                {"status": status},
+                f"SELECT COUNT(*) as count FROM arkham_reports WHERE status = :status{tenant_filter}",
+                params,
             )
         else:
-            result = await self._db.fetch_one(
-                "SELECT COUNT(*) as count FROM arkham_reports"
-            )
+            if tenant_id:
+                result = await self._db.fetch_one(
+                    "SELECT COUNT(*) as count FROM arkham_reports WHERE tenant_id = :tenant_id",
+                    params,
+                )
+            else:
+                result = await self._db.fetch_one(
+                    "SELECT COUNT(*) as count FROM arkham_reports"
+                )
 
         return result["count"] if result else 0
 
@@ -378,10 +448,18 @@ class ReportsShard(ArkhamShard):
         if not self._db:
             return None
 
-        row = await self._db.fetch_one(
-            "SELECT * FROM arkham_report_templates WHERE id = :template_id",
-            {"template_id": template_id},
-        )
+        # Filter by tenant_id for multi-tenancy
+        tenant_id = self.get_tenant_id_or_none()
+        if tenant_id:
+            row = await self._db.fetch_one(
+                "SELECT * FROM arkham_report_templates WHERE id = :template_id AND tenant_id = :tenant_id",
+                {"template_id": template_id, "tenant_id": str(tenant_id)},
+            )
+        else:
+            row = await self._db.fetch_one(
+                "SELECT * FROM arkham_report_templates WHERE id = :template_id",
+                {"template_id": template_id},
+            )
         return self._row_to_template(row) if row else None
 
     async def list_templates(
@@ -396,6 +474,12 @@ class ReportsShard(ArkhamShard):
 
         query = "SELECT * FROM arkham_report_templates WHERE 1=1"
         params: Dict[str, Any] = {}
+
+        # Filter by tenant_id for multi-tenancy
+        tenant_id = self.get_tenant_id_or_none()
+        if tenant_id:
+            query += " AND tenant_id = :tenant_id"
+            params["tenant_id"] = str(tenant_id)
 
         if report_type:
             query += " AND report_type = :report_type"
@@ -458,13 +542,20 @@ class ReportsShard(ArkhamShard):
             return []
 
         query = "SELECT * FROM arkham_report_schedules WHERE 1=1"
-        params = []
+        params: Dict[str, Any] = {}
+
+        # Filter by tenant_id for multi-tenancy
+        tenant_id = self.get_tenant_id_or_none()
+        if tenant_id:
+            query += " AND tenant_id = :tenant_id"
+            params["tenant_id"] = str(tenant_id)
 
         if enabled_only:
             query += " AND enabled = 1"
 
-        query += " ORDER BY next_run LIMIT ? OFFSET ?"
-        params.extend([limit, offset])
+        query += " ORDER BY next_run LIMIT :limit OFFSET :offset"
+        params["limit"] = limit
+        params["offset"] = offset
 
         rows = await self._db.fetch_all(query, params)
         return [self._row_to_schedule(row) for row in rows]
@@ -474,10 +565,18 @@ class ReportsShard(ArkhamShard):
         if not self._db:
             return False
 
-        await self._db.execute(
-            "DELETE FROM arkham_report_schedules WHERE id = :id",
-            {"id": schedule_id},
-        )
+        # Filter by tenant_id for multi-tenancy
+        tenant_id = self.get_tenant_id_or_none()
+        if tenant_id:
+            await self._db.execute(
+                "DELETE FROM arkham_report_schedules WHERE id = :id AND tenant_id = :tenant_id",
+                {"id": schedule_id, "tenant_id": str(tenant_id)},
+            )
+        else:
+            await self._db.execute(
+                "DELETE FROM arkham_report_schedules WHERE id = :id",
+                {"id": schedule_id},
+            )
         return True
 
     # === Statistics ===
@@ -487,44 +586,58 @@ class ReportsShard(ArkhamShard):
         if not self._db:
             return ReportStatistics()
 
+        # Filter by tenant_id for multi-tenancy
+        tenant_id = self.get_tenant_id_or_none()
+        tenant_filter = " WHERE tenant_id = :tenant_id" if tenant_id else ""
+        tenant_filter_and = " AND tenant_id = :tenant_id" if tenant_id else ""
+        params = {"tenant_id": str(tenant_id)} if tenant_id else {}
+
         # Total reports
         total = await self._db.fetch_one(
-            "SELECT COUNT(*) as count FROM arkham_reports"
+            f"SELECT COUNT(*) as count FROM arkham_reports{tenant_filter}",
+            params,
         )
         total_reports = total["count"] if total else 0
 
         # By status
         status_rows = await self._db.fetch_all(
-            "SELECT status, COUNT(*) as count FROM arkham_reports GROUP BY status"
+            f"SELECT status, COUNT(*) as count FROM arkham_reports{tenant_filter} GROUP BY status",
+            params,
         )
         by_status = {row["status"]: row["count"] for row in status_rows}
 
         # By type
         type_rows = await self._db.fetch_all(
-            "SELECT report_type, COUNT(*) as count FROM arkham_reports GROUP BY report_type"
+            f"SELECT report_type, COUNT(*) as count FROM arkham_reports{tenant_filter} GROUP BY report_type",
+            params,
         )
         by_type = {row["report_type"]: row["count"] for row in type_rows}
 
         # By format
         format_rows = await self._db.fetch_all(
-            "SELECT output_format, COUNT(*) as count FROM arkham_reports GROUP BY output_format"
+            f"SELECT output_format, COUNT(*) as count FROM arkham_reports{tenant_filter} GROUP BY output_format",
+            params,
         )
         by_format = {row["output_format"]: row["count"] for row in format_rows}
 
         # Templates and schedules
         templates = await self._db.fetch_one(
-            "SELECT COUNT(*) as count FROM arkham_report_templates"
+            f"SELECT COUNT(*) as count FROM arkham_report_templates{tenant_filter}",
+            params,
         )
         schedules = await self._db.fetch_one(
-            "SELECT COUNT(*) as count FROM arkham_report_schedules"
+            f"SELECT COUNT(*) as count FROM arkham_report_schedules{tenant_filter}",
+            params,
         )
         active_schedules = await self._db.fetch_one(
-            "SELECT COUNT(*) as count FROM arkham_report_schedules WHERE enabled = 1"
+            f"SELECT COUNT(*) as count FROM arkham_report_schedules WHERE enabled = 1{tenant_filter_and}",
+            params,
         )
 
         # File sizes
         file_size = await self._db.fetch_one(
-            "SELECT SUM(file_size) as total FROM arkham_reports WHERE file_size IS NOT NULL"
+            f"SELECT SUM(file_size) as total FROM arkham_reports WHERE file_size IS NOT NULL{tenant_filter_and}",
+            params,
         )
 
         return ReportStatistics(
@@ -1409,6 +1522,7 @@ class ReportsShard(ArkhamShard):
             return
 
         import json
+        tenant_id = self.get_tenant_id_or_none()
         params = {
             "id": report.id,
             "report_type": report.report_type.value,
@@ -1422,25 +1536,36 @@ class ReportsShard(ArkhamShard):
             "file_size": report.file_size,
             "error": report.error,
             "metadata": json.dumps(report.metadata),
+            "tenant_id": str(tenant_id) if tenant_id else None,
         }
 
         if update:
-            await self._db.execute("""
-                UPDATE arkham_reports SET
-                    report_type=:report_type, title=:title, status=:status, created_at=:created_at,
-                    completed_at=:completed_at, parameters=:parameters, output_format=:output_format,
-                    file_path=:file_path, file_size=:file_size, error=:error, metadata=:metadata
-                WHERE id=:id
-            """, params)
+            if tenant_id:
+                await self._db.execute("""
+                    UPDATE arkham_reports SET
+                        report_type=:report_type, title=:title, status=:status, created_at=:created_at,
+                        completed_at=:completed_at, parameters=:parameters, output_format=:output_format,
+                        file_path=:file_path, file_size=:file_size, error=:error, metadata=:metadata,
+                        tenant_id=:tenant_id
+                    WHERE id=:id AND tenant_id=:tenant_id
+                """, params)
+            else:
+                await self._db.execute("""
+                    UPDATE arkham_reports SET
+                        report_type=:report_type, title=:title, status=:status, created_at=:created_at,
+                        completed_at=:completed_at, parameters=:parameters, output_format=:output_format,
+                        file_path=:file_path, file_size=:file_size, error=:error, metadata=:metadata
+                    WHERE id=:id
+                """, params)
         else:
             await self._db.execute("""
                 INSERT INTO arkham_reports (
                     id, report_type, title, status, created_at,
                     completed_at, parameters, output_format,
-                    file_path, file_size, error, metadata
+                    file_path, file_size, error, metadata, tenant_id
                 ) VALUES (:id, :report_type, :title, :status, :created_at,
                     :completed_at, :parameters, :output_format,
-                    :file_path, :file_size, :error, :metadata)
+                    :file_path, :file_size, :error, :metadata, :tenant_id)
             """, params)
 
     async def _save_template(self, template: ReportTemplate, update: bool = False) -> None:
@@ -1449,6 +1574,7 @@ class ReportsShard(ArkhamShard):
             return
 
         import json
+        tenant_id = self.get_tenant_id_or_none()
         params = {
             "id": template.id,
             "name": template.name,
@@ -1460,25 +1586,35 @@ class ReportsShard(ArkhamShard):
             "created_at": template.created_at.isoformat(),
             "updated_at": template.updated_at.isoformat(),
             "metadata": json.dumps(template.metadata),
+            "tenant_id": str(tenant_id) if tenant_id else None,
         }
 
         if update:
-            await self._db.execute("""
-                UPDATE arkham_report_templates SET
-                    name=:name, report_type=:report_type, description=:description,
-                    parameters_schema=:parameters_schema, default_format=:default_format, template_content=:template_content,
-                    created_at=:created_at, updated_at=:updated_at, metadata=:metadata
-                WHERE id=:id
-            """, params)
+            if tenant_id:
+                await self._db.execute("""
+                    UPDATE arkham_report_templates SET
+                        name=:name, report_type=:report_type, description=:description,
+                        parameters_schema=:parameters_schema, default_format=:default_format, template_content=:template_content,
+                        created_at=:created_at, updated_at=:updated_at, metadata=:metadata, tenant_id=:tenant_id
+                    WHERE id=:id AND tenant_id=:tenant_id
+                """, params)
+            else:
+                await self._db.execute("""
+                    UPDATE arkham_report_templates SET
+                        name=:name, report_type=:report_type, description=:description,
+                        parameters_schema=:parameters_schema, default_format=:default_format, template_content=:template_content,
+                        created_at=:created_at, updated_at=:updated_at, metadata=:metadata
+                    WHERE id=:id
+                """, params)
         else:
             await self._db.execute("""
                 INSERT INTO arkham_report_templates (
                     id, name, report_type, description,
                     parameters_schema, default_format, template_content,
-                    created_at, updated_at, metadata
+                    created_at, updated_at, metadata, tenant_id
                 ) VALUES (:id, :name, :report_type, :description,
                     :parameters_schema, :default_format, :template_content,
-                    :created_at, :updated_at, :metadata)
+                    :created_at, :updated_at, :metadata, :tenant_id)
             """, params)
 
     async def _save_schedule(self, schedule: ReportSchedule, update: bool = False) -> None:
@@ -1487,6 +1623,7 @@ class ReportsShard(ArkhamShard):
             return
 
         import json
+        tenant_id = self.get_tenant_id_or_none()
         params = {
             "id": schedule.id,
             "template_id": schedule.template_id,
@@ -1499,25 +1636,36 @@ class ReportsShard(ArkhamShard):
             "retention_days": schedule.retention_days,
             "email_recipients": json.dumps(schedule.email_recipients),
             "metadata": json.dumps(schedule.metadata),
+            "tenant_id": str(tenant_id) if tenant_id else None,
         }
 
         if update:
-            await self._db.execute("""
-                UPDATE arkham_report_schedules SET
-                    template_id=:template_id, cron_expression=:cron_expression, enabled=:enabled,
-                    last_run=:last_run, next_run=:next_run, parameters=:parameters,
-                    output_format=:output_format, retention_days=:retention_days, email_recipients=:email_recipients, metadata=:metadata
-                WHERE id=:id
-            """, params)
+            if tenant_id:
+                await self._db.execute("""
+                    UPDATE arkham_report_schedules SET
+                        template_id=:template_id, cron_expression=:cron_expression, enabled=:enabled,
+                        last_run=:last_run, next_run=:next_run, parameters=:parameters,
+                        output_format=:output_format, retention_days=:retention_days, email_recipients=:email_recipients,
+                        metadata=:metadata, tenant_id=:tenant_id
+                    WHERE id=:id AND tenant_id=:tenant_id
+                """, params)
+            else:
+                await self._db.execute("""
+                    UPDATE arkham_report_schedules SET
+                        template_id=:template_id, cron_expression=:cron_expression, enabled=:enabled,
+                        last_run=:last_run, next_run=:next_run, parameters=:parameters,
+                        output_format=:output_format, retention_days=:retention_days, email_recipients=:email_recipients, metadata=:metadata
+                    WHERE id=:id
+                """, params)
         else:
             await self._db.execute("""
                 INSERT INTO arkham_report_schedules (
                     id, template_id, cron_expression, enabled,
                     last_run, next_run, parameters,
-                    output_format, retention_days, email_recipients, metadata
+                    output_format, retention_days, email_recipients, metadata, tenant_id
                 ) VALUES (:id, :template_id, :cron_expression, :enabled,
                     :last_run, :next_run, :parameters,
-                    :output_format, :retention_days, :email_recipients, :metadata)
+                    :output_format, :retention_days, :email_recipients, :metadata, :tenant_id)
             """, params)
 
     def _row_to_report(self, row: Dict[str, Any]) -> Report:

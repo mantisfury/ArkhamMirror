@@ -172,6 +172,39 @@ class ContradictionsShard(ArkhamShard):
                 statement = statement.strip()
                 if statement:
                     await self._db_service.execute(statement)
+
+            # ===========================================
+            # Multi-tenancy Migration
+            # ===========================================
+            await self._db_service.execute("""
+                DO $$
+                DECLARE
+                    tables_to_update TEXT[] := ARRAY['contradictions', 'chains'];
+                    tbl TEXT;
+                BEGIN
+                    FOREACH tbl IN ARRAY tables_to_update LOOP
+                        IF NOT EXISTS (
+                            SELECT 1 FROM information_schema.columns
+                            WHERE table_schema = 'arkham_contradictions'
+                            AND table_name = tbl
+                            AND column_name = 'tenant_id'
+                        ) THEN
+                            EXECUTE format('ALTER TABLE arkham_contradictions.%I ADD COLUMN tenant_id UUID', tbl);
+                        END IF;
+                    END LOOP;
+                END $$;
+            """)
+
+            await self._db_service.execute("""
+                CREATE INDEX IF NOT EXISTS idx_contradictions_tenant
+                ON arkham_contradictions.contradictions(tenant_id)
+            """)
+
+            await self._db_service.execute("""
+                CREATE INDEX IF NOT EXISTS idx_chains_tenant
+                ON arkham_contradictions.chains(tenant_id)
+            """)
+
             logger.info("Contradictions schema created/verified")
         except Exception as e:
             logger.error(f"Failed to create contradictions schema: {e}")
@@ -297,13 +330,19 @@ class ContradictionsShard(ArkhamShard):
 
         try:
             # Get all other document IDs
-            other_docs = await self._db_service.fetch_all(
-                """SELECT id FROM arkham_frame.documents
-                   WHERE id != :id
-                   ORDER BY created_at DESC
-                   LIMIT 50""",
-                {"id": doc_id}
-            )
+            query = """SELECT id FROM arkham_frame.documents
+                   WHERE id != :id"""
+            params = {"id": doc_id}
+
+            # Add tenant filtering if tenant context is available
+            tenant_id = self.get_tenant_id_or_none()
+            if tenant_id:
+                query += " AND tenant_id = :tenant_id"
+                params["tenant_id"] = str(tenant_id)
+
+            query += " ORDER BY created_at DESC LIMIT 50"
+
+            other_docs = await self._db_service.fetch_all(query, params)
 
             if not other_docs:
                 logger.info(f"No other documents to compare against {doc_id}")
@@ -419,22 +458,33 @@ class ContradictionsShard(ArkhamShard):
 
         try:
             # Get document metadata
-            doc_result = await self._db_service.fetch_one(
-                "SELECT id, filename FROM arkham_frame.documents WHERE id = :id",
-                {"id": doc_id}
-            )
+            query = "SELECT id, filename FROM arkham_frame.documents WHERE id = :id"
+            params = {"id": doc_id}
+
+            # Add tenant filtering if tenant context is available
+            tenant_id = self.get_tenant_id_or_none()
+            if tenant_id:
+                query += " AND tenant_id = :tenant_id"
+                params["tenant_id"] = str(tenant_id)
+
+            doc_result = await self._db_service.fetch_one(query, params)
 
             if not doc_result:
                 logger.warning(f"Document not found: {doc_id}")
                 return None
 
             # Get all chunks for the document, ordered by chunk_index
-            chunks = await self._db_service.fetch_all(
-                """SELECT text FROM arkham_frame.chunks
-                   WHERE document_id = :id
-                   ORDER BY chunk_index""",
-                {"id": doc_id}
-            )
+            chunk_query = """SELECT text FROM arkham_frame.chunks
+                   WHERE document_id = :id"""
+            chunk_params = {"id": doc_id}
+
+            if tenant_id:
+                chunk_query += " AND tenant_id = :tenant_id"
+                chunk_params["tenant_id"] = str(tenant_id)
+
+            chunk_query += " ORDER BY chunk_index"
+
+            chunks = await self._db_service.fetch_all(chunk_query, chunk_params)
 
             # Combine chunk text
             content = "\n\n".join(c["text"] for c in chunks if c.get("text"))

@@ -4,6 +4,7 @@ import json
 import logging
 from typing import Any, Dict, List, Optional
 from datetime import datetime, timedelta
+from uuid import UUID
 
 from .models import (
     Anomaly,
@@ -57,21 +58,29 @@ class AnomalyStore:
         logger.debug(f"Stored anomaly {anomaly.id} for doc {anomaly.doc_id}")
         return anomaly
 
-    async def get_anomaly(self, anomaly_id: str) -> Optional[Anomaly]:
+    async def get_anomaly(
+        self, anomaly_id: str, tenant_id: Optional[UUID] = None
+    ) -> Optional[Anomaly]:
         """
         Get an anomaly by ID.
 
         Args:
             anomaly_id: Anomaly ID
+            tenant_id: Optional tenant ID for filtering
 
         Returns:
             Anomaly or None if not found
         """
         if self._db:
-            row = await self._db.fetch_one(
-                "SELECT * FROM arkham_anomalies WHERE id = :id",
-                {"id": anomaly_id}
-            )
+            query = "SELECT * FROM arkham_anomalies WHERE id = :id"
+            params: Dict[str, Any] = {"id": anomaly_id}
+
+            # Add tenant filtering if tenant context is available
+            if tenant_id:
+                query += " AND tenant_id = :tenant_id"
+                params["tenant_id"] = str(tenant_id)
+
+            row = await self._db.fetch_one(query, params)
             return self._row_to_anomaly(row) if row else None
         else:
             return self._anomalies.get(anomaly_id)
@@ -96,27 +105,40 @@ class AnomalyStore:
         logger.debug(f"Updated anomaly {anomaly.id}")
         return anomaly
 
-    async def delete_anomaly(self, anomaly_id: str) -> bool:
+    async def delete_anomaly(
+        self, anomaly_id: str, tenant_id: Optional[UUID] = None
+    ) -> bool:
         """
         Delete an anomaly.
 
         Args:
             anomaly_id: Anomaly ID
+            tenant_id: Optional tenant ID for filtering
 
         Returns:
             True if deleted, False if not found
         """
         if self._db:
+            # Build query with tenant filtering
+            query = "DELETE FROM arkham_anomaly_notes WHERE anomaly_id = :id"
+            params: Dict[str, Any] = {"id": anomaly_id}
+
+            if tenant_id:
+                query += " AND tenant_id = :tenant_id"
+                params["tenant_id"] = str(tenant_id)
+
             # Delete associated notes first
-            await self._db.execute(
-                "DELETE FROM arkham_anomaly_notes WHERE anomaly_id = :id",
-                {"id": anomaly_id}
-            )
+            await self._db.execute(query, params)
+
             # Delete the anomaly
-            result = await self._db.execute(
-                "DELETE FROM arkham_anomalies WHERE id = :id",
-                {"id": anomaly_id}
-            )
+            query = "DELETE FROM arkham_anomalies WHERE id = :id"
+            params = {"id": anomaly_id}
+
+            if tenant_id:
+                query += " AND tenant_id = :tenant_id"
+                params["tenant_id"] = str(tenant_id)
+
+            await self._db.execute(query, params)
             logger.debug(f"Deleted anomaly {anomaly_id}")
             return True
         else:
@@ -137,6 +159,7 @@ class AnomalyStore:
         severity: Optional[SeverityLevel] = None,
         doc_id: Optional[str] = None,
         project_id: Optional[str] = None,
+        tenant_id: Optional[UUID] = None,
     ) -> tuple[List[Anomaly], int]:
         """
         List anomalies with filtering and pagination.
@@ -149,6 +172,7 @@ class AnomalyStore:
             severity: Filter by severity
             doc_id: Filter by document ID
             project_id: Filter by project ID
+            tenant_id: Optional tenant ID for filtering
 
         Returns:
             Tuple of (anomalies, total_count)
@@ -157,6 +181,11 @@ class AnomalyStore:
             # Build dynamic WHERE clause
             where_clauses = ["1=1"]
             params: Dict[str, Any] = {}
+
+            # Add tenant filtering if tenant context is available
+            if tenant_id:
+                where_clauses.append("tenant_id = :tenant_id")
+                params["tenant_id"] = str(tenant_id)
 
             if anomaly_type:
                 where_clauses.append("anomaly_type = :anomaly_type")
@@ -217,23 +246,31 @@ class AnomalyStore:
 
             return result, total
 
-    async def get_anomalies_by_doc(self, doc_id: str) -> List[Anomaly]:
+    async def get_anomalies_by_doc(
+        self, doc_id: str, tenant_id: Optional[UUID] = None
+    ) -> List[Anomaly]:
         """
         Get all anomalies for a document.
 
         Args:
             doc_id: Document ID
+            tenant_id: Optional tenant ID for filtering
 
         Returns:
             List of anomalies
         """
         if self._db:
-            rows = await self._db.fetch_all(
-                """SELECT * FROM arkham_anomalies
-                   WHERE doc_id = :doc_id
-                   ORDER BY detected_at DESC""",
-                {"doc_id": doc_id}
-            )
+            query = "SELECT * FROM arkham_anomalies WHERE doc_id = :doc_id"
+            params: Dict[str, Any] = {"doc_id": doc_id}
+
+            # Add tenant filtering if tenant context is available
+            if tenant_id:
+                query += " AND tenant_id = :tenant_id"
+                params["tenant_id"] = str(tenant_id)
+
+            query += " ORDER BY detected_at DESC"
+
+            rows = await self._db.fetch_all(query, params)
             return [self._row_to_anomaly(row) for row in rows]
         else:
             anomalies = [a for a in self._anomalies.values() if a.doc_id == doc_id]
@@ -246,6 +283,7 @@ class AnomalyStore:
         status: AnomalyStatus,
         reviewed_by: Optional[str] = None,
         notes: str = "",
+        tenant_id: Optional[UUID] = None,
     ) -> Optional[Anomaly]:
         """
         Update anomaly status.
@@ -255,11 +293,12 @@ class AnomalyStore:
             status: New status
             reviewed_by: Reviewer identifier
             notes: Review notes
+            tenant_id: Optional tenant ID for filtering
 
         Returns:
             Updated anomaly or None if not found
         """
-        anomaly = await self.get_anomaly(anomaly_id)
+        anomaly = await self.get_anomaly(anomaly_id, tenant_id=tenant_id)
         if not anomaly:
             return None
 
@@ -272,23 +311,28 @@ class AnomalyStore:
             anomaly.notes = notes
 
         if self._db:
-            await self._db.execute(
-                """UPDATE arkham_anomalies SET
+            query = """UPDATE arkham_anomalies SET
                     status = :status,
                     reviewed_by = :reviewed_by,
                     reviewed_at = :reviewed_at,
                     updated_at = :updated_at,
                     notes = :notes
-                   WHERE id = :id""",
-                {
-                    "id": anomaly_id,
-                    "status": status.value,
-                    "reviewed_by": reviewed_by,
-                    "reviewed_at": anomaly.reviewed_at.isoformat(),
-                    "updated_at": anomaly.updated_at.isoformat(),
-                    "notes": notes,
-                }
-            )
+                   WHERE id = :id"""
+            params: Dict[str, Any] = {
+                "id": anomaly_id,
+                "status": status.value,
+                "reviewed_by": reviewed_by,
+                "reviewed_at": anomaly.reviewed_at.isoformat(),
+                "updated_at": anomaly.updated_at.isoformat(),
+                "notes": notes,
+            }
+
+            # Add tenant filtering if tenant context is available
+            if tenant_id:
+                query += " AND tenant_id = :tenant_id"
+                params["tenant_id"] = str(tenant_id)
+
+            await self._db.execute(query, params)
         else:
             self._anomalies[anomaly_id] = anomaly
 
@@ -325,23 +369,32 @@ class AnomalyStore:
         logger.debug(f"Added note to anomaly {note.anomaly_id}")
         return note
 
-    async def get_notes(self, anomaly_id: str) -> List[AnalystNote]:
+    async def get_notes(
+        self, anomaly_id: str, tenant_id: Optional[UUID] = None
+    ) -> List[AnalystNote]:
         """
         Get all notes for an anomaly.
 
         Args:
             anomaly_id: Anomaly ID
+            tenant_id: Optional tenant ID for filtering
 
         Returns:
             List of notes
         """
         if self._db:
-            rows = await self._db.fetch_all(
-                """SELECT * FROM arkham_anomaly_notes
-                   WHERE anomaly_id = :anomaly_id
-                   ORDER BY created_at DESC""",
-                {"anomaly_id": anomaly_id}
-            )
+            query = """SELECT * FROM arkham_anomaly_notes
+                   WHERE anomaly_id = :anomaly_id"""
+            params: Dict[str, Any] = {"anomaly_id": anomaly_id}
+
+            # Add tenant filtering if tenant context is available
+            if tenant_id:
+                query += " AND tenant_id = :tenant_id"
+                params["tenant_id"] = str(tenant_id)
+
+            query += " ORDER BY created_at DESC"
+
+            rows = await self._db.fetch_all(query, params)
             return [self._row_to_note(row) for row in rows]
         else:
             return self._notes.get(anomaly_id, [])
@@ -379,71 +432,108 @@ class AnomalyStore:
         logger.debug(f"Stored pattern {pattern.id}")
         return pattern
 
-    async def get_pattern(self, pattern_id: str) -> Optional[AnomalyPattern]:
+    async def get_pattern(
+        self, pattern_id: str, tenant_id: Optional[UUID] = None
+    ) -> Optional[AnomalyPattern]:
         """
         Get a pattern by ID.
 
         Args:
             pattern_id: Pattern ID
+            tenant_id: Optional tenant ID for filtering
 
         Returns:
             Pattern or None if not found
         """
         if self._db:
-            row = await self._db.fetch_one(
-                "SELECT * FROM arkham_anomaly_patterns WHERE id = :id",
-                {"id": pattern_id}
-            )
+            query = "SELECT * FROM arkham_anomaly_patterns WHERE id = :id"
+            params: Dict[str, Any] = {"id": pattern_id}
+
+            # Add tenant filtering if tenant context is available
+            if tenant_id:
+                query += " AND tenant_id = :tenant_id"
+                params["tenant_id"] = str(tenant_id)
+
+            row = await self._db.fetch_one(query, params)
             return self._row_to_pattern(row) if row else None
         else:
             return self._patterns.get(pattern_id)
 
-    async def list_patterns(self) -> List[AnomalyPattern]:
+    async def list_patterns(
+        self, tenant_id: Optional[UUID] = None
+    ) -> List[AnomalyPattern]:
         """
         List all patterns.
+
+        Args:
+            tenant_id: Optional tenant ID for filtering
 
         Returns:
             List of patterns
         """
         if self._db:
-            rows = await self._db.fetch_all(
-                "SELECT * FROM arkham_anomaly_patterns ORDER BY detected_at DESC"
-            )
+            query = "SELECT * FROM arkham_anomaly_patterns WHERE 1=1"
+            params: Dict[str, Any] = {}
+
+            # Add tenant filtering if tenant context is available
+            if tenant_id:
+                query += " AND tenant_id = :tenant_id"
+                params["tenant_id"] = str(tenant_id)
+
+            query += " ORDER BY detected_at DESC"
+
+            rows = await self._db.fetch_all(query, params)
             return [self._row_to_pattern(row) for row in rows]
         else:
             patterns = list(self._patterns.values())
             patterns.sort(key=lambda p: p.detected_at, reverse=True)
             return patterns
 
-    async def get_stats(self) -> AnomalyStats:
+    async def get_stats(
+        self, tenant_id: Optional[UUID] = None
+    ) -> AnomalyStats:
         """
         Calculate anomaly statistics.
+
+        Args:
+            tenant_id: Optional tenant ID for filtering
 
         Returns:
             Statistics object
         """
         if self._db:
+            # Build tenant filter clause
+            tenant_clause = ""
+            tenant_params: Dict[str, Any] = {}
+            if tenant_id:
+                tenant_clause = " AND tenant_id = :tenant_id"
+                tenant_params["tenant_id"] = str(tenant_id)
+
             # Total anomalies
             total_row = await self._db.fetch_one(
-                "SELECT COUNT(*) as count FROM arkham_anomalies"
+                f"SELECT COUNT(*) as count FROM arkham_anomalies WHERE 1=1{tenant_clause}",
+                tenant_params
             )
             total = total_row["count"] if total_row else 0
 
             # Count by type
             type_rows = await self._db.fetch_all(
-                "SELECT anomaly_type, COUNT(*) as count FROM arkham_anomalies GROUP BY anomaly_type"
+                f"SELECT anomaly_type, COUNT(*) as count FROM arkham_anomalies WHERE 1=1{tenant_clause} GROUP BY anomaly_type",
+                tenant_params
             )
             by_type = {row["anomaly_type"]: row["count"] for row in type_rows}
 
             # Count by status
             status_rows = await self._db.fetch_all(
-                "SELECT status, COUNT(*) as count FROM arkham_anomalies GROUP BY status"
+                f"SELECT status, COUNT(*) as count FROM arkham_anomalies WHERE 1=1{tenant_clause} GROUP BY status",
+                tenant_params
             )
             by_status = {row["status"]: row["count"] for row in status_rows}
 
             # Count by severity
             severity_rows = await self._db.fetch_all(
-                "SELECT severity, COUNT(*) as count FROM arkham_anomalies GROUP BY severity"
+                f"SELECT severity, COUNT(*) as count FROM arkham_anomalies WHERE 1=1{tenant_clause} GROUP BY severity",
+                tenant_params
             )
             by_severity = {row["severity"]: row["count"] for row in severity_rows}
 
@@ -451,39 +541,43 @@ class AnomalyStore:
             now = datetime.utcnow()
             last_24h = (now - timedelta(hours=24)).isoformat()
 
+            detected_params = {"since": last_24h, **tenant_params}
             detected_row = await self._db.fetch_one(
-                "SELECT COUNT(*) as count FROM arkham_anomalies WHERE detected_at >= :since",
-                {"since": last_24h}
+                f"SELECT COUNT(*) as count FROM arkham_anomalies WHERE detected_at >= :since{tenant_clause}",
+                detected_params
             )
             detected_last_24h = detected_row["count"] if detected_row else 0
 
             confirmed_row = await self._db.fetch_one(
-                "SELECT COUNT(*) as count FROM arkham_anomalies WHERE status = 'confirmed' AND reviewed_at >= :since",
-                {"since": last_24h}
+                f"SELECT COUNT(*) as count FROM arkham_anomalies WHERE status = 'confirmed' AND reviewed_at >= :since{tenant_clause}",
+                detected_params
             )
             confirmed_last_24h = confirmed_row["count"] if confirmed_row else 0
 
             dismissed_row = await self._db.fetch_one(
-                "SELECT COUNT(*) as count FROM arkham_anomalies WHERE status = 'dismissed' AND reviewed_at >= :since",
-                {"since": last_24h}
+                f"SELECT COUNT(*) as count FROM arkham_anomalies WHERE status = 'dismissed' AND reviewed_at >= :since{tenant_clause}",
+                detected_params
             )
             dismissed_last_24h = dismissed_row["count"] if dismissed_row else 0
 
             # Quality metrics
             reviewed_row = await self._db.fetch_one(
-                "SELECT COUNT(*) as count FROM arkham_anomalies WHERE status IN ('confirmed', 'dismissed', 'false_positive')"
+                f"SELECT COUNT(*) as count FROM arkham_anomalies WHERE status IN ('confirmed', 'dismissed', 'false_positive'){tenant_clause}",
+                tenant_params
             )
             reviewed_count = reviewed_row["count"] if reviewed_row else 0
 
             fp_row = await self._db.fetch_one(
-                "SELECT COUNT(*) as count FROM arkham_anomalies WHERE status = 'false_positive'"
+                f"SELECT COUNT(*) as count FROM arkham_anomalies WHERE status = 'false_positive'{tenant_clause}",
+                tenant_params
             )
             fp_count = fp_row["count"] if fp_row else 0
 
             false_positive_rate = fp_count / reviewed_count if reviewed_count > 0 else 0.0
 
             avg_row = await self._db.fetch_one(
-                "SELECT AVG(confidence) as avg FROM arkham_anomalies"
+                f"SELECT AVG(confidence) as avg FROM arkham_anomalies WHERE 1=1{tenant_clause}",
+                tenant_params
             )
             avg_confidence = avg_row["avg"] if avg_row and avg_row["avg"] else 0.0
 
@@ -549,14 +643,26 @@ class AnomalyStore:
                 avg_confidence=avg_confidence,
             )
 
-    async def get_facets(self) -> Dict[str, Any]:
+    async def get_facets(
+        self, tenant_id: Optional[UUID] = None
+    ) -> Dict[str, Any]:
         """
         Get facet counts for filtering.
+
+        Args:
+            tenant_id: Optional tenant ID for filtering
 
         Returns:
             Dictionary of facet counts
         """
         if self._db:
+            # Build tenant filter clause
+            tenant_clause = ""
+            tenant_params: Dict[str, Any] = {}
+            if tenant_id:
+                tenant_clause = " AND tenant_id = :tenant_id"
+                tenant_params["tenant_id"] = str(tenant_id)
+
             facets = {
                 'types': {},
                 'statuses': {},
@@ -564,19 +670,22 @@ class AnomalyStore:
             }
 
             type_rows = await self._db.fetch_all(
-                "SELECT anomaly_type, COUNT(*) as count FROM arkham_anomalies GROUP BY anomaly_type"
+                f"SELECT anomaly_type, COUNT(*) as count FROM arkham_anomalies WHERE 1=1{tenant_clause} GROUP BY anomaly_type",
+                tenant_params
             )
             for row in type_rows:
                 facets['types'][row["anomaly_type"]] = row["count"]
 
             status_rows = await self._db.fetch_all(
-                "SELECT status, COUNT(*) as count FROM arkham_anomalies GROUP BY status"
+                f"SELECT status, COUNT(*) as count FROM arkham_anomalies WHERE 1=1{tenant_clause} GROUP BY status",
+                tenant_params
             )
             for row in status_rows:
                 facets['statuses'][row["status"]] = row["count"]
 
             severity_rows = await self._db.fetch_all(
-                "SELECT severity, COUNT(*) as count FROM arkham_anomalies GROUP BY severity"
+                f"SELECT severity, COUNT(*) as count FROM arkham_anomalies WHERE 1=1{tenant_clause} GROUP BY severity",
+                tenant_params
             )
             for row in severity_rows:
                 facets['severities'][row["severity"]] = row["count"]

@@ -418,12 +418,49 @@ class IntakeManager:
 
     def _sanitize_filename(self, filename: str) -> str:
         """Sanitize filename for safe storage."""
-        # Remove path separators and null bytes
-        safe = filename.replace("/", "_").replace("\\", "_").replace("\x00", "")
-        # Limit length
+        import re
+        import unicodedata
+
+        if not filename:
+            return "unnamed"
+
+        # Normalize unicode (NFC form)
+        safe = unicodedata.normalize('NFC', filename)
+
+        # Replace path separators
+        safe = re.sub(r'[/\\]', '_', safe)
+
+        # Block directory traversal patterns
+        safe = re.sub(r'\.\.+', '_', safe)
+
+        # Remove control characters (U+0000-U+001F and U+007F-U+009F)
+        safe = re.sub(r'[\x00-\x1f\x7f-\x9f]', '', safe)
+
+        # Replace Windows-forbidden characters
+        safe = re.sub(r'[<>:"|?*]', '_', safe)
+
+        # Collapse multiple underscores
+        safe = re.sub(r'_+', '_', safe)
+
+        # Strip leading/trailing dots, spaces, and underscores
+        safe = safe.strip('. \t_')
+
+        # Block Windows reserved names (CON, PRN, AUX, NUL, COM1-9, LPT1-9)
+        reserved = {'CON', 'PRN', 'AUX', 'NUL'} | {f'COM{i}' for i in range(1, 10)} | {f'LPT{i}' for i in range(1, 10)}
+        name_part = safe.split('.')[0].upper() if '.' in safe else safe.upper()
+        if name_part in reserved:
+            safe = f"file_{safe}"
+
+        # Limit length while preserving extension
         if len(safe) > 200:
-            name, ext = safe.rsplit(".", 1) if "." in safe else (safe, "")
-            safe = name[:200-len(ext)-1] + "." + ext if ext else name[:200]
+            if '.' in safe:
+                name, ext = safe.rsplit('.', 1)
+                # Limit extension to 10 chars
+                ext = ext[:10]
+                safe = f"{name[:200-len(ext)-1]}.{ext}"
+            else:
+                safe = safe[:200]
+
         return safe or "unnamed"
 
     def _validate_file(self, path: Path, extension: str) -> None:

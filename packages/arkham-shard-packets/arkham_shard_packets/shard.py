@@ -198,6 +198,48 @@ class PacketsShard(ArkhamShard):
             CREATE INDEX IF NOT EXISTS idx_versions_packet ON arkham_packet_versions(packet_id)
         """)
 
+        # ===========================================
+        # Multi-tenancy Migration
+        # ===========================================
+        await self._db.execute("""
+            DO $$
+            DECLARE
+                tables_to_update TEXT[] := ARRAY['arkham_packets', 'arkham_packet_contents', 'arkham_packet_shares', 'arkham_packet_versions'];
+                tbl TEXT;
+            BEGIN
+                FOREACH tbl IN ARRAY tables_to_update LOOP
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = 'public'
+                        AND table_name = tbl
+                        AND column_name = 'tenant_id'
+                    ) THEN
+                        EXECUTE format('ALTER TABLE %I ADD COLUMN tenant_id UUID', tbl);
+                    END IF;
+                END LOOP;
+            END $$;
+        """)
+
+        await self._db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_packets_tenant
+            ON arkham_packets(tenant_id)
+        """)
+
+        await self._db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_packet_contents_tenant
+            ON arkham_packet_contents(tenant_id)
+        """)
+
+        await self._db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_packet_shares_tenant
+            ON arkham_packet_shares(tenant_id)
+        """)
+
+        await self._db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_packet_versions_tenant
+            ON arkham_packet_versions(tenant_id)
+        """)
+
         logger.debug("Packets schema created/verified")
 
     # === Public API Methods ===
@@ -248,10 +290,18 @@ class PacketsShard(ArkhamShard):
         if not self._db:
             return None
 
-        row = await self._db.fetch_one(
-            "SELECT * FROM arkham_packets WHERE id = :packet_id",
-            {"packet_id": packet_id},
-        )
+        # Filter by tenant_id for multi-tenancy
+        tenant_id = self.get_tenant_id_or_none()
+        if tenant_id:
+            row = await self._db.fetch_one(
+                "SELECT * FROM arkham_packets WHERE id = :packet_id AND tenant_id = :tenant_id",
+                {"packet_id": packet_id, "tenant_id": str(tenant_id)},
+            )
+        else:
+            row = await self._db.fetch_one(
+                "SELECT * FROM arkham_packets WHERE id = :packet_id",
+                {"packet_id": packet_id},
+            )
         return self._row_to_packet(row) if row else None
 
     async def list_packets(
@@ -266,6 +316,12 @@ class PacketsShard(ArkhamShard):
 
         query = "SELECT * FROM arkham_packets WHERE 1=1"
         params: Dict[str, Any] = {}
+
+        # Filter by tenant_id for multi-tenancy
+        tenant_id = self.get_tenant_id_or_none()
+        if tenant_id:
+            query += " AND tenant_id = :tenant_id"
+            params["tenant_id"] = str(tenant_id)
 
         if filter:
             if filter.status:
@@ -462,10 +518,18 @@ class PacketsShard(ArkhamShard):
         if not self._db:
             return False
 
-        await self._db.execute(
-            "DELETE FROM arkham_packet_contents WHERE id = :id AND packet_id = :packet_id",
-            {"id": content_entry_id, "packet_id": packet_id},
-        )
+        # Filter by tenant_id for multi-tenancy
+        tenant_id = self.get_tenant_id_or_none()
+        if tenant_id:
+            await self._db.execute(
+                "DELETE FROM arkham_packet_contents WHERE id = :id AND packet_id = :packet_id AND tenant_id = :tenant_id",
+                {"id": content_entry_id, "packet_id": packet_id, "tenant_id": str(tenant_id)},
+            )
+        else:
+            await self._db.execute(
+                "DELETE FROM arkham_packet_contents WHERE id = :id AND packet_id = :packet_id",
+                {"id": content_entry_id, "packet_id": packet_id},
+            )
 
         await self._update_packet_counts(packet_id)
 
@@ -484,10 +548,18 @@ class PacketsShard(ArkhamShard):
         if not self._db:
             return []
 
-        rows = await self._db.fetch_all(
-            "SELECT * FROM arkham_packet_contents WHERE packet_id = :packet_id ORDER BY order_num, added_at",
-            {"packet_id": packet_id},
-        )
+        # Filter by tenant_id for multi-tenancy
+        tenant_id = self.get_tenant_id_or_none()
+        if tenant_id:
+            rows = await self._db.fetch_all(
+                "SELECT * FROM arkham_packet_contents WHERE packet_id = :packet_id AND tenant_id = :tenant_id ORDER BY order_num, added_at",
+                {"packet_id": packet_id, "tenant_id": str(tenant_id)},
+            )
+        else:
+            rows = await self._db.fetch_all(
+                "SELECT * FROM arkham_packet_contents WHERE packet_id = :packet_id ORDER BY order_num, added_at",
+                {"packet_id": packet_id},
+            )
         return [self._row_to_content(row) for row in rows]
 
     async def share_packet(
@@ -542,10 +614,18 @@ class PacketsShard(ArkhamShard):
         if not self._db:
             return []
 
-        rows = await self._db.fetch_all(
-            "SELECT * FROM arkham_packet_shares WHERE packet_id = :packet_id ORDER BY shared_at DESC",
-            {"packet_id": packet_id},
-        )
+        # Filter by tenant_id for multi-tenancy
+        tenant_id = self.get_tenant_id_or_none()
+        if tenant_id:
+            rows = await self._db.fetch_all(
+                "SELECT * FROM arkham_packet_shares WHERE packet_id = :packet_id AND tenant_id = :tenant_id ORDER BY shared_at DESC",
+                {"packet_id": packet_id, "tenant_id": str(tenant_id)},
+            )
+        else:
+            rows = await self._db.fetch_all(
+                "SELECT * FROM arkham_packet_shares WHERE packet_id = :packet_id ORDER BY shared_at DESC",
+                {"packet_id": packet_id},
+            )
         return [self._row_to_share(row) for row in rows]
 
     async def revoke_share(self, share_id: str) -> bool:
@@ -553,10 +633,18 @@ class PacketsShard(ArkhamShard):
         if not self._db:
             return False
 
-        await self._db.execute(
-            "DELETE FROM arkham_packet_shares WHERE id = :id",
-            {"id": share_id},
-        )
+        # Filter by tenant_id for multi-tenancy
+        tenant_id = self.get_tenant_id_or_none()
+        if tenant_id:
+            await self._db.execute(
+                "DELETE FROM arkham_packet_shares WHERE id = :id AND tenant_id = :tenant_id",
+                {"id": share_id, "tenant_id": str(tenant_id)},
+            )
+        else:
+            await self._db.execute(
+                "DELETE FROM arkham_packet_shares WHERE id = :id",
+                {"id": share_id},
+            )
         return True
 
     async def export_packet(
@@ -937,10 +1025,18 @@ class PacketsShard(ArkhamShard):
         if not self._db:
             return []
 
-        rows = await self._db.fetch_all(
-            "SELECT * FROM arkham_packet_versions WHERE packet_id = :packet_id ORDER BY version_number DESC",
-            {"packet_id": packet_id},
-        )
+        # Filter by tenant_id for multi-tenancy
+        tenant_id = self.get_tenant_id_or_none()
+        if tenant_id:
+            rows = await self._db.fetch_all(
+                "SELECT * FROM arkham_packet_versions WHERE packet_id = :packet_id AND tenant_id = :tenant_id ORDER BY version_number DESC",
+                {"packet_id": packet_id, "tenant_id": str(tenant_id)},
+            )
+        else:
+            rows = await self._db.fetch_all(
+                "SELECT * FROM arkham_packet_versions WHERE packet_id = :packet_id ORDER BY version_number DESC",
+                {"packet_id": packet_id},
+            )
         return [self._row_to_version(row) for row in rows]
 
     async def get_statistics(self) -> PacketStatistics:
@@ -948,48 +1044,62 @@ class PacketsShard(ArkhamShard):
         if not self._db:
             return PacketStatistics()
 
+        # Filter by tenant_id for multi-tenancy
+        tenant_id = self.get_tenant_id_or_none()
+        tenant_filter = " WHERE tenant_id = :tenant_id" if tenant_id else ""
+        tenant_filter_and = " AND tenant_id = :tenant_id" if tenant_id else ""
+        params = {"tenant_id": str(tenant_id)} if tenant_id else {}
+
         # Total packets
         total = await self._db.fetch_one(
-            "SELECT COUNT(*) as count FROM arkham_packets"
+            f"SELECT COUNT(*) as count FROM arkham_packets{tenant_filter}",
+            params,
         )
         total_packets = total["count"] if total else 0
 
         # By status
         status_rows = await self._db.fetch_all(
-            "SELECT status, COUNT(*) as count FROM arkham_packets GROUP BY status"
+            f"SELECT status, COUNT(*) as count FROM arkham_packets{tenant_filter} GROUP BY status",
+            params,
         )
         by_status = {row["status"]: row["count"] for row in status_rows}
 
         # By visibility
         vis_rows = await self._db.fetch_all(
-            "SELECT visibility, COUNT(*) as count FROM arkham_packets GROUP BY visibility"
+            f"SELECT visibility, COUNT(*) as count FROM arkham_packets{tenant_filter} GROUP BY visibility",
+            params,
         )
         by_visibility = {row["visibility"]: row["count"] for row in vis_rows}
 
         # Total contents
         total_contents_row = await self._db.fetch_one(
-            "SELECT COUNT(*) as count FROM arkham_packet_contents"
+            f"SELECT COUNT(*) as count FROM arkham_packet_contents{tenant_filter}",
+            params,
         )
         total_contents = total_contents_row["count"] if total_contents_row else 0
 
         # By content type
         content_type_rows = await self._db.fetch_all(
-            "SELECT content_type, COUNT(*) as count FROM arkham_packet_contents GROUP BY content_type"
+            f"SELECT content_type, COUNT(*) as count FROM arkham_packet_contents{tenant_filter} GROUP BY content_type",
+            params,
         )
         by_content_type = {row["content_type"]: row["count"] for row in content_type_rows}
 
         # Shares
         total_shares_row = await self._db.fetch_one(
-            "SELECT COUNT(*) as count FROM arkham_packet_shares"
+            f"SELECT COUNT(*) as count FROM arkham_packet_shares{tenant_filter}",
+            params,
         )
         total_shares = total_shares_row["count"] if total_shares_row else 0
 
         # Averages
         avg_contents = await self._db.fetch_one(
-            "SELECT AVG(contents_count) as avg FROM arkham_packets"
+            f"SELECT AVG(contents_count) as avg FROM arkham_packets{tenant_filter}",
+            params,
         )
         avg_size = await self._db.fetch_one(
-            "SELECT AVG(size_bytes) as avg FROM arkham_packets"
+            f"SELECT AVG(size_bytes) as avg FROM arkham_packets{tenant_filter}",
+            params,
         )
 
         return PacketStatistics(
@@ -1011,15 +1121,30 @@ class PacketsShard(ArkhamShard):
         if not self._db:
             return 0
 
+        # Filter by tenant_id for multi-tenancy
+        tenant_id = self.get_tenant_id_or_none()
+
         if status:
-            result = await self._db.fetch_one(
-                "SELECT COUNT(*) as count FROM arkham_packets WHERE status = :status",
-                {"status": status},
-            )
+            if tenant_id:
+                result = await self._db.fetch_one(
+                    "SELECT COUNT(*) as count FROM arkham_packets WHERE status = :status AND tenant_id = :tenant_id",
+                    {"status": status, "tenant_id": str(tenant_id)},
+                )
+            else:
+                result = await self._db.fetch_one(
+                    "SELECT COUNT(*) as count FROM arkham_packets WHERE status = :status",
+                    {"status": status},
+                )
         else:
-            result = await self._db.fetch_one(
-                "SELECT COUNT(*) as count FROM arkham_packets"
-            )
+            if tenant_id:
+                result = await self._db.fetch_one(
+                    "SELECT COUNT(*) as count FROM arkham_packets WHERE tenant_id = :tenant_id",
+                    {"tenant_id": str(tenant_id)},
+                )
+            else:
+                result = await self._db.fetch_one(
+                    "SELECT COUNT(*) as count FROM arkham_packets"
+                )
 
         return result["count"] if result else 0
 
@@ -1031,6 +1156,8 @@ class PacketsShard(ArkhamShard):
             return
 
         import json
+        # Include tenant_id for multi-tenancy
+        tenant_id = self.get_tenant_id_or_none()
         params = {
             "id": packet.id,
             "name": packet.name,
@@ -1045,25 +1172,37 @@ class PacketsShard(ArkhamShard):
             "size_bytes": packet.size_bytes,
             "checksum": packet.checksum,
             "metadata": json.dumps(packet.metadata),
+            "tenant_id": str(tenant_id) if tenant_id else None,
         }
 
         if update:
-            await self._db.execute("""
-                UPDATE arkham_packets SET
-                    name=:name, description=:description, status=:status, visibility=:visibility,
-                    created_by=:created_by, created_at=:created_at, updated_at=:updated_at,
-                    version=:version, contents_count=:contents_count, size_bytes=:size_bytes, checksum=:checksum, metadata=:metadata
-                WHERE id=:id
-            """, params)
+            if tenant_id:
+                await self._db.execute("""
+                    UPDATE arkham_packets SET
+                        name=:name, description=:description, status=:status, visibility=:visibility,
+                        created_by=:created_by, created_at=:created_at, updated_at=:updated_at,
+                        version=:version, contents_count=:contents_count, size_bytes=:size_bytes,
+                        checksum=:checksum, metadata=:metadata, tenant_id=:tenant_id
+                    WHERE id=:id AND tenant_id=:tenant_id
+                """, params)
+            else:
+                await self._db.execute("""
+                    UPDATE arkham_packets SET
+                        name=:name, description=:description, status=:status, visibility=:visibility,
+                        created_by=:created_by, created_at=:created_at, updated_at=:updated_at,
+                        version=:version, contents_count=:contents_count, size_bytes=:size_bytes,
+                        checksum=:checksum, metadata=:metadata
+                    WHERE id=:id
+                """, params)
         else:
             await self._db.execute("""
                 INSERT INTO arkham_packets (
                     id, name, description, status, visibility,
                     created_by, created_at, updated_at,
-                    version, contents_count, size_bytes, checksum, metadata
+                    version, contents_count, size_bytes, checksum, metadata, tenant_id
                 ) VALUES (:id, :name, :description, :status, :visibility,
                     :created_by, :created_at, :updated_at,
-                    :version, :contents_count, :size_bytes, :checksum, :metadata)
+                    :version, :contents_count, :size_bytes, :checksum, :metadata, :tenant_id)
             """, params)
 
     async def _save_content(self, content: PacketContent) -> None:
@@ -1071,12 +1210,14 @@ class PacketsShard(ArkhamShard):
         if not self._db:
             return
 
+        # Include tenant_id for multi-tenancy
+        tenant_id = self.get_tenant_id_or_none()
         await self._db.execute("""
             INSERT INTO arkham_packet_contents (
                 id, packet_id, content_type, content_id, content_title,
-                added_at, added_by, order_num
+                added_at, added_by, order_num, tenant_id
             ) VALUES (:id, :packet_id, :content_type, :content_id, :content_title,
-                :added_at, :added_by, :order_num)
+                :added_at, :added_by, :order_num, :tenant_id)
         """, {
             "id": content.id,
             "packet_id": content.packet_id,
@@ -1086,6 +1227,7 @@ class PacketsShard(ArkhamShard):
             "added_at": content.added_at.isoformat(),
             "added_by": content.added_by,
             "order_num": content.order,
+            "tenant_id": str(tenant_id) if tenant_id else None,
         })
 
     async def _save_share(self, share: PacketShare) -> None:
@@ -1093,12 +1235,14 @@ class PacketsShard(ArkhamShard):
         if not self._db:
             return
 
+        # Include tenant_id for multi-tenancy
+        tenant_id = self.get_tenant_id_or_none()
         await self._db.execute("""
             INSERT INTO arkham_packet_shares (
                 id, packet_id, shared_with, permissions,
-                shared_at, expires_at, access_token
+                shared_at, expires_at, access_token, tenant_id
             ) VALUES (:id, :packet_id, :shared_with, :permissions,
-                :shared_at, :expires_at, :access_token)
+                :shared_at, :expires_at, :access_token, :tenant_id)
         """, {
             "id": share.id,
             "packet_id": share.packet_id,
@@ -1107,6 +1251,7 @@ class PacketsShard(ArkhamShard):
             "shared_at": share.shared_at.isoformat(),
             "expires_at": share.expires_at.isoformat() if share.expires_at else None,
             "access_token": share.access_token,
+            "tenant_id": str(tenant_id) if tenant_id else None,
         })
 
     async def _save_version(self, version: PacketVersion) -> None:
@@ -1114,12 +1259,14 @@ class PacketsShard(ArkhamShard):
         if not self._db:
             return
 
+        # Include tenant_id for multi-tenancy
+        tenant_id = self.get_tenant_id_or_none()
         await self._db.execute("""
             INSERT INTO arkham_packet_versions (
                 id, packet_id, version_number, created_at,
-                changes_summary, snapshot_path
+                changes_summary, snapshot_path, tenant_id
             ) VALUES (:id, :packet_id, :version_number, :created_at,
-                :changes_summary, :snapshot_path)
+                :changes_summary, :snapshot_path, :tenant_id)
         """, {
             "id": version.id,
             "packet_id": version.packet_id,
@@ -1127,6 +1274,7 @@ class PacketsShard(ArkhamShard):
             "created_at": version.created_at.isoformat(),
             "changes_summary": version.changes_summary,
             "snapshot_path": version.snapshot_path,
+            "tenant_id": str(tenant_id) if tenant_id else None,
         })
 
     async def _update_packet_counts(self, packet_id: str) -> None:
@@ -1134,18 +1282,34 @@ class PacketsShard(ArkhamShard):
         if not self._db:
             return
 
-        count_row = await self._db.fetch_one(
-            "SELECT COUNT(*) as count FROM arkham_packet_contents WHERE packet_id = :packet_id",
-            {"packet_id": packet_id},
-        )
+        # Filter by tenant_id for multi-tenancy
+        tenant_id = self.get_tenant_id_or_none()
+        if tenant_id:
+            count_row = await self._db.fetch_one(
+                "SELECT COUNT(*) as count FROM arkham_packet_contents WHERE packet_id = :packet_id AND tenant_id = :tenant_id",
+                {"packet_id": packet_id, "tenant_id": str(tenant_id)},
+            )
+        else:
+            count_row = await self._db.fetch_one(
+                "SELECT COUNT(*) as count FROM arkham_packet_contents WHERE packet_id = :packet_id",
+                {"packet_id": packet_id},
+            )
         count = count_row["count"] if count_row else 0
 
-        await self._db.execute("""
-            UPDATE arkham_packets SET
-                contents_count = :contents_count,
-                updated_at = :updated_at
-            WHERE id = :id
-        """, {"contents_count": count, "updated_at": datetime.utcnow().isoformat(), "id": packet_id})
+        if tenant_id:
+            await self._db.execute("""
+                UPDATE arkham_packets SET
+                    contents_count = :contents_count,
+                    updated_at = :updated_at
+                WHERE id = :id AND tenant_id = :tenant_id
+            """, {"contents_count": count, "updated_at": datetime.utcnow().isoformat(), "id": packet_id, "tenant_id": str(tenant_id)})
+        else:
+            await self._db.execute("""
+                UPDATE arkham_packets SET
+                    contents_count = :contents_count,
+                    updated_at = :updated_at
+                WHERE id = :id
+            """, {"contents_count": count, "updated_at": datetime.utcnow().isoformat(), "id": packet_id})
 
     async def _create_version_snapshot(
         self,

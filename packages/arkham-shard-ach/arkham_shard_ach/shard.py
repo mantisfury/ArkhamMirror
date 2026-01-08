@@ -277,6 +277,7 @@ class ACHShard(ArkhamShard):
             await self._db.execute("""
                 CREATE TABLE IF NOT EXISTS arkham_ach.matrices (
                     id TEXT PRIMARY KEY,
+                    tenant_id UUID NOT NULL,
                     title TEXT NOT NULL,
                     description TEXT,
                     question TEXT,
@@ -288,6 +289,19 @@ class ACHShard(ArkhamShard):
                     settings JSONB DEFAULT '{}',
                     metadata JSONB DEFAULT '{}'
                 )
+            """)
+
+            # Add tenant_id column if it doesn't exist (migration for existing data)
+            await self._db.execute("""
+                DO $$
+                BEGIN
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = 'arkham_ach' AND table_name = 'matrices' AND column_name = 'tenant_id'
+                    ) THEN
+                        ALTER TABLE arkham_ach.matrices ADD COLUMN tenant_id UUID;
+                    END IF;
+                END $$;
             """)
 
             # Hypotheses table
@@ -473,6 +487,54 @@ class ACHShard(ArkhamShard):
             )
             await self._db.execute(
                 "CREATE INDEX IF NOT EXISTS idx_scenario_nodes_tree ON arkham_ach.scenario_nodes(tree_id)"
+            )
+
+            # ===========================================
+            # Multi-tenancy Migration
+            # ===========================================
+            # Add tenant_id columns to all tables that need tenant isolation
+            await self._db.execute("""
+                DO $$
+                DECLARE
+                    tables_to_update TEXT[] := ARRAY[
+                        'matrices', 'hypotheses', 'evidence', 'ratings',
+                        'premortems', 'failure_modes', 'scenario_trees',
+                        'scenario_nodes', 'scenario_indicators', 'scenario_drivers'
+                    ];
+                    tbl TEXT;
+                BEGIN
+                    FOREACH tbl IN ARRAY tables_to_update LOOP
+                        -- Add tenant_id column if it doesn't exist
+                        IF NOT EXISTS (
+                            SELECT 1 FROM information_schema.columns
+                            WHERE table_schema = 'arkham_ach'
+                            AND table_name = tbl
+                            AND column_name = 'tenant_id'
+                        ) THEN
+                            EXECUTE format('ALTER TABLE arkham_ach.%I ADD COLUMN tenant_id UUID', tbl);
+                        END IF;
+                    END LOOP;
+                END $$;
+            """)
+
+            # Create tenant_id indexes for all tables
+            await self._db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_ach_matrices_tenant ON arkham_ach.matrices(tenant_id)"
+            )
+            await self._db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_ach_hypotheses_tenant ON arkham_ach.hypotheses(tenant_id)"
+            )
+            await self._db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_ach_evidence_tenant ON arkham_ach.evidence(tenant_id)"
+            )
+            await self._db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_ach_ratings_tenant ON arkham_ach.ratings(tenant_id)"
+            )
+            await self._db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_ach_premortems_tenant ON arkham_ach.premortems(tenant_id)"
+            )
+            await self._db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_ach_scenario_trees_tenant ON arkham_ach.scenario_trees(tenant_id)"
             )
 
             logger.info("ACH database schema created")
@@ -986,13 +1048,16 @@ class ACHShard(ArkhamShard):
                 "linked_document_ids": matrix.linked_document_ids,
             }
 
+            # Get tenant_id for multi-tenancy
+            tenant_id = self.get_tenant_id_or_none()
+
             # Save the matrix record
             await self._db.execute(
                 """
                 INSERT INTO arkham_ach.matrices
-                (id, title, description, project_id, created_at, updated_at,
+                (id, tenant_id, title, description, project_id, created_at, updated_at,
                  created_by, status, metadata)
-                VALUES (:id, :title, :description, :project_id, :created_at, :updated_at,
+                VALUES (:id, :tenant_id, :title, :description, :project_id, :created_at, :updated_at,
                         :created_by, :status, :metadata)
                 ON CONFLICT (id) DO UPDATE SET
                     title = EXCLUDED.title,
@@ -1004,6 +1069,7 @@ class ACHShard(ArkhamShard):
                 """,
                 {
                     "id": matrix.id,
+                    "tenant_id": str(tenant_id) if tenant_id else None,
                     "title": matrix.title,
                     "description": matrix.description,
                     "project_id": matrix.project_id,
@@ -1293,6 +1359,12 @@ class ACHShard(ArkhamShard):
             query = "SELECT id FROM arkham_ach.matrices WHERE 1=1"
             params: Dict[str, Any] = {"limit": limit, "offset": offset}
 
+            # Add tenant filtering if tenant context is available
+            tenant_id = self.get_tenant_id_or_none()
+            if tenant_id:
+                query += " AND tenant_id = :tenant_id"
+                params["tenant_id"] = str(tenant_id)
+
             if project_id:
                 query += " AND project_id = :project_id"
                 params["project_id"] = project_id
@@ -1428,17 +1500,21 @@ class ACHShard(ArkhamShard):
             return 0
 
         try:
-            if project_id:
-                row = await self._db.fetch_one(
-                    "SELECT COUNT(*) as count FROM arkham_ach.matrices WHERE project_id = :project_id",
-                    {"project_id": project_id}
-                )
-            else:
-                row = await self._db.fetch_one(
-                    "SELECT COUNT(*) as count FROM arkham_ach.matrices",
-                    {}
-                )
+            # Build query with tenant filtering
+            query = "SELECT COUNT(*) as count FROM arkham_ach.matrices WHERE 1=1"
+            params: Dict[str, Any] = {}
 
+            # Add tenant filtering if tenant context is available
+            tenant_id = self.get_tenant_id_or_none()
+            if tenant_id:
+                query += " AND tenant_id = :tenant_id"
+                params["tenant_id"] = str(tenant_id)
+
+            if project_id:
+                query += " AND project_id = :project_id"
+                params["project_id"] = project_id
+
+            row = await self._db.fetch_one(query, params)
             return row["count"] if row else 0
 
         except Exception as e:

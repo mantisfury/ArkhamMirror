@@ -525,6 +525,35 @@ class IngestShard(ArkhamShard):
             "CREATE INDEX IF NOT EXISTS idx_ingest_batches_status ON arkham_ingest.batches(status)"
         )
 
+        # ===========================================
+        # Multi-tenancy Migration
+        # ===========================================
+        await self._db.execute("""
+            DO $$
+            DECLARE
+                tables_to_update TEXT[] := ARRAY['jobs', 'batches', 'checksums'];
+                tbl TEXT;
+            BEGIN
+                FOREACH tbl IN ARRAY tables_to_update LOOP
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = 'arkham_ingest'
+                        AND table_name = tbl
+                        AND column_name = 'tenant_id'
+                    ) THEN
+                        EXECUTE format('ALTER TABLE arkham_ingest.%I ADD COLUMN tenant_id UUID', tbl);
+                    END IF;
+                END LOOP;
+            END $$;
+        """)
+
+        await self._db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_ingest_jobs_tenant ON arkham_ingest.jobs(tenant_id)"
+        )
+        await self._db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_ingest_batches_tenant ON arkham_ingest.batches(tenant_id)"
+        )
+
         logger.info("arkham_ingest schema created successfully")
 
     async def _save_job(self, job: IngestJob) -> None:
@@ -547,18 +576,21 @@ class IngestShard(ArkhamShard):
                 "analysis_ms": job.quality_score.analysis_ms,
             })
 
+        # Get tenant_id for multi-tenancy
+        tenant_id = self.get_tenant_id_or_none()
+
         await self._db.execute(
             """
             INSERT INTO arkham_ingest.jobs (
                 id, filename, original_path, status, file_category, mime_type,
                 file_size, checksum, quality_score, worker_route, current_worker,
                 batch_id, retry_count, max_retries, error_message, result,
-                created_at, started_at, completed_at
+                created_at, started_at, completed_at, tenant_id
             ) VALUES (
                 :id, :filename, :original_path, :status, :file_category, :mime_type,
                 :file_size, :checksum, :quality_score, :worker_route, :current_worker,
                 :batch_id, :retry_count, :max_retries, :error_message, :result,
-                :created_at, :started_at, :completed_at
+                :created_at, :started_at, :completed_at, :tenant_id
             )
             ON CONFLICT (id) DO UPDATE SET
                 status = EXCLUDED.status,
@@ -589,6 +621,7 @@ class IngestShard(ArkhamShard):
                 "created_at": job.created_at,
                 "started_at": job.started_at,
                 "completed_at": job.completed_at,
+                "tenant_id": str(tenant_id) if tenant_id else None,
             },
         )
 
@@ -597,10 +630,18 @@ class IngestShard(ArkhamShard):
         if not self._db:
             return None
 
-        row = await self._db.fetch_one(
-            "SELECT * FROM arkham_ingest.jobs WHERE id = :id",
-            {"id": job_id},
-        )
+        # Filter by tenant_id for multi-tenancy
+        tenant_id = self.get_tenant_id_or_none()
+        if tenant_id:
+            row = await self._db.fetch_one(
+                "SELECT * FROM arkham_ingest.jobs WHERE id = :id AND tenant_id = :tenant_id",
+                {"id": job_id, "tenant_id": str(tenant_id)},
+            )
+        else:
+            row = await self._db.fetch_one(
+                "SELECT * FROM arkham_ingest.jobs WHERE id = :id",
+                {"id": job_id},
+            )
 
         if not row:
             return None
@@ -619,6 +660,12 @@ class IngestShard(ArkhamShard):
 
         query = "SELECT * FROM arkham_ingest.jobs WHERE 1=1"
         params = {"limit": limit}
+
+        # Filter by tenant_id for multi-tenancy
+        tenant_id = self.get_tenant_id_or_none()
+        if tenant_id:
+            query += " AND tenant_id = :tenant_id"
+            params["tenant_id"] = str(tenant_id)
 
         if status:
             query += " AND status = :status"
@@ -648,25 +695,49 @@ class IngestShard(ArkhamShard):
         started_at = now if status == JobStatus.PROCESSING else None
         completed_at = now if status in (JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.DEAD) else None
 
-        await self._db.execute(
-            """
-            UPDATE arkham_ingest.jobs SET
-                status = :status,
-                error_message = COALESCE(:error_message, error_message),
-                result = COALESCE(:result, result),
-                started_at = COALESCE(:started_at, started_at),
-                completed_at = COALESCE(:completed_at, completed_at)
-            WHERE id = :id
-            """,
-            {
-                "id": job_id,
-                "status": status.value,
-                "error_message": error,
-                "result": json.dumps(result) if result else None,
-                "started_at": started_at,
-                "completed_at": completed_at,
-            },
-        )
+        # Filter by tenant_id for multi-tenancy
+        tenant_id = self.get_tenant_id_or_none()
+        if tenant_id:
+            await self._db.execute(
+                """
+                UPDATE arkham_ingest.jobs SET
+                    status = :status,
+                    error_message = COALESCE(:error_message, error_message),
+                    result = COALESCE(:result, result),
+                    started_at = COALESCE(:started_at, started_at),
+                    completed_at = COALESCE(:completed_at, completed_at)
+                WHERE id = :id AND tenant_id = :tenant_id
+                """,
+                {
+                    "id": job_id,
+                    "status": status.value,
+                    "error_message": error,
+                    "result": json.dumps(result) if result else None,
+                    "started_at": started_at,
+                    "completed_at": completed_at,
+                    "tenant_id": str(tenant_id),
+                },
+            )
+        else:
+            await self._db.execute(
+                """
+                UPDATE arkham_ingest.jobs SET
+                    status = :status,
+                    error_message = COALESCE(:error_message, error_message),
+                    result = COALESCE(:result, result),
+                    started_at = COALESCE(:started_at, started_at),
+                    completed_at = COALESCE(:completed_at, completed_at)
+                WHERE id = :id
+                """,
+                {
+                    "id": job_id,
+                    "status": status.value,
+                    "error_message": error,
+                    "result": json.dumps(result) if result else None,
+                    "started_at": started_at,
+                    "completed_at": completed_at,
+                },
+            )
 
     async def _save_batch(self, batch: IngestBatch) -> None:
         """Save a batch to the database."""
@@ -683,13 +754,16 @@ class IngestShard(ArkhamShard):
         else:
             status = "pending"
 
+        # Get tenant_id for multi-tenancy
+        tenant_id = self.get_tenant_id_or_none()
+
         await self._db.execute(
             """
             INSERT INTO arkham_ingest.batches (
                 id, name, status, priority, total_files, completed_files,
-                failed_files, created_at, completed_at
+                failed_files, created_at, completed_at, tenant_id
             ) VALUES (:id, :name, :status, :priority, :total_files, :completed_files,
-                :failed_files, :created_at, :completed_at)
+                :failed_files, :created_at, :completed_at, :tenant_id)
             ON CONFLICT (id) DO UPDATE SET
                 status = EXCLUDED.status,
                 completed_files = EXCLUDED.completed_files,
@@ -706,6 +780,7 @@ class IngestShard(ArkhamShard):
                 "failed_files": batch.failed,
                 "created_at": batch.created_at,
                 "completed_at": batch.completed_at,
+                "tenant_id": str(tenant_id) if tenant_id else None,
             },
         )
 
@@ -721,15 +796,23 @@ class IngestShard(ArkhamShard):
         if not self._db:
             return None
 
-        row = await self._db.fetch_one(
-            "SELECT * FROM arkham_ingest.batches WHERE id = :id",
-            {"id": batch_id},
-        )
+        # Filter by tenant_id for multi-tenancy
+        tenant_id = self.get_tenant_id_or_none()
+        if tenant_id:
+            row = await self._db.fetch_one(
+                "SELECT * FROM arkham_ingest.batches WHERE id = :id AND tenant_id = :tenant_id",
+                {"id": batch_id, "tenant_id": str(tenant_id)},
+            )
+        else:
+            row = await self._db.fetch_one(
+                "SELECT * FROM arkham_ingest.batches WHERE id = :id",
+                {"id": batch_id},
+            )
 
         if not row:
             return None
 
-        # Load jobs for this batch
+        # Load jobs for this batch (tenant filtering applied in _list_jobs)
         jobs = await self._list_jobs(batch_id=batch_id, limit=1000)
 
         # Parse priority
@@ -754,26 +837,47 @@ class IngestShard(ArkhamShard):
         if not self._db:
             return
 
+        # Filter by tenant_id for multi-tenancy
+        tenant_id = self.get_tenant_id_or_none()
+
         # Count jobs by status
-        result = await self._db.fetch_one(
-            """
-            SELECT
-                COUNT(*) FILTER (WHERE status = 'completed') as completed,
-                COUNT(*) FILTER (WHERE status IN ('failed', 'dead')) as failed
-            FROM arkham_ingest.jobs
-            WHERE batch_id = :batch_id
-            """,
-            {"batch_id": batch_id},
-        )
+        if tenant_id:
+            result = await self._db.fetch_one(
+                """
+                SELECT
+                    COUNT(*) FILTER (WHERE status = 'completed') as completed,
+                    COUNT(*) FILTER (WHERE status IN ('failed', 'dead')) as failed
+                FROM arkham_ingest.jobs
+                WHERE batch_id = :batch_id AND tenant_id = :tenant_id
+                """,
+                {"batch_id": batch_id, "tenant_id": str(tenant_id)},
+            )
+        else:
+            result = await self._db.fetch_one(
+                """
+                SELECT
+                    COUNT(*) FILTER (WHERE status = 'completed') as completed,
+                    COUNT(*) FILTER (WHERE status IN ('failed', 'dead')) as failed
+                FROM arkham_ingest.jobs
+                WHERE batch_id = :batch_id
+                """,
+                {"batch_id": batch_id},
+            )
 
         completed = result["completed"] if result else 0
         failed = result["failed"] if result else 0
 
         # Determine if batch is complete
-        batch_row = await self._db.fetch_one(
-            "SELECT total_files FROM arkham_ingest.batches WHERE id = :id",
-            {"id": batch_id},
-        )
+        if tenant_id:
+            batch_row = await self._db.fetch_one(
+                "SELECT total_files FROM arkham_ingest.batches WHERE id = :id AND tenant_id = :tenant_id",
+                {"id": batch_id, "tenant_id": str(tenant_id)},
+            )
+        else:
+            batch_row = await self._db.fetch_one(
+                "SELECT total_files FROM arkham_ingest.batches WHERE id = :id",
+                {"id": batch_id},
+            )
         total = batch_row["total_files"] if batch_row else 0
 
         status = "processing"
@@ -782,33 +886,61 @@ class IngestShard(ArkhamShard):
             status = "completed" if failed == 0 else "failed"
             completed_at = datetime.utcnow()
 
-        await self._db.execute(
-            """
-            UPDATE arkham_ingest.batches SET
-                status = :status,
-                completed_files = :completed_files,
-                failed_files = :failed_files,
-                completed_at = COALESCE(:completed_at, completed_at)
-            WHERE id = :id
-            """,
-            {
-                "id": batch_id,
-                "status": status,
-                "completed_files": completed,
-                "failed_files": failed,
-                "completed_at": completed_at,
-            },
-        )
+        if tenant_id:
+            await self._db.execute(
+                """
+                UPDATE arkham_ingest.batches SET
+                    status = :status,
+                    completed_files = :completed_files,
+                    failed_files = :failed_files,
+                    completed_at = COALESCE(:completed_at, completed_at)
+                WHERE id = :id AND tenant_id = :tenant_id
+                """,
+                {
+                    "id": batch_id,
+                    "status": status,
+                    "completed_files": completed,
+                    "failed_files": failed,
+                    "completed_at": completed_at,
+                    "tenant_id": str(tenant_id),
+                },
+            )
+        else:
+            await self._db.execute(
+                """
+                UPDATE arkham_ingest.batches SET
+                    status = :status,
+                    completed_files = :completed_files,
+                    failed_files = :failed_files,
+                    completed_at = COALESCE(:completed_at, completed_at)
+                WHERE id = :id
+                """,
+                {
+                    "id": batch_id,
+                    "status": status,
+                    "completed_files": completed,
+                    "failed_files": failed,
+                    "completed_at": completed_at,
+                },
+            )
 
     async def _check_duplicate(self, checksum: str) -> str | None:
         """Check if a file with this checksum has already been ingested."""
         if not self._db:
             return None
 
-        row = await self._db.fetch_one(
-            "SELECT job_id FROM arkham_ingest.checksums WHERE checksum = :checksum",
-            {"checksum": checksum},
-        )
+        # Filter by tenant_id for multi-tenancy (duplicates are per-tenant)
+        tenant_id = self.get_tenant_id_or_none()
+        if tenant_id:
+            row = await self._db.fetch_one(
+                "SELECT job_id FROM arkham_ingest.checksums WHERE checksum = :checksum AND tenant_id = :tenant_id",
+                {"checksum": checksum, "tenant_id": str(tenant_id)},
+            )
+        else:
+            row = await self._db.fetch_one(
+                "SELECT job_id FROM arkham_ingest.checksums WHERE checksum = :checksum",
+                {"checksum": checksum},
+            )
 
         return row["job_id"] if row else None
 
@@ -817,13 +949,21 @@ class IngestShard(ArkhamShard):
         if not self._db:
             return
 
+        # Get tenant_id for multi-tenancy
+        tenant_id = self.get_tenant_id_or_none()
+
         await self._db.execute(
             """
-            INSERT INTO arkham_ingest.checksums (checksum, job_id, filename)
-            VALUES (:checksum, :job_id, :filename)
+            INSERT INTO arkham_ingest.checksums (checksum, job_id, filename, tenant_id)
+            VALUES (:checksum, :job_id, :filename, :tenant_id)
             ON CONFLICT (checksum) DO NOTHING
             """,
-            {"checksum": checksum, "job_id": job_id, "filename": filename},
+            {
+                "checksum": checksum,
+                "job_id": job_id,
+                "filename": filename,
+                "tenant_id": str(tenant_id) if tenant_id else None,
+            },
         )
 
     async def _recover_pending_jobs(self) -> list[IngestJob]:
