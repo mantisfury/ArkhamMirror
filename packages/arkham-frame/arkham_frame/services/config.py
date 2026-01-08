@@ -67,6 +67,17 @@ class ConfigService:
             os.environ.get("LM_STUDIO_URL", "http://localhost:1234/v1")
         )
 
+        # Air-gap / offline mode - prevents auto-downloading ML models
+        self._config["offline_mode"] = os.environ.get(
+            "ARKHAM_OFFLINE_MODE", ""
+        ).lower() in ("true", "1", "yes")
+
+        # Model cache path (for pre-cached models in air-gap deployments)
+        self._config["model_cache_path"] = os.environ.get(
+            "ARKHAM_MODEL_CACHE",
+            os.environ.get("HF_HOME", "")
+        )
+
     def _load_yaml(self, path: str):
         """Load configuration from YAML file."""
         config_file = Path(path)
@@ -95,6 +106,16 @@ class ConfigService:
     @property
     def llm_endpoint(self) -> str:
         return self._config.get("llm_endpoint", "")
+
+    @property
+    def offline_mode(self) -> bool:
+        """Return whether offline/air-gap mode is enabled."""
+        return self._config.get("offline_mode", False)
+
+    @property
+    def model_cache_path(self) -> str:
+        """Return the model cache path for pre-cached ML models."""
+        return self._config.get("model_cache_path", "")
 
     def get(self, key: str, default: Any = None) -> Any:
         """Get a config value by dot-notation key."""

@@ -69,12 +69,19 @@ class PaddleWorker(BaseWorker):
 
         Lazy loads on first use to save memory.
 
+        In offline mode (ARKHAM_OFFLINE_MODE=true), will fail if models are not
+        already cached locally instead of attempting to download.
+
         Args:
             lang: Language code
             use_angle_cls: Enable angle classification
 
         Returns:
             PaddleOCR engine instance
+
+        Raises:
+            ImportError: If paddleocr is not installed
+            RuntimeError: If models not cached in offline mode
         """
         if cls._ocr_engine is None or cls._lang != lang:
             try:
@@ -85,15 +92,31 @@ class PaddleWorker(BaseWorker):
                     "Install with: pip install paddleocr paddlepaddle"
                 )
 
+            # Check for offline mode
+            offline_mode = os.environ.get("ARKHAM_OFFLINE_MODE", "").lower() in ("true", "1", "yes")
+            if offline_mode:
+                logger.info("Running in offline mode - will only use cached OCR models")
+
             logger.info(f"Initializing PaddleOCR (lang={lang}, angle_cls={use_angle_cls})")
             # Suppress PaddleOCR's verbose logging via environment
             os.environ["FLAGS_log_level"] = "3"  # Suppress paddle logging
-            cls._ocr_engine = PaddleOCR(
-                use_angle_cls=use_angle_cls,
-                lang=lang,
-            )
-            cls._lang = lang
-            logger.info("PaddleOCR initialized")
+
+            try:
+                cls._ocr_engine = PaddleOCR(
+                    use_angle_cls=use_angle_cls,
+                    lang=lang,
+                )
+                cls._lang = lang
+                logger.info("PaddleOCR initialized")
+            except Exception as e:
+                if offline_mode:
+                    logger.error(
+                        f"Failed to initialize PaddleOCR in offline mode. "
+                        f"OCR models may not be cached locally for lang={lang}. "
+                        "Download the models first using Settings > ML Models, "
+                        "or disable ARKHAM_OFFLINE_MODE."
+                    )
+                raise RuntimeError(f"Failed to initialize PaddleOCR: {e}")
 
         return cls._ocr_engine
 

@@ -65,6 +65,26 @@ interface StorageStats {
   total_storage_bytes: number;
 }
 
+// ML Model types
+interface ModelInfo {
+  id: string;
+  name: string;
+  model_type: string;
+  description: string;
+  size_mb: number;
+  status: 'installed' | 'not_installed' | 'downloading' | 'error' | 'unknown';
+  path: string | null;
+  error: string | null;
+  required_by: string[];
+  is_default: boolean;
+}
+
+interface ModelsData {
+  offline_mode: boolean;
+  cache_path: string;
+  models: ModelInfo[];
+}
+
 // Notification channel types
 interface EmailChannelForm {
   name: string;
@@ -112,6 +132,7 @@ const CATEGORIES: CategoryInfo[] = [
   { id: 'notifications', label: 'Notifications', icon: 'Bell', description: 'Alerts, email, and webhooks' },
   { id: 'performance', label: 'Performance', icon: 'Zap', description: 'Caching and pagination' },
   { id: 'data', label: 'Data', icon: 'Database', description: 'Storage, cleanup, and data management' },
+  { id: 'models', label: 'ML Models', icon: 'Brain', description: 'Embedding and OCR model management' },
   { id: 'advanced', label: 'Advanced', icon: 'Wrench', description: 'Developer and debug options' },
   { id: 'shards', label: 'Shards', icon: 'Puzzle', description: 'Enable or disable feature modules' },
 ];
@@ -195,6 +216,19 @@ export function SettingsPage() {
   } = useFetch<StorageStats>(
     activeCategory === 'data' ? '/api/settings/data/stats' : null
   );
+
+  // Fetch ML models for model management
+  const {
+    data: modelsData,
+    loading: modelsLoading,
+    error: modelsError,
+    refetch: refetchModels
+  } = useFetch<ModelsData>(
+    activeCategory === 'models' ? '/api/settings/models' : null
+  );
+
+  // Model download state
+  const [downloadingModel, setDownloadingModel] = useState<string | null>(null);
 
   // Reset pending changes when category changes
   useEffect(() => {
@@ -466,6 +500,30 @@ export function SettingsPage() {
       toast.success('Local storage cleared');
     } catch {
       toast.error('Failed to clear local storage');
+    }
+  };
+
+  // Download ML model
+  const downloadModel = async (modelId: string) => {
+    setDownloadingModel(modelId);
+    try {
+      const response = await fetch(`/api/settings/models/${modelId}/download`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      });
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.detail || 'Download failed');
+      }
+
+      const result = await response.json();
+      toast.success(result.message || `Model ${modelId} downloaded successfully`);
+      refetchModels();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to download model');
+    } finally {
+      setDownloadingModel(null);
     }
   };
 
@@ -1070,6 +1128,173 @@ export function SettingsPage() {
                   </div>
                 </div>
               )}
+            </div>
+          ) : activeCategory === 'models' ? (
+            // ML Models Management UI
+            <div className="models-settings">
+              <div className="models-header">
+                <p className="models-description">
+                  Manage ML models for embeddings and OCR. Download models on-demand or pre-cache them for air-gapped deployments.
+                </p>
+                {modelsData?.offline_mode && (
+                  <div className="offline-mode-banner">
+                    <Icon name="WifiOff" size={16} />
+                    <span>Offline Mode Enabled - Downloads are disabled. Pre-cache models before deployment.</span>
+                  </div>
+                )}
+              </div>
+
+              {modelsLoading ? (
+                <div className="section-loading">
+                  <Icon name="Loader2" size={20} className="spin" />
+                  <span>Loading models...</span>
+                </div>
+              ) : modelsError ? (
+                <div className="section-error">
+                  <span>Failed to load models</span>
+                  <button className="btn btn-sm" onClick={() => refetchModels()}>Retry</button>
+                </div>
+              ) : modelsData ? (
+                <>
+                  {/* Embedding Models */}
+                  <section className="models-section">
+                    <h3 className="section-title">
+                      <Icon name="FileText" size={18} />
+                      Embedding Models
+                    </h3>
+                    <p className="section-description">
+                      Used for semantic search and document similarity. Required by the Embed shard.
+                    </p>
+                    <div className="models-list">
+                      {modelsData.models
+                        .filter(m => m.model_type === 'embedding')
+                        .map(model => (
+                          <div key={model.id} className={`model-item ${model.status}`}>
+                            <div className="model-icon">
+                              <Icon name={model.status === 'installed' ? 'CheckCircle' : 'Circle'} size={20} />
+                            </div>
+                            <div className="model-info">
+                              <div className="model-header">
+                                <span className="model-name">{model.name}</span>
+                                {model.is_default && <span className="default-badge">Default</span>}
+                                <span className="model-size">{model.size_mb} MB</span>
+                              </div>
+                              <p className="model-description">{model.description}</p>
+                              {model.path && (
+                                <span className="model-path" title={model.path}>
+                                  <Icon name="Folder" size={12} />
+                                  Cached locally
+                                </span>
+                              )}
+                            </div>
+                            <div className="model-action">
+                              {model.status === 'installed' ? (
+                                <span className="status-badge installed">
+                                  <Icon name="Check" size={14} />
+                                  Installed
+                                </span>
+                              ) : model.status === 'downloading' || downloadingModel === model.id ? (
+                                <span className="status-badge downloading">
+                                  <Icon name="Loader2" size={14} className="spin" />
+                                  Downloading...
+                                </span>
+                              ) : (
+                                <button
+                                  className="btn btn-secondary btn-sm"
+                                  onClick={() => downloadModel(model.id)}
+                                  disabled={modelsData.offline_mode || downloadingModel !== null}
+                                  title={modelsData.offline_mode ? 'Downloads disabled in offline mode' : 'Download model'}
+                                >
+                                  <Icon name="Download" size={14} />
+                                  Download
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                        ))}
+                    </div>
+                  </section>
+
+                  {/* OCR Models */}
+                  <section className="models-section">
+                    <h3 className="section-title">
+                      <Icon name="ScanText" size={18} />
+                      OCR Models
+                    </h3>
+                    <p className="section-description">
+                      Used for text extraction from images. Required by the OCR shard.
+                    </p>
+                    <div className="models-list">
+                      {modelsData.models
+                        .filter(m => m.model_type === 'ocr')
+                        .map(model => (
+                          <div key={model.id} className={`model-item ${model.status}`}>
+                            <div className="model-icon">
+                              <Icon name={model.status === 'installed' ? 'CheckCircle' : 'Circle'} size={20} />
+                            </div>
+                            <div className="model-info">
+                              <div className="model-header">
+                                <span className="model-name">{model.name}</span>
+                                {model.is_default && <span className="default-badge">Default</span>}
+                                <span className="model-size">{model.size_mb} MB</span>
+                              </div>
+                              <p className="model-description">{model.description}</p>
+                              {model.path && (
+                                <span className="model-path" title={model.path}>
+                                  <Icon name="Folder" size={12} />
+                                  Cached locally
+                                </span>
+                              )}
+                            </div>
+                            <div className="model-action">
+                              {model.status === 'installed' ? (
+                                <span className="status-badge installed">
+                                  <Icon name="Check" size={14} />
+                                  Installed
+                                </span>
+                              ) : model.status === 'downloading' || downloadingModel === model.id ? (
+                                <span className="status-badge downloading">
+                                  <Icon name="Loader2" size={14} className="spin" />
+                                  Downloading...
+                                </span>
+                              ) : (
+                                <button
+                                  className="btn btn-secondary btn-sm"
+                                  onClick={() => downloadModel(model.id)}
+                                  disabled={modelsData.offline_mode || downloadingModel !== null}
+                                  title={modelsData.offline_mode ? 'Downloads disabled in offline mode' : 'Download model'}
+                                >
+                                  <Icon name="Download" size={14} />
+                                  Download
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                        ))}
+                    </div>
+                  </section>
+
+                  {/* Air-Gap Info */}
+                  <section className="models-section models-info">
+                    <h3 className="section-title">
+                      <Icon name="Shield" size={18} />
+                      Air-Gap Deployment
+                    </h3>
+                    <div className="info-box">
+                      <p>
+                        To deploy in an air-gapped environment without internet access:
+                      </p>
+                      <ol>
+                        <li>Download required models on a connected machine using the buttons above</li>
+                        <li>Models are cached in: <code>{modelsData.cache_path || '~/.cache/huggingface/hub'}</code></li>
+                        <li>Copy the cache directory to your air-gapped system</li>
+                        <li>Set <code>ARKHAM_OFFLINE_MODE=true</code> to prevent download attempts</li>
+                        <li>Optionally set <code>ARKHAM_MODEL_CACHE=/path/to/cache</code> for custom location</li>
+                      </ol>
+                    </div>
+                  </section>
+                </>
+              ) : null}
             </div>
           ) : activeCategory === 'notifications' ? (
             // Custom Notifications UI

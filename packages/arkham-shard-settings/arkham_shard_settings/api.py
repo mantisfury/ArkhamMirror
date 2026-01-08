@@ -393,6 +393,204 @@ async def reset_all_data(request: Request):
     )
 
 
+# === ML Model Management Endpoints ===
+# NOTE: These must be defined BEFORE the /{key:path} catch-all route
+
+
+class ModelInfoResponse(BaseModel):
+    """Response model for ML model information."""
+    id: str
+    name: str
+    model_type: str
+    description: str
+    size_mb: float
+    status: str
+    path: Optional[str] = None
+    error: Optional[str] = None
+    required_by: List[str] = []
+    is_default: bool = False
+
+
+class ModelsListResponse(BaseModel):
+    """Response for listing all models."""
+    offline_mode: bool
+    cache_path: str
+    models: List[ModelInfoResponse]
+
+
+class ModelDownloadResponse(BaseModel):
+    """Response for model download action."""
+    success: bool
+    message: str
+    model: Optional[ModelInfoResponse] = None
+
+
+@router.get("/models", response_model=ModelsListResponse)
+async def list_models(
+    request: Request,
+    model_type: Optional[str] = Query(None, description="Filter by type: embedding, ocr, vision"),
+):
+    """
+    List all available ML models and their installation status.
+
+    Use this to check which models are installed for air-gap deployments.
+    """
+    shard = get_shard(request)
+    frame = shard._frame
+    models_service = frame.get_service("models")
+
+    if not models_service:
+        raise HTTPException(status_code=503, detail="Model service not available")
+
+    # Filter by type if specified
+    type_filter = None
+    if model_type:
+        from arkham_frame.services.models import ModelType
+        try:
+            type_filter = ModelType(model_type)
+        except ValueError:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid model_type: {model_type}. Must be: embedding, ocr, vision"
+            )
+
+    models = models_service.list_models(model_type=type_filter)
+
+    return ModelsListResponse(
+        offline_mode=models_service.offline_mode,
+        cache_path=models_service.cache_path or "",
+        models=[
+            ModelInfoResponse(
+                id=m.id,
+                name=m.name,
+                model_type=m.model_type.value,
+                description=m.description,
+                size_mb=m.size_mb,
+                status=m.status.value,
+                path=m.path,
+                error=m.error,
+                required_by=m.required_by,
+                is_default=m.is_default,
+            )
+            for m in models
+        ],
+    )
+
+
+@router.get("/models/{model_id}", response_model=ModelInfoResponse)
+async def get_model_status(model_id: str, request: Request):
+    """Get the status of a specific ML model."""
+    shard = get_shard(request)
+    frame = shard._frame
+    models_service = frame.get_service("models")
+
+    if not models_service:
+        raise HTTPException(status_code=503, detail="Model service not available")
+
+    model = models_service.get_model_status(model_id)
+    if not model:
+        raise HTTPException(status_code=404, detail=f"Unknown model: {model_id}")
+
+    return ModelInfoResponse(
+        id=model.id,
+        name=model.name,
+        model_type=model.model_type.value,
+        description=model.description,
+        size_mb=model.size_mb,
+        status=model.status.value,
+        path=model.path,
+        error=model.error,
+        required_by=model.required_by,
+        is_default=model.is_default,
+    )
+
+
+@router.post("/models/{model_id}/download", response_model=ModelDownloadResponse)
+async def download_model(model_id: str, request: Request):
+    """
+    Download an ML model.
+
+    This triggers an on-demand download of the specified model.
+    Will fail if offline mode is enabled (ARKHAM_OFFLINE_MODE=true).
+    """
+    shard = get_shard(request)
+    frame = shard._frame
+    models_service = frame.get_service("models")
+
+    if not models_service:
+        raise HTTPException(status_code=503, detail="Model service not available")
+
+    if models_service.offline_mode:
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot download models in offline mode. Disable ARKHAM_OFFLINE_MODE or pre-cache models."
+        )
+
+    try:
+        model = await models_service.download_model(model_id)
+        return ModelDownloadResponse(
+            success=True,
+            message=f"Successfully downloaded model: {model_id}",
+            model=ModelInfoResponse(
+                id=model.id,
+                name=model.name,
+                model_type=model.model_type.value,
+                description=model.description,
+                size_mb=model.size_mb,
+                status=model.status.value,
+                path=model.path,
+                error=model.error,
+                required_by=model.required_by,
+                is_default=model.is_default,
+            ),
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Download failed: {str(e)}")
+
+
+@router.get("/models/offline-status")
+async def get_offline_status(request: Request):
+    """
+    Get the current offline/air-gap mode status.
+
+    Returns information about whether the system is in offline mode
+    and which models are available for use.
+    """
+    shard = get_shard(request)
+    frame = shard._frame
+    models_service = frame.get_service("models")
+    config = frame.get_service("config")
+
+    offline_mode = config.offline_mode if config else False
+
+    if not models_service:
+        return {
+            "offline_mode": offline_mode,
+            "models_service_available": False,
+            "message": "Model service not initialized",
+        }
+
+    models = models_service.list_models()
+    installed = [m for m in models if m.status.value == "installed"]
+    not_installed = [m for m in models if m.status.value == "not_installed"]
+
+    return {
+        "offline_mode": offline_mode,
+        "models_service_available": True,
+        "cache_path": models_service.cache_path,
+        "total_models": len(models),
+        "installed_count": len(installed),
+        "not_installed_count": len(not_installed),
+        "installed_models": [m.id for m in installed],
+        "missing_models": [m.id for m in not_installed],
+        "ready_for_airgap": len(not_installed) == 0 or offline_mode,
+    }
+
+
 # === Individual Setting Operations ===
 # NOTE: /{key:path} is a catch-all route - must come AFTER specific routes
 

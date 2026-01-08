@@ -55,6 +55,7 @@ class ArkhamFrame:
         self.ai_analyst = None
         self.events = None
         self.workers = None
+        self.models = None  # ML model management (for air-gap deployments)
 
         # Loaded shards
         self.shards: Dict[str, Any] = {}
@@ -77,6 +78,20 @@ class ArkhamFrame:
         from arkham_frame.services.config import ConfigService
         self.config = ConfigService()
         logger.info("ConfigService initialized")
+
+        # Initialize model service (for ML model management in air-gap deployments)
+        try:
+            from arkham_frame.services.models import ModelService
+            self.models = ModelService(
+                offline_mode=self.config.offline_mode,
+                cache_path=self.config.model_cache_path or None,
+            )
+            if self.config.offline_mode:
+                logger.info("ModelService initialized (OFFLINE MODE - no auto-downloads)")
+            else:
+                logger.info("ModelService initialized")
+        except Exception as e:
+            logger.warning(f"ModelService failed to initialize: {e}")
 
         # Initialize resources (hardware detection) - early because workers depend on it
         try:
@@ -243,6 +258,7 @@ class ArkhamFrame:
             "documents": self.documents,
             "entities": self.entities,
             "projects": self.projects,
+            "models": self.models,  # ML model management
         }
         return service_map.get(name)
 
@@ -357,6 +373,7 @@ class ArkhamFrame:
                 "ai_analyst": self.ai_analyst is not None and self.ai_analyst.is_available() if self.ai_analyst else False,
                 "events": self.events is not None,
                 "workers": self.workers is not None,
+                "models": self.models is not None,
             },
             "shards": list(self.shards.keys()),
         }
@@ -364,5 +381,9 @@ class ArkhamFrame:
         # Add resource tier if available
         if self.resources:
             state["resource_tier"] = self.resources.get_tier_name()
+
+        # Add offline mode status
+        if self.config:
+            state["offline_mode"] = self.config.offline_mode
 
         return state

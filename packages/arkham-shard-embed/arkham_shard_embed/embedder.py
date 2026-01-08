@@ -71,12 +71,17 @@ class EmbeddingManager:
         Lazy loads the model on first use. Tries the configured model first,
         with fallback options if loading fails.
 
+        In offline mode (ARKHAM_OFFLINE_MODE=true), will fail if model is not
+        already cached locally instead of attempting to download.
+
         Raises:
             ImportError: If sentence-transformers is not installed
-            RuntimeError: If model loading fails
+            RuntimeError: If model loading fails or not cached in offline mode
         """
         if self._model is not None:
             return
+
+        import os
 
         try:
             from sentence_transformers import SentenceTransformer
@@ -85,6 +90,14 @@ class EmbeddingManager:
                 "sentence-transformers not installed. "
                 "Install with: pip install sentence-transformers"
             )
+
+        # Check for offline mode
+        offline_mode = os.environ.get("ARKHAM_OFFLINE_MODE", "").lower() in ("true", "1", "yes")
+        if offline_mode:
+            # Set HuggingFace to offline mode to prevent download attempts
+            os.environ["HF_HUB_OFFLINE"] = "1"
+            os.environ["TRANSFORMERS_OFFLINE"] = "1"
+            logger.info("Running in offline mode - will only use cached models")
 
         # Detect device
         self._device = self._detect_device()
@@ -105,6 +118,13 @@ class EmbeddingManager:
                 f"({self._dimensions} dimensions) on {self._device}"
             )
         except Exception as e:
+            if offline_mode:
+                logger.error(
+                    f"Failed to load model {model_name} in offline mode. "
+                    "Model may not be cached locally. "
+                    "Download the model first using Settings > ML Models, "
+                    "or disable ARKHAM_OFFLINE_MODE."
+                )
             logger.error(f"Failed to load model {model_name}: {e}")
             raise RuntimeError(f"Failed to load embedding model {model_name}: {e}")
 
