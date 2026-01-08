@@ -2,7 +2,7 @@
  * GraphPage - Entity relationship graph visualization
  *
  * Provides interactive visualization of entity relationships and connections.
- * Uses react-force-graph for physics-based graph rendering with advanced controls.
+ * Uses react-force-graph-2d for physics-based graph rendering with advanced controls.
  */
 
 import { useState, useCallback, useMemo, useRef, useEffect } from 'react';
