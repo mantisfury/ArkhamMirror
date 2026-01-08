@@ -10,7 +10,7 @@
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10+-green.svg)](https://python.org)
 [![TypeScript](https://img.shields.io/badge/TypeScript-React-blue.svg)](https://www.typescriptlang.org/)
 
-[Philosophy](#philosophy) | [Architecture](#architecture) | [Use Cases](#use-cases) | [Quick Start](#quick-start) | [Documentation](#documentation)
+[Philosophy](#philosophy) | [Architecture](#architecture) | [Features](#features) | [Quick Start](#quick-start) | [Documentation](#documentation)
 
 </div>
 
@@ -81,44 +81,49 @@ SHATTERED uses the **Voltron** architectural philosophy: a modular, plug-and-pla
 
 ---
 
-## Use Cases
+## Features
 
-SHATTERED supports 67 pre-configured bundles across 17 user bases. Here are some examples:
+### AI-Powered Analysis
 
-### Journalists & Investigators
-| Bundle | Purpose |
-|--------|---------|
-| **OSINT Kit** | Social media archiving, entity correlation, network mapping |
-| **FOIA Tracker** | Request templates, deadline tracking, response analysis |
-| **Publication Prep** | Claim extraction, citation tracing, fact-check reports |
+- **AI Analyst**: LLM-powered analysis across all analysis shards - generate insights, identify patterns, and synthesize findings automatically
+- **LLM Summarization**: Automatic document and corpus summarization
+- **Deception Detection**: AI-assisted credibility assessment
 
-### Legal Self-Advocacy
-| Bundle | Purpose |
-|--------|---------|
-| **Tenant Defense** | Violation chronology, housing code matching, evidence packets |
-| **Employment Rights** | Incident documentation, labor law elements, EEOC prep |
-| **Consumer Protection** | Warranty extraction, demand letters, small claims prep |
+### Structured Analytic Techniques
 
-### Healthcare Self-Advocacy
-| Bundle | Purpose |
-|--------|---------|
-| **Chronic Illness Manager** | Lab results parsing, symptom tracking, treatment analysis |
-| **Insurance Fighter** | Denial tracking, appeal letters, medical necessity docs |
-| **Diagnosis Quest** | Test organization, symptom progression, specialist prep |
+- **ACH (Analysis of Competing Hypotheses)**: Full matrix analysis with evidence scoring, premortem analysis, cone of plausibility, corpus search integration, and scenario planning
+- **Contradiction Detection**: Automated identification of conflicting claims across documents
+- **Pattern Recognition**: Find recurring themes, entities, and relationships
+- **Anomaly Detection**: Statistical and contextual anomaly identification
+- **Credibility Assessment**: Source reliability scoring with deception indicators
 
-### Civic Engagement
-| Bundle | Purpose |
-|--------|---------|
-| **Local Government Watch** | Meeting minutes parsing, vote tracking, promise vs action |
-| **Campaign Finance** | Donor identification, bundling detection, money flow mapping |
+### Advanced Visualization
 
-### Financial Analysis
-| Bundle | Purpose |
-|--------|---------|
-| **Fraud Detection** | Benford analysis, transaction anomalies, duplicate detection |
-| **Investment Research** | SEC filings, financial statement analysis, news tracking |
+- **Graph Analysis**: 7 visualization modes:
+  - Force-directed network graphs
+  - Sankey flow diagrams
+  - Association matrix views
+  - Geographic network overlays (Leaflet)
+  - Causal relationship graphs
+  - Argumentation graphs (ACH integration)
+  - Link analysis mode (i2-style)
+- **Timeline**: Event management, temporal analysis, and context extraction
 
-See [SHARDS_AND_BUNDLES.md](SHARDS_AND_BUNDLES.md) for the complete list of 67 bundles.
+### Document Processing
+
+- **Multi-format Ingest**: PDF, DOCX, images, and more
+- **OCR**: PaddleOCR and Qwen-VL for text extraction from images
+- **Entity Extraction**: spaCy-powered NER for people, organizations, locations
+- **Claim Extraction**: Identify and track factual claims
+- **Vector Search**: Semantic search via Qdrant embeddings
+
+### Export & Reporting
+
+- **Reports**: Generate formatted analytical reports
+- **Letters**: Template-based letter generation
+- **Packets**: Complete evidence packet assembly
+- **Templates**: Shared template system across export shards
+- **Multiple Formats**: JSON, CSV, PDF, DOCX export
 
 ---
 
@@ -145,20 +150,16 @@ See [SHARDS_AND_BUNDLES.md](SHARDS_AND_BUNDLES.md) for the complete list of 67 b
 | **NotificationService** | Email/Webhook/Log notifications |
 | **SchedulerService** | APScheduler job scheduling |
 
-### Implemented Shards (25 shards)
+### Implemented Shards (25 shards + shell)
 
 | Category | Shards |
 |----------|--------|
 | **System** | Dashboard, Projects, Settings |
-| **Data** | Ingest, OCR, Parse, Documents, Entities |
-| **Search** | Search, Embed |
+| **Data** | Ingest, OCR, Parse, Documents, Entities, Embed |
+| **Search** | Search |
 | **Analysis** | ACH, Claims, Provenance, Credibility, Contradictions, Patterns, Anomalies, Summary |
 | **Visualize** | Graph, Timeline |
 | **Export** | Export, Letters, Templates, Reports, Packets |
-
-### Roadmap (58 total shards planned)
-
-See [SHARDS_AND_BUNDLES.md](SHARDS_AND_BUNDLES.md) for the complete shard inventory and build priority.
 
 ---
 
@@ -172,7 +173,8 @@ See [SHARDS_AND_BUNDLES.md](SHARDS_AND_BUNDLES.md) for the complete shard invent
 
 ### Frontend
 - **React** + **TypeScript** with Vite
-- **TailwindCSS** for styling
+- **TailwindCSS** + **shadcn/ui** for styling
+- **Lucide React** for icons
 
 ### AI/ML (Optional)
 - **LM Studio** / **Ollama** / **vLLM** for LLM inference
@@ -244,24 +246,52 @@ LM_STUDIO_URL=http://localhost:1234/v1  # Optional
 
 ---
 
+## Use Cases
+
+SHATTERED supports diverse investigative workflows:
+
+### Journalists & Investigators
+- **OSINT**: Social media archiving, entity correlation, network mapping
+- **FOIA Tracking**: Request templates, deadline tracking, response analysis
+- **Publication Prep**: Claim extraction, citation tracing, fact-check reports
+
+### Legal Self-Advocacy
+- **Tenant Defense**: Violation chronology, housing code matching, evidence packets
+- **Employment Rights**: Incident documentation, labor law elements, EEOC prep
+- **Consumer Protection**: Warranty extraction, demand letters, small claims prep
+
+### Healthcare Self-Advocacy
+- **Chronic Illness Manager**: Lab results parsing, symptom tracking, treatment analysis
+- **Insurance Fighter**: Denial tracking, appeal letters, medical necessity docs
+- **Diagnosis Quest**: Test organization, symptom progression, specialist prep
+
+### Civic Engagement
+- **Government Watch**: Meeting minutes parsing, vote tracking, promise vs action
+- **Campaign Finance**: Donor identification, bundling detection, money flow mapping
+
+### Financial Analysis
+- **Fraud Detection**: Benford analysis, transaction anomalies, duplicate detection
+- **Investment Research**: SEC filings, financial statement analysis, news tracking
+
+---
+
 ## Documentation
 
 | Document | Description |
 |----------|-------------|
-| [SHARDS_AND_BUNDLES.md](SHARDS_AND_BUNDLES.md) | Complete shard inventory and use-case bundles |
-| [full_frame_plan.md](full_frame_plan.md) | Frame implementation details and service specs |
-| [docs/shard_manifest_schema_prod.md](docs/shard_manifest_schema_prod.md) | Production manifest schema for shard development |
 | [CLAUDE.md](CLAUDE.md) | Project guidelines and development standards |
 | [docs/voltron_plan.md](docs/voltron_plan.md) | Architecture overview |
+| [docs/shard_manifest_schema_prod.md](docs/shard_manifest_schema_prod.md) | Production manifest schema for shard development |
 
 ---
 
 ## Project Status
 
-- **25 production-ready shards** implemented
+- **26 production-ready packages** (25 shards + shell)
 - **16 Frame services** operational
-- **1,469+ tests** across all components
-- **7 development phases** complete
+- **7 graph visualization modes** implemented
+- **AI Analyst** integration across analysis shards
+- **Full ACH implementation** with premortem, cone of plausibility, and corpus search
 
 ---
 
