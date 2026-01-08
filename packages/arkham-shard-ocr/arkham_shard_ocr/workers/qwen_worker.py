@@ -30,6 +30,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_ENDPOINT = os.environ.get("VLM_ENDPOINT", "http://localhost:1234/v1")
 DEFAULT_MODEL = os.environ.get("VLM_MODEL", "qwen2.5-vl-7b-instruct")
 DEFAULT_TIMEOUT = float(os.environ.get("VLM_TIMEOUT", "120"))
+DEFAULT_API_KEY = os.environ.get("VLM_API_KEY") or os.environ.get("LLM_API_KEY")
 
 # System prompt for OCR mode
 OCR_SYSTEM_PROMPT = """You are a robotic OCR engine. Your ONLY job is to transcribe text from the image exactly as it appears.
@@ -99,9 +100,12 @@ class QwenWorker(BaseWorker):
         return file_path
 
     async def _get_client(self) -> httpx.AsyncClient:
-        """Get or create HTTP client."""
+        """Get or create HTTP client with optional auth."""
         if self._client is None:
-            self._client = httpx.AsyncClient(timeout=DEFAULT_TIMEOUT)
+            headers = {}
+            if DEFAULT_API_KEY:
+                headers["Authorization"] = f"Bearer {DEFAULT_API_KEY}"
+            self._client = httpx.AsyncClient(timeout=DEFAULT_TIMEOUT, headers=headers)
         return self._client
 
     async def process_job(self, job_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:

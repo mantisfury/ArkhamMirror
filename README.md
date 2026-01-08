@@ -143,7 +143,7 @@ SHATTERED uses the **Voltron** architectural philosophy: a modular, plug-and-pla
 | Stage | Capabilities |
 |-------|-------------|
 | **Ingest** | Multi-format support (PDF, DOCX, images, HTML, TXT), batch processing, duplicate detection, job queue management |
-| **OCR** | PaddleOCR for standard OCR, Qwen-VL for complex documents, language detection, confidence scoring |
+| **OCR** | PaddleOCR for standard OCR, Vision LLM for complex documents (supports local Qwen-VL or cloud APIs like GPT-4o), language detection, confidence scoring |
 | **Parse** | 8 chunking strategies, metadata extraction, relations extraction, table detection |
 | **Embed** | Multiple embedding models, batch processing, incremental updates |
 | **Entity Extraction** | spaCy-powered NER (PERSON, ORG, GPE, DATE, etc.), relationship detection, duplicate merging |
@@ -215,7 +215,7 @@ The Frame provides 17 core services available to all shards:
 | **Documents** | Document management | CRUD operations, content access, metadata, batch operations |
 | **Parse** | Document parsing | 8 chunking strategies, relations extraction, table detection |
 | **Embed** | Vector embeddings | Multiple models, batch processing, incremental updates |
-| **OCR** | Text extraction | PaddleOCR, Qwen-VL, language detection, confidence scoring |
+| **OCR** | Text extraction | PaddleOCR, Vision LLM (local or cloud), language detection, confidence scoring |
 | **Entities** | Entity management | NER extraction, relationships, deduplication, type management |
 
 ### Search (1 shard)
@@ -287,7 +287,7 @@ The Frame provides 17 core services available to all shards:
 |-----------|---------|
 | **LLM Inference** | LM Studio, Ollama, vLLM, OpenAI API |
 | **NER** | spaCy (en_core_web_sm/lg/trf) |
-| **OCR** | PaddleOCR, Qwen-VL |
+| **OCR** | PaddleOCR, Vision LLM (Qwen-VL local, or cloud GPT-4o/Claude) |
 | **Embeddings** | sentence-transformers, OpenAI |
 
 ---

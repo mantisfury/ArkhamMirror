@@ -27,6 +27,19 @@ The OCR shard provides optical character recognition capabilities for SHATTERED.
 | `paddle` | Clean documents, tables | Fast | Good |
 | `qwen` | Messy documents, handwriting | Slow | Excellent |
 
+### VLM Backend Options
+
+The Qwen/VLM engine supports multiple backends:
+
+| Backend | Configuration | Notes |
+|---------|--------------|-------|
+| **Local (LM Studio)** | `VLM_ENDPOINT=http://localhost:1234/v1` | Free, requires GPU |
+| **Local (Ollama)** | `VLM_ENDPOINT=http://localhost:11434/v1` | Free, requires GPU |
+| **OpenRouter** | `VLM_ENDPOINT=https://openrouter.ai/api/v1` | GPT-4o, Claude, Gemini |
+| **OpenAI** | `VLM_ENDPOINT=https://api.openai.com/v1` | GPT-4o vision |
+
+Set `VLM_API_KEY` for cloud APIs (or uses `LLM_API_KEY` if not set).
+
 ### Processing Modes
 - **Single Page** - OCR individual image files
 - **Full Document** - OCR all pages in a document
@@ -163,6 +176,39 @@ curl -X POST http://localhost:8100/api/ocr/upload \
 | `escalated` | bool | Whether escalated to Qwen |
 | `char_count` | int | Total character count |
 | `word_count` | int | Total word count |
+
+## Configuration
+
+### Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `VLM_ENDPOINT` | `http://localhost:1234/v1` | Vision model API endpoint |
+| `VLM_MODEL` | `qwen2.5-vl-7b-instruct` | Vision model ID |
+| `VLM_API_KEY` | - | API key for cloud providers |
+| `VLM_TIMEOUT` | `120` | Request timeout in seconds |
+
+### Example Configurations
+
+**Local LM Studio:**
+```bash
+VLM_ENDPOINT=http://localhost:1234/v1
+VLM_MODEL=qwen2.5-vl-7b-instruct
+```
+
+**OpenRouter (cloud):**
+```bash
+VLM_ENDPOINT=https://openrouter.ai/api/v1
+VLM_MODEL=openai/gpt-4o
+VLM_API_KEY=sk-or-v1-your-key
+```
+
+**OpenAI (cloud):**
+```bash
+VLM_ENDPOINT=https://api.openai.com/v1
+VLM_MODEL=gpt-4o
+VLM_API_KEY=sk-your-openai-key
+```
 
 ## Worker Pools
 
