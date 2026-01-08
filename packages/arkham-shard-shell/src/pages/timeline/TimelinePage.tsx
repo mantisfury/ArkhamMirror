@@ -8,6 +8,7 @@
 import { useState, useCallback, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Icon } from '../../components/common/Icon';
+import { AIAnalystButton } from '../../components/AIAnalyst';
 import { useToast } from '../../context/ToastContext';
 import { useFetch } from '../../hooks/useFetch';
 import './TimelinePage.css';
@@ -561,6 +562,30 @@ export function TimelinePage() {
             Extract
           </button>
         </div>
+
+        {/* AI Analyst Button */}
+        <AIAnalystButton
+          shard="timeline"
+          targetId={activeTab}
+          context={{
+            tab: activeTab,
+            events: eventsData?.events?.slice(0, 50) || [],
+            event_count: eventsData?.count || 0,
+            statistics: statsData || null,
+            filters_applied: {
+              start_date: filterApplied ? startDate : null,
+              end_date: filterApplied ? endDate : null,
+              entity_id: selectedEntityId || null,
+            },
+            date_range: statsData?.date_range || null,
+            gaps_analysis: gapsData || null,
+            conflicts_analysis: conflictsData || null,
+          }}
+          label="AI Analysis"
+          variant="secondary"
+          size="sm"
+          disabled={!eventsData?.events || eventsData.events.length === 0}
+        />
       </header>
 
       <main className="timeline-content">

@@ -7,6 +7,7 @@
 
 import { useState, useCallback, useEffect } from 'react';
 import { Icon } from '../../components/common/Icon';
+import { AIAnalystButton } from '../../components/AIAnalyst';
 import { useToast } from '../../context/ToastContext';
 import { useFetch } from '../../hooks/useFetch';
 import { usePaginatedFetch } from '../../hooks';
@@ -563,6 +564,17 @@ export function CredibilityPage() {
           </div>
         </div>
         <div className="page-actions">
+          <AIAnalystButton
+            shard="credibility"
+            targetId={selectedAssessment?.id || 'overview'}
+            context={{
+              statistics: stats,
+              filters: { level: selectedLevel },
+              selectedAssessment: selectedAssessment,
+            }}
+            label="AI Analysis"
+            disabled={false}
+          />
           <button
             className="btn btn-primary"
             onClick={() => setShowCreateModal(true)}

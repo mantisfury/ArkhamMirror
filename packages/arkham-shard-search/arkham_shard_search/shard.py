@@ -108,6 +108,10 @@ class SearchShard(ArkhamShard):
             await event_bus.subscribe("documents.indexed", self._on_document_indexed)
             await event_bus.subscribe("documents.deleted", self._on_document_deleted)
 
+        # Register self in app state for API access
+        if hasattr(frame, "app") and frame.app:
+            frame.app.state.search_shard = self
+
         logger.info("Search Shard initialized")
 
     async def shutdown(self) -> None:

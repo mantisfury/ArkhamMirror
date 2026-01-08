@@ -4,9 +4,11 @@ Patterns Shard - API Routes
 FastAPI routes for pattern detection and analysis.
 """
 
-from typing import Optional, TYPE_CHECKING
+from typing import Any, Optional, TYPE_CHECKING
 
 from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
 
 from .models import (
     CorrelationRequest,
@@ -333,3 +335,76 @@ async def batch_dismiss(pattern_ids: list[str], request: Request):
         "processed": len(pattern_ids),
         "results": results,
     }
+
+
+# --- AI Junior Analyst ---
+
+
+class AIJuniorAnalystRequest(BaseModel):
+    """Request for AI Junior Analyst analysis."""
+    target_id: str
+    context: dict[str, Any] = {}
+    depth: str = "quick"
+    session_id: str | None = None
+    message: str | None = None
+    conversation_history: list[dict[str, str]] | None = None
+
+
+@router.post("/ai/junior-analyst")
+async def ai_junior_analyst(request: Request, body: AIJuniorAnalystRequest):
+    """
+    AI Junior Analyst endpoint for pattern analysis.
+
+    Provides AI-powered interpretation of patterns including:
+    - Pattern significance assessment
+    - Correlation interpretation
+    - Trend analysis
+    - Predictive insights
+    - Related pattern discovery
+    """
+    shard = get_shard(request)
+    frame = shard.frame
+
+    if not frame or not getattr(frame, "ai_analyst", None):
+        raise HTTPException(
+            status_code=503,
+            detail="AI Analyst service not available"
+        )
+
+    # Build context from request
+    from arkham_frame.services import AnalysisRequest, AnalysisDepth, AnalystMessage
+
+    # Parse depth
+    try:
+        depth = AnalysisDepth(body.depth)
+    except ValueError:
+        depth = AnalysisDepth.QUICK
+
+    # Build conversation history
+    history = None
+    if body.conversation_history:
+        history = [
+            AnalystMessage(role=msg["role"], content=msg["content"])
+            for msg in body.conversation_history
+        ]
+
+    analysis_request = AnalysisRequest(
+        shard="patterns",
+        target_id=body.target_id,
+        context=body.context,
+        depth=depth,
+        session_id=body.session_id,
+        message=body.message,
+        conversation_history=history,
+    )
+
+    # Stream the response
+    return StreamingResponse(
+        frame.ai_analyst.stream_analyze(analysis_request),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )

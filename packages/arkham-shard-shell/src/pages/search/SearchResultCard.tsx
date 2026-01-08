@@ -11,9 +11,10 @@ interface SearchResultCardProps {
   result: SearchResultItem;
   onView?: (docId: string) => void;
   onFindSimilar?: (docId: string) => void;
+  onAskAbout?: (result: SearchResultItem) => void;
 }
 
-export function SearchResultCard({ result, onView, onFindSimilar }: SearchResultCardProps) {
+export function SearchResultCard({ result, onView, onFindSimilar, onAskAbout }: SearchResultCardProps) {
   // Format date if available
   const formattedDate = result.created_at
     ? new Date(result.created_at).toLocaleDateString('en-US', {
@@ -117,6 +118,16 @@ export function SearchResultCard({ result, onView, onFindSimilar }: SearchResult
           >
             <Icon name="Eye" size={16} />
             View
+          </button>
+        )}
+        {onAskAbout && (
+          <button
+            className="action-button ai"
+            onClick={() => onAskAbout(result)}
+            title="Ask AI about this document"
+          >
+            <Icon name="MessageSquare" size={16} />
+            Ask AI
           </button>
         )}
         {onFindSimilar && (

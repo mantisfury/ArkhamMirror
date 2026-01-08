@@ -4305,6 +4305,16 @@ a:hover {
   color: var(--arkham-text-primary);
 }
 
+.action-button.ai {
+  border-color: var(--arkham-accent-info, #3b82f6);
+  color: var(--arkham-accent-info, #3b82f6);
+}
+
+.action-button.ai:hover {
+  background-color: var(--arkham-accent-info, #3b82f6);
+  color: white;
+}
+
 /* Search Empty State */
 .search-empty-state {
   display: flex;

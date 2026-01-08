@@ -9,6 +9,7 @@ import { useSearchParams } from 'react-router-dom';
 import { useToast } from '../../context/ToastContext';
 import { Icon } from '../../components/common/Icon';
 import { LoadingSkeleton } from '../../components/common/LoadingSkeleton';
+import { AIAnalystButton } from '../../components/AIAnalyst';
 import { AnomalyDetail } from './AnomalyDetail';
 
 import * as api from './api';
@@ -234,6 +235,31 @@ function AnomaliesListView() {
             <Icon name="Zap" size={16} />
             Run Detection
           </button>
+          <AIAnalystButton
+            shard="anomalies"
+            targetId="overview"
+            context={{
+              statistics: stats || null,
+              filters: {
+                type: typeFilter || null,
+                status: statusFilter || null,
+                severity: severityFilter || null,
+              },
+              anomalies: anomalies.slice(0, 20).map(a => ({
+                id: a.id,
+                anomaly_type: a.anomaly_type,
+                severity: a.severity,
+                status: a.status,
+                score: a.score,
+                explanation: a.explanation,
+              })),
+              total_count: anomalies.length,
+            }}
+            label="AI Analysis"
+            variant="secondary"
+            size="sm"
+            disabled={anomalies.length === 0}
+          />
         </div>
       </header>
 

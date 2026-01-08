@@ -52,6 +52,7 @@ class ArkhamFrame:
         self.chunks = None
         self.vectors = None
         self.llm = None
+        self.ai_analyst = None
         self.events = None
         self.workers = None
 
@@ -122,6 +123,14 @@ class ArkhamFrame:
         except Exception as e:
             logger.warning(f"LLMService failed to initialize: {e}")
 
+        # Initialize AI Junior Analyst (depends on LLM)
+        try:
+            from arkham_frame.services.ai_analyst import AIJuniorAnalystService
+            self.ai_analyst = AIJuniorAnalystService(llm_service=self.llm)
+            logger.info("AIJuniorAnalystService initialized")
+        except Exception as e:
+            logger.warning(f"AIJuniorAnalystService failed to initialize: {e}")
+
         # Initialize chunks (text chunking and tokenization)
         try:
             from arkham_frame.services.chunks import ChunkService
@@ -137,6 +146,11 @@ class ArkhamFrame:
             self.events = EventBus(config=self.config)
             await self.events.initialize()
             logger.info("EventBus initialized")
+
+            # Connect event bus to AI Analyst for audit trail
+            if self.ai_analyst:
+                self.ai_analyst.set_event_bus(self.events)
+                logger.debug("EventBus connected to AIJuniorAnalystService")
         except Exception as e:
             logger.warning(f"EventBus failed to initialize: {e}")
 
@@ -223,6 +237,7 @@ class ArkhamFrame:
             "vectors": self.vectors,
             "embeddings": self.vectors,  # Alias for vectors (provides embedding methods)
             "llm": self.llm,
+            "ai_analyst": self.ai_analyst,
             "events": self.events,
             "workers": self.workers,
             "documents": self.documents,
@@ -339,6 +354,7 @@ class ArkhamFrame:
                 "chunks": self.chunks is not None,
                 "vectors": self.vectors is not None,
                 "llm": self.llm is not None and self.llm.is_available() if self.llm else False,
+                "ai_analyst": self.ai_analyst is not None and self.ai_analyst.is_available() if self.ai_analyst else False,
                 "events": self.events is not None,
                 "workers": self.workers is not None,
             },

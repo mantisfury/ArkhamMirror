@@ -51,6 +51,7 @@ class UpdateProjectRequest(BaseModel):
 
 
 @router.get("/")
+@router.get("/list")
 async def list_projects(
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=50, ge=1, le=200),
@@ -282,6 +283,8 @@ async def get_project(project_id: str) -> Dict[str, Any]:
 
     try:
         project = await frame.projects.get_project(project_id)
+        if project is None:
+            raise HTTPException(status_code=404, detail=f"Project {project_id} not found")
         return _project_to_dict(project)
     except ProjectNotFoundError:
         raise HTTPException(status_code=404, detail=f"Project {project_id} not found")

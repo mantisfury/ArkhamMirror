@@ -13,6 +13,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { Icon } from '../../components/common/Icon';
+import { AIAnalystButton } from '../../components/AIAnalyst';
 import { useToast } from '../../context/ToastContext';
 import { useFetch } from '../../hooks/useFetch';
 import { usePaginatedFetch } from '../../hooks';
@@ -458,6 +459,36 @@ export function PatternsPage() {
             <Icon name="Plus" size={16} />
             New Pattern
           </button>
+          <AIAnalystButton
+            shard="patterns"
+            targetId={selectedPattern?.id || 'overview'}
+            context={{
+              statistics: stats || null,
+              selected_pattern: selectedPattern ? {
+                id: selectedPattern.id,
+                name: selectedPattern.name,
+                description: selectedPattern.description,
+                pattern_type: selectedPattern.pattern_type,
+                status: selectedPattern.status,
+                confidence: selectedPattern.confidence,
+                match_count: selectedPattern.match_count,
+                criteria: selectedPattern.criteria,
+              } : null,
+              patterns: patterns.slice(0, 20).map(p => ({
+                id: p.id,
+                name: p.name,
+                pattern_type: p.pattern_type,
+                status: p.status,
+                confidence: p.confidence,
+                match_count: p.match_count,
+              })),
+              total_count: stats?.total_patterns || 0,
+              active_tab: activeTab,
+            }}
+            label="AI Analysis"
+            variant="secondary"
+            size="sm"
+          />
         </div>
 
         {stats && (

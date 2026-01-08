@@ -18,6 +18,7 @@ import { useToast } from '../../context/ToastContext';
 import { useConfirm } from '../../context/ConfirmContext';
 import { Icon } from '../../components/common/Icon';
 import { LoadingSkeleton } from '../../components/common/LoadingSkeleton';
+import { AIAnalystButton } from '../../components/AIAnalyst';
 
 import * as api from './api';
 import type {
@@ -1288,6 +1289,38 @@ function MatrixDetailView({ matrixId }: { matrixId: string }) {
               Devil's Advocate
             </button>
           )}
+          <AIAnalystButton
+            shard="ach"
+            targetId={matrixId}
+            context={{
+              matrix: {
+                id: matrix.id,
+                title: matrix.title,
+                description: matrix.description,
+                status: matrix.status,
+                hypothesis_count: matrix.hypotheses?.length || 0,
+                evidence_count: matrix.evidence?.length || 0,
+              },
+              hypotheses: matrix.hypotheses?.map(h => ({
+                id: h.id,
+                title: h.title,
+                description: h.description,
+                is_lead: h.is_lead,
+              })) || [],
+              evidence: matrix.evidence?.slice(0, 20).map(e => ({
+                id: e.id,
+                description: e.description,
+                evidence_type: e.evidence_type,
+                credibility: e.credibility,
+                relevance: e.relevance,
+              })) || [],
+              current_step: currentStep,
+              scores: matrix.scores || null,
+            }}
+            label="AI Analysis"
+            variant="secondary"
+            size="sm"
+          />
         </div>
       </header>
 

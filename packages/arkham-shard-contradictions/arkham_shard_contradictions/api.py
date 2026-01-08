@@ -1,10 +1,14 @@
 """Contradictions Shard API endpoints."""
 
 import logging
-from typing import Annotated
+from typing import Annotated, Any, TYPE_CHECKING
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
+
+if TYPE_CHECKING:
+    from .shard import ContradictionsShard
 
 from .models import (
     AnalyzeRequest,
@@ -39,6 +43,14 @@ def init_api(detector, storage, event_bus, chain_detector):
     _storage = storage
     _event_bus = event_bus
     _chain_detector = chain_detector
+
+
+def get_shard(request: Request) -> "ContradictionsShard":
+    """Get the contradictions shard instance from app state."""
+    shard = getattr(request.app.state, "contradictions_shard", None)
+    if not shard:
+        raise HTTPException(status_code=503, detail="Contradictions shard not available")
+    return shard
 
 
 def set_db_service(db_service):
@@ -639,3 +651,76 @@ async def bulk_update_status(request: BulkStatusRequest):
         "updated_ids": updated,
         "failures": failed,
     }
+
+
+# --- AI Junior Analyst ---
+
+
+class AIJuniorAnalystRequest(BaseModel):
+    """Request for AI Junior Analyst analysis."""
+    target_id: str
+    context: dict[str, Any] = {}
+    depth: str = "quick"
+    session_id: str | None = None
+    message: str | None = None
+    conversation_history: list[dict[str, str]] | None = None
+
+
+@router.post("/ai/junior-analyst")
+async def ai_junior_analyst(request: Request, body: AIJuniorAnalystRequest):
+    """
+    AI Junior Analyst endpoint for contradiction analysis.
+
+    Provides AI-powered interpretation of contradictions including:
+    - Contradiction significance assessment
+    - Resolution suggestions
+    - Source reliability comparison
+    - Chain of contradiction analysis
+    - Contextual interpretation
+    """
+    shard = get_shard(request)
+    frame = shard._frame
+
+    if not frame or not getattr(frame, "ai_analyst", None):
+        raise HTTPException(
+            status_code=503,
+            detail="AI Analyst service not available"
+        )
+
+    # Build context from request
+    from arkham_frame.services import AnalysisRequest, AnalysisDepth, AnalystMessage
+
+    # Parse depth
+    try:
+        depth = AnalysisDepth(body.depth)
+    except ValueError:
+        depth = AnalysisDepth.QUICK
+
+    # Build conversation history
+    history = None
+    if body.conversation_history:
+        history = [
+            AnalystMessage(role=msg["role"], content=msg["content"])
+            for msg in body.conversation_history
+        ]
+
+    analysis_request = AnalysisRequest(
+        shard="contradictions",
+        target_id=body.target_id,
+        context=body.context,
+        depth=depth,
+        session_id=body.session_id,
+        message=body.message,
+        conversation_history=history,
+    )
+
+    # Stream the response
+    return StreamingResponse(
+        frame.ai_analyst.stream_analyze(analysis_request),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )

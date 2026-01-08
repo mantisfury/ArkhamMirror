@@ -23,6 +23,7 @@
     "react-force-graph": "^1.48.1",
     "react-force-graph-2d": "^1.29.0",
     "react-leaflet": "^5.0.0",
+    "react-markdown": "^10.1.0",
     "react-router-dom": "^6.20.0"
   },
   "devDependencies": {

@@ -8,6 +8,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { Icon } from '../../components/common/Icon';
 import { LoadingSkeleton } from '../../components/common/LoadingSkeleton';
+import { AIAnalystButton } from '../../components/AIAnalyst';
 import { useToast } from '../../context/ToastContext';
 
 import * as api from './api';
@@ -192,6 +193,34 @@ function ContradictionListView() {
             <Icon name="RefreshCw" size={16} />
             Refresh
           </button>
+          <AIAnalystButton
+            shard="contradictions"
+            targetId="overview"
+            context={{
+              statistics: stats || null,
+              filters: {
+                status: statusFilter || null,
+                severity: severityFilter || null,
+                type: typeFilter || null,
+              },
+              contradictions: contradictions.slice(0, 20).map(c => ({
+                id: c.id,
+                doc_a_id: c.doc_a_id,
+                doc_b_id: c.doc_b_id,
+                claim_a: c.claim_a,
+                claim_b: c.claim_b,
+                contradiction_type: c.contradiction_type,
+                severity: c.severity,
+                status: c.status,
+                confidence_score: c.confidence_score,
+              })),
+              total_count: total,
+            }}
+            label="AI Analysis"
+            variant="secondary"
+            size="sm"
+            disabled={contradictions.length === 0}
+          />
         </div>
       </header>
 

@@ -1,9 +1,10 @@
 """Provenance Shard API endpoints."""
 
 import logging
-from typing import List, Optional, TYPE_CHECKING
+from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
 from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 if TYPE_CHECKING:
@@ -928,3 +929,71 @@ async def get_record(id: str, request: Request):
     except Exception as e:
         logger.error(f"Error getting record: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# --- AI Junior Analyst ---
+
+
+class AIJuniorAnalystRequest(BaseModel):
+    """Request for AI Junior Analyst analysis."""
+
+    target_id: str
+    context: Dict[str, Any] = {}
+    depth: str = "quick"
+    session_id: Optional[str] = None
+    message: Optional[str] = None
+    conversation_history: Optional[List[Dict[str, str]]] = None
+
+
+@router.post("/ai/junior-analyst")
+async def ai_junior_analyst(request: Request, body: AIJuniorAnalystRequest):
+    """
+    AI Junior Analyst endpoint for provenance analysis.
+
+    Provides streaming AI analysis of provenance chains and source tracking.
+    """
+    shard = get_shard(request)
+    frame = shard._frame
+    if not frame or not getattr(frame, "ai_analyst", None):
+        raise HTTPException(status_code=503, detail="AI Analyst service not available")
+
+    from arkham_frame.services import AnalysisRequest, AnalysisDepth, AnalystMessage
+
+    # Map depth string to enum
+    depth_map = {
+        "quick": AnalysisDepth.QUICK,
+        "standard": AnalysisDepth.DETAILED,
+        "detailed": AnalysisDepth.DETAILED,
+        "deep": AnalysisDepth.DETAILED,
+    }
+    depth = depth_map.get(body.depth, AnalysisDepth.QUICK)
+
+    # Build conversation history
+    history = None
+    if body.conversation_history:
+        history = [
+            AnalystMessage(role=m["role"], content=m["content"])
+            for m in body.conversation_history
+        ]
+
+    # Create analysis request
+    analysis_request = AnalysisRequest(
+        shard="provenance",
+        target_id=body.target_id,
+        context=body.context,
+        depth=depth,
+        session_id=body.session_id,
+        message=body.message,
+        conversation_history=history,
+    )
+
+    # Return streaming response
+    return StreamingResponse(
+        frame.ai_analyst.stream_analyze(analysis_request),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )

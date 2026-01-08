@@ -7,6 +7,7 @@
 
 import { useState, useCallback } from 'react';
 import { Icon } from '../../components/common/Icon';
+import { AIAnalystButton } from '../../components/AIAnalyst';
 import { useToast } from '../../context/ToastContext';
 import { useFetch } from '../../hooks/useFetch';
 import './ProvenancePage.css';
@@ -650,6 +651,21 @@ export function ProvenancePage() {
             <h1>Provenance</h1>
             <p className="page-description">Track data origin, evidence chains, and lineage</p>
           </div>
+        </div>
+        <div className="page-actions">
+          <AIAnalystButton
+            shard="provenance"
+            targetId={selectedArtifact?.id || selectedChain?.id || 'overview'}
+            context={{
+              currentTab: mainTab,
+              selectedArtifact: selectedArtifact,
+              selectedChain: selectedChain,
+              artifactCount: artifacts?.length || 0,
+              chainCount: chains?.length || 0,
+            }}
+            label="AI Analysis"
+            disabled={false}
+          />
         </div>
       </header>
 

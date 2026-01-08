@@ -7,6 +7,7 @@
 import { useState, useCallback, useEffect } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { Icon } from '../../components/common/Icon';
+import { AIAnalystButton } from '../../components/AIAnalyst';
 import { useToast } from '../../context/ToastContext';
 import { useFetch } from '../../hooks/useFetch';
 import { usePaginatedFetch } from '../../hooks';
@@ -157,6 +158,20 @@ export function DocumentsPage() {
               <h1>Documents</h1>
               <p className="page-description">Browse and manage documents</p>
             </div>
+          </div>
+          <div className="page-actions">
+            <AIAnalystButton
+              shard="documents"
+              targetId={selectedDoc || 'overview'}
+              context={{
+                statistics: stats,
+                filters: { status: statusFilter, search: searchQuery },
+                selectedDocumentId: selectedDoc,
+                totalDocuments: total,
+              }}
+              label="AI Analysis"
+              disabled={false}
+            />
           </div>
 
           {stats && (

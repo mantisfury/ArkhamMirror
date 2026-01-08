@@ -9,6 +9,7 @@ import { useState, useCallback, useMemo, useRef, useEffect } from 'react';
 import ForceGraph2D from 'react-force-graph-2d';
 import type { ForceGraphMethods } from 'react-force-graph-2d';
 import { Icon } from '../../components/common/Icon';
+import { AIAnalystButton } from '../../components/AIAnalyst';
 import { useToast } from '../../context/ToastContext';
 import { useFetch } from '../../hooks/useFetch';
 import { useGraphSettings } from './hooks/useGraphSettings';
@@ -1020,6 +1021,30 @@ export function GraphPage() {
             <Icon name={urlCopied ? 'Check' : 'Share2'} size={16} />
             {urlCopied ? 'Copied!' : 'Share'}
           </button>
+          <AIAnalystButton
+            shard="graph"
+            targetId={selectedNode?.id || 'overview'}
+            context={{
+              stats: stats ? {
+                node_count: stats.node_count,
+                edge_count: stats.edge_count,
+                avg_degree: stats.avg_degree,
+                density: stats.density,
+              } : null,
+              visible_nodes: forceGraphData.nodes.length,
+              visible_edges: forceGraphData.links.length,
+              selected_node: selectedNode ? {
+                id: selectedNode.id,
+                label: selectedNode.label,
+                type: selectedNode.type || selectedNode.entity_type,
+                degree: selectedNode.degree,
+              } : null,
+              relationship_types: Array.from(relationshipTypes),
+              entity_types: Array.from(entityTypes),
+              project_id: projectId,
+            }}
+            disabled={!graphData}
+          />
         </div>
       </header>
 
@@ -1267,6 +1292,37 @@ export function GraphPage() {
                     <Icon name="Target" size={14} />
                     {egoFocusEntity === selectedNode.id ? 'Focused' : 'Focus (Ego Network)'}
                   </button>
+                  <div style={{ marginTop: '0.5rem', width: '100%' }}>
+                    <AIAnalystButton
+                      shard="graph"
+                      targetId={selectedNode.id}
+                      context={{
+                        selected_item: {
+                          id: selectedNode.id,
+                          label: selectedNode.label,
+                          type: selectedNode.type,
+                          degree: selectedNode.degree,
+                          document_count: selectedNode.document_count,
+                        },
+                        related_items: getConnectedNodes(selectedNode.id).map(n => ({
+                          id: n.id,
+                          label: n.label,
+                          type: n.type,
+                          degree: n.degree,
+                        })),
+                        statistics: stats ? {
+                          total_nodes: stats.node_count,
+                          total_edges: stats.edge_count,
+                          avg_degree: stats.avg_degree,
+                          density: stats.density,
+                        } : {},
+                        filters_applied: filters,
+                      }}
+                      label="AI Analysis"
+                      variant="secondary"
+                      size="sm"
+                    />
+                  </div>
                 </div>
               )}
 

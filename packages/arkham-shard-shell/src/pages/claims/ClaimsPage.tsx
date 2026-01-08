@@ -7,6 +7,7 @@
 
 import { useState, useEffect } from 'react';
 import { Icon } from '../../components/common/Icon';
+import { AIAnalystButton } from '../../components/AIAnalyst';
 import { useToast } from '../../context/ToastContext';
 import { useFetch } from '../../hooks/useFetch';
 import { usePaginatedFetch } from '../../hooks';
@@ -266,6 +267,17 @@ export function ClaimsPage() {
           </div>
         </div>
         <div className="page-actions">
+          <AIAnalystButton
+            shard="claims"
+            targetId={selectedClaim?.id || 'overview'}
+            context={{
+              filters: { status: statusFilter, search: searchQuery },
+              selectedClaim: selectedClaim,
+              totalClaims: total,
+            }}
+            label="AI Analysis"
+            disabled={false}
+          />
           <button
             className="btn btn-primary"
             onClick={() => setShowExtractModal(true)}

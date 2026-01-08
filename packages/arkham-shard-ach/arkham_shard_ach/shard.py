@@ -143,6 +143,11 @@ class ACHShard(ArkhamShard):
             # For example, when documents are added, we could link them to evidence
             pass
 
+        # Register self in app state for API access
+        if hasattr(frame, "app") and frame.app:
+            frame.app.state.ach_shard = self
+            logger.debug("ACH Shard registered on app.state")
+
         logger.info("ACH Shard initialized")
 
     async def shutdown(self) -> None:

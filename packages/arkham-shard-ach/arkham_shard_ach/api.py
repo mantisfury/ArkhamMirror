@@ -1,12 +1,24 @@
 """ACH Shard API endpoints."""
 
 import logging
-from typing import Annotated
+from typing import Annotated, Any, TYPE_CHECKING
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+if TYPE_CHECKING:
+    from .shard import ACHShard
+
 logger = logging.getLogger(__name__)
+
+
+def get_shard(request: Request) -> "ACHShard":
+    """Get the ACH shard instance from app state."""
+    shard = getattr(request.app.state, "ach_shard", None)
+    if not shard:
+        raise HTTPException(status_code=503, detail="ACH shard not available")
+    return shard
 
 router = APIRouter(prefix="/api/ach", tags=["ach"])
 
@@ -614,6 +626,11 @@ async def add_hypothesis(request: AddHypothesisRequest):
     if not _matrix_manager:
         raise HTTPException(status_code=503, detail="ACH service not initialized")
 
+    # Preload matrix into cache (async) so sync add_hypothesis works
+    matrix = await _matrix_manager.get_matrix_async(request.matrix_id)
+    if not matrix:
+        raise HTTPException(status_code=404, detail=f"Matrix not found: {request.matrix_id}")
+
     hypothesis = _matrix_manager.add_hypothesis(
         matrix_id=request.matrix_id,
         title=request.title,
@@ -622,7 +639,7 @@ async def add_hypothesis(request: AddHypothesisRequest):
     )
 
     if not hypothesis:
-        raise HTTPException(status_code=404, detail=f"Matrix not found: {request.matrix_id}")
+        raise HTTPException(status_code=500, detail="Failed to add hypothesis")
 
     # Emit event
     if _event_bus:
@@ -674,6 +691,11 @@ async def add_evidence(request: AddEvidenceRequest):
     if not _matrix_manager:
         raise HTTPException(status_code=503, detail="ACH service not initialized")
 
+    # Preload matrix into cache (async) so sync add_evidence works
+    matrix = await _matrix_manager.get_matrix_async(request.matrix_id)
+    if not matrix:
+        raise HTTPException(status_code=404, detail=f"Matrix not found: {request.matrix_id}")
+
     evidence = _matrix_manager.add_evidence(
         matrix_id=request.matrix_id,
         description=request.description,
@@ -686,7 +708,7 @@ async def add_evidence(request: AddEvidenceRequest):
     )
 
     if not evidence:
-        raise HTTPException(status_code=404, detail=f"Matrix not found: {request.matrix_id}")
+        raise HTTPException(status_code=500, detail="Failed to add evidence")
 
     # Emit event
     if _event_bus:
@@ -740,6 +762,11 @@ async def update_rating(request: UpdateRatingRequest):
 
     from .models import ConsistencyRating
 
+    # Preload matrix into cache (async) so sync set_rating works
+    matrix = await _matrix_manager.get_matrix_async(request.matrix_id)
+    if not matrix:
+        raise HTTPException(status_code=404, detail=f"Matrix not found: {request.matrix_id}")
+
     # Parse rating
     try:
         rating_enum = ConsistencyRating(request.rating)
@@ -757,7 +784,7 @@ async def update_rating(request: UpdateRatingRequest):
     )
 
     if not rating:
-        raise HTTPException(status_code=404, detail="Matrix, evidence, or hypothesis not found")
+        raise HTTPException(status_code=404, detail="Evidence or hypothesis not found")
 
     # Emit event
     if _event_bus:
@@ -2091,3 +2118,76 @@ def _format_scenario_tree(tree) -> dict:
         "created_at": tree.created_at.isoformat(),
         "updated_at": tree.updated_at.isoformat(),
     }
+
+
+# --- AI Junior Analyst ---
+
+
+class AIJuniorAnalystRequest(BaseModel):
+    """Request for AI Junior Analyst analysis."""
+    target_id: str
+    context: dict[str, Any] = {}
+    depth: str = "quick"
+    session_id: str | None = None
+    message: str | None = None
+    conversation_history: list[dict[str, str]] | None = None
+
+
+@router.post("/ai/junior-analyst")
+async def ai_junior_analyst(request: Request, body: AIJuniorAnalystRequest):
+    """
+    AI Junior Analyst endpoint for ACH matrix analysis.
+
+    Provides AI-powered interpretation of ACH matrices including:
+    - Hypothesis ranking and likelihood assessment
+    - Evidence pattern analysis
+    - Inconsistency detection
+    - Devil's advocate perspectives
+    - Cognitive bias warnings
+    """
+    shard = get_shard(request)
+    frame = shard._frame
+
+    if not frame or not getattr(frame, "ai_analyst", None):
+        raise HTTPException(
+            status_code=503,
+            detail="AI Analyst service not available"
+        )
+
+    # Build context from request
+    from arkham_frame.services import AnalysisRequest, AnalysisDepth, AnalystMessage
+
+    # Parse depth
+    try:
+        depth = AnalysisDepth(body.depth)
+    except ValueError:
+        depth = AnalysisDepth.QUICK
+
+    # Build conversation history
+    history = None
+    if body.conversation_history:
+        history = [
+            AnalystMessage(role=msg["role"], content=msg["content"])
+            for msg in body.conversation_history
+        ]
+
+    analysis_request = AnalysisRequest(
+        shard="ach",
+        target_id=body.target_id,
+        context=body.context,
+        depth=depth,
+        session_id=body.session_id,
+        message=body.message,
+        conversation_history=history,
+    )
+
+    # Stream the response
+    return StreamingResponse(
+        frame.ai_analyst.stream_analyze(analysis_request),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )

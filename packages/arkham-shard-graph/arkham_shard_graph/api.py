@@ -98,6 +98,137 @@ def init_api(builder, algorithms, exporter, storage=None, event_bus=None, scorer
 # ========== Scoring Endpoints (must be before /{project_id} catch-all) ==========
 
 
+# ========== AI Junior Analyst Endpoints ==========
+
+
+class AIJuniorAnalystRequest(BaseModel):
+    """Request for AI Junior Analyst analysis."""
+    target_id: str
+    context: dict[str, Any] = {}
+    depth: str = "quick"  # "quick" or "detailed"
+    session_id: str | None = None
+    message: str | None = None  # Follow-up question
+    conversation_history: list[dict[str, str]] | None = None
+
+
+@router.post("/ai/junior-analyst")
+async def ai_junior_analyst(
+    request: Request,
+    body: AIJuniorAnalystRequest,
+):
+    """
+    AI Junior Analyst - Provide AI-powered network analysis.
+
+    Serializes the current graph context and sends to LLM for interpretation.
+    Supports follow-up questions with conversation history.
+
+    Returns streaming response with:
+    - Session ID for follow-ups
+    - Analysis text (streamed)
+    - Completion status
+    """
+    from fastapi.responses import StreamingResponse
+
+    # Get shard and frame
+    shard = get_shard(request)
+    frame = shard._frame
+
+    if not frame.ai_analyst:
+        raise HTTPException(status_code=503, detail="AI Analyst service not available")
+
+    if not frame.ai_analyst.is_available():
+        raise HTTPException(status_code=503, detail="LLM service not available. Configure LLM endpoint in settings.")
+
+    try:
+        # Build analysis request
+        from arkham_frame.services import AnalysisRequest, AnalysisDepth
+
+        analysis_request = AnalysisRequest(
+            shard="graph",
+            target_id=body.target_id,
+            context=body.context,
+            depth=AnalysisDepth.QUICK if body.depth == "quick" else AnalysisDepth.DETAILED,
+            session_id=body.session_id,
+            message=body.message,
+            conversation_history=body.conversation_history,
+        )
+
+        # Stream the response
+        async def generate():
+            async for chunk in frame.ai_analyst.stream_analyze(
+                request=analysis_request,
+                temperature=0.7,
+            ):
+                yield chunk
+
+        return StreamingResponse(
+            generate(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+            },
+        )
+
+    except Exception as e:
+        logger.error(f"AI Junior Analyst error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ========== AI Feedback ==========
+
+
+class AIFeedbackRequest(BaseModel):
+    """Request for AI analysis feedback."""
+
+    session_id: str
+    message_id: str | None = None
+    rating: str  # "up" or "down"
+    feedback_text: str | None = None
+
+
+class AIFeedbackResponse(BaseModel):
+    """Response after submitting feedback."""
+
+    success: bool
+    feedback_id: str
+
+
+@router.post("/ai/feedback", response_model=AIFeedbackResponse)
+async def submit_ai_feedback(request: Request, body: AIFeedbackRequest):
+    """Submit feedback on AI analysis quality."""
+    import uuid
+
+    shard = get_shard(request)
+    frame = shard.frame
+
+    feedback_id = str(uuid.uuid4())
+
+    # Emit feedback event for tracking
+    if frame.events:
+        await frame.events.emit(
+            event_type="ai.feedback.submitted",
+            payload={
+                "feedback_id": feedback_id,
+                "session_id": body.session_id,
+                "message_id": body.message_id,
+                "rating": body.rating,
+                "has_text": bool(body.feedback_text),
+                "shard": "graph",
+            },
+            source="graph-shard",
+        )
+
+    logger.info(
+        f"AI Feedback: session={body.session_id}, rating={body.rating}"
+    )
+
+    return AIFeedbackResponse(success=True, feedback_id=feedback_id)
+
+
+# ========== Scoring Endpoints (continued) ==========
+
+
 @router.post("/scores")
 async def calculate_scores(request: ScoreConfigRequest) -> ScoreResponseModel:
     """

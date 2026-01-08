@@ -7,8 +7,10 @@
 import { useState, useEffect } from 'react';
 import { useSearchParams, useNavigate } from 'react-router-dom';
 import { Icon } from '../../components/common/Icon';
+import { AIAnalystButton } from '../../components/AIAnalyst';
 import { useToast } from '../../context/ToastContext';
 import { SearchResultCard } from './SearchResultCard';
+import { RAGChatPanel } from './RAGChatPanel';
 import { useSearch, findSimilar } from './api';
 import type { SearchMode, SearchFilters, SearchResultItem } from './types';
 
@@ -29,6 +31,8 @@ export function SearchPage() {
   const [filters, setFilters] = useState<SearchFilters>({});
   const [similarResults, setSimilarResults] = useState<SearchResultItem[] | null>(null);
   const [similarLoading, setSimilarLoading] = useState(false);
+  const [showRAGChat, setShowRAGChat] = useState(false);
+  const [ragInitialQuestion, setRagInitialQuestion] = useState<string | undefined>();
 
   // Execute search when URL changes
   const { data, loading, error } = useSearch({
@@ -103,6 +107,13 @@ export function SearchPage() {
     }
   };
 
+  // Handle ask about - open RAG chat with document context
+  const handleAskAbout = (result: SearchResultItem) => {
+    const question = `Tell me about the document "${result.title}". What are the main topics and key information it contains?`;
+    setRagInitialQuestion(question);
+    setShowRAGChat(true);
+  };
+
   // Handle similar search from URL on page load
   useEffect(() => {
     if (similarDocId && !similarResults && !similarLoading) {
@@ -128,6 +139,28 @@ export function SearchPage() {
               Hybrid semantic and keyword search across documents
             </p>
           </div>
+        </div>
+        <div className="page-actions">
+          <button
+            className={`btn btn-secondary ${showRAGChat ? 'active' : ''}`}
+            onClick={() => setShowRAGChat(!showRAGChat)}
+          >
+            <Icon name="MessageSquare" size={16} />
+            Ask AI
+          </button>
+          <AIAnalystButton
+            shard="search"
+            targetId={queryFromUrl || 'overview'}
+            context={{
+              query: queryFromUrl,
+              mode: searchMode,
+              filters: filters,
+              resultsCount: data?.total || 0,
+              results: data?.items?.slice(0, 5) || [],
+            }}
+            label="AI Analysis"
+            disabled={false}
+          />
         </div>
       </header>
 
@@ -358,6 +391,7 @@ export function SearchPage() {
                     result={result}
                     onView={handleViewDocument}
                     onFindSimilar={handleFindSimilar}
+                    onAskAbout={handleAskAbout}
                   />
                 ))}
               </div>
@@ -424,6 +458,7 @@ export function SearchPage() {
                     result={result}
                     onView={handleViewDocument}
                     onFindSimilar={handleFindSimilar}
+                    onAskAbout={handleAskAbout}
                   />
                 ))}
               </div>
@@ -457,6 +492,13 @@ export function SearchPage() {
           </div>
         </section>
       )}
+
+      {/* RAG Chat Panel */}
+      <RAGChatPanel
+        isOpen={showRAGChat}
+        onClose={() => setShowRAGChat(false)}
+        initialQuestion={ragInitialQuestion}
+      />
     </div>
   );
 }

@@ -154,6 +154,11 @@ class ContradictionsShard(ArkhamShard):
         if self._event_bus:
             await self._subscribe_to_events()
 
+        # Register shard on app.state for API access
+        if hasattr(frame, "app") and frame.app:
+            frame.app.state.contradictions_shard = self
+            logger.debug("Contradictions Shard registered on app.state")
+
         logger.info("Contradictions Shard initialized")
 
     async def _create_schema(self) -> None:

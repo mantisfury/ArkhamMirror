@@ -138,6 +138,13 @@ from .scheduler import (
     ScheduledJob,
     JobResult,
 )
+from .ai_analyst import (
+    AIJuniorAnalystService,
+    AnalysisRequest,
+    AnalysisResponse,
+    AnalysisDepth,
+    Message as AnalystMessage,
+)
 
 __all__ = [
     # Services
@@ -157,6 +164,7 @@ __all__ = [
     "TemplateService",
     "NotificationService",
     "SchedulerService",
+    "AIJuniorAnalystService",
     # Entity types and enums
     "EntityType",
     "RelationshipType",
@@ -267,4 +275,9 @@ __all__ = [
     "JobNotFoundError",
     "JobExecutionError",
     "InvalidScheduleError",
+    # AI Analyst types
+    "AnalysisRequest",
+    "AnalysisResponse",
+    "AnalysisDepth",
+    "AnalystMessage",
 ]

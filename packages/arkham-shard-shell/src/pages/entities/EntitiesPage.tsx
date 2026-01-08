@@ -8,6 +8,7 @@
 import { useState, useEffect } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { Icon } from '../../components/common/Icon';
+import { AIAnalystButton } from '../../components/AIAnalyst';
 import { useToast } from '../../context/ToastContext';
 import { useFetch } from '../../hooks/useFetch';
 import { usePaginatedFetch } from '../../hooks';
@@ -157,6 +158,19 @@ export function EntitiesPage() {
               )}
             </p>
           </div>
+        </div>
+        <div className="page-actions">
+          <AIAnalystButton
+            shard="entities"
+            targetId={selectedEntity?.id || 'overview'}
+            context={{
+              statistics: stats,
+              filters: { type: typeFilter, search: searchQuery },
+              selectedEntity: selectedEntity,
+            }}
+            label="AI Analysis"
+            disabled={false}
+          />
         </div>
       </header>
 
