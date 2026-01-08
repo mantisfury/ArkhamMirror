@@ -89,3 +89,9 @@ credentials.json
 
 # Test output
 test_*/
+
+# Archive (local planning docs)
+archive/
+
+# Windows artifacts
+nul
