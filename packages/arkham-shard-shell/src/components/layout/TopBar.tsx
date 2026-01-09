@@ -7,6 +7,7 @@
 import { useShell } from '../../context/ShellContext';
 import { Icon } from '../common/Icon';
 import { ProjectSelector } from '../common/ProjectSelector';
+import { UserMenu } from '../auth/UserMenu';
 
 export function TopBar() {
   const { currentShard, loading, error, connected, refetchShards } = useShell();
@@ -63,10 +64,8 @@ export function TopBar() {
           </button>
         </div>
 
-        {/* User actions */}
-        <button className="topbar-action" title="Settings">
-          <Icon name="Settings" size={18} />
-        </button>
+        {/* User menu */}
+        <UserMenu />
       </div>
     </header>
   );

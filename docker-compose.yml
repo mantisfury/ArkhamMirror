@@ -44,6 +44,9 @@ services:
       - EMBED_MODEL=${EMBED_MODEL:-}
       # Serve the React shell from FastAPI
       - ARKHAM_SERVE_SHELL=true
+      # Auth security (REQUIRED for production - generate with: openssl rand -hex 32)
+      - AUTH_SECRET_KEY=${AUTH_SECRET_KEY:-CHANGE-ME-IN-PRODUCTION}
+      - JWT_LIFETIME_SECONDS=${JWT_LIFETIME_SECONDS:-3600}
     volumes:
       # Persist uploaded documents and exports
       - datasilo:/app/data_silo
