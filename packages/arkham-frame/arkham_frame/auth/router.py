@@ -63,9 +63,16 @@ async def get_current_user(user: User = Depends(current_active_user)):
 
 
 @router.get("/me/tenant", response_model=TenantRead)
-async def get_current_tenant(user: User = Depends(current_active_user)):
+async def get_current_tenant(
+    user: User = Depends(current_active_user),
+    session: AsyncSession = Depends(get_async_session),
+):
     """Get current user's tenant."""
-    return user.tenant
+    result = await session.execute(select(Tenant).where(Tenant.id == user.tenant_id))
+    tenant = result.scalar_one_or_none()
+    if not tenant:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+    return tenant
 
 
 @router.patch("/me", response_model=UserRead)
@@ -244,7 +251,9 @@ async def create_tenant_user(
         select(func.count(User.id)).where(User.tenant_id == user.tenant_id)
     )
     current_count = count_result.scalar()
-    if current_count >= user.tenant.max_users:
+    tenant_result = await session.execute(select(Tenant).where(Tenant.id == user.tenant_id))
+    tenant = tenant_result.scalar_one()
+    if current_count >= tenant.max_users:
         raise HTTPException(status_code=400, detail="Tenant user limit reached")
 
     # Create user

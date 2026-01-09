@@ -12,6 +12,7 @@ from fastapi_users.authentication import (
     JWTStrategy,
 )
 from fastapi_users.db import SQLAlchemyUserDatabase
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
 
 from .models import User, UserRole, Base
@@ -38,7 +39,7 @@ async def create_db_and_tables():
     """Create auth database tables."""
     async with engine.begin() as conn:
         # Create schema if not exists
-        await conn.execute("CREATE SCHEMA IF NOT EXISTS arkham_auth")
+        await conn.execute(text("CREATE SCHEMA IF NOT EXISTS arkham_auth"))
         await conn.run_sync(Base.metadata.create_all)
 
 

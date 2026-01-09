@@ -86,6 +86,16 @@ async def lifespan(app: FastAPI):
     frame = ArkhamFrame()
     await frame.initialize()
 
+    # Initialize auth database tables
+    from .auth import create_db_and_tables
+    from .auth.dependencies import async_session_maker
+    from .auth.audit import ensure_audit_schema
+    await create_db_and_tables()
+    # Create audit tables
+    async with async_session_maker() as session:
+        await ensure_audit_schema(session)
+        await session.commit()
+
     # Store app reference on frame for shards to access
     frame.app = app
 
