@@ -50,22 +50,20 @@ class ConfigService:
 
     def _load_env(self):
         """Load configuration from environment variables."""
+        # PostgreSQL database (includes pgvector for vectors and job queue)
         self._config["database_url"] = os.environ.get(
             "DATABASE_URL",
             "postgresql://arkham:arkhampass@localhost:5432/arkhamdb"
         )
-        self._config["redis_url"] = os.environ.get(
-            "REDIS_URL",
-            "redis://localhost:6379"
-        )
-        self._config["qdrant_url"] = os.environ.get(
-            "QDRANT_URL",
-            "http://localhost:6333"  # Fixed: was 6343, Qdrant default is 6333
-        )
+        # LLM endpoint (LM Studio, Ollama, OpenAI-compatible)
         self._config["llm_endpoint"] = os.environ.get(
             "LLM_ENDPOINT",
             os.environ.get("LM_STUDIO_URL", "http://localhost:1234/v1")
         )
+        # VLM endpoint for vision tasks (OCR)
+        self._config["vlm_endpoint"] = os.environ.get("VLM_ENDPOINT", "")
+        # Embedding model name
+        self._config["embed_model"] = os.environ.get("EMBED_MODEL", "")
 
         # Air-gap / offline mode - prevents auto-downloading ML models
         self._config["offline_mode"] = os.environ.get(
@@ -96,16 +94,16 @@ class ConfigService:
         return self._config.get("database_url", "")
 
     @property
-    def redis_url(self) -> str:
-        return self._config.get("redis_url", "")
-
-    @property
-    def qdrant_url(self) -> str:
-        return self._config.get("qdrant_url", "")
-
-    @property
     def llm_endpoint(self) -> str:
         return self._config.get("llm_endpoint", "")
+
+    @property
+    def vlm_endpoint(self) -> str:
+        return self._config.get("vlm_endpoint", "")
+
+    @property
+    def embed_model(self) -> str:
+        return self._config.get("embed_model", "")
 
     @property
     def offline_mode(self) -> bool:

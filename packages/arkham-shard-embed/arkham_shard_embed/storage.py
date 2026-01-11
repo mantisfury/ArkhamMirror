@@ -9,12 +9,12 @@ logger = logging.getLogger(__name__)
 
 class VectorStore:
     """
-    Wrapper for Qdrant vector storage operations.
+    Wrapper for pgvector storage operations.
 
     Handles:
     - Collection management
     - Vector upsert, query, delete operations
-    - Index optimization
+    - Index reindexing
     - Batch operations
     """
 
@@ -242,7 +242,7 @@ class VectorStore:
         try:
             await self.vectors_service.delete(
                 collection_name=collection_name,
-                points_selector={"ids": vector_ids}
+                ids=vector_ids
             )
 
             logger.info(f"Deleted {len(vector_ids)} vectors from '{collection_name}'")
@@ -262,7 +262,7 @@ class VectorStore:
 
         Args:
             collection_name: Name of the collection
-            filters: Qdrant filter conditions
+            filters: Payload filter conditions (e.g., {"document_id": "doc-123"})
 
         Returns:
             True if successful, False otherwise
@@ -270,7 +270,7 @@ class VectorStore:
         try:
             await self.vectors_service.delete(
                 collection_name=collection_name,
-                points_selector={"filter": filters}
+                filter=filters
             )
 
             logger.info(f"Deleted vectors from '{collection_name}' with filter")
@@ -311,9 +311,13 @@ class VectorStore:
             logger.error(f"Failed to list collections: {e}")
             return []
 
-    async def optimize_collection(self, collection_name: str) -> bool:
+    async def reindex_collection(self, collection_name: str) -> bool:
         """
-        Optimize a collection's indexes for better search performance.
+        Reindex a collection's IVFFlat index for better search performance.
+
+        This rebuilds the IVFFlat index with optimal parameters based on
+        current data distribution. Should be called periodically after
+        significant data changes.
 
         Args:
             collection_name: Name of the collection
@@ -322,11 +326,12 @@ class VectorStore:
             True if successful, False otherwise
         """
         try:
-            # This would trigger index optimization in Qdrant
-            # The actual implementation depends on the vectors_service API
-            logger.info(f"Optimizing collection '{collection_name}'")
-            # await self.vectors_service.optimize(collection_name)
+            result = await self.vectors_service.reindex_collection(collection_name)
+            logger.info(
+                f"Reindexed collection '{collection_name}': "
+                f"lists {result.get('old_lists', 0)} -> {result.get('new_lists', 0)}"
+            )
             return True
         except Exception as e:
-            logger.error(f"Failed to optimize '{collection_name}': {e}")
+            logger.error(f"Failed to reindex '{collection_name}': {e}")
             return False

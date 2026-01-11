@@ -20,78 +20,64 @@ import tempfile
 import time
 from pathlib import Path
 
-REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379")
+DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql://postgres:postgres@localhost:5432/arkham")
 
 
-async def get_redis():
-    """Get async Redis client."""
-    import redis.asyncio as aioredis
-    client = aioredis.from_url(REDIS_URL)
+async def get_db_pool():
+    """Get async PostgreSQL connection pool."""
+    import asyncpg
     try:
-        await client.ping()
-        return client
+        pool = await asyncpg.create_pool(DATABASE_URL, min_size=1, max_size=5)
+        async with pool.acquire() as conn:
+            await conn.fetchval("SELECT 1")
+        return pool
     except Exception as e:
-        print(f"Redis connection failed: {e}")
+        print(f"PostgreSQL connection failed: {e}")
         return None
 
 
-async def enqueue_job(redis, pool: str, job_id: str, payload: dict, priority: int = 1):
+async def enqueue_job(pool, pool_name: str, job_id: str, payload: dict, priority: int = 1):
     """Enqueue a job."""
-    queue_key = f"arkham:queue:{pool}"
-    job_key = f"arkham:job:{job_id}"
-
-    await redis.hset(job_key, mapping={
-        "pool": pool,
-        "payload": json.dumps(payload),
-        "priority": priority,
-        "status": "pending",
-    })
-    await redis.zadd(queue_key, {job_id: priority})
+    async with pool.acquire() as conn:
+        await conn.execute("""
+            INSERT INTO arkham_jobs.jobs (id, pool, payload, priority, status)
+            VALUES ($1, $2, $3, $4, 'pending')
+            ON CONFLICT (id) DO UPDATE SET
+                status = 'pending',
+                payload = EXCLUDED.payload
+        """, job_id, pool_name, json.dumps(payload), priority)
 
 
-async def wait_for_job(redis, job_id: str, timeout: float = 60.0) -> dict:
+async def wait_for_job(pool, job_id: str, timeout: float = 60.0) -> dict:
     """Wait for job completion."""
-    job_key = f"arkham:job:{job_id}"
     elapsed = 0.0
     interval = 0.2
 
     while elapsed < timeout:
-        status = await redis.hget(job_key, "status")
-        if status:
-            if isinstance(status, bytes):
-                status = status.decode()
-            if status in ["completed", "failed"]:
-                data = await redis.hgetall(job_key)
-                result = {}
-                for k, v in data.items():
-                    key = k.decode() if isinstance(k, bytes) else k
-                    val = v.decode() if isinstance(v, bytes) else v
-                    result[key] = val
-                return result
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT status, result, error FROM arkham_jobs.jobs WHERE id = $1",
+                job_id
+            )
+            if row and row["status"] in ["completed", "failed"]:
+                return {
+                    "status": row["status"],
+                    "result": json.dumps(row["result"]) if row["result"] else "{}",
+                    "error": row["error"],
+                }
         await asyncio.sleep(interval)
         elapsed += interval
 
     return {"status": "timeout"}
 
 
-async def cleanup_jobs(redis, prefix="e2e-test"):
+async def cleanup_jobs(pool, prefix="e2e-test"):
     """Clean up test jobs."""
-    for pool in ["cpu-extract", "cpu-light", "cpu-ner", "gpu-embed"]:
-        queue_key = f"arkham:queue:{pool}"
-        members = await redis.zrange(queue_key, 0, -1)
-        for member in members:
-            if isinstance(member, bytes):
-                member = member.decode()
-            if member.startswith(prefix):
-                await redis.zrem(queue_key, member)
-
-    cursor = 0
-    while True:
-        cursor, keys = await redis.scan(cursor, match=f"arkham:job:{prefix}-*", count=100)
-        if keys:
-            await redis.delete(*keys)
-        if cursor == 0:
-            break
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "DELETE FROM arkham_jobs.jobs WHERE id LIKE $1",
+            f"{prefix}-%"
+        )
 
 
 def create_test_document():
@@ -152,14 +138,14 @@ async def run_e2e_test(test_file: str = None):
     print("END-TO-END PIPELINE TEST")
     print("=" * 70)
 
-    # Connect to Redis
-    redis = await get_redis()
-    if not redis:
+    # Connect to PostgreSQL
+    pool = await get_db_pool()
+    if not pool:
         return False
 
     # Clean up old test data
     print("\n[1] Cleaning up previous test data...")
-    await cleanup_jobs(redis)
+    await cleanup_jobs(pool)
 
     # Start workers
     print("\n[2] Starting workers...")
@@ -176,7 +162,7 @@ async def run_e2e_test(test_file: str = None):
     ]
 
     for name, cls in worker_classes:
-        worker = cls(redis_url=REDIS_URL, worker_id=f"e2e-{name}-worker")
+        worker = cls(database_url=DATABASE_URL, worker_id=f"e2e-{name}-worker")
         worker.idle_timeout = 120.0
         workers.append(worker)
         tasks.append(asyncio.create_task(worker.run()))
@@ -207,12 +193,12 @@ async def run_e2e_test(test_file: str = None):
         print("-" * 70)
 
         job_id = "e2e-test-extract"
-        await enqueue_job(redis, "cpu-extract", job_id, {
+        await enqueue_job(pool, "cpu-extract", job_id, {
             "file_path": file_path,
         })
         print(f"    Dispatched job: {job_id}")
 
-        result = await wait_for_job(redis, job_id, timeout=30)
+        result = await wait_for_job(pool, job_id, timeout=30)
         if result.get("status") != "completed":
             print(f"    FAILED: {result.get('error', 'Unknown error')}")
             return False
@@ -231,13 +217,13 @@ async def run_e2e_test(test_file: str = None):
         print("-" * 70)
 
         job_id = "e2e-test-light"
-        await enqueue_job(redis, "cpu-light", job_id, {
+        await enqueue_job(pool, "cpu-light", job_id, {
             "task": "process",
             "text": text,
         })
         print(f"    Dispatched job: {job_id}")
 
-        result = await wait_for_job(redis, job_id, timeout=30)
+        result = await wait_for_job(pool, job_id, timeout=30)
         if result.get("status") != "completed":
             print(f"    FAILED: {result.get('error', 'Unknown error')}")
             return False
@@ -257,13 +243,13 @@ async def run_e2e_test(test_file: str = None):
         print("-" * 70)
 
         job_id = "e2e-test-ner"
-        await enqueue_job(redis, "cpu-ner", job_id, {
+        await enqueue_job(pool, "cpu-ner", job_id, {
             "text": normalized_text,
             "doc_id": "e2e-test-doc",
         })
         print(f"    Dispatched job: {job_id}")
 
-        result = await wait_for_job(redis, job_id, timeout=60)
+        result = await wait_for_job(pool, job_id, timeout=60)
         if result.get("status") != "completed":
             print(f"    FAILED: {result.get('error', 'Unknown error')}")
             return False
@@ -300,11 +286,11 @@ async def run_e2e_test(test_file: str = None):
         embeddings = []
         for i, chunk in enumerate(chunks[:3]):  # Limit to first 3 chunks for speed
             job_id = f"e2e-test-embed-{i}"
-            await enqueue_job(redis, "gpu-embed", job_id, {
+            await enqueue_job(pool, "gpu-embed", job_id, {
                 "text": chunk,
             })
 
-            result = await wait_for_job(redis, job_id, timeout=60)
+            result = await wait_for_job(pool, job_id, timeout=60)
             if result.get("status") == "completed":
                 embed_result = json.loads(result.get("result", "{}"))
                 embeddings.append({
@@ -359,13 +345,13 @@ async def run_e2e_test(test_file: str = None):
             worker._shutdown_event.set()
         await asyncio.gather(*tasks, return_exceptions=True)
 
-        await cleanup_jobs(redis)
+        await cleanup_jobs(pool)
 
         # Remove temp file if we created it
         if not test_file and Path(file_path).exists():
             os.unlink(file_path)
 
-        await redis.aclose()
+        await pool.close()
 
 
 def main():

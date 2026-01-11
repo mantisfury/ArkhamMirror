@@ -11,9 +11,9 @@ logger = logging.getLogger(__name__)
 
 class SemanticSearchEngine:
     """
-    Semantic search using Qdrant vector store.
+    Semantic search using pgvector.
 
-    Performs similarity search based on embedding vectors.
+    Performs similarity search based on embedding vectors stored in PostgreSQL.
     """
 
     def __init__(
@@ -28,7 +28,7 @@ class SemanticSearchEngine:
         Initialize semantic search engine.
 
         Args:
-            vectors_service: Qdrant vector store service
+            vectors_service: pgvector storage service
             documents_service: Optional documents service for metadata
             embedding_service: Direct embedding service (for sync calls)
             worker_service: Worker service (for async dispatching)
@@ -70,13 +70,13 @@ class SemanticSearchEngine:
         collection_name = self._get_collection_name("chunks")
         logger.debug(f"Searching collection: {collection_name}")
 
-        # Search Qdrant for similar vectors
+        # Search pgvector for similar vectors
         try:
             results = await self.vectors.search(
                 collection=collection_name,
                 query_vector=query_vector,
                 limit=query.limit,
-                filter=self._build_qdrant_filter(query.filters) if query.filters else None,
+                filter=self._build_filter(query.filters) if query.filters else None,
             )
         except Exception as e:
             logger.error(f"Vector search failed: {e}")
@@ -194,12 +194,9 @@ class SemanticSearchEngine:
             except Exception as e:
                 logger.warning(f"Direct embedding failed: {e}")
 
-        # Fallback to worker pool
+        # Fallback to worker pool (async dispatch with wait)
         if self.worker_service:
             try:
-                import asyncio
-                import json
-
                 job_id = str(uuid.uuid4())
                 await self.worker_service.enqueue(
                     pool="gpu-embed",
@@ -208,70 +205,58 @@ class SemanticSearchEngine:
                     priority=1,  # High priority for search
                 )
 
-                # Wait for result (blocking)
-                job_key = f"arkham:job:{job_id}"
-                redis = self.worker_service.redis
+                # Wait for result using PostgreSQL polling
+                result = await self.worker_service.wait_for_result(
+                    job_id=job_id,
+                    timeout=10.0,
+                    poll_interval=0.1,
+                )
 
-                for _ in range(100):  # 10 second timeout
-                    status = await redis.hget(job_key, "status")
-                    if status:
-                        if isinstance(status, bytes):
-                            status = status.decode()
-                        if status == "completed":
-                            result = await redis.hget(job_key, "result")
-                            if result:
-                                if isinstance(result, bytes):
-                                    result = result.decode()
-                                data = json.loads(result)
-                                return data.get("embedding")
-                        elif status == "failed":
-                            logger.error("Embedding job failed")
-                            break
-                    await asyncio.sleep(0.1)
+                if result and "embedding" in result:
+                    return result["embedding"]
 
-                logger.warning("Embedding job timed out")
             except Exception as e:
                 logger.error(f"Worker embedding failed: {e}")
 
         logger.error("No embedding service available")
         return None
 
-    def _build_qdrant_filter(self, filters) -> dict[str, Any]:
+    def _build_filter(self, filters) -> dict[str, Any]:
         """
-        Build Qdrant filters from SearchFilters.
+        Build pgvector JSONB filters from SearchFilters.
 
         Args:
             filters: SearchFilters object
 
         Returns:
-            Qdrant filter dict
+            Filter dict for pgvector search
         """
         if not filters:
             return {}
 
-        qdrant_filters = {}
+        filter_dict = {}
 
         # Date range
         if filters.date_range:
             if filters.date_range.start:
-                qdrant_filters["created_at_gte"] = filters.date_range.start.isoformat()
+                filter_dict["created_at_gte"] = filters.date_range.start.isoformat()
             if filters.date_range.end:
-                qdrant_filters["created_at_lte"] = filters.date_range.end.isoformat()
+                filter_dict["created_at_lte"] = filters.date_range.end.isoformat()
 
         # Entity filter
         if filters.entity_ids:
-            qdrant_filters["entity_ids"] = {"any": filters.entity_ids}
+            filter_dict["entity_ids"] = {"any": filters.entity_ids}
 
         # Project filter
         if filters.project_ids:
-            qdrant_filters["project_ids"] = {"any": filters.project_ids}
+            filter_dict["project_ids"] = {"any": filters.project_ids}
 
         # File type filter
         if filters.file_types:
-            qdrant_filters["file_type"] = {"any": filters.file_types}
+            filter_dict["file_type"] = {"any": filters.file_types}
 
         # Tags filter
         if filters.tags:
-            qdrant_filters["tags"] = {"any": filters.tags}
+            filter_dict["tags"] = {"any": filters.tags}
 
-        return qdrant_filters
+        return filter_dict

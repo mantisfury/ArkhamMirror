@@ -2,6 +2,9 @@
 # SHATTERED KANDOR: Docker Compose
 # Works for both local development and VPS deployment
 #
+# Architecture: PostgreSQL-only (pgvector for vectors, SKIP LOCKED for jobs)
+# No Redis or Qdrant dependencies
+#
 # Usage:
 #   docker compose up -d              # Start all services
 #   docker compose logs -f app        # View app logs
@@ -25,12 +28,8 @@ services:
     ports:
       - "${APP_PORT:-8100}:8100"
     environment:
-      # Database connection
+      # Database connection (includes pgvector for vectors and job queue)
       - DATABASE_URL=postgresql://${POSTGRES_USER:-arkham}:${POSTGRES_PASSWORD:-arkhampass}@postgres:5432/${POSTGRES_DB:-arkhamdb}
-      # Vector store (optional)
-      - QDRANT_URL=http://qdrant:6333
-      # Job queue (optional)
-      - REDIS_URL=redis://redis:6379
       # LLM endpoint (optional - works without it)
       - LLM_ENDPOINT=${LLM_ENDPOINT:-}
       - LM_STUDIO_URL=${LM_STUDIO_URL:-}
@@ -55,10 +54,6 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-      qdrant:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
     networks:
       - shattered-net
     # For connecting to LLM on host machine (LM Studio, Ollama, etc)
@@ -66,10 +61,11 @@ services:
       - "host.docker.internal:host-gateway"
 
   # ---------------------------------------------------------------------------
-  # PostgreSQL Database
+  # PostgreSQL Database with pgvector
+  # Handles: structured data, vector embeddings, job queue, rate limiting
   # ---------------------------------------------------------------------------
   postgres:
-    image: postgres:15-alpine
+    image: pgvector/pgvector:pg15
     container_name: shattered-postgres
     restart: unless-stopped
     environment:
@@ -78,6 +74,8 @@ services:
       - POSTGRES_DB=${POSTGRES_DB:-arkhamdb}
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      # Run migration on first start
+      - ./migrations:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-arkham} -d ${POSTGRES_DB:-arkhamdb}"]
       interval: 5s
@@ -89,58 +87,12 @@ services:
     ports:
       - "5432:5432"
 
-  # ---------------------------------------------------------------------------
-  # Qdrant Vector Database
-  # ---------------------------------------------------------------------------
-  qdrant:
-    image: qdrant/qdrant:latest
-    container_name: shattered-qdrant
-    restart: unless-stopped
-    volumes:
-      - qdrant_data:/qdrant/storage
-    healthcheck:
-      # Use bash /dev/tcp since curl/wget not available in Qdrant image
-      test: ["CMD-SHELL", "bash -c '</dev/tcp/localhost/6333'"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
-    networks:
-      - shattered-net
-    # Expose for local development (Python running on host)
-    ports:
-      - "6333:6333"
-
-  # ---------------------------------------------------------------------------
-  # Redis (Job Queue)
-  # ---------------------------------------------------------------------------
-  redis:
-    image: redis:7-alpine
-    container_name: shattered-redis
-    restart: unless-stopped
-    command: redis-server --appendonly yes
-    volumes:
-      - redis_data:/data
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
-    networks:
-      - shattered-net
-    # Expose for local development (Python running on host)
-    ports:
-      - "6379:6379"
-
 # -----------------------------------------------------------------------------
 # Volumes (Persistent Data)
 # -----------------------------------------------------------------------------
 volumes:
   postgres_data:
     name: shattered_postgres_data
-  qdrant_data:
-    name: shattered_qdrant_data
-  redis_data:
-    name: shattered_redis_data
   datasilo:
     name: shattered_datasilo
 

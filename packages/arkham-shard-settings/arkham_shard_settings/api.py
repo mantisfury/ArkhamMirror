@@ -117,8 +117,45 @@ class ValidationResponse(BaseModel):
 # === Endpoints ===
 
 
-def setting_to_response(setting) -> SettingResponse:
+def _check_cloud_api_available() -> bool:
+    """Check if a cloud API key is configured for embeddings."""
+    import os
+    # Check for API keys that would enable cloud embeddings
+    return bool(
+        os.environ.get("OPENAI_API_KEY") or
+        os.environ.get("LLM_API_KEY") or
+        os.environ.get("ANTHROPIC_API_KEY")
+    )
+
+
+def _filter_embedding_options(options: list, api_available: bool) -> list:
+    """Filter/annotate embedding model options based on API availability."""
+    if api_available:
+        return options
+
+    # If no API key, mark cloud options as disabled
+    filtered = []
+    for opt in options:
+        if "[CLOUD API]" in opt.get("label", ""):
+            # Add disabled flag and warning to cloud options
+            filtered.append({
+                **opt,
+                "disabled": True,
+                "disabledReason": "Requires API key (OPENAI_API_KEY or LLM_API_KEY)",
+            })
+        else:
+            filtered.append(opt)
+    return filtered
+
+
+def setting_to_response(setting, cloud_api_available: bool = False) -> SettingResponse:
     """Convert a Setting dataclass to a response model."""
+    options = setting.options
+
+    # Apply special filtering for embedding model options
+    if setting.key == "advanced.embedding_model":
+        options = _filter_embedding_options(options, cloud_api_available)
+
     return SettingResponse(
         key=setting.key,
         value=setting.value,
@@ -131,7 +168,7 @@ def setting_to_response(setting) -> SettingResponse:
         is_modified=setting.is_modified,
         is_readonly=setting.is_readonly,
         order=setting.order,
-        options=setting.options,
+        options=options,
         validation=setting.validation,
     )
 
@@ -174,7 +211,8 @@ async def list_settings(
         search=search,
         modified_only=modified_only
     )
-    return [setting_to_response(s) for s in settings]
+    cloud_api_available = _check_cloud_api_available()
+    return [setting_to_response(s, cloud_api_available) for s in settings]
 
 
 # === Data Management Endpoints ===
@@ -328,6 +366,181 @@ async def clear_temp_storage(request: Request):
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to clear temp storage: {str(e)}")
+
+
+class VectorMaintenanceResponse(BaseModel):
+    """Response model for vector maintenance operations."""
+    success: bool
+    message: str
+    operation: str
+    details: Dict[str, Any] = {}
+
+
+class VectorHealthResponse(BaseModel):
+    """Response model for vector health check."""
+    status: str
+    total_vectors: int
+    total_collections: int
+    collections: List[Dict[str, Any]] = []
+    warnings: List[str] = []
+    last_reindex: Optional[str] = None
+    reindex_in_progress: bool = False
+
+
+@router.get("/vectors/health", response_model=VectorHealthResponse)
+async def get_vector_health(request: Request):
+    """Get vector store health status."""
+    shard = get_shard(request)
+    frame = shard._frame
+    vectors = frame.get_service("vectors")
+    maintenance = frame.get_service("vector_maintenance")
+
+    if not vectors:
+        return VectorHealthResponse(
+            status="unavailable",
+            total_vectors=0,
+            total_collections=0,
+            warnings=["Vector service not available"],
+        )
+
+    try:
+        collections = await vectors.list_collections()
+        total_vectors = 0
+        collection_data = []
+
+        for coll in collections:
+            info = await vectors.get_collection_info(coll.name if hasattr(coll, 'name') else coll)
+            coll_vectors = info.vector_count if hasattr(info, 'vector_count') else 0
+            total_vectors += coll_vectors
+            collection_data.append({
+                "name": info.name if hasattr(info, 'name') else str(coll),
+                "vector_count": coll_vectors,
+                "vector_size": info.vector_size if hasattr(info, 'vector_size') else 0,
+                "index_type": info.index_type if hasattr(info, 'index_type') else "unknown",
+                "lists": info.lists if hasattr(info, 'lists') else 0,
+                "probes": info.probes if hasattr(info, 'probes') else 0,
+                "last_reindex": info.last_reindex.isoformat() if hasattr(info, 'last_reindex') and info.last_reindex else None,
+            })
+
+        # Get maintenance status if available
+        last_reindex = None
+        reindex_in_progress = False
+        if maintenance:
+            status = maintenance.get_status()
+            last_reindex = status.get("last_reindex")
+            reindex_in_progress = status.get("reindex_in_progress", False)
+
+        return VectorHealthResponse(
+            status="healthy",
+            total_vectors=total_vectors,
+            total_collections=len(collections),
+            collections=collection_data,
+            warnings=[],
+            last_reindex=last_reindex,
+            reindex_in_progress=reindex_in_progress,
+        )
+
+    except Exception as e:
+        return VectorHealthResponse(
+            status="error",
+            total_vectors=0,
+            total_collections=0,
+            warnings=[f"Failed to get vector health: {str(e)}"],
+        )
+
+
+@router.post("/vectors/reindex", response_model=VectorMaintenanceResponse)
+async def trigger_reindex_all(request: Request):
+    """
+    Trigger manual reindex of all vector collections.
+
+    This rebuilds all IVFFlat indexes with optimal parameters based on
+    current data distribution. Use after significant data changes.
+    """
+    shard = get_shard(request)
+    frame = shard._frame
+    maintenance = frame.get_service("vector_maintenance")
+
+    if not maintenance:
+        # Fallback to vectors service directly
+        vectors = frame.get_service("vectors")
+        if not vectors:
+            raise HTTPException(status_code=503, detail="Vector service not available")
+
+        try:
+            result = await vectors.reindex_all()
+            return VectorMaintenanceResponse(
+                success=result.get("success", True),
+                message=f"Reindexed {result.get('collections_reindexed', 0)} collection(s)",
+                operation="reindex_all",
+                details=result,
+            )
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Reindex failed: {str(e)}")
+
+    try:
+        result = await maintenance.reindex_all()
+        return VectorMaintenanceResponse(
+            success=result.get("success", False),
+            message=f"Reindexed {result.get('collections_reindexed', 0)} collection(s)",
+            operation="reindex_all",
+            details=result,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Reindex failed: {str(e)}")
+
+
+@router.post("/vectors/reindex/{collection_name}", response_model=VectorMaintenanceResponse)
+async def trigger_reindex_collection(collection_name: str, request: Request):
+    """
+    Trigger manual reindex of a specific vector collection.
+
+    Args:
+        collection_name: Name of the collection to reindex
+    """
+    shard = get_shard(request)
+    frame = shard._frame
+    maintenance = frame.get_service("vector_maintenance")
+
+    if not maintenance:
+        vectors = frame.get_service("vectors")
+        if not vectors:
+            raise HTTPException(status_code=503, detail="Vector service not available")
+
+        try:
+            result = await vectors.reindex_collection(collection_name)
+            return VectorMaintenanceResponse(
+                success=True,
+                message=f"Reindexed collection '{collection_name}'",
+                operation="reindex_collection",
+                details=result,
+            )
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Reindex failed: {str(e)}")
+
+    try:
+        result = await maintenance.reindex_collection(collection_name)
+        return VectorMaintenanceResponse(
+            success=result.get("success", False),
+            message=f"Reindexed collection '{collection_name}'",
+            operation="reindex_collection",
+            details=result,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Reindex failed: {str(e)}")
+
+
+@router.get("/vectors/reindex/history")
+async def get_reindex_history(request: Request, limit: int = Query(20, ge=1, le=100)):
+    """Get history of reindex operations."""
+    shard = get_shard(request)
+    frame = shard._frame
+    maintenance = frame.get_service("vector_maintenance")
+
+    if not maintenance:
+        return {"history": [], "message": "Maintenance service not available"}
+
+    return {"history": maintenance.get_reindex_history(limit=limit)}
 
 
 @router.post("/data/reset-all", response_model=DataActionResponse)
@@ -602,7 +815,8 @@ async def get_setting(key: str, request: Request):
     setting = await shard.get_setting(key)
     if not setting:
         raise HTTPException(status_code=404, detail=f"Setting not found: {key}")
-    return setting_to_response(setting)
+    cloud_api_available = _check_cloud_api_available()
+    return setting_to_response(setting, cloud_api_available)
 
 
 @router.put("/{key:path}", response_model=SettingResponse)
@@ -613,7 +827,8 @@ async def update_setting(key: str, body: SettingUpdateRequest, request: Request)
         setting = await shard.update_setting(key, body.value)
         if not setting:
             raise HTTPException(status_code=404, detail=f"Setting not found: {key}")
-        return setting_to_response(setting)
+        cloud_api_available = _check_cloud_api_available()
+        return setting_to_response(setting, cloud_api_available)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -626,7 +841,8 @@ async def reset_setting(key: str, request: Request):
         setting = await shard.reset_setting(key)
         if not setting:
             raise HTTPException(status_code=404, detail=f"Setting not found: {key}")
-        return setting_to_response(setting)
+        cloud_api_available = _check_cloud_api_available()
+        return setting_to_response(setting, cloud_api_available)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -639,7 +855,8 @@ async def get_category_settings(category: str, request: Request):
     """Get all settings in a category."""
     shard = get_shard(request)
     settings = await shard.get_category_settings(category)
-    return [setting_to_response(s) for s in settings]
+    cloud_api_available = _check_cloud_api_available()
+    return [setting_to_response(s, cloud_api_available) for s in settings]
 
 
 @router.put("/category/{category}")

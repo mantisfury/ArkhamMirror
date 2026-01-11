@@ -1,7 +1,7 @@
 """
 BaseWorker - Abstract base class for all ArkhamFrame workers.
 
-Workers poll a Redis queue, process jobs, and report results.
+Workers poll a PostgreSQL job queue using SKIP LOCKED, process jobs, and report results.
 """
 
 from abc import ABC, abstractmethod
@@ -14,6 +14,7 @@ import json
 import logging
 import os
 import signal
+import socket
 import time
 import uuid
 
@@ -69,9 +70,9 @@ class BaseWorker(ABC):
     - process_job(): The actual job processing logic
 
     Lifecycle:
-    1. Worker starts and connects to Redis
+    1. Worker starts and connects to PostgreSQL
     2. Enters main loop: poll queue -> process -> report
-    3. Sends heartbeats every 10 seconds
+    3. Sends heartbeats every 30 seconds
     4. On shutdown signal: finish current job, cleanup, exit
     """
 
@@ -81,25 +82,25 @@ class BaseWorker(ABC):
 
     # Configuration
     poll_interval: float = 1.0  # Seconds between queue polls
-    heartbeat_interval: float = 10.0  # Seconds between heartbeats
+    heartbeat_interval: float = 30.0  # Seconds between heartbeats
     idle_timeout: float = 60.0  # Seconds of idle before shutdown
     job_timeout: float = 300.0  # Max seconds per job
     max_retries: int = 3
 
-    def __init__(self, redis_url: str = None, worker_id: str = None):
+    def __init__(self, database_url: str = None, worker_id: str = None):
         """
         Initialize worker.
 
         Args:
-            redis_url: Redis connection URL (defaults to env var)
+            database_url: PostgreSQL connection URL (defaults to env var)
             worker_id: Unique worker ID (auto-generated if not provided)
         """
         self.worker_id = worker_id or f"{self.pool}-{uuid.uuid4().hex[:8]}"
-        self.redis_url = redis_url or os.environ.get(
-            "REDIS_URL", "redis://localhost:6379"
+        self.database_url = database_url or os.environ.get(
+            "DATABASE_URL", "postgresql://arkham:arkhampass@localhost:5432/arkhamdb"
         )
 
-        self._redis = None
+        self._db_pool = None
         self._state = WorkerState.STOPPED
         self._metrics = WorkerMetrics()
         self._current_job = None
@@ -126,190 +127,209 @@ class BaseWorker(ABC):
         self._shutdown_event.set()
 
     async def connect(self) -> bool:
-        """Connect to Redis."""
+        """Connect to PostgreSQL."""
         try:
-            import redis.asyncio as aioredis
+            import asyncpg
 
-            self._redis = aioredis.from_url(self.redis_url)
-            await self._redis.ping()
-            logger.info(f"Worker {self.worker_id} connected to Redis")
+            self._db_pool = await asyncpg.create_pool(
+                self.database_url,
+                min_size=1,
+                max_size=3,
+            )
+            logger.info(f"Worker {self.worker_id} connected to PostgreSQL")
             return True
         except Exception as e:
-            logger.error(f"Worker {self.worker_id} Redis connection failed: {e}")
+            logger.error(f"Worker {self.worker_id} PostgreSQL connection failed: {e}")
             return False
 
     async def disconnect(self):
-        """Disconnect from Redis."""
-        if self._redis:
-            await self._redis.close()
-            self._redis = None
+        """Disconnect from PostgreSQL."""
+        if self._db_pool:
+            await self._db_pool.close()
+            self._db_pool = None
 
     async def register(self):
-        """Register worker in Redis registry."""
-        if not self._redis:
+        """Register worker in database registry."""
+        if not self._db_pool:
             return
 
-        worker_key = f"arkham:worker:{self.worker_id}"
-        await self._redis.hset(worker_key, mapping={
-            "pool": self.pool,
-            "name": self.name,
-            "state": self._state.value,
-            "started_at": datetime.utcnow().isoformat(),
-            "pid": os.getpid(),
-        })
-        # Set expiry so dead workers disappear
-        await self._redis.expire(worker_key, 120)
-
-        # Add to pool set
-        pool_key = f"arkham:pool:{self.pool}:workers"
-        await self._redis.sadd(pool_key, self.worker_id)
+        async with self._db_pool.acquire() as conn:
+            await conn.execute("""
+                INSERT INTO arkham_jobs.workers
+                (id, pool, name, hostname, pid, state, started_at, last_heartbeat)
+                VALUES ($1, $2, $3, $4, $5, $6, NOW(), NOW())
+                ON CONFLICT (id) DO UPDATE SET
+                    state = EXCLUDED.state,
+                    started_at = NOW(),
+                    last_heartbeat = NOW()
+            """, self.worker_id, self.pool, self.name, socket.gethostname(),
+                os.getpid(), self._state.value)
 
     async def deregister(self):
-        """Remove worker from Redis registry."""
-        if not self._redis:
+        """Remove worker from database registry."""
+        if not self._db_pool:
             return
 
-        worker_key = f"arkham:worker:{self.worker_id}"
-        await self._redis.delete(worker_key)
-
-        pool_key = f"arkham:pool:{self.pool}:workers"
-        await self._redis.srem(pool_key, self.worker_id)
+        async with self._db_pool.acquire() as conn:
+            await conn.execute("""
+                DELETE FROM arkham_jobs.workers
+                WHERE id = $1
+            """, self.worker_id)
 
     async def heartbeat(self):
-        """Send heartbeat to Redis."""
-        if not self._redis:
+        """Send heartbeat to database."""
+        if not self._db_pool:
             return
 
         self._metrics.last_heartbeat = datetime.utcnow()
 
-        worker_key = f"arkham:worker:{self.worker_id}"
-        await self._redis.hset(worker_key, mapping={
-            "state": self._state.value,
-            "last_heartbeat": self._metrics.last_heartbeat.isoformat(),
-            "jobs_completed": self._metrics.jobs_completed,
-            "jobs_failed": self._metrics.jobs_failed,
-            "current_job": self._current_job or "",
-        })
-        # Refresh expiry
-        await self._redis.expire(worker_key, 120)
+        async with self._db_pool.acquire() as conn:
+            await conn.execute("""
+                UPDATE arkham_jobs.workers
+                SET state = $2,
+                    last_heartbeat = NOW(),
+                    jobs_completed = $3,
+                    jobs_failed = $4,
+                    current_job = $5
+                WHERE id = $1
+            """, self.worker_id, self._state.value, self._metrics.jobs_completed,
+                self._metrics.jobs_failed, self._current_job)
 
     async def dequeue_job(self) -> Optional[Dict[str, Any]]:
         """
-        Dequeue a job from the pool's queue.
+        Dequeue a job from the pool's queue using SKIP LOCKED.
+
+        This is the key PostgreSQL pattern for concurrent job processing.
+        SKIP LOCKED ensures multiple workers don't get the same job.
 
         Returns:
             Job data dict or None if queue is empty.
         """
-        if not self._redis:
+        if not self._db_pool:
             return None
 
-        queue_key = f"arkham:queue:{self.pool}"
+        async with self._db_pool.acquire() as conn:
+            # First, promote any scheduled jobs that are ready
+            await conn.execute("""
+                UPDATE arkham_jobs.jobs
+                SET status = 'pending'
+                WHERE status = 'scheduled'
+                  AND scheduled_at <= NOW()
+            """)
 
-        # Pop highest priority job (lowest score)
-        result = await self._redis.zpopmin(queue_key, count=1)
-        if not result:
-            return None
+            # SKIP LOCKED is the magic - it skips rows locked by other workers
+            row = await conn.fetchrow("""
+                UPDATE arkham_jobs.jobs
+                SET status = 'processing',
+                    started_at = NOW(),
+                    worker_id = $2
+                WHERE id = (
+                    SELECT id FROM arkham_jobs.jobs
+                    WHERE pool = $1
+                      AND status = 'pending'
+                    ORDER BY priority ASC, created_at ASC
+                    FOR UPDATE SKIP LOCKED
+                    LIMIT 1
+                )
+                RETURNING id, pool, job_type, payload, priority, created_at,
+                          retry_count, max_retries
+            """, self.pool, self.worker_id)
 
-        job_id = result[0][0]
-        if isinstance(job_id, bytes):
-            job_id = job_id.decode()
+            if not row:
+                return None
 
-        # Get job data
-        job_key = f"arkham:job:{job_id}"
-        job_data = await self._redis.hgetall(job_key)
+            payload = row['payload']
+            if isinstance(payload, str):
+                payload = json.loads(payload)
 
-        if not job_data:
-            logger.warning(f"Job {job_id} not found in Redis")
-            return None
-
-        # Parse job data
-        payload_raw = job_data.get(b"payload") or job_data.get("payload", "{}")
-        if isinstance(payload_raw, bytes):
-            payload_raw = payload_raw.decode()
-        payload = json.loads(payload_raw)
-
-        # Mark as active
-        await self._redis.hset(job_key, mapping={
-            "status": "active",
-            "worker_id": self.worker_id,
-            "started_at": datetime.utcnow().isoformat(),
-        })
-
-        return {
-            "id": job_id,
-            "pool": self.pool,
-            "payload": payload,
-            "job_key": job_key,
-        }
+            return {
+                "id": row['id'],
+                "pool": row['pool'],
+                "job_type": row['job_type'],
+                "payload": payload,
+                "priority": row['priority'],
+                "retry_count": row['retry_count'],
+                "max_retries": row['max_retries'],
+            }
 
     async def complete_job(self, job_id: str, result: Dict[str, Any] = None):
         """Mark job as completed."""
-        if not self._redis:
+        if not self._db_pool:
             return
 
-        job_key = f"arkham:job:{job_id}"
-        await self._redis.hset(job_key, mapping={
-            "status": "completed",
-            "completed_at": datetime.utcnow().isoformat(),
-            "result": json.dumps(result or {}),
-        })
+        async with self._db_pool.acquire() as conn:
+            await conn.execute("""
+                UPDATE arkham_jobs.jobs
+                SET status = 'completed',
+                    completed_at = NOW(),
+                    result = $2
+                WHERE id = $1
+            """, job_id, json.dumps(result or {}))
 
-        # Publish completion event
-        await self._redis.publish("arkham:events", json.dumps({
-            "event": "worker.job.completed",
-            "job_id": job_id,
-            "worker_id": self.worker_id,
-            "pool": self.pool,
-            "result": result,
-        }))
+            # Update worker stats
+            await conn.execute("""
+                UPDATE arkham_jobs.workers
+                SET jobs_completed = jobs_completed + 1,
+                    current_job = NULL
+                WHERE id = $1
+            """, self.worker_id)
 
     async def fail_job(self, job_id: str, error: str, requeue: bool = False):
         """Mark job as failed."""
-        if not self._redis:
+        if not self._db_pool:
             return
 
-        job_key = f"arkham:job:{job_id}"
+        async with self._db_pool.acquire() as conn:
+            # Get current job state
+            row = await conn.fetchrow("""
+                SELECT retry_count, max_retries, pool, job_type, payload, created_at
+                FROM arkham_jobs.jobs WHERE id = $1
+            """, job_id)
 
-        if requeue:
-            # Get current retry count
-            retry_count = await self._redis.hget(job_key, "retry_count") or 0
-            if isinstance(retry_count, bytes):
-                retry_count = int(retry_count.decode())
-            else:
-                retry_count = int(retry_count)
-
-            if retry_count < self.max_retries:
-                # Requeue with lower priority
-                await self._redis.hset(job_key, mapping={
-                    "status": "pending",
-                    "retry_count": retry_count + 1,
-                    "last_error": error,
-                })
-                queue_key = f"arkham:queue:{self.pool}"
-                # Higher priority number = lower priority
-                await self._redis.zadd(queue_key, {job_id: 10 + retry_count})
-                logger.info(f"Requeued job {job_id} (retry {retry_count + 1})")
+            if not row:
                 return
 
-        # Mark as failed (no more retries)
-        await self._redis.hset(job_key, mapping={
-            "status": "failed",
-            "completed_at": datetime.utcnow().isoformat(),
-            "error": error,
-        })
+            retry_count = row['retry_count']
+            max_retries = row['max_retries']
 
-        # Add to dead letter queue
-        dlq_key = f"arkham:dlq:{self.pool}"
-        await self._redis.lpush(dlq_key, job_id)
+            if requeue and retry_count < max_retries:
+                # Requeue with incremented retry count
+                await conn.execute("""
+                    UPDATE arkham_jobs.jobs
+                    SET status = 'pending',
+                        started_at = NULL,
+                        worker_id = NULL,
+                        retry_count = retry_count + 1,
+                        last_error = $2
+                    WHERE id = $1
+                """, job_id, error)
+                logger.info(f"Requeued job {job_id} (retry {retry_count + 1}/{max_retries})")
+            else:
+                # Move to dead letter queue
+                await conn.execute("""
+                    INSERT INTO arkham_jobs.dead_letters
+                    (job_id, pool, job_type, payload, error, retry_count, original_created_at)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7)
+                """, job_id, row['pool'], row['job_type'], row['payload'],
+                    error, row['retry_count'], row['created_at'])
 
-        # Publish failure event
-        await self._redis.publish("arkham:events", json.dumps({
-            "event": "worker.job.failed",
-            "job_id": job_id,
-            "worker_id": self.worker_id,
-            "pool": self.pool,
-            "error": error,
-        }))
+                # Mark as dead
+                await conn.execute("""
+                    UPDATE arkham_jobs.jobs
+                    SET status = 'dead',
+                        completed_at = NOW(),
+                        last_error = $2
+                    WHERE id = $1
+                """, job_id, error)
+                logger.warning(f"Job {job_id} moved to dead letter queue: {error}")
+
+            # Update worker stats
+            await conn.execute("""
+                UPDATE arkham_jobs.workers
+                SET jobs_failed = jobs_failed + 1,
+                    current_job = NULL
+                WHERE id = $1
+            """, self.worker_id)
 
     @abstractmethod
     async def process_job(self, job_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -352,7 +372,7 @@ class BaseWorker(ABC):
         self._running = True
         self._state = WorkerState.STARTING
 
-        # Connect to Redis
+        # Connect to PostgreSQL
         if not await self.connect():
             self._state = WorkerState.ERROR
             return
@@ -491,14 +511,14 @@ class BaseWorker(ABC):
         }
 
 
-def run_worker(worker_class: type, redis_url: str = None, worker_id: str = None):
+def run_worker(worker_class: type, database_url: str = None, worker_id: str = None):
     """
     Convenience function to run a worker.
 
     Args:
         worker_class: BaseWorker subclass
-        redis_url: Redis connection URL
+        database_url: PostgreSQL connection URL
         worker_id: Optional worker ID
     """
-    worker = worker_class(redis_url=redis_url, worker_id=worker_id)
+    worker = worker_class(database_url=database_url, worker_id=worker_id)
     asyncio.run(worker.run())

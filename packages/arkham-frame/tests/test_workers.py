@@ -2,7 +2,7 @@
 Integration tests for worker infrastructure.
 
 Requirements:
-    - Redis running at localhost:6379 (or REDIS_URL env var)
+    - PostgreSQL running (or DATABASE_URL env var)
 
 Run with:
     cd packages/arkham-frame
@@ -15,78 +15,64 @@ import os
 import pytest
 import pytest_asyncio
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 
 # Test configuration
-REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379")
+DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql://postgres:postgres@localhost:5432/arkham")
 TEST_TIMEOUT = 30  # Max seconds for any test
 
 
 @pytest_asyncio.fixture
-async def redis_client():
-    """Get async Redis client."""
-    import redis.asyncio as aioredis
+async def db_pool():
+    """Get async PostgreSQL connection pool."""
+    import asyncpg
 
-    client = aioredis.from_url(REDIS_URL)
     try:
-        await client.ping()
+        pool = await asyncpg.create_pool(DATABASE_URL, min_size=1, max_size=5)
     except Exception as e:
-        pytest.skip(f"Redis not available: {e}")
+        pytest.skip(f"PostgreSQL not available: {e}")
+        return
 
-    yield client
+    yield pool
 
-    # Cleanup test keys
-    cursor = 0
-    while True:
-        cursor, keys = await client.scan(cursor, match="arkham:test:*", count=100)
-        if keys:
-            await client.delete(*keys)
-        if cursor == 0:
-            break
+    # Cleanup test jobs
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "DELETE FROM arkham_jobs.jobs WHERE id LIKE 'test-%'"
+        )
+        await conn.execute(
+            "DELETE FROM arkham_jobs.workers WHERE id LIKE 'test-%'"
+        )
 
-    await client.aclose()
+    await pool.close()
 
 
-async def wait_for_worker_registration(redis_client, worker_id: str, timeout: float = 2.0) -> bool:
+async def wait_for_worker_registration(pool, worker_id: str, timeout: float = 2.0) -> bool:
     """Poll for worker registration with timeout."""
-    worker_key = f"arkham:worker:{worker_id}"
     elapsed = 0.0
     interval = 0.1
     while elapsed < timeout:
         await asyncio.sleep(interval)
-        if await redis_client.exists(worker_key):
-            return True
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT 1 FROM arkham_jobs.workers WHERE id = $1",
+                worker_id
+            )
+            if row:
+                return True
         elapsed += interval
     return False
 
 
-async def cleanup_test_queues(redis_client):
-    """Clean up test queues."""
-    # Clean worker registrations
-    cursor = 0
-    while True:
-        cursor, keys = await redis_client.scan(cursor, match="arkham:worker:test-*", count=100)
-        if keys:
-            await redis_client.delete(*keys)
-        if cursor == 0:
-            break
-
-    # Clean smoke test worker
-    await redis_client.delete("arkham:worker:smoke-test-worker")
-
-    # Clean test jobs
-    cursor = 0
-    while True:
-        cursor, keys = await redis_client.scan(cursor, match="arkham:job:test-*", count=100)
-        if keys:
-            await redis_client.delete(*keys)
-        if cursor == 0:
-            break
-
-    # Clean queues used by test workers
-    await redis_client.delete("arkham:queue:cpu-light")
-    await redis_client.delete("arkham:queue:cpu-heavy")
-    await redis_client.delete("arkham:dlq:cpu-light")
+async def cleanup_test_queues(pool):
+    """Clean up test jobs and workers."""
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "DELETE FROM arkham_jobs.jobs WHERE id LIKE 'test-%'"
+        )
+        await conn.execute(
+            "DELETE FROM arkham_jobs.workers WHERE id LIKE 'test-%' OR id LIKE 'smoke-test-%'"
+        )
 
 
 # =============================================================================
@@ -97,58 +83,70 @@ class TestWorkerLifecycle:
     """Test worker start/stop/register/deregister."""
 
     @pytest.mark.asyncio
-    async def test_worker_registers_on_start(self, redis_client):
-        """Worker should register in Redis when started."""
-        await cleanup_test_queues(redis_client)
+    async def test_worker_registers_on_start(self, db_pool):
+        """Worker should register in database when started."""
+        await cleanup_test_queues(db_pool)
 
         from arkham_frame.workers import EchoWorker
 
-        worker = EchoWorker(redis_url=REDIS_URL, worker_id="test-lifecycle-1")
+        worker = EchoWorker(database_url=DATABASE_URL, worker_id="test-lifecycle-1")
         worker.idle_timeout = 5.0  # Short timeout for test
 
         # Start worker in background
         task = asyncio.create_task(worker.run())
 
         # Wait for registration (poll instead of fixed sleep)
-        registered = await wait_for_worker_registration(redis_client, worker.worker_id)
-        assert registered, "Worker should be registered in Redis"
+        registered = await wait_for_worker_registration(db_pool, worker.worker_id)
+        assert registered, "Worker should be registered in database"
 
-        # Check Redis registration
-        worker_key = f"arkham:worker:{worker.worker_id}"
-
-        data = await redis_client.hgetall(worker_key)
-        assert data[b"pool"] == b"cpu-light"
-        assert data[b"state"] in [b"idle", b"starting"]
+        # Check database registration
+        async with db_pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT pool, state FROM arkham_jobs.workers WHERE id = $1",
+                worker.worker_id
+            )
+            assert row["pool"] == "cpu-light"
+            assert row["state"] in ["idle", "starting"]
 
         # Stop worker
         worker._shutdown_event.set()
         await asyncio.wait_for(task, timeout=5)
 
-        await cleanup_test_queues(redis_client)
+        await cleanup_test_queues(db_pool)
 
     @pytest.mark.asyncio
-    async def test_worker_heartbeat(self, redis_client):
+    async def test_worker_heartbeat(self, db_pool):
         """Worker should send heartbeats."""
-        await cleanup_test_queues(redis_client)
+        await cleanup_test_queues(db_pool)
 
         from arkham_frame.workers import EchoWorker
 
-        worker = EchoWorker(redis_url=REDIS_URL, worker_id="test-heartbeat-1")
+        worker = EchoWorker(database_url=DATABASE_URL, worker_id="test-heartbeat-1")
         worker.idle_timeout = 10.0
         worker.heartbeat_interval = 0.5  # Fast heartbeat for test
 
         task = asyncio.create_task(worker.run())
 
         # Wait for registration first
-        registered = await wait_for_worker_registration(redis_client, worker.worker_id)
+        registered = await wait_for_worker_registration(db_pool, worker.worker_id)
 
         # Get initial heartbeat
-        worker_key = f"arkham:worker:{worker.worker_id}"
-        hb1 = await redis_client.hget(worker_key, "last_heartbeat")
+        async with db_pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT last_heartbeat FROM arkham_jobs.workers WHERE id = $1",
+                worker.worker_id
+            )
+            hb1 = row["last_heartbeat"] if row else None
 
         # Wait for another heartbeat
         await asyncio.sleep(1.0)
-        hb2 = await redis_client.hget(worker_key, "last_heartbeat")
+
+        async with db_pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT last_heartbeat FROM arkham_jobs.workers WHERE id = $1",
+                worker.worker_id
+            )
+            hb2 = row["last_heartbeat"] if row else None
 
         # Heartbeat should have updated
         assert hb2 is not None
@@ -158,37 +156,45 @@ class TestWorkerLifecycle:
         worker._shutdown_event.set()
         await asyncio.wait_for(task, timeout=5)
 
-        await cleanup_test_queues(redis_client)
+        await cleanup_test_queues(db_pool)
 
     @pytest.mark.asyncio
-    async def test_worker_deregisters_on_stop(self, redis_client):
+    async def test_worker_deregisters_on_stop(self, db_pool):
         """Worker should deregister when stopped."""
-        await cleanup_test_queues(redis_client)
+        await cleanup_test_queues(db_pool)
 
         from arkham_frame.workers import EchoWorker
 
-        worker = EchoWorker(redis_url=REDIS_URL, worker_id="test-dereg-1")
+        worker = EchoWorker(database_url=DATABASE_URL, worker_id="test-dereg-1")
         worker.idle_timeout = 10.0
 
         task = asyncio.create_task(worker.run())
 
         # Wait for registration
-        registered = await wait_for_worker_registration(redis_client, worker.worker_id)
+        registered = await wait_for_worker_registration(db_pool, worker.worker_id)
         assert registered, "Worker should register first"
 
         # Verify registered
-        worker_key = f"arkham:worker:{worker.worker_id}"
-        assert await redis_client.exists(worker_key)
+        async with db_pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT 1 FROM arkham_jobs.workers WHERE id = $1",
+                worker.worker_id
+            )
+            assert row is not None
 
         # Stop worker
         worker._shutdown_event.set()
         await asyncio.wait_for(task, timeout=5)
 
         # Verify deregistered
-        exists = await redis_client.exists(worker_key)
-        assert not exists, "Worker should be deregistered from Redis"
+        async with db_pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT 1 FROM arkham_jobs.workers WHERE id = $1",
+                worker.worker_id
+            )
+            assert row is None, "Worker should be deregistered from database"
 
-        await cleanup_test_queues(redis_client)
+        await cleanup_test_queues(db_pool)
 
 
 # =============================================================================
@@ -199,27 +205,23 @@ class TestJobProcessing:
     """Test job processing with EchoWorker."""
 
     @pytest.mark.asyncio
-    async def test_worker_processes_job(self, redis_client):
+    async def test_worker_processes_job(self, db_pool):
         """Worker should pick up and complete a job."""
-        await cleanup_test_queues(redis_client)
+        await cleanup_test_queues(db_pool)
 
         from arkham_frame.workers import EchoWorker
 
         # Create job
         job_id = "test-job-1"
-        queue_key = "arkham:queue:cpu-light"
-        job_key = f"arkham:job:{job_id}"
 
-        await redis_client.zadd(queue_key, {job_id: 1})
-        await redis_client.hset(job_key, mapping={
-            "pool": "cpu-light",
-            "payload": json.dumps({"message": "Hello!", "delay": 0.1}),
-            "priority": 1,
-            "status": "pending",
-        })
+        async with db_pool.acquire() as conn:
+            await conn.execute("""
+                INSERT INTO arkham_jobs.jobs (id, pool, payload, priority, status)
+                VALUES ($1, $2, $3, $4, 'pending')
+            """, job_id, "cpu-light", json.dumps({"message": "Hello!", "delay": 0.1}), 1)
 
         # Start worker
-        worker = EchoWorker(redis_url=REDIS_URL, worker_id="test-process-1")
+        worker = EchoWorker(database_url=DATABASE_URL, worker_id="test-process-1")
         worker.idle_timeout = 3.0
         worker.poll_interval = 0.2
 
@@ -227,49 +229,54 @@ class TestJobProcessing:
 
         # Wait for job to complete
         for _ in range(30):
-            status = await redis_client.hget(job_key, "status")
-            if status == b"completed":
-                break
+            async with db_pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    "SELECT status FROM arkham_jobs.jobs WHERE id = $1",
+                    job_id
+                )
+                if row and row["status"] == "completed":
+                    break
             await asyncio.sleep(0.2)
 
         # Verify completion
-        status = await redis_client.hget(job_key, "status")
-        assert status == b"completed", f"Job should be completed, got {status}"
+        async with db_pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT status, result FROM arkham_jobs.jobs WHERE id = $1",
+                job_id
+            )
+            assert row["status"] == "completed", f"Job should be completed, got {row['status']}"
 
-        # Check result
-        result_raw = await redis_client.hget(job_key, "result")
-        result = json.loads(result_raw)
-        assert result["echoed"] is True
-        assert result["message"] == "Hello!"
+            # Check result (asyncpg returns JSONB as string)
+            result = row["result"]
+            if isinstance(result, str):
+                result = json.loads(result)
+            assert result["echoed"] is True
+            assert result["message"] == "Hello!"
 
         worker._shutdown_event.set()
         await asyncio.wait_for(task, timeout=5)
 
-        await cleanup_test_queues(redis_client)
+        await cleanup_test_queues(db_pool)
 
     @pytest.mark.asyncio
-    async def test_worker_processes_multiple_jobs(self, redis_client):
+    async def test_worker_processes_multiple_jobs(self, db_pool):
         """Worker should process multiple jobs sequentially."""
-        await cleanup_test_queues(redis_client)
+        await cleanup_test_queues(db_pool)
 
         from arkham_frame.workers import EchoWorker
 
         # Create 5 jobs
-        queue_key = "arkham:queue:cpu-light"
         job_ids = [f"test-multi-{i}" for i in range(5)]
 
-        for job_id in job_ids:
-            job_key = f"arkham:job:{job_id}"
-            await redis_client.zadd(queue_key, {job_id: 1})
-            await redis_client.hset(job_key, mapping={
-                "pool": "cpu-light",
-                "payload": json.dumps({"message": f"Job {job_id}", "delay": 0.05}),
-                "priority": 1,
-                "status": "pending",
-            })
+        async with db_pool.acquire() as conn:
+            for job_id in job_ids:
+                await conn.execute("""
+                    INSERT INTO arkham_jobs.jobs (id, pool, payload, priority, status)
+                    VALUES ($1, $2, $3, $4, 'pending')
+                """, job_id, "cpu-light", json.dumps({"message": f"Job {job_id}", "delay": 0.05}), 1)
 
         # Start worker
-        worker = EchoWorker(redis_url=REDIS_URL, worker_id="test-multi-1")
+        worker = EchoWorker(database_url=DATABASE_URL, worker_id="test-multi-1")
         worker.idle_timeout = 5.0
         worker.poll_interval = 0.1
 
@@ -278,18 +285,26 @@ class TestJobProcessing:
         # Wait for all jobs to complete
         for _ in range(50):
             completed = 0
-            for job_id in job_ids:
-                status = await redis_client.hget(f"arkham:job:{job_id}", "status")
-                if status == b"completed":
-                    completed += 1
+            async with db_pool.acquire() as conn:
+                for job_id in job_ids:
+                    row = await conn.fetchrow(
+                        "SELECT status FROM arkham_jobs.jobs WHERE id = $1",
+                        job_id
+                    )
+                    if row and row["status"] == "completed":
+                        completed += 1
             if completed == len(job_ids):
                 break
             await asyncio.sleep(0.2)
 
         # Verify all completed
-        for job_id in job_ids:
-            status = await redis_client.hget(f"arkham:job:{job_id}", "status")
-            assert status == b"completed", f"Job {job_id} should be completed"
+        async with db_pool.acquire() as conn:
+            for job_id in job_ids:
+                row = await conn.fetchrow(
+                    "SELECT status FROM arkham_jobs.jobs WHERE id = $1",
+                    job_id
+                )
+                assert row["status"] == "completed", f"Job {job_id} should be completed"
 
         # Check metrics
         assert worker._metrics.jobs_completed == 5
@@ -297,7 +312,7 @@ class TestJobProcessing:
         worker._shutdown_event.set()
         await asyncio.wait_for(task, timeout=5)
 
-        await cleanup_test_queues(redis_client)
+        await cleanup_test_queues(db_pool)
 
 
 # =============================================================================
@@ -308,28 +323,23 @@ class TestFailureHandling:
     """Test job failure and retry logic."""
 
     @pytest.mark.asyncio
-    async def test_failed_job_retries(self, redis_client):
+    async def test_failed_job_retries(self, db_pool):
         """Failed job should be retried up to max_retries."""
-        await cleanup_test_queues(redis_client)
+        await cleanup_test_queues(db_pool)
 
         from arkham_frame.workers import FailWorker
 
         # Create job that will fail
         job_id = "test-fail-1"
-        queue_key = "arkham:queue:cpu-light"
-        job_key = f"arkham:job:{job_id}"
 
-        await redis_client.zadd(queue_key, {job_id: 1})
-        await redis_client.hset(job_key, mapping={
-            "pool": "cpu-light",
-            "payload": json.dumps({"fail_after": 0.05}),
-            "priority": 1,
-            "status": "pending",
-            "retry_count": 0,
-        })
+        async with db_pool.acquire() as conn:
+            await conn.execute("""
+                INSERT INTO arkham_jobs.jobs (id, pool, payload, priority, status, retry_count)
+                VALUES ($1, $2, $3, $4, 'pending', 0)
+            """, job_id, "cpu-light", json.dumps({"fail_after": 0.05}), 1)
 
         # Start worker (max_retries=2)
-        worker = FailWorker(redis_url=REDIS_URL, worker_id="test-fail-worker-1")
+        worker = FailWorker(database_url=DATABASE_URL, worker_id="test-fail-worker-1")
         worker.idle_timeout = 5.0
         worker.poll_interval = 0.1
         worker.max_retries = 2
@@ -338,19 +348,22 @@ class TestFailureHandling:
 
         # Wait for retries to exhaust
         for _ in range(40):
-            status = await redis_client.hget(job_key, "status")
-            if status == b"failed":
-                break
+            async with db_pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    "SELECT status FROM arkham_jobs.jobs WHERE id = $1",
+                    job_id
+                )
+                if row and row["status"] == "failed":
+                    break
             await asyncio.sleep(0.2)
 
         # Job should eventually fail permanently
-        status = await redis_client.hget(job_key, "status")
-        assert status == b"failed", "Job should be marked as failed after retries"
-
-        # Check dead letter queue
-        dlq_key = "arkham:dlq:cpu-light"
-        dlq_len = await redis_client.llen(dlq_key)
-        assert dlq_len > 0, "Failed job should be in dead letter queue"
+        async with db_pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT status FROM arkham_jobs.jobs WHERE id = $1",
+                job_id
+            )
+            assert row["status"] == "failed", "Job should be marked as failed after retries"
 
         # Worker should still be alive
         assert worker._metrics.jobs_failed >= 1
@@ -358,12 +371,12 @@ class TestFailureHandling:
         worker._shutdown_event.set()
         await asyncio.wait_for(task, timeout=5)
 
-        await cleanup_test_queues(redis_client)
+        await cleanup_test_queues(db_pool)
 
     @pytest.mark.asyncio
-    async def test_worker_survives_job_failure(self, redis_client):
+    async def test_worker_survives_job_failure(self, db_pool):
         """Worker should continue processing after a job fails."""
-        await cleanup_test_queues(redis_client)
+        await cleanup_test_queues(db_pool)
 
         from arkham_frame.workers.base import BaseWorker
 
@@ -383,19 +396,14 @@ class TestFailureHandling:
                 return {"success": True, "call": self.call_count}
 
         # Create two jobs
-        queue_key = "arkham:queue:cpu-light"
+        async with db_pool.acquire() as conn:
+            for i, job_id in enumerate(["test-failonce-1", "test-failonce-2"]):
+                await conn.execute("""
+                    INSERT INTO arkham_jobs.jobs (id, pool, payload, priority, status)
+                    VALUES ($1, $2, $3, $4, 'pending')
+                """, job_id, "cpu-light", json.dumps({"num": i}), i + 1)
 
-        for i, job_id in enumerate(["test-failonce-1", "test-failonce-2"]):
-            job_key = f"arkham:job:{job_id}"
-            await redis_client.zadd(queue_key, {job_id: i + 1})
-            await redis_client.hset(job_key, mapping={
-                "pool": "cpu-light",
-                "payload": json.dumps({"num": i}),
-                "priority": i + 1,
-                "status": "pending",
-            })
-
-        worker = FailOnceWorker(redis_url=REDIS_URL, worker_id="test-failonce-worker")
+        worker = FailOnceWorker(database_url=DATABASE_URL, worker_id="test-failonce-worker")
         worker.idle_timeout = 10.0
         worker.poll_interval = 0.1
         worker.max_retries = 0  # Don't retry for this test
@@ -403,18 +411,26 @@ class TestFailureHandling:
         task = asyncio.create_task(worker.run())
 
         # Wait for worker to register first
-        await wait_for_worker_registration(redis_client, worker.worker_id)
+        await wait_for_worker_registration(db_pool, worker.worker_id)
 
         # Poll for second job to complete
         for _ in range(50):  # 5 seconds max
-            status = await redis_client.hget("arkham:job:test-failonce-2", "status")
-            if status == b"completed":
-                break
+            async with db_pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    "SELECT status FROM arkham_jobs.jobs WHERE id = $1",
+                    "test-failonce-2"
+                )
+                if row and row["status"] == "completed":
+                    break
             await asyncio.sleep(0.1)
 
         # Second job should have completed
-        status = await redis_client.hget("arkham:job:test-failonce-2", "status")
-        assert status == b"completed", f"Second job should complete even after first fails, got {status}"
+        async with db_pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT status FROM arkham_jobs.jobs WHERE id = $1",
+                "test-failonce-2"
+            )
+            assert row["status"] == "completed", f"Second job should complete even after first fails, got {row['status']}"
 
         assert worker._metrics.jobs_failed == 1
         assert worker._metrics.jobs_completed == 1
@@ -422,7 +438,7 @@ class TestFailureHandling:
         worker._shutdown_event.set()
         await asyncio.wait_for(task, timeout=5)
 
-        await cleanup_test_queues(redis_client)
+        await cleanup_test_queues(db_pool)
 
 
 # =============================================================================
@@ -433,27 +449,23 @@ class TestStuckDetection:
     """Test stuck worker detection and handling."""
 
     @pytest.mark.asyncio
-    async def test_job_timeout(self, redis_client):
+    async def test_job_timeout(self, db_pool):
         """Job exceeding timeout should fail and be requeued."""
-        await cleanup_test_queues(redis_client)
+        await cleanup_test_queues(db_pool)
 
         from arkham_frame.workers import SlowWorker
 
         # Create job that takes longer than timeout
         job_id = "test-slow-1"
-        queue_key = "arkham:queue:cpu-heavy"
-        job_key = f"arkham:job:{job_id}"
 
-        await redis_client.zadd(queue_key, {job_id: 1})
-        await redis_client.hset(job_key, mapping={
-            "pool": "cpu-heavy",
-            "payload": json.dumps({"sleep": 30}),  # 30 seconds
-            "priority": 1,
-            "status": "pending",
-        })
+        async with db_pool.acquire() as conn:
+            await conn.execute("""
+                INSERT INTO arkham_jobs.jobs (id, pool, payload, priority, status)
+                VALUES ($1, $2, $3, $4, 'pending')
+            """, job_id, "cpu-heavy", json.dumps({"sleep": 30}), 1)
 
         # Worker with short timeout
-        worker = SlowWorker(redis_url=REDIS_URL, worker_id="test-slow-worker-1")
+        worker = SlowWorker(database_url=DATABASE_URL, worker_id="test-slow-worker-1")
         worker.job_timeout = 0.5  # 0.5 second timeout
         worker.idle_timeout = 10.0
         worker.poll_interval = 0.1
@@ -462,18 +474,26 @@ class TestStuckDetection:
         task = asyncio.create_task(worker.run())
 
         # Wait for worker to register first
-        await wait_for_worker_registration(redis_client, worker.worker_id)
+        await wait_for_worker_registration(db_pool, worker.worker_id)
 
         # Poll for job status to change from "active" (after timeout it should be requeued or failed)
         for _ in range(50):  # 5 seconds max
-            status = await redis_client.hget(job_key, "status")
-            if status in [b"pending", b"failed"]:
-                break
+            async with db_pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    "SELECT status FROM arkham_jobs.jobs WHERE id = $1",
+                    job_id
+                )
+                if row and row["status"] in ["pending", "failed"]:
+                    break
             await asyncio.sleep(0.1)
 
         # Job should be requeued or failed
-        status = await redis_client.hget(job_key, "status")
-        assert status in [b"pending", b"failed"], f"Job should be requeued or failed, got {status}"
+        async with db_pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT status FROM arkham_jobs.jobs WHERE id = $1",
+                job_id
+            )
+            assert row["status"] in ["pending", "failed"], f"Job should be requeued or failed, got {row['status']}"
 
         # Worker should have recorded the failure
         assert worker._metrics.jobs_failed >= 1
@@ -481,7 +501,7 @@ class TestStuckDetection:
         worker._shutdown_event.set()
         await asyncio.wait_for(task, timeout=5)
 
-        await cleanup_test_queues(redis_client)
+        await cleanup_test_queues(db_pool)
 
 
 # =============================================================================
@@ -492,9 +512,9 @@ class TestWorkerRegistry:
     """Test WorkerRegistry functionality."""
 
     @pytest.mark.asyncio
-    async def test_registry_discovers_workers(self, redis_client):
+    async def test_registry_discovers_workers(self, db_pool):
         """Registry should discover running workers."""
-        await cleanup_test_queues(redis_client)
+        await cleanup_test_queues(db_pool)
 
         from arkham_frame.workers import EchoWorker, WorkerRegistry
 
@@ -502,19 +522,19 @@ class TestWorkerRegistry:
         workers = []
         tasks = []
         for i in range(3):
-            worker = EchoWorker(redis_url=REDIS_URL, worker_id=f"test-reg-{i}")
+            worker = EchoWorker(database_url=DATABASE_URL, worker_id=f"test-reg-{i}")
             worker.idle_timeout = 10.0
             workers.append(worker)
             tasks.append(asyncio.create_task(worker.run()))
 
         # Wait for all workers to register
         for worker in workers:
-            registered = await wait_for_worker_registration(redis_client, worker.worker_id)
+            registered = await wait_for_worker_registration(db_pool, worker.worker_id)
             assert registered, f"Worker {worker.worker_id} should register"
 
         # Query registry
-        registry = WorkerRegistry(redis_url=REDIS_URL)
-        await registry.connect(redis_client)
+        registry = WorkerRegistry(database_url=DATABASE_URL)
+        await registry.connect(db_pool)
 
         all_workers = await registry.get_all_workers()
         test_workers = [w for w in all_workers if w.worker_id.startswith("test-reg-")]
@@ -531,31 +551,27 @@ class TestWorkerRegistry:
             worker._shutdown_event.set()
         await asyncio.gather(*tasks, return_exceptions=True)
 
-        await cleanup_test_queues(redis_client)
+        await cleanup_test_queues(db_pool)
 
     @pytest.mark.asyncio
-    async def test_registry_detects_dead_workers(self, redis_client):
+    async def test_registry_detects_dead_workers(self, db_pool):
         """Registry should detect workers that stopped heartbeating."""
-        await cleanup_test_queues(redis_client)
+        await cleanup_test_queues(db_pool)
 
         from arkham_frame.workers import WorkerRegistry
 
         # Manually create a "dead" worker entry (old heartbeat)
         worker_id = "test-dead-worker"
-        worker_key = f"arkham:worker:{worker_id}"
+        old_time = datetime.utcnow() - timedelta(hours=1)
 
-        old_time = datetime(2020, 1, 1, 0, 0, 0).isoformat()
-        await redis_client.hset(worker_key, mapping={
-            "pool": "cpu-light",
-            "name": "DeadWorker",
-            "state": "processing",
-            "pid": 99999,
-            "started_at": old_time,
-            "last_heartbeat": old_time,
-        })
+        async with db_pool.acquire() as conn:
+            await conn.execute("""
+                INSERT INTO arkham_jobs.workers (id, pool, name, state, pid, started_at, last_heartbeat)
+                VALUES ($1, $2, $3, $4, $5, $6, $7)
+            """, worker_id, "cpu-light", "DeadWorker", "processing", 99999, old_time, old_time)
 
-        registry = WorkerRegistry(redis_url=REDIS_URL)
-        await registry.connect(redis_client)
+        registry = WorkerRegistry(database_url=DATABASE_URL)
+        await registry.connect(db_pool)
 
         # Check stuck detection
         stuck = await registry.get_stuck_workers()
@@ -567,81 +583,14 @@ class TestWorkerRegistry:
         assert cleaned >= 1, "Should cleanup dead workers"
 
         # Worker should be gone
-        exists = await redis_client.exists(worker_key)
-        assert not exists, "Dead worker should be removed"
+        async with db_pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT 1 FROM arkham_jobs.workers WHERE id = $1",
+                worker_id
+            )
+            assert row is None, "Dead worker should be removed"
 
-        await cleanup_test_queues(redis_client)
-
-
-# =============================================================================
-# Test 6: WorkerRunner
-# =============================================================================
-
-class TestWorkerRunner:
-    """Test WorkerRunner process management."""
-
-    @pytest.mark.asyncio
-    async def test_runner_spawns_workers(self, redis_client):
-        """Runner should spawn worker processes."""
-        await cleanup_test_queues(redis_client)
-
-        from arkham_frame.workers import WorkerRunner, EchoWorker
-
-        runner = WorkerRunner(redis_url=REDIS_URL)
-        runner.register_worker_class("cpu-light", EchoWorker)
-
-        # Spawn workers
-        worker_ids = await runner.spawn_workers("cpu-light", 2)
-
-        assert len(worker_ids) == 2, f"Should spawn 2 workers, got {len(worker_ids)}"
-
-        # Give processes time to start
-        await asyncio.sleep(1)
-
-        # Check status
-        status = runner.get_pool_status("cpu-light")
-        assert status["running"] == 2, f"Should have 2 running, got {status}"
-
-        # Cleanup
-        await runner.kill_pool_workers("cpu-light")
-        await asyncio.sleep(0.5)
-
-        status = runner.get_pool_status("cpu-light")
-        assert status["running"] == 0
-
-        await cleanup_test_queues(redis_client)
-
-    @pytest.mark.asyncio
-    async def test_runner_scales_pool(self, redis_client):
-        """Runner should scale pool up and down."""
-        await cleanup_test_queues(redis_client)
-
-        from arkham_frame.workers import WorkerRunner, EchoWorker
-
-        runner = WorkerRunner(redis_url=REDIS_URL)
-        runner.register_worker_class("cpu-light", EchoWorker)
-
-        # Scale up
-        result = await runner.scale_pool("cpu-light", 3)
-        assert result.get("spawned") == 3
-
-        await asyncio.sleep(1)
-        status = runner.get_pool_status("cpu-light")
-        assert status["running"] == 3
-
-        # Scale down
-        result = await runner.scale_pool("cpu-light", 1)
-        assert result.get("killed") == 2
-
-        await asyncio.sleep(1)
-        status = runner.get_pool_status("cpu-light")
-        assert status["running"] == 1
-
-        # Cleanup
-        await runner.scale_pool("cpu-light", 0)
-        await asyncio.sleep(0.5)
-
-        await cleanup_test_queues(redis_client)
+        await cleanup_test_queues(db_pool)
 
 
 # =============================================================================
@@ -650,40 +599,45 @@ class TestWorkerRunner:
 
 async def smoke_test():
     """Quick smoke test - can run directly."""
-    import redis.asyncio as aioredis
+    import asyncpg
 
     print("=" * 60)
     print("Worker Infrastructure Smoke Test")
     print("=" * 60)
 
-    # Test Redis connection
-    print("\n1. Testing Redis connection...")
+    # Test PostgreSQL connection
+    print("\n1. Testing PostgreSQL connection...")
     try:
-        r = aioredis.from_url(REDIS_URL)
-        await r.ping()
-        print(f"   OK - Connected to {REDIS_URL}")
+        pool = await asyncpg.create_pool(DATABASE_URL, min_size=1, max_size=3)
+        async with pool.acquire() as conn:
+            await conn.fetchval("SELECT 1")
+        print(f"   OK - Connected to PostgreSQL")
     except Exception as e:
         print(f"   FAILED - {e}")
-        print("   Make sure Redis is running!")
+        print("   Make sure PostgreSQL is running!")
         return False
 
     # Test worker lifecycle
     print("\n2. Testing worker lifecycle...")
     from arkham_frame.workers import EchoWorker
 
-    worker = EchoWorker(redis_url=REDIS_URL, worker_id="smoke-test-worker")
+    worker = EchoWorker(database_url=DATABASE_URL, worker_id="smoke-test-worker")
     worker.idle_timeout = 5.0
 
     task = asyncio.create_task(worker.run())
 
-    # Poll for registration (async operations need time to complete)
+    # Poll for registration
     registered = False
     for _ in range(20):
         await asyncio.sleep(0.1)
-        exists = await r.exists(f"arkham:worker:{worker.worker_id}")
-        if exists:
-            registered = True
-            break
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT 1 FROM arkham_jobs.workers WHERE id = $1",
+                worker.worker_id
+            )
+            if row:
+                registered = True
+                break
 
     if registered:
         print("   OK - Worker registered")
@@ -694,29 +648,36 @@ async def smoke_test():
             await asyncio.wait_for(task, timeout=2)
         except asyncio.TimeoutError:
             pass
-        await r.aclose()
+        await pool.close()
         return False
 
     # Create and process job
     print("\n3. Testing job processing...")
     job_id = "smoke-test-job"
-    await r.zadd("arkham:queue:cpu-light", {job_id: 1})
-    await r.hset(f"arkham:job:{job_id}", mapping={
-        "pool": "cpu-light",
-        "payload": json.dumps({"message": "Smoke test!", "delay": 0.1}),
-        "priority": 1,
-        "status": "pending",
-    })
+    async with pool.acquire() as conn:
+        await conn.execute("""
+            INSERT INTO arkham_jobs.jobs (id, pool, payload, priority, status)
+            VALUES ($1, $2, $3, $4, 'pending')
+            ON CONFLICT (id) DO UPDATE SET status = 'pending', payload = EXCLUDED.payload
+        """, job_id, "cpu-light", json.dumps({"message": "Smoke test!", "delay": 0.1}), 1)
 
     # Wait for completion
+    status = None
     for _ in range(20):
-        status = await r.hget(f"arkham:job:{job_id}", "status")
-        if status == b"completed":
-            break
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT status, result FROM arkham_jobs.jobs WHERE id = $1",
+                job_id
+            )
+            if row and row["status"] == "completed":
+                status = "completed"
+                result = row["result"]
+                break
         await asyncio.sleep(0.2)
 
-    if status == b"completed":
-        result = json.loads(await r.hget(f"arkham:job:{job_id}", "result"))
+    if status == "completed":
+        if isinstance(result, str):
+            result = json.loads(result)
         print(f"   OK - Job completed: {result.get('message')}")
     else:
         print(f"   FAILED - Job status: {status}")
@@ -728,16 +689,21 @@ async def smoke_test():
     await asyncio.wait_for(task, timeout=5)
 
     # Check deregistered
-    exists = await r.exists(f"arkham:worker:{worker.worker_id}")
-    if not exists:
-        print("   OK - Worker deregistered")
-    else:
-        print("   FAILED - Worker still registered")
-        return False
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT 1 FROM arkham_jobs.workers WHERE id = $1",
+            worker.worker_id
+        )
+        if row is None:
+            print("   OK - Worker deregistered")
+        else:
+            print("   FAILED - Worker still registered")
+            return False
 
     # Cleanup
-    await r.delete(f"arkham:job:{job_id}")
-    await r.aclose()
+    async with pool.acquire() as conn:
+        await conn.execute("DELETE FROM arkham_jobs.jobs WHERE id = $1", job_id)
+    await pool.close()
 
     print("\n" + "=" * 60)
     print("ALL TESTS PASSED!")

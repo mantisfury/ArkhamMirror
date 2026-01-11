@@ -73,9 +73,23 @@ class DashboardShard(ArkhamShard):
                 "url": safe_url,
             }
 
-        # Vectors
+        # Vectors (pgvector)
         if self.frame.vectors:
             health["vectors"]["available"] = self.frame.vectors.is_available()
+            if self.frame.vectors.is_available():
+                try:
+                    stats = await self.frame.vectors.get_stats()
+                    health["vectors"]["info"] = {
+                        "backend": stats.get("backend", "pgvector"),
+                        "total_vectors": stats.get("total_vectors", 0),
+                        "collections": len(stats.get("collections", [])),
+                        "embedding_available": stats.get("embedding_available", False),
+                        "embedding_model": stats.get("embedding_model"),
+                        "embedding_dimension": stats.get("embedding_dimension"),
+                        "is_cloud_embedding": stats.get("is_cloud_embedding", False),
+                    }
+                except Exception as e:
+                    logger.warning(f"Failed to get vector stats: {e}")
 
         # LLM
         if self.frame.llm:

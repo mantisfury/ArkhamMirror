@@ -44,13 +44,13 @@ class TestQwenWorkerInitialization:
 
     def test_worker_creation(self):
         """Test creating a worker instance."""
-        worker = QwenWorker(redis_url="redis://localhost")
+        worker = QwenWorker(database_url="postgresql://localhost/test")
         assert worker._client is None
 
     @pytest.mark.asyncio
     async def test_get_client_creates_client(self):
         """Test client is created on first use."""
-        worker = QwenWorker(redis_url="redis://localhost")
+        worker = QwenWorker(database_url="postgresql://localhost/test")
 
         with patch("httpx.AsyncClient") as mock_client_class:
             mock_client = AsyncMock()
@@ -64,7 +64,7 @@ class TestQwenWorkerInitialization:
     @pytest.mark.asyncio
     async def test_get_client_reuses_client(self):
         """Test client is reused."""
-        worker = QwenWorker(redis_url="redis://localhost")
+        worker = QwenWorker(database_url="postgresql://localhost/test")
 
         with patch("httpx.AsyncClient") as mock_client_class:
             mock_client = AsyncMock()
@@ -80,7 +80,7 @@ class TestQwenWorkerInitialization:
     @pytest.mark.asyncio
     async def test_cleanup_closes_client(self):
         """Test cleanup closes HTTP client."""
-        worker = QwenWorker(redis_url="redis://localhost")
+        worker = QwenWorker(database_url="postgresql://localhost/test")
 
         mock_client = AsyncMock()
         worker._client = mock_client
@@ -97,7 +97,7 @@ class TestQwenWorkerProcessJob:
     @pytest.mark.asyncio
     async def test_process_job_single_image_path(self):
         """Test processing single image from path."""
-        worker = QwenWorker(redis_url="redis://localhost")
+        worker = QwenWorker(database_url="postgresql://localhost/test")
 
         # Mock HTTP response
         mock_response = MagicMock()
@@ -137,7 +137,7 @@ class TestQwenWorkerProcessJob:
     @pytest.mark.asyncio
     async def test_process_job_image_not_found(self):
         """Test processing with non-existent image."""
-        worker = QwenWorker(redis_url="redis://localhost")
+        worker = QwenWorker(database_url="postgresql://localhost/test")
 
         with patch("os.path.exists", return_value=False):
             payload = {"image_path": "/missing/image.png"}
@@ -148,7 +148,7 @@ class TestQwenWorkerProcessJob:
     @pytest.mark.asyncio
     async def test_process_job_base64_image(self):
         """Test processing base64 encoded image."""
-        worker = QwenWorker(redis_url="redis://localhost")
+        worker = QwenWorker(database_url="postgresql://localhost/test")
 
         fake_img_data = b"fake image bytes"
         fake_b64 = base64.b64encode(fake_img_data).decode("utf-8")
@@ -176,7 +176,7 @@ class TestQwenWorkerProcessJob:
     @pytest.mark.asyncio
     async def test_process_job_no_image_provided(self):
         """Test processing without image."""
-        worker = QwenWorker(redis_url="redis://localhost")
+        worker = QwenWorker(database_url="postgresql://localhost/test")
 
         payload = {}
 
@@ -186,7 +186,7 @@ class TestQwenWorkerProcessJob:
     @pytest.mark.asyncio
     async def test_process_job_custom_endpoint(self):
         """Test processing with custom endpoint."""
-        worker = QwenWorker(redis_url="redis://localhost")
+        worker = QwenWorker(database_url="postgresql://localhost/test")
 
         mock_response = MagicMock()
         mock_response.json.return_value = {
@@ -221,7 +221,7 @@ class TestQwenWorkerProcessJob:
     @pytest.mark.asyncio
     async def test_process_job_custom_model(self):
         """Test processing with custom model."""
-        worker = QwenWorker(redis_url="redis://localhost")
+        worker = QwenWorker(database_url="postgresql://localhost/test")
 
         mock_response = MagicMock()
         mock_response.json.return_value = {
@@ -256,7 +256,7 @@ class TestQwenWorkerProcessJob:
     @pytest.mark.asyncio
     async def test_process_job_custom_prompt(self):
         """Test processing with custom prompt."""
-        worker = QwenWorker(redis_url="redis://localhost")
+        worker = QwenWorker(database_url="postgresql://localhost/test")
 
         mock_response = MagicMock()
         mock_response.json.return_value = {
@@ -291,7 +291,7 @@ class TestQwenWorkerProcessJob:
     @pytest.mark.asyncio
     async def test_process_job_temperature(self):
         """Test processing with custom temperature."""
-        worker = QwenWorker(redis_url="redis://localhost")
+        worker = QwenWorker(database_url="postgresql://localhost/test")
 
         mock_response = MagicMock()
         mock_response.json.return_value = {
@@ -323,7 +323,7 @@ class TestQwenWorkerProcessJob:
     @pytest.mark.asyncio
     async def test_process_job_connection_error(self):
         """Test handling connection error."""
-        worker = QwenWorker(redis_url="redis://localhost")
+        worker = QwenWorker(database_url="postgresql://localhost/test")
 
         import httpx
 
@@ -346,7 +346,7 @@ class TestQwenWorkerProcessJob:
     @pytest.mark.asyncio
     async def test_process_job_http_error(self):
         """Test handling HTTP error."""
-        worker = QwenWorker(redis_url="redis://localhost")
+        worker = QwenWorker(database_url="postgresql://localhost/test")
 
         import httpx
 
@@ -377,7 +377,7 @@ class TestQwenWorkerProcessJob:
     @pytest.mark.asyncio
     async def test_process_job_image_types(self):
         """Test processing different image types."""
-        worker = QwenWorker(redis_url="redis://localhost")
+        worker = QwenWorker(database_url="postgresql://localhost/test")
 
         mock_response = MagicMock()
         mock_response.json.return_value = {
@@ -420,7 +420,7 @@ class TestQwenWorkerTableExtraction:
     @pytest.mark.asyncio
     async def test_extract_tables_success(self):
         """Test successful table extraction."""
-        worker = QwenWorker(redis_url="redis://localhost")
+        worker = QwenWorker(database_url="postgresql://localhost/test")
 
         # Mock table extraction response
         table_data = [
@@ -459,7 +459,7 @@ class TestQwenWorkerTableExtraction:
     @pytest.mark.asyncio
     async def test_extract_tables_no_tables(self):
         """Test table extraction when no tables found."""
-        worker = QwenWorker(redis_url="redis://localhost")
+        worker = QwenWorker(database_url="postgresql://localhost/test")
 
         mock_response = MagicMock()
         mock_response.json.return_value = {
@@ -485,7 +485,7 @@ class TestQwenWorkerTableExtraction:
     @pytest.mark.asyncio
     async def test_extract_tables_with_markdown(self):
         """Test table extraction with markdown code blocks."""
-        worker = QwenWorker(redis_url="redis://localhost")
+        worker = QwenWorker(database_url="postgresql://localhost/test")
 
         table_data = [{"headers": ["A"], "rows": [["1"]]}]
         content_with_markdown = f"```json\n{json.dumps(table_data)}\n```"
@@ -514,7 +514,7 @@ class TestQwenWorkerTableExtraction:
     @pytest.mark.asyncio
     async def test_extract_tables_error(self):
         """Test table extraction error handling."""
-        worker = QwenWorker(redis_url="redis://localhost")
+        worker = QwenWorker(database_url="postgresql://localhost/test")
 
         mock_client = AsyncMock()
         mock_client.post = AsyncMock(side_effect=Exception("API error"))
@@ -535,7 +535,7 @@ class TestQwenWorkerTableExtraction:
     @pytest.mark.asyncio
     async def test_process_job_with_table_extraction(self):
         """Test processing with table extraction enabled."""
-        worker = QwenWorker(redis_url="redis://localhost")
+        worker = QwenWorker(database_url="postgresql://localhost/test")
 
         mock_response = MagicMock()
         mock_response.json.return_value = {
@@ -574,7 +574,7 @@ class TestQwenWorkerBatchMode:
     @pytest.mark.asyncio
     async def test_process_batch(self):
         """Test batch processing multiple images."""
-        worker = QwenWorker(redis_url="redis://localhost")
+        worker = QwenWorker(database_url="postgresql://localhost/test")
 
         mock_response = MagicMock()
         mock_response.json.return_value = {
@@ -609,7 +609,7 @@ class TestQwenWorkerBatchMode:
     @pytest.mark.asyncio
     async def test_process_batch_empty(self):
         """Test batch processing with no images."""
-        worker = QwenWorker(redis_url="redis://localhost")
+        worker = QwenWorker(database_url="postgresql://localhost/test")
 
         payload = {
             "batch": True,
@@ -622,7 +622,7 @@ class TestQwenWorkerBatchMode:
     @pytest.mark.asyncio
     async def test_process_batch_with_errors(self):
         """Test batch processing with some failures."""
-        worker = QwenWorker(redis_url="redis://localhost")
+        worker = QwenWorker(database_url="postgresql://localhost/test")
 
         mock_response = MagicMock()
         mock_response.json.return_value = {

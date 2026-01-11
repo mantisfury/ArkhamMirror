@@ -155,7 +155,7 @@ class TestPaddleWorkerProcessJob:
     @pytest.mark.asyncio
     async def test_process_job_single_image_path(self):
         """Test processing single image from path."""
-        worker = PaddleWorker(redis_url="redis://localhost")
+        worker = PaddleWorker(database_url="postgresql://localhost/test")
 
         # Mock the engine and file operations
         mock_engine = MagicMock()
@@ -192,7 +192,7 @@ class TestPaddleWorkerProcessJob:
     @pytest.mark.asyncio
     async def test_process_job_image_not_found(self):
         """Test processing with non-existent image."""
-        worker = PaddleWorker(redis_url="redis://localhost")
+        worker = PaddleWorker(database_url="postgresql://localhost/test")
 
         # Mock paddleocr module
         mock_paddleocr_module = MagicMock()
@@ -209,7 +209,7 @@ class TestPaddleWorkerProcessJob:
     @pytest.mark.asyncio
     async def test_process_job_base64_image(self):
         """Test processing base64 encoded image."""
-        worker = PaddleWorker(redis_url="redis://localhost")
+        worker = PaddleWorker(database_url="postgresql://localhost/test")
 
         # Create fake image
         fake_img_data = b"fake image bytes"
@@ -245,7 +245,7 @@ class TestPaddleWorkerProcessJob:
     @pytest.mark.asyncio
     async def test_process_job_no_image_provided(self):
         """Test processing without image."""
-        worker = PaddleWorker(redis_url="redis://localhost")
+        worker = PaddleWorker(database_url="postgresql://localhost/test")
 
         # Mock paddleocr module
         mock_paddleocr_module = MagicMock()
@@ -261,7 +261,7 @@ class TestPaddleWorkerProcessJob:
     @pytest.mark.asyncio
     async def test_process_job_multiple_lines(self):
         """Test processing image with multiple text lines."""
-        worker = PaddleWorker(redis_url="redis://localhost")
+        worker = PaddleWorker(database_url="postgresql://localhost/test")
 
         mock_engine = MagicMock()
         mock_engine.ocr.return_value = [
@@ -297,7 +297,7 @@ class TestPaddleWorkerProcessJob:
     @pytest.mark.asyncio
     async def test_process_job_empty_result(self):
         """Test processing image with no text detected."""
-        worker = PaddleWorker(redis_url="redis://localhost")
+        worker = PaddleWorker(database_url="postgresql://localhost/test")
 
         mock_engine = MagicMock()
         mock_engine.ocr.return_value = [[]]  # No text detected
@@ -317,7 +317,7 @@ class TestPaddleWorkerProcessJob:
     @pytest.mark.asyncio
     async def test_process_job_detection_only(self):
         """Test detection only mode."""
-        worker = PaddleWorker(redis_url="redis://localhost")
+        worker = PaddleWorker(database_url="postgresql://localhost/test")
 
         mock_engine = MagicMock()
         mock_engine.ocr.return_value = [[]]
@@ -342,7 +342,7 @@ class TestPaddleWorkerProcessJob:
     @pytest.mark.asyncio
     async def test_process_job_custom_language(self):
         """Test processing with custom language."""
-        worker = PaddleWorker(redis_url="redis://localhost")
+        worker = PaddleWorker(database_url="postgresql://localhost/test")
 
         mock_engine = MagicMock()
         mock_engine.ocr.return_value = [[]]
@@ -380,7 +380,7 @@ class TestPaddleWorkerBatchMode:
     @pytest.mark.asyncio
     async def test_process_batch(self):
         """Test batch processing multiple images."""
-        worker = PaddleWorker(redis_url="redis://localhost")
+        worker = PaddleWorker(database_url="postgresql://localhost/test")
 
         mock_engine = MagicMock()
         mock_engine.ocr.return_value = [
@@ -414,7 +414,7 @@ class TestPaddleWorkerBatchMode:
     @pytest.mark.asyncio
     async def test_process_batch_empty(self):
         """Test batch processing with no images."""
-        worker = PaddleWorker(redis_url="redis://localhost")
+        worker = PaddleWorker(database_url="postgresql://localhost/test")
 
         # Mock paddleocr module
         mock_paddleocr_module = MagicMock()
@@ -433,7 +433,7 @@ class TestPaddleWorkerBatchMode:
     @pytest.mark.asyncio
     async def test_process_batch_with_errors(self):
         """Test batch processing with some failures."""
-        worker = PaddleWorker(redis_url="redis://localhost")
+        worker = PaddleWorker(database_url="postgresql://localhost/test")
 
         mock_engine = MagicMock()
         mock_engine.ocr.return_value = [
@@ -471,7 +471,7 @@ class TestPaddleWorkerBatchMode:
     @pytest.mark.asyncio
     async def test_process_batch_mixed_formats(self):
         """Test batch with both path and base64 images."""
-        worker = PaddleWorker(redis_url="redis://localhost")
+        worker = PaddleWorker(database_url="postgresql://localhost/test")
 
         fake_b64 = base64.b64encode(b"fake").decode("utf-8")
 

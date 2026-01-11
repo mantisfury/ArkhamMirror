@@ -155,7 +155,7 @@ export function OverviewTab() {
             info={health?.llm.info}
           />
           <ServiceCard
-            title="Workers (Redis)"
+            title="Workers"
             icon="Cpu"
             available={health?.workers.available ?? false}
             info={health?.workers.info ? { queues: health.workers.info.length } : null}

@@ -32,14 +32,45 @@ logger = logging.getLogger(__name__)
 
 
 # Known embedding models with their dimensions
-KNOWN_EMBEDDING_MODELS = {
-    "all-MiniLM-L6-v2": {"dimensions": 384, "description": "Fast, lightweight (384D)"},
-    "BAAI/bge-m3": {"dimensions": 1024, "description": "High quality, multilingual (1024D)"},
-    "all-mpnet-base-v2": {"dimensions": 768, "description": "Balanced quality (768D)"},
-    "paraphrase-MiniLM-L6-v2": {"dimensions": 384, "description": "Paraphrase optimized (384D)"},
+# LOCAL models - run on your machine, no API required
+LOCAL_EMBEDDING_MODELS = {
+    "all-MiniLM-L6-v2": {
+        "dimensions": 384,
+        "description": "Fast, lightweight (384D)",
+        "is_cloud": False,
+    },
+    "BAAI/bge-m3": {
+        "dimensions": 1024,
+        "description": "High quality, multilingual (1024D)",
+        "is_cloud": False,
+    },
+    "all-mpnet-base-v2": {
+        "dimensions": 768,
+        "description": "Balanced quality (768D)",
+        "is_cloud": False,
+    },
+    "paraphrase-MiniLM-L6-v2": {
+        "dimensions": 384,
+        "description": "Paraphrase optimized (384D)",
+        "is_cloud": False,
+    },
 }
 
-# Default embedding model for new projects
+# CLOUD models - require API key, data sent to external service
+CLOUD_EMBEDDING_MODELS = {
+    "text-embedding-3-small": {
+        "dimensions": 1536,
+        "description": "[CLOUD API] OpenAI - High quality (1536D)",
+        "is_cloud": True,
+        "requires_api_key": True,
+        "warning": "Data sent to OpenAI API. Requires OPENAI_API_KEY.",
+    },
+}
+
+# Combined for backwards compatibility
+KNOWN_EMBEDDING_MODELS = {**LOCAL_EMBEDDING_MODELS, **CLOUD_EMBEDDING_MODELS}
+
+# Default embedding model for new projects (always local)
 DEFAULT_EMBEDDING_MODEL = "all-MiniLM-L6-v2"
 
 

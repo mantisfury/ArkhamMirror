@@ -461,11 +461,14 @@ DEFAULT_SETTINGS: list[Setting] = [
             "WARNING: Changing models after storing vectors requires rebuilding vector collections!"
         ),
         options=[
-            {"value": "BAAI/bge-m3", "label": "BGE-M3 (1024-dim, multilingual) - Default"},
-            {"value": "BAAI/bge-large-en-v1.5", "label": "BGE-Large-EN (1024-dim, English)"},
-            {"value": "BAAI/bge-base-en-v1.5", "label": "BGE-Base-EN (768-dim)"},
-            {"value": "sentence-transformers/all-MiniLM-L6-v2", "label": "MiniLM-L6 (384-dim, fast, lightweight)"},
-            {"value": "sentence-transformers/all-mpnet-base-v2", "label": "MPNet-Base (768-dim, balanced)"},
+            # === LOCAL MODELS (run on your machine) ===
+            {"value": "BAAI/bge-m3", "label": "[LOCAL] BGE-M3 (1024D, multilingual) - Recommended"},
+            {"value": "BAAI/bge-large-en-v1.5", "label": "[LOCAL] BGE-Large-EN (1024D, English)"},
+            {"value": "BAAI/bge-base-en-v1.5", "label": "[LOCAL] BGE-Base-EN (768D)"},
+            {"value": "sentence-transformers/all-MiniLM-L6-v2", "label": "[LOCAL] MiniLM-L6 (384D, fast, lightweight)"},
+            {"value": "sentence-transformers/all-mpnet-base-v2", "label": "[LOCAL] MPNet-Base (768D, balanced)"},
+            # === CLOUD API MODELS (require API key, data sent externally) ===
+            {"value": "text-embedding-3-small", "label": "[CLOUD API] OpenAI text-embedding-3-small (1536D) - Requires API key"},
         ],
         requires_restart=True,
         order=11,

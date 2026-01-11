@@ -15,6 +15,13 @@ import { useFetch, clearSettingsCache } from '../../hooks';
 import './SettingsPage.css';
 
 // Types
+interface SettingOption {
+  value: string | number;
+  label: string;
+  disabled?: boolean;
+  disabledReason?: string;
+}
+
 interface Setting {
   key: string;
   value: unknown;
@@ -27,7 +34,7 @@ interface Setting {
   is_modified: boolean;
   is_readonly: boolean;
   order: number;
-  options: Array<{ value: string | number; label: string }>;
+  options: SettingOption[];
   validation: Record<string, unknown>;
 }
 
@@ -63,6 +70,24 @@ interface StorageStats {
   }>;
   storage_categories: Record<string, number>;
   total_storage_bytes: number;
+}
+
+interface VectorHealthStatus {
+  status: string;
+  total_vectors: number;
+  total_collections: number;
+  collections: Array<{
+    name: string;
+    vector_count: number;
+    vector_size: number;
+    index_type: string;
+    lists: number;
+    probes: number;
+    last_reindex: string | null;
+  }>;
+  warnings: string[];
+  last_reindex: string | null;
+  reindex_in_progress: boolean;
 }
 
 // ML Model types
@@ -229,6 +254,18 @@ export function SettingsPage() {
 
   // Model download state
   const [downloadingModel, setDownloadingModel] = useState<string | null>(null);
+
+  // Vector maintenance state
+  const [reindexingCollection, setReindexingCollection] = useState<string | null>(null);
+
+  // Fetch vector health for data management
+  const {
+    data: vectorHealth,
+    loading: vectorHealthLoading,
+    refetch: refetchVectorHealth
+  } = useFetch<VectorHealthStatus>(
+    activeCategory === 'data' ? '/api/settings/vectors/health' : null
+  );
 
   // Reset pending changes when category changes
   useEffect(() => {
@@ -527,6 +564,34 @@ export function SettingsPage() {
     }
   };
 
+  // Reindex vector collection
+  const triggerReindex = async (collectionName?: string) => {
+    const endpoint = collectionName
+      ? `/api/settings/vectors/reindex/${collectionName}`
+      : '/api/settings/vectors/reindex';
+
+    setReindexingCollection(collectionName || 'all');
+    try {
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      });
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.detail || 'Reindex failed');
+      }
+
+      const result = await response.json();
+      toast.success(result.message || 'Reindex completed successfully');
+      refetchVectorHealth();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to reindex');
+    } finally {
+      setReindexingCollection(null);
+    }
+  };
+
   const formatBytes = (bytes: number): string => {
     if (bytes === 0) return '0 B';
     const k = 1024;
@@ -567,22 +632,51 @@ export function SettingsPage() {
         // Find the original typed value from options when selection changes
         const handleSelectChange = (selectedValue: string) => {
           const option = setting.options.find(opt => String(opt.value) === selectedValue);
+          // Prevent selection of disabled options
+          if (option?.disabled) {
+            return;
+          }
           // Use the original typed value from the option, not the string
           handleSettingChange(setting.key, option ? option.value : selectedValue);
         };
+
+        // Check if any option is disabled (for showing tooltip info)
+        const hasDisabledOptions = setting.options.some(opt => opt.disabled);
+        const selectedOption = setting.options.find(opt => String(opt.value) === String(value));
+        const isCloudOption = selectedOption?.label?.includes('[CLOUD API]');
+
         return (
-          <select
-            value={String(value)}
-            onChange={e => handleSelectChange(e.target.value)}
-            disabled={setting.is_readonly}
-            className="setting-select"
-          >
-            {setting.options.map(opt => (
-              <option key={String(opt.value)} value={String(opt.value)}>
-                {opt.label}
-              </option>
-            ))}
-          </select>
+          <div className="select-wrapper">
+            <select
+              value={String(value)}
+              onChange={e => handleSelectChange(e.target.value)}
+              disabled={setting.is_readonly}
+              className={`setting-select ${isCloudOption ? 'cloud-option' : ''}`}
+            >
+              {setting.options.map(opt => (
+                <option
+                  key={String(opt.value)}
+                  value={String(opt.value)}
+                  disabled={opt.disabled}
+                  title={opt.disabledReason}
+                >
+                  {opt.label}{opt.disabled ? ' (unavailable)' : ''}
+                </option>
+              ))}
+            </select>
+            {isCloudOption && (
+              <div className="cloud-warning">
+                <Icon name="Cloud" size={14} />
+                <span>Data will be sent to external API</span>
+              </div>
+            )}
+            {hasDisabledOptions && !isCloudOption && (
+              <div className="disabled-options-hint">
+                <Icon name="Info" size={12} />
+                <span>Some options require API key configuration</span>
+              </div>
+            )}
+          </div>
         );
       }
 
@@ -1088,6 +1182,120 @@ export function SettingsPage() {
                     Export Settings JSON
                   </a>
                 </div>
+              </section>
+
+              {/* Vector Maintenance Section */}
+              <section className="data-section">
+                <h3 className="section-title">
+                  <Icon name="Cpu" size={18} />
+                  Vector Index Maintenance
+                </h3>
+                <p className="section-description">
+                  Rebuild IVFFlat indexes after significant data changes. This optimizes search performance
+                  by recalculating index parameters based on current data distribution.
+                </p>
+
+                {vectorHealthLoading ? (
+                  <div className="section-loading">
+                    <Icon name="Loader2" size={20} className="spin" />
+                    <span>Loading vector health...</span>
+                  </div>
+                ) : vectorHealth ? (
+                  <div className="vector-maintenance">
+                    {/* Status Overview */}
+                    <div className="vector-status-bar">
+                      <div className={`status-indicator ${vectorHealth.status}`}>
+                        <Icon name={vectorHealth.status === 'healthy' ? 'CheckCircle' : 'AlertCircle'} size={16} />
+                        <span>{vectorHealth.status === 'healthy' ? 'Healthy' : vectorHealth.status}</span>
+                      </div>
+                      <span className="status-detail">
+                        {vectorHealth.total_vectors.toLocaleString()} vectors in {vectorHealth.total_collections} collection(s)
+                      </span>
+                      {vectorHealth.last_reindex && (
+                        <span className="last-reindex">
+                          Last reindex: {new Date(vectorHealth.last_reindex).toLocaleString()}
+                        </span>
+                      )}
+                    </div>
+
+                    {/* Warnings */}
+                    {vectorHealth.warnings.length > 0 && (
+                      <div className="vector-warnings">
+                        {vectorHealth.warnings.map((warning, i) => (
+                          <div key={i} className="warning-item">
+                            <Icon name="AlertTriangle" size={14} />
+                            <span>{warning}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    {/* Collections Table */}
+                    {vectorHealth.collections.length > 0 && (
+                      <div className="collections-table">
+                        <div className="table-header">
+                          <span className="col-name">Collection</span>
+                          <span className="col-vectors">Vectors</span>
+                          <span className="col-index">Index</span>
+                          <span className="col-params">Params</span>
+                          <span className="col-action">Action</span>
+                        </div>
+                        {vectorHealth.collections.map(coll => (
+                          <div key={coll.name} className="table-row">
+                            <span className="col-name" title={coll.name}>{coll.name}</span>
+                            <span className="col-vectors">{coll.vector_count.toLocaleString()}</span>
+                            <span className="col-index">{coll.index_type}</span>
+                            <span className="col-params">
+                              lists={coll.lists}, probes={coll.probes}
+                            </span>
+                            <span className="col-action">
+                              <button
+                                className="btn btn-sm btn-secondary"
+                                onClick={() => triggerReindex(coll.name)}
+                                disabled={reindexingCollection !== null}
+                                title="Reindex this collection"
+                              >
+                                {reindexingCollection === coll.name ? (
+                                  <Icon name="Loader2" size={14} className="spin" />
+                                ) : (
+                                  <Icon name="RefreshCw" size={14} />
+                                )}
+                              </button>
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    {/* Reindex All Button */}
+                    <div className="reindex-actions">
+                      <button
+                        className="btn btn-primary"
+                        onClick={() => triggerReindex()}
+                        disabled={reindexingCollection !== null || vectorHealth.reindex_in_progress}
+                      >
+                        {reindexingCollection === 'all' || vectorHealth.reindex_in_progress ? (
+                          <>
+                            <Icon name="Loader2" size={16} className="spin" />
+                            Reindexing...
+                          </>
+                        ) : (
+                          <>
+                            <Icon name="RefreshCw" size={16} />
+                            Reindex All Collections
+                          </>
+                        )}
+                      </button>
+                      <span className="reindex-hint">
+                        Rebuilds all IVFFlat indexes with optimal parameters
+                      </span>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="section-error">
+                    <span>Vector service not available</span>
+                  </div>
+                )}
               </section>
 
               {/* Confirmation Dialog */}
