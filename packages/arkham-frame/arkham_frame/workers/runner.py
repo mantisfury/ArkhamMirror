@@ -53,22 +53,22 @@ class WorkerRunner:
 
     def __init__(
         self,
-        redis_url: str = None,
+        database_url: str = None,
         worker_classes: Dict[str, Type[BaseWorker]] = None,
     ):
         """
         Initialize the runner.
 
         Args:
-            redis_url: Redis connection URL
+            database_url: PostgreSQL connection URL
             worker_classes: Map of pool name -> worker class
         """
-        self.redis_url = redis_url or os.environ.get(
-            "REDIS_URL", "redis://localhost:6379"
+        self.database_url = database_url or os.environ.get(
+            "DATABASE_URL", "postgresql://arkham:arkhampass@localhost:5432/arkhamdb"
         )
         self._worker_classes: Dict[str, Type[BaseWorker]] = worker_classes or {}
         self._processes: Dict[str, WorkerProcess] = {}
-        self._registry = WorkerRegistry(self.redis_url)
+        self._registry = None  # Registry uses PostgreSQL via workers table
         self._running = False
         self._shutdown_event = asyncio.Event()
 
@@ -106,7 +106,7 @@ class WorkerRunner:
         # Create subprocess
         process = multiprocessing.Process(
             target=run_worker,
-            args=(worker_class, self.redis_url, worker_id),
+            args=(worker_class, self.database_url, worker_id),
             name=f"worker-{worker_id}",
             daemon=True,
         )
@@ -364,16 +364,9 @@ class WorkerRunner:
                 # Cleanup dead processes
                 await self.cleanup_dead_processes()
 
-                # Check registry for stuck workers
-                await self._registry.connect()
-                stuck = await self._registry.get_stuck_workers()
-
-                for worker in stuck:
-                    if worker.worker_id in self._processes:
-                        logger.warning(f"Worker {worker.worker_id} appears stuck, killing")
-                        await self.kill_worker(worker.worker_id)
-
-                await self._registry.cleanup_dead_workers()
+                # Note: With PostgreSQL-based workers, the arkham_jobs.workers table
+                # tracks worker state. Stuck worker detection is handled differently
+                # than the old Redis-based registry approach.
 
             except Exception as e:
                 logger.error(f"Monitor loop error: {e}")
@@ -400,9 +393,6 @@ class WorkerRunner:
         counts = counts or {}
 
         logger.info("WorkerRunner starting...")
-
-        # Connect registry
-        await self._registry.connect()
 
         # Spawn initial workers
         for pool in pools:
@@ -431,7 +421,6 @@ class WorkerRunner:
         for pool in WORKER_POOLS.keys():
             await self.kill_pool_workers(pool)
 
-        await self._registry.disconnect()
         logger.info("WorkerRunner stopped")
 
     def request_shutdown(self):
@@ -441,7 +430,7 @@ class WorkerRunner:
 
 async def run_single_worker(
     worker_class: Type[BaseWorker],
-    redis_url: str = None,
+    database_url: str = None,
     worker_id: str = None,
 ):
     """
@@ -449,8 +438,8 @@ async def run_single_worker(
 
     Args:
         worker_class: BaseWorker subclass
-        redis_url: Redis connection URL
+        database_url: PostgreSQL connection URL
         worker_id: Optional worker ID
     """
-    worker = worker_class(redis_url=redis_url, worker_id=worker_id)
+    worker = worker_class(database_url=database_url, worker_id=worker_id)
     await worker.run()

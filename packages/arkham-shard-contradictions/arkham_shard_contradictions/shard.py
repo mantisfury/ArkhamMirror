@@ -145,6 +145,7 @@ class ContradictionsShard(ArkhamShard):
             storage=self.storage,
             event_bus=self._event_bus,
             chain_detector=self.chain_detector,
+            worker_service=self._worker_service,
         )
 
         # Set database service for document fetching in API

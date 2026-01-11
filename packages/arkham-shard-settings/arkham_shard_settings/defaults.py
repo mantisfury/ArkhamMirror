@@ -451,22 +451,25 @@ DEFAULT_SETTINGS: list[Setting] = [
     # --- Embedding Model ---
     Setting(
         key="advanced.embedding_model",
-        value="BAAI/bge-m3",
-        default_value="BAAI/bge-m3",
+        value="sentence-transformers/all-MiniLM-L6-v2",
+        default_value="sentence-transformers/all-MiniLM-L6-v2",
         category=SettingCategory.ADVANCED,
         data_type=SettingType.SELECT,
         label="Embedding Model",
         description=(
             "Model for semantic text embeddings (vector search). "
+            "Leave empty to disable semantic search. "
             "WARNING: Changing models after storing vectors requires rebuilding vector collections!"
         ),
         options=[
+            # === DISABLED ===
+            {"value": "", "label": "[DISABLED] No semantic search"},
             # === LOCAL MODELS (run on your machine) ===
-            {"value": "BAAI/bge-m3", "label": "[LOCAL] BGE-M3 (1024D, multilingual) - Recommended"},
-            {"value": "BAAI/bge-large-en-v1.5", "label": "[LOCAL] BGE-Large-EN (1024D, English)"},
-            {"value": "BAAI/bge-base-en-v1.5", "label": "[LOCAL] BGE-Base-EN (768D)"},
-            {"value": "sentence-transformers/all-MiniLM-L6-v2", "label": "[LOCAL] MiniLM-L6 (384D, fast, lightweight)"},
-            {"value": "sentence-transformers/all-mpnet-base-v2", "label": "[LOCAL] MPNet-Base (768D, balanced)"},
+            {"value": "sentence-transformers/all-MiniLM-L6-v2", "label": "[LOCAL] MiniLM-L6 (384D, ~80MB) - Default, fast"},
+            {"value": "sentence-transformers/all-mpnet-base-v2", "label": "[LOCAL] MPNet-Base (768D, ~420MB)"},
+            {"value": "BAAI/bge-base-en-v1.5", "label": "[LOCAL] BGE-Base-EN (768D, ~440MB)"},
+            {"value": "BAAI/bge-large-en-v1.5", "label": "[LOCAL] BGE-Large-EN (1024D, ~1.3GB)"},
+            {"value": "BAAI/bge-m3", "label": "[LOCAL] BGE-M3 (1024D, ~2.2GB, multilingual) - Best quality"},
             # === CLOUD API MODELS (require API key, data sent externally) ===
             {"value": "text-embedding-3-small", "label": "[CLOUD API] OpenAI text-embedding-3-small (1536D) - Requires API key"},
         ],

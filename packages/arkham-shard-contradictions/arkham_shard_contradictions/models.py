@@ -133,6 +133,7 @@ class BatchAnalyzeRequest(BaseModel):
     document_pairs: list[tuple[str, str]]
     threshold: float = 0.7
     use_llm: bool = True
+    async_mode: bool = False  # If True, use llm-analysis worker for background processing
 
 
 class ClaimsRequest(BaseModel):

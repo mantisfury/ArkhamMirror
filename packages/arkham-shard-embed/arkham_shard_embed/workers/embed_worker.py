@@ -170,19 +170,19 @@ class EmbedWorker(BaseWorker):
             }
 
 
-def run_embed_worker(redis_url: str = None, worker_id: str = None):
+def run_embed_worker(database_url: str = None, worker_id: str = None):
     """
     Convenience function to run an EmbedWorker.
 
     Args:
-        redis_url: Redis connection URL (defaults to env var)
+        database_url: PostgreSQL connection URL (defaults to env var)
         worker_id: Optional worker ID (auto-generated if not provided)
 
     Example:
         python -m arkham_shard_embed.workers.embed_worker
     """
     import asyncio
-    worker = EmbedWorker(redis_url=redis_url, worker_id=worker_id)
+    worker = EmbedWorker(database_url=database_url, worker_id=worker_id)
     asyncio.run(worker.run())
 
 

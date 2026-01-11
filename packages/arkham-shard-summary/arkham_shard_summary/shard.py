@@ -280,9 +280,87 @@ class SummaryShard(ArkhamShard):
 
         Returns:
             BatchSummaryResult with all generated summaries
+            In async_mode, returns job IDs instead of immediate results.
         """
         start_time = time.time()
 
+        # Async mode: use llm-enrich worker for background processing
+        if batch_request.async_mode:
+            if not self._workers:
+                raise RuntimeError("Worker service not available for async mode")
+
+            job_ids = []
+            for req in batch_request.requests:
+                job_id = str(uuid.uuid4())
+                try:
+                    # Fetch source content
+                    source_text = await self._fetch_source_content(
+                        req.source_type,
+                        req.source_ids,
+                    )
+
+                    if not source_text:
+                        logger.warning(f"Skipping request: no source content for {req.source_ids}")
+                        continue
+
+                    # Map summary type to llm-enrich operation style
+                    style_map = {
+                        SummaryType.BRIEF: "brief",
+                        SummaryType.DETAILED: "detailed",
+                        SummaryType.EXECUTIVE: "executive",
+                        SummaryType.BULLET_POINTS: "bullet_points",
+                        SummaryType.ABSTRACT: "academic",
+                    }
+                    style = style_map.get(req.summary_type, "detailed")
+
+                    # Map length to word count
+                    length_map = {
+                        SummaryLength.VERY_SHORT: 50,
+                        SummaryLength.SHORT: 100,
+                        SummaryLength.MEDIUM: 250,
+                        SummaryLength.LONG: 500,
+                        SummaryLength.VERY_LONG: 1000,
+                    }
+                    max_length = length_map.get(req.target_length, 250)
+
+                    # Enqueue to llm-enrich worker
+                    await self._workers.enqueue(
+                        pool="llm-enrich",
+                        job_id=job_id,
+                        job_type="summarize",
+                        payload={
+                            "operation": "summarize",
+                            "text": source_text,
+                            "style": style,
+                            "max_length": max_length,
+                            # Metadata for result processing
+                            "_source_type": req.source_type.value,
+                            "_source_ids": req.source_ids,
+                            "_summary_type": req.summary_type.value,
+                            "_target_length": req.target_length.value,
+                            "_tags": req.tags,
+                        },
+                        priority=5,
+                    )
+                    job_ids.append({
+                        "job_id": job_id,
+                        "source_type": req.source_type.value,
+                        "source_ids": req.source_ids,
+                    })
+                except Exception as e:
+                    logger.error(f"Failed to enqueue summary request: {e}")
+
+            # Return async response as BatchSummaryResult
+            return BatchSummaryResult(
+                total=len(batch_request.requests),
+                successful=len(job_ids),
+                failed=len(batch_request.requests) - len(job_ids),
+                summaries=[],  # No immediate results in async mode
+                errors=[f"Async mode: {len(job_ids)} jobs queued. Poll /api/summary/jobs/<job_id> for results."],
+                total_processing_time_ms=(time.time() - start_time) * 1000,
+            )
+
+        # Sync mode: process sequentially
         if self._events:
             await self._events.emit(
                 "summary.batch.started",

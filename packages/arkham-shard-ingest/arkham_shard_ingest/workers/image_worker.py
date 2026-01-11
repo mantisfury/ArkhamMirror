@@ -299,17 +299,18 @@ class ImageWorker(BaseWorker):
             maintain_aspect = payload.get("maintain_aspect", True)
 
             original_size = img.size
+            result_img = img.copy()  # Work on a copy to avoid closure issues
 
             if maintain_aspect:
-                img.thumbnail((width or 10000, height or 10000), Image.Resampling.LANCZOS)
-                new_size = img.size
+                result_img.thumbnail((width or 10000, height or 10000), Image.Resampling.LANCZOS)
+                new_size = result_img.size
             else:
                 if not width or not height:
                     raise ValueError("width and height required when maintain_aspect=False")
-                img = img.resize((width, height), Image.Resampling.LANCZOS)
+                result_img = result_img.resize((width, height), Image.Resampling.LANCZOS)
                 new_size = (width, height)
 
-            return img, original_size, new_size
+            return result_img, original_size, new_size
 
         result_img, original_size, new_size = await asyncio.to_thread(_process)
         img_base64 = await self._image_to_base64(result_img)
@@ -760,19 +761,19 @@ class ImageWorker(BaseWorker):
         return await asyncio.to_thread(_process)
 
 
-def run_image_worker(redis_url: str = None, worker_id: str = None):
+def run_image_worker(database_url: str = None, worker_id: str = None):
     """
     Convenience function to run an ImageWorker.
 
     Args:
-        redis_url: Redis connection URL
-        worker_id: Optional worker ID
+        database_url: PostgreSQL connection URL (defaults to env var)
+        worker_id: Optional worker ID (auto-generated if not provided)
 
     Example:
-        python -m arkham_frame.workers.image_worker
+        python -m arkham_shard_ingest.workers.image_worker
     """
     import asyncio
-    worker = ImageWorker(redis_url=redis_url, worker_id=worker_id)
+    worker = ImageWorker(database_url=database_url, worker_id=worker_id)
     asyncio.run(worker.run())
 
 

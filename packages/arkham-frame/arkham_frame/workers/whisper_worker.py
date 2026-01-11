@@ -717,19 +717,19 @@ class WhisperWorker(BaseWorker):
             )
 
 
-def run_whisper_worker(redis_url: str = None, worker_id: str = None):
+def run_whisper_worker(database_url: str = None, worker_id: str = None):
     """
     Convenience function to run a WhisperWorker.
 
     Args:
-        redis_url: Redis connection URL (defaults to env var)
+        database_url: PostgreSQL connection URL (defaults to env var)
         worker_id: Optional worker ID (auto-generated if not provided)
 
     Example:
         python -m arkham_frame.workers.whisper_worker
     """
     import asyncio
-    worker = WhisperWorker(redis_url=redis_url, worker_id=worker_id)
+    worker = WhisperWorker(database_url=database_url, worker_id=worker_id)
     asyncio.run(worker.run())
 
 

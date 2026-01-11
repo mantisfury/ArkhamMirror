@@ -401,7 +401,7 @@ Only output the JSON, nothing else."""
             self._client = None
 
 
-def run_qwen_worker(redis_url: str = None, worker_id: str = None):
+def run_qwen_worker(database_url: str = None, worker_id: str = None):
     """
     Convenience function to run a QwenWorker.
 
@@ -411,8 +411,8 @@ def run_qwen_worker(redis_url: str = None, worker_id: str = None):
     - VLM_TIMEOUT: Request timeout in seconds (default: 120)
 
     Args:
-        redis_url: Redis connection URL
-        worker_id: Optional worker ID
+        database_url: PostgreSQL connection URL (defaults to env var)
+        worker_id: Optional worker ID (auto-generated if not provided)
 
     Example:
         # Default (LM Studio)
@@ -422,7 +422,7 @@ def run_qwen_worker(redis_url: str = None, worker_id: str = None):
         VLM_ENDPOINT=http://localhost:11434/v1 VLM_MODEL=llava python -m arkham_shard_ocr.workers.qwen_worker
     """
     import asyncio
-    worker = QwenWorker(redis_url=redis_url, worker_id=worker_id)
+    worker = QwenWorker(database_url=database_url, worker_id=worker_id)
     asyncio.run(worker.run())
 
 

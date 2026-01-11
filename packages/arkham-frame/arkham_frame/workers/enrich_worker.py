@@ -636,7 +636,7 @@ Text:
             self._client = None
 
 
-def run_enrich_worker(redis_url: str = None, worker_id: str = None):
+def run_enrich_worker(database_url: str = None, worker_id: str = None):
     """
     Convenience function to run an EnrichWorker.
 
@@ -647,8 +647,8 @@ def run_enrich_worker(redis_url: str = None, worker_id: str = None):
     - LLM_MAX_CONTEXT: Max context tokens (default: 4000)
 
     Args:
-        redis_url: Redis connection URL
-        worker_id: Optional worker ID
+        database_url: PostgreSQL connection URL (defaults to env var)
+        worker_id: Optional worker ID (auto-generated if not provided)
 
     Example:
         # Default (LM Studio)
@@ -658,7 +658,7 @@ def run_enrich_worker(redis_url: str = None, worker_id: str = None):
         LLM_ENDPOINT=http://localhost:11434/v1 LLM_MODEL=qwen2.5 python -m arkham_frame.workers.enrich_worker
     """
     import asyncio
-    worker = EnrichWorker(redis_url=redis_url, worker_id=worker_id)
+    worker = EnrichWorker(database_url=database_url, worker_id=worker_id)
     asyncio.run(worker.run())
 
 

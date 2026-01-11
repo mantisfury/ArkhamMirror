@@ -107,6 +107,7 @@ class BatchCreate(BaseModel):
     requests: List[SummaryCreate]
     parallel: bool = False
     stop_on_error: bool = False
+    async_mode: bool = False  # If True, use llm-enrich worker for background processing
 
 
 class BatchResponse(BaseModel):
@@ -164,6 +165,42 @@ async def get_capabilities(request: Request):
         "source_types": [t.value for t in SourceType],
         "target_lengths": [t.value for t in SummaryLength],
     }
+
+
+@router.get("/jobs/{job_id}")
+async def get_job_status(job_id: str, request: Request):
+    """
+    Get status and result of an async summarization job.
+
+    Use this to poll for results after submitting a batch request with async_mode=True.
+    """
+    shard = get_shard(request)
+
+    if not shard._workers:
+        raise HTTPException(status_code=503, detail="Worker service not available")
+
+    try:
+        job = await shard._workers.get_job_from_db(job_id)
+        if not job:
+            raise HTTPException(status_code=404, detail=f"Job not found: {job_id}")
+
+        response = {
+            "job_id": job_id,
+            "status": job.status,
+            "created_at": job.created_at.isoformat() if job.created_at else None,
+        }
+
+        if job.status == "completed":
+            response["result"] = job.result
+            response["completed_at"] = job.completed_at.isoformat() if job.completed_at else None
+        elif job.status in ("failed", "dead"):
+            response["error"] = job.error
+
+        return response
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get job status: {e}")
 
 
 @router.get("/types", response_model=SummaryTypesResponse)
@@ -426,6 +463,7 @@ async def create_batch_summaries(body: BatchCreate, request: Request):
         requests=summary_requests,
         parallel=body.parallel,
         stop_on_error=body.stop_on_error,
+        async_mode=body.async_mode,
     )
 
     result = await shard.generate_batch_summaries(batch_request)

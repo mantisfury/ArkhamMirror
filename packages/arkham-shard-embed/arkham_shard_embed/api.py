@@ -895,8 +895,8 @@ async def check_model_switch(request: ModelSwitchRequest):
             "affected_collections": [],
         }
 
-    # Check if dimensions differ
-    requires_wipe = current_dimensions != new_dimensions and current_dimensions > 0
+    # Check if dimensions differ (handle None case)
+    requires_wipe = current_dimensions != new_dimensions and (current_dimensions or 0) > 0
 
     # Get affected collections (non-empty ones)
     affected_collections = []
@@ -982,8 +982,8 @@ async def switch_model(request: ModelSwitchRequest):
                 detail=f"Failed to load model '{new_model}': {str(e)}"
             )
 
-    # Check if wipe is required
-    requires_wipe = current_dimensions != new_dimensions and current_dimensions > 0
+    # Check if wipe is required (handle None case)
+    requires_wipe = current_dimensions != new_dimensions and (current_dimensions or 0) > 0
 
     if requires_wipe and not request.confirm_wipe:
         # Get affected collections

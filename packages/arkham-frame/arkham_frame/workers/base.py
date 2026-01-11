@@ -131,10 +131,27 @@ class BaseWorker(ABC):
         try:
             import asyncpg
 
+            # JSON codec setup for asyncpg (JSONB is returned as string by default)
+            async def init_connection(conn):
+                """Initialize connection with JSON codecs."""
+                await conn.set_type_codec(
+                    'jsonb',
+                    encoder=json.dumps,
+                    decoder=json.loads,
+                    schema='pg_catalog'
+                )
+                await conn.set_type_codec(
+                    'json',
+                    encoder=json.dumps,
+                    decoder=json.loads,
+                    schema='pg_catalog'
+                )
+
             self._db_pool = await asyncpg.create_pool(
                 self.database_url,
                 min_size=1,
                 max_size=3,
+                init=init_connection,  # Set up JSON codecs
             )
             logger.info(f"Worker {self.worker_id} connected to PostgreSQL")
             return True
@@ -258,13 +275,14 @@ class BaseWorker(ABC):
             return
 
         async with self._db_pool.acquire() as conn:
+            # Pass dict directly - asyncpg JSON codec handles serialization
             await conn.execute("""
                 UPDATE arkham_jobs.jobs
                 SET status = 'completed',
                     completed_at = NOW(),
                     result = $2
                 WHERE id = $1
-            """, job_id, json.dumps(result or {}))
+            """, job_id, result or {})
 
             # Update worker stats
             await conn.execute("""

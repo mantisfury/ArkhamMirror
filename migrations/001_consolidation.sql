@@ -238,6 +238,8 @@ CREATE TRIGGER trg_job_created
     EXECUTE FUNCTION arkham_jobs.notify_job_created();
 
 -- Notify on job status change
+-- NOTE: Do NOT include full result in NOTIFY - pg_notify has 8000 byte limit
+-- Listeners should fetch result from database using job_id
 CREATE OR REPLACE FUNCTION arkham_jobs.notify_job_status()
 RETURNS TRIGGER AS $$
 BEGIN

@@ -293,19 +293,19 @@ class PaddleWorker(BaseWorker):
         }
 
 
-def run_paddle_worker(redis_url: str = None, worker_id: str = None):
+def run_paddle_worker(database_url: str = None, worker_id: str = None):
     """
     Convenience function to run a PaddleWorker.
 
     Args:
-        redis_url: Redis connection URL
-        worker_id: Optional worker ID
+        database_url: PostgreSQL connection URL (defaults to env var)
+        worker_id: Optional worker ID (auto-generated if not provided)
 
     Example:
         python -m arkham_shard_ocr.workers.paddle_worker
     """
     import asyncio
-    worker = PaddleWorker(redis_url=redis_url, worker_id=worker_id)
+    worker = PaddleWorker(database_url=database_url, worker_id=worker_id)
     asyncio.run(worker.run())
 
 

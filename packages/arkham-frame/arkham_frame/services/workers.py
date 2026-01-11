@@ -160,6 +160,23 @@ class WorkerService:
             # Create database pool if not already set
             if self._db_pool is None:
                 import asyncpg
+
+                # JSON codec setup for asyncpg (JSONB is returned as string by default)
+                async def init_connection(conn):
+                    """Initialize connection with JSON codecs."""
+                    await conn.set_type_codec(
+                        'jsonb',
+                        encoder=json.dumps,
+                        decoder=json.loads,
+                        schema='pg_catalog'
+                    )
+                    await conn.set_type_codec(
+                        'json',
+                        encoder=json.dumps,
+                        decoder=json.loads,
+                        schema='pg_catalog'
+                    )
+
                 database_url = self.config.database_url if self.config else None
                 if not database_url:
                     import os
@@ -172,6 +189,7 @@ class WorkerService:
                             min_size=2,
                             max_size=10,
                             command_timeout=60,
+                            init=init_connection,  # Set up JSON codecs
                         )
                         logger.info(f"WorkerService connected to PostgreSQL")
                     except Exception as e:
@@ -741,7 +759,7 @@ class WorkerService:
                 retry_count=row['retry_count'],
                 max_retries=row['max_retries'],
                 error=row['last_error'],
-                result=json.loads(row['result']) if row['result'] else None,
+                result=json.loads(row['result']) if isinstance(row['result'], str) else row['result'],
             )
 
     # --- Queue Stats ---
@@ -897,10 +915,10 @@ class WorkerService:
             return None
 
         # Get database URL from config
-        database_url = self.config.database_url or 'postgresql://arkham:arkhampass@localhost:5432/arkhamdb'
+        database_url = getattr(self.config, 'database_url', None) or 'postgresql://arkham:arkhampass@localhost:5432/arkhamdb'
 
         # Set DATA_SILO_PATH for workers
-        data_silo_path = self.config.get("data_silo_path", "./data_silo")
+        data_silo_path = getattr(self.config, 'data_silo_path', None) or "./data_silo"
         os.environ["DATA_SILO_PATH"] = str(Path(data_silo_path).resolve())
 
         from arkham_frame.workers.base import run_worker
@@ -1169,15 +1187,14 @@ class WorkerService:
             if elapsed > timeout:
                 raise WorkerError(f"Job {job_id} timed out after {timeout}s")
 
-            # Check in-memory cache first
+            # Check in-memory cache for status (not result - result comes from DB)
             job = self._jobs.get(job_id)
             if job:
-                if job.status == "completed":
-                    return job.result or {}
-                elif job.status in ("failed", "dead"):
+                if job.status in ("failed", "dead"):
                     raise WorkerError(f"Job {job_id} failed: {job.error}")
 
-            # Check database
+            # Check database for status and result
+            # Always fetch result from DB since NOTIFY doesn't include it
             if self._available and self._db_pool:
                 async with self._db_pool.acquire() as conn:
                     row = await conn.fetchrow("""

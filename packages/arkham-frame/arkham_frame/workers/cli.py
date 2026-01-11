@@ -76,42 +76,50 @@ def get_worker_class(pool: str):
 
     Returns None if no worker is implemented yet.
     Uses lazy imports to handle missing implementations gracefully.
+
+    Workers can be in:
+    1. arkham_frame.workers - Frame infrastructure workers
+    2. arkham_shard_*.workers - Shard-specific workers
     """
-    # Map pool names to (module, class_name) tuples
+    # Map pool names to (package, module, class_name) tuples
+    # Full module path is: f"{package}.{module}"
     worker_registry = {
         # IO workers
-        "io-file": ("file_worker", "FileWorker"),
-        "io-db": ("db_worker", "DBWorker"),
-        # CPU workers
-        "cpu-light": ("light_worker", "LightWorker"),
-        "cpu-heavy": ("examples", "SlowWorker"),
-        "cpu-extract": ("extract_worker", "ExtractWorker"),
-        "cpu-ner": ("ner_worker", "NERWorker"),
-        "cpu-image": ("image_worker", "ImageWorker"),
-        "cpu-archive": ("archive_worker", "ArchiveWorker"),
-        # GPU workers - OCR
-        "gpu-paddle": ("paddle_worker", "PaddleWorker"),
-        "gpu-qwen": ("qwen_worker", "QwenWorker"),
-        # GPU workers - audio
-        "gpu-whisper": ("whisper_worker", "WhisperWorker"),
-        # GPU workers - embeddings
-        "gpu-embed": ("embed_worker", "EmbedWorker"),
-        # LLM workers
-        "llm-enrich": ("enrich_worker", "EnrichWorker"),
-        "llm-analysis": ("analysis_worker", "AnalysisWorker"),
+        "io-file": ("arkham_shard_ingest.workers", "file_worker", "FileWorker"),
+        "io-db": ("arkham_frame.workers", "db_worker", "DBWorker"),
+        # CPU workers - Frame infrastructure
+        "cpu-light": ("arkham_frame.workers", "light_worker", "LightWorker"),
+        "cpu-heavy": ("arkham_frame.workers", "examples", "SlowWorker"),
+        # CPU workers - Shard workers
+        "cpu-extract": ("arkham_shard_ingest.workers", "extract_worker", "ExtractWorker"),
+        "cpu-ner": ("arkham_shard_parse.workers", "ner_worker", "NERWorker"),
+        "cpu-image": ("arkham_shard_ingest.workers", "image_worker", "ImageWorker"),
+        "cpu-archive": ("arkham_shard_ingest.workers", "archive_worker", "ArchiveWorker"),
+        # GPU workers - OCR (Shard)
+        "gpu-paddle": ("arkham_shard_ocr.workers", "paddle_worker", "PaddleWorker"),
+        "gpu-qwen": ("arkham_shard_ocr.workers", "qwen_worker", "QwenWorker"),
+        # GPU workers - audio (Frame - future shard)
+        "gpu-whisper": ("arkham_frame.workers", "whisper_worker", "WhisperWorker"),
+        # GPU workers - embeddings (Shard)
+        "gpu-embed": ("arkham_shard_embed.workers", "embed_worker", "EmbedWorker"),
+        # LLM workers (Frame)
+        "llm-enrich": ("arkham_frame.workers", "enrich_worker", "EnrichWorker"),
+        "llm-analysis": ("arkham_frame.workers", "analysis_worker", "AnalysisWorker"),
     }
 
     if pool not in worker_registry:
         return None
 
-    module_name, class_name = worker_registry[pool]
+    package_path, module_name, class_name = worker_registry[pool]
 
     try:
         import importlib
-        module = importlib.import_module(f".{module_name}", package="arkham_frame.workers")
+        # Use full module path for import
+        full_module = f"{package_path}.{module_name}"
+        module = importlib.import_module(full_module)
         return getattr(module, class_name, None)
     except (ImportError, ModuleNotFoundError) as e:
-        logger.debug(f"Worker module for {pool} not available: {e}")
+        logger.debug(f"Worker module for {pool} not available ({full_module}): {e}")
         return None
 
 
@@ -152,11 +160,11 @@ def list_tiers():
     print("\n")
 
 
-async def run_workers(pools: dict, redis_url: str):
+async def run_workers(pools: dict, database_url: str):
     """Run workers for specified pools."""
     from .runner import WorkerRunner
 
-    runner = WorkerRunner(redis_url=redis_url)
+    runner = WorkerRunner(database_url=database_url)
 
     # Register available worker classes
     for pool in pools.keys():
@@ -222,9 +230,9 @@ Examples:
         help="Use a predefined resource tier",
     )
     parser.add_argument(
-        "--redis-url",
-        default=os.environ.get("REDIS_URL", "redis://localhost:6379"),
-        help="Redis connection URL",
+        "--database-url",
+        default=os.environ.get("DATABASE_URL", "postgresql://arkham:arkhampass@localhost:5432/arkhamdb"),
+        help="PostgreSQL connection URL",
     )
     parser.add_argument(
         "--list-pools",
@@ -278,7 +286,7 @@ Examples:
     logger.info(f"Starting workers: {pools}")
 
     # Run
-    asyncio.run(run_workers(pools, args.redis_url))
+    asyncio.run(run_workers(pools, args.database_url))
 
 
 if __name__ == "__main__":

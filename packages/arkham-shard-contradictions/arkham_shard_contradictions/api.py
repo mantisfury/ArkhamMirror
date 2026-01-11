@@ -34,15 +34,17 @@ _storage = None
 _event_bus = None
 _chain_detector = None
 _db = None
+_worker_service = None
 
 
-def init_api(detector, storage, event_bus, chain_detector):
+def init_api(detector, storage, event_bus, chain_detector, worker_service=None):
     """Initialize API with shard dependencies."""
-    global _detector, _storage, _event_bus, _chain_detector
+    global _detector, _storage, _event_bus, _chain_detector, _worker_service
     _detector = detector
     _storage = storage
     _event_bus = event_bus
     _chain_detector = chain_detector
+    _worker_service = worker_service
 
 
 def get_shard(request: Request) -> "ContradictionsShard":
@@ -215,12 +217,70 @@ async def batch_analyze(request: BatchAnalyzeRequest):
     Analyze multiple document pairs for contradictions.
 
     Useful for batch processing or full corpus analysis.
+
+    Set async_mode=True to use background workers for large batches.
+    In async mode, returns job IDs instead of immediate results.
     """
+    import uuid
+
     if not _detector or not _storage:
         raise HTTPException(status_code=503, detail="Contradiction service not initialized")
 
-    logger.info(f"Batch analyzing {len(request.document_pairs)} document pairs")
+    logger.info(f"Batch analyzing {len(request.document_pairs)} document pairs (async={request.async_mode})")
 
+    # Async mode: use llm-analysis worker for background processing
+    if request.async_mode:
+        if not _worker_service:
+            raise HTTPException(
+                status_code=503,
+                detail="Worker service not available for async mode"
+            )
+
+        job_ids = []
+        for doc_a_id, doc_b_id in request.document_pairs:
+            job_id = str(uuid.uuid4())
+            try:
+                # Fetch document content for the worker
+                doc_a = await _get_document_content(doc_a_id)
+                doc_b = await _get_document_content(doc_b_id)
+
+                if not doc_a or not doc_b:
+                    logger.warning(f"Skipping pair {doc_a_id}/{doc_b_id}: document not found")
+                    continue
+
+                # Enqueue to llm-analysis worker
+                await _worker_service.enqueue(
+                    pool="llm-analysis",
+                    job_id=job_id,
+                    job_type="find_contradictions",
+                    payload={
+                        "operation": "find_contradictions",
+                        "text_a": doc_a["content"],
+                        "text_b": doc_b["content"],
+                        "context": f"Document A: {doc_a.get('title', doc_a_id)}, Document B: {doc_b.get('title', doc_b_id)}",
+                        # Metadata for result processing
+                        "_doc_a_id": doc_a_id,
+                        "_doc_b_id": doc_b_id,
+                        "_threshold": request.threshold,
+                    },
+                    priority=5,
+                )
+                job_ids.append({
+                    "job_id": job_id,
+                    "doc_a_id": doc_a_id,
+                    "doc_b_id": doc_b_id,
+                })
+            except Exception as e:
+                logger.error(f"Failed to enqueue {doc_a_id} vs {doc_b_id}: {e}")
+
+        return {
+            "async": True,
+            "pairs_queued": len(job_ids),
+            "jobs": job_ids,
+            "message": f"Queued {len(job_ids)} pairs for background analysis. Poll /api/contradictions/jobs/<job_id> for results.",
+        }
+
+    # Sync mode: process sequentially
     all_contradictions = []
 
     for doc_a_id, doc_b_id in request.document_pairs:
@@ -239,6 +299,7 @@ async def batch_analyze(request: BatchAnalyzeRequest):
             logger.error(f"Failed to analyze {doc_a_id} vs {doc_b_id}: {e}")
 
     return {
+        "async": False,
         "pairs_analyzed": len(request.document_pairs),
         "contradictions": all_contradictions,
         "count": len(all_contradictions),
@@ -468,6 +529,41 @@ async def get_chain(chain_id: str):
 
 # NOTE: These non-parameterized routes MUST be defined BEFORE /{contradiction_id}
 # to avoid FastAPI treating "count" or "pending" as an ID
+
+
+@router.get("/jobs/{job_id}")
+async def get_job_status(job_id: str):
+    """
+    Get status and result of an async analysis job.
+
+    Use this to poll for results after submitting a batch request with async_mode=True.
+    """
+    if not _worker_service:
+        raise HTTPException(status_code=503, detail="Worker service not available")
+
+    try:
+        job = await _worker_service.get_job_from_db(job_id)
+        if not job:
+            raise HTTPException(status_code=404, detail=f"Job not found: {job_id}")
+
+        response = {
+            "job_id": job_id,
+            "status": job.status,
+            "created_at": job.created_at.isoformat() if job.created_at else None,
+        }
+
+        if job.status == "completed":
+            response["result"] = job.result
+            response["completed_at"] = job.completed_at.isoformat() if job.completed_at else None
+        elif job.status in ("failed", "dead"):
+            response["error"] = job.error
+
+        return response
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get job status: {e}")
+
 
 @router.get("/count")
 async def get_count():

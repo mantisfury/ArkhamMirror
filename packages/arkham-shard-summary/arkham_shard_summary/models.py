@@ -157,6 +157,7 @@ class BatchSummaryRequest:
     requests: List[SummaryRequest]
     parallel: bool = False                               # Generate in parallel
     stop_on_error: bool = False                          # Stop if one fails
+    async_mode: bool = False                             # Use llm-enrich worker for background processing
 
 
 @dataclass

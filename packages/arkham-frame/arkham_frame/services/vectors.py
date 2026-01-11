@@ -209,6 +209,22 @@ class VectorService:
         """Initialize PostgreSQL/pgvector connection and optional embedding model."""
         import asyncpg
 
+        # JSON codec setup for asyncpg
+        async def init_connection(conn):
+            """Initialize connection with JSON codecs."""
+            await conn.set_type_codec(
+                'jsonb',
+                encoder=json.dumps,
+                decoder=json.loads,
+                schema='pg_catalog'
+            )
+            await conn.set_type_codec(
+                'json',
+                encoder=json.dumps,
+                decoder=json.loads,
+                schema='pg_catalog'
+            )
+
         # Initialize PostgreSQL connection pool
         try:
             database_url = self.config.database_url
@@ -220,6 +236,7 @@ class VectorService:
                 min_size=2,
                 max_size=10,
                 command_timeout=60,
+                init=init_connection,  # Set up JSON codecs for each connection
             )
 
             # Verify pgvector extension is available
@@ -240,7 +257,7 @@ class VectorService:
             logger.warning(f"pgvector connection failed: {e}")
             self._available = False
 
-        # Initialize embedding model
+        # Initialize embedding model (only if explicitly configured)
         try:
             import os
             embedding_model = os.environ.get("EMBED_MODEL", "")
@@ -249,11 +266,14 @@ class VectorService:
             if not embedding_model:
                 embedding_model = await self._get_embedding_model_from_settings()
 
-            # Default to all-MiniLM-L6-v2 (384 dims, fast, lightweight) for testing
-            if not embedding_model:
-                embedding_model = "all-MiniLM-L6-v2"
-
-            await self._load_embedding_model(embedding_model)
+            # Only load model if explicitly configured - no default auto-load
+            # This prevents blocking on first Docker start when no model is cached
+            if embedding_model:
+                await self._load_embedding_model(embedding_model)
+            else:
+                logger.info("Embedding model not configured - semantic search disabled")
+                logger.info("Set EMBED_MODEL env var or configure in Settings > Advanced")
+                self._embedding_available = False
         except Exception as e:
             logger.warning(f"Embedding model failed to load: {e}")
             self._embedding_available = False
@@ -302,10 +322,16 @@ class VectorService:
             raise UnsupportedDimensionError(model_name, dims, MAX_PGVECTOR_DIMENSIONS)
 
         # Load local model via SentenceTransformer
+        # Run in thread pool to avoid blocking the event loop during model download/load
         try:
+            import asyncio
             from sentence_transformers import SentenceTransformer
 
-            self._embedding_model = SentenceTransformer(model_name)
+            def _load_model():
+                return SentenceTransformer(model_name)
+
+            logger.info(f"Loading embedding model '{model_name}' (this may download on first use)...")
+            self._embedding_model = await asyncio.to_thread(_load_model)
             self._default_dimension = self._embedding_model.get_sentence_embedding_dimension()
 
             # Final dimension check
