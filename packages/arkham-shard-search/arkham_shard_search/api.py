@@ -520,7 +520,7 @@ async def rag_chat(request: Request, body: RAGChatRequest):
                 search_filter = {"project_id": body.project_id}
 
             search_results = await vectors.search_text(
-                collection="arkham_chunks",
+                collection="arkham_documents",  # Use correct collection name (embeddings are per-chunk in documents)
                 text=body.question,
                 limit=body.k_chunks,
                 score_threshold=body.similarity_threshold,
@@ -532,34 +532,73 @@ async def rag_chat(request: Request, body: RAGChatRequest):
             return
 
         # 2. Format context from retrieved chunks
+        # Get db pool for enrichment
+        db_pool = vectors._pool if hasattr(vectors, '_pool') else None
+        db_conn = None
+        if db_pool:
+            try:
+                db_conn = await db_pool.acquire()
+            except Exception as e:
+                logger.debug(f"Could not acquire db connection for RAG enrichment: {e}")
+
         citations = []
         context_parts = ["CONTEXT FROM DOCUMENTS:\n"]
 
-        for i, result in enumerate(search_results, 1):
-            # SearchResult has id, score, and payload dict
-            payload = result.payload or {}
-            chunk_id = result.id
-            score = result.score or 0.0
-            doc_id = payload.get('document_id', '') or payload.get('doc_id', '')
-            title = payload.get('document_title', '') or payload.get('title', 'Unknown')
-            page_num = payload.get('page_number')
-            text = payload.get('text', '') or payload.get('content', '')
+        try:
+            for i, result in enumerate(search_results, 1):
+                # SearchResult has id, score, and payload dict
+                payload = result.payload or {}
+                chunk_id = payload.get('chunk_id') or result.id
+                score = result.score or 0.0
+                doc_id = payload.get('document_id', '') or payload.get('doc_id', '')
+                title = payload.get('document_title', '') or payload.get('title', '')
+                page_num = payload.get('page_number')
+                text = payload.get('text', '') or payload.get('content', '')
 
-            context_parts.append(f"""
+                # Enrich from database if we have minimal payload
+                if db_conn and chunk_id and not text:
+                    try:
+                        row = await db_conn.fetchrow(
+                            """SELECT c.id, c.text, c.page_number,
+                                      d.filename, d.mime_type
+                               FROM arkham_frame.chunks c
+                               LEFT JOIN arkham_frame.documents d ON c.document_id = d.id
+                               WHERE c.id = $1""",
+                            chunk_id
+                        )
+                        if row:
+                            text = row.get('text', '')
+                            if not title:
+                                title = row.get('filename', '')
+                            if not page_num:
+                                page_num = row.get('page_number')
+                            if not doc_id:
+                                doc_id = row.get('doc_id', '')
+                    except Exception as e:
+                        logger.debug(f"Could not fetch chunk {chunk_id}: {e}")
+
+                if not title:
+                    title = "Unknown"
+
+                context_parts.append(f"""
 [Chunk {i} - Relevance: {score:.2f}]
 From: {title}{f' (page {page_num})' if page_num else ''}
 ---
 {text[:1500]}
 ---
 """)
-            citations.append({
-                "chunk_id": chunk_id,
-                "doc_id": doc_id,
-                "title": title,
-                "page_number": page_num,
-                "excerpt": text[:200] + "..." if len(text) > 200 else text,
-                "score": round(score, 4),
-            })
+                citations.append({
+                    "chunk_id": chunk_id,
+                    "doc_id": doc_id,
+                    "title": title,
+                    "page_number": page_num,
+                    "excerpt": text[:200] + "..." if len(text) > 200 else text,
+                    "score": round(score, 4),
+                })
+        finally:
+            # Release db connection
+            if db_conn and db_pool:
+                await db_pool.release(db_conn)
 
         # Emit citations
         yield f"data: {json.dumps({'type': 'citations', 'citations': citations, 'chunks_retrieved': len(search_results)})}\n\n"
@@ -586,7 +625,8 @@ Format citations at the end of relevant sentences, not all at the end."""
         user_message = f"{context_text}\n\nQUESTION: {body.question}\n\nANSWER:"
 
         # Build conversation history for follow-ups
-        messages = []
+        # Include system prompt as first message in the messages array
+        messages = [{"role": "system", "content": system_prompt}]
         if body.conversation_history:
             for msg in body.conversation_history[-6:]:  # Last 3 exchanges max
                 messages.append({"role": msg["role"], "content": msg["content"]})
@@ -596,12 +636,12 @@ Format citations at the end of relevant sentences, not all at the end."""
         try:
             async for chunk in llm.stream_chat(
                 messages=messages,
-                system_prompt=system_prompt,
                 temperature=0.7,
                 max_tokens=2000,
             ):
-                text = getattr(chunk, 'text', '') or getattr(chunk, 'content', '') or str(chunk)
-                if text:
+                # Extract text from StreamChunk - don't use str() fallback
+                text = getattr(chunk, 'text', None) or getattr(chunk, 'content', None) or ''
+                if text and isinstance(text, str) and text.strip():
                     yield f"data: {json.dumps({'type': 'text', 'content': text})}\n\n"
         except Exception as e:
             logger.error(f"RAG LLM generation failed: {e}")

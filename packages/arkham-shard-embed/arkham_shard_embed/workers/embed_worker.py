@@ -7,6 +7,9 @@ Purpose: Generate vector embeddings for semantic search and similarity matching.
 
 from typing import Dict, Any, List
 import logging
+import os
+import json
+import uuid as uuid_mod
 
 from arkham_frame.workers.base import BaseWorker
 
@@ -119,7 +122,10 @@ class EmbedWorker(BaseWorker):
             if not isinstance(texts, list):
                 raise ValueError("'texts' must be a list of strings")
 
-            logger.info(f"Job {job_id}: Embedding batch of {len(texts)} texts")
+            doc_id = payload.get("doc_id", "")
+            chunk_ids = payload.get("chunk_ids", [])
+
+            logger.info(f"Job {job_id}: Embedding batch of {len(texts)} texts for doc {doc_id}")
 
             # Generate embeddings for all texts
             # sentence-transformers handles batching internally
@@ -128,11 +134,21 @@ class EmbedWorker(BaseWorker):
             # Convert numpy arrays to lists for JSON serialization
             embeddings_list = [emb.tolist() for emb in embeddings]
 
+            # Store embeddings in database
+            vector_ids = await self._store_embeddings(
+                embeddings_list,
+                doc_id,
+                chunk_ids,
+                dimensions,
+                model_name,
+            )
+
             return {
                 "embeddings": embeddings_list,
                 "dimensions": dimensions,
                 "model": model_name,
                 "count": len(embeddings_list),
+                "vector_ids": vector_ids,
                 "success": True,
             }
 
@@ -159,6 +175,15 @@ class EmbedWorker(BaseWorker):
             # Convert numpy array to list for JSON serialization
             embedding_list = embedding.tolist()
 
+            # Store single embedding in database
+            vector_ids = await self._store_embeddings(
+                [embedding_list],
+                doc_id,
+                [chunk_id],
+                dimensions,
+                model_name,
+            )
+
             return {
                 "embedding": embedding_list,
                 "dimensions": dimensions,
@@ -166,8 +191,106 @@ class EmbedWorker(BaseWorker):
                 "doc_id": doc_id,
                 "chunk_id": chunk_id,
                 "text_length": len(text),
+                "vector_id": vector_ids[0] if vector_ids else None,
                 "success": True,
             }
+
+    async def _store_embeddings(
+        self,
+        embeddings: List[List[float]],
+        doc_id: str,
+        chunk_ids: List[str],
+        dimensions: int,
+        model_name: str,
+    ) -> List[str]:
+        """
+        Store embeddings in the arkham_vectors.embeddings table.
+
+        Args:
+            embeddings: List of embedding vectors
+            doc_id: Document ID
+            chunk_ids: List of chunk IDs (parallel to embeddings)
+            dimensions: Embedding dimensions
+            model_name: Name of the embedding model
+
+        Returns:
+            List of vector IDs that were stored
+        """
+        if not self._db_pool:
+            logger.warning("No database pool - embeddings not stored persistently")
+            return []
+
+        vector_ids = []
+        # Use "arkham_documents" to match VectorService standard collection naming
+        # SemanticSearchEngine._get_collection_name("documents") returns "arkham_documents"
+        collection_name = "arkham_documents"
+
+        try:
+            async with self._db_pool.acquire() as conn:
+                # Ensure collection exists in collections table
+                exists = await conn.fetchval(
+                    "SELECT 1 FROM arkham_vectors.collections WHERE name = $1",
+                    collection_name
+                )
+                if not exists:
+                    # Create collection with proper dimensions
+                    # Calculate optimal lists for IVFFlat (sqrt of expected rows)
+                    lists = max(100, min(1000, int((100000 ** 0.5))))
+                    probes = max(1, lists // 10)
+
+                    await conn.execute("""
+                        INSERT INTO arkham_vectors.collections
+                            (name, vector_size, distance_metric, index_type, lists, probes)
+                        VALUES ($1, $2, 'cosine', 'ivfflat', $3, $4)
+                        ON CONFLICT (name) DO NOTHING
+                    """, collection_name, dimensions, lists, probes)
+
+                    logger.info(f"Created collection {collection_name} with {dimensions} dimensions")
+
+                # Insert embeddings using batch
+                values = []
+                for i, embedding in enumerate(embeddings):
+                    vector_id = str(uuid_mod.uuid4())
+                    chunk_id = chunk_ids[i] if i < len(chunk_ids) else ""
+
+                    # Store metadata in payload JSONB
+                    payload = {
+                        "document_id": doc_id,
+                        "chunk_id": chunk_id,
+                        "chunk_index": i,
+                        "model": model_name,
+                    }
+
+                    # Pass payload as JSON string - asyncpg will handle ::jsonb cast
+                    values.append((vector_id, collection_name, str(embedding), payload))
+                    vector_ids.append(vector_id)
+
+                # Batch insert all embeddings
+                await conn.executemany("""
+                    INSERT INTO arkham_vectors.embeddings
+                    (id, collection, embedding, payload)
+                    VALUES ($1, $2, $3::vector, $4::jsonb)
+                    ON CONFLICT (id) DO UPDATE SET
+                        embedding = EXCLUDED.embedding,
+                        payload = EXCLUDED.payload,
+                        updated_at = CURRENT_TIMESTAMP
+                """, values)
+
+                # Update chunk vector_id references in batch
+                chunk_updates = [(vid, cid) for vid, cid in zip(vector_ids, chunk_ids) if cid]
+                if chunk_updates:
+                    await conn.executemany("""
+                        UPDATE arkham_frame.chunks
+                        SET vector_id = $1
+                        WHERE id = $2
+                    """, chunk_updates)
+
+                logger.info(f"Stored {len(vector_ids)} embeddings for doc {doc_id} in {collection_name}")
+
+        except Exception as e:
+            logger.error(f"Failed to store embeddings: {e}", exc_info=True)
+
+        return vector_ids
 
 
 def run_embed_worker(database_url: str = None, worker_id: str = None):
