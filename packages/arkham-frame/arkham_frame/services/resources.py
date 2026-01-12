@@ -63,9 +63,7 @@ class SystemResources:
     data_silo_path: str = ""
 
     # Services (detected at runtime)
-    redis_available: bool = False
     postgres_available: bool = False
-    qdrant_available: bool = False
     lm_studio_available: bool = False
 
 
@@ -292,24 +290,10 @@ class ResourceService:
             logger.warning(f"Disk detection failed: {e}")
 
         # Check service availability (non-blocking quick checks)
-        resources.redis_available = await self._check_redis()
         resources.postgres_available = await self._check_postgres()
-        resources.qdrant_available = await self._check_qdrant()
         resources.lm_studio_available = await self._check_lm_studio()
 
         return resources
-
-    async def _check_redis(self) -> bool:
-        """Quick check if Redis is available."""
-        try:
-            import redis.asyncio as redis
-            url = self.config.redis_url if self.config else "redis://localhost:6379"
-            client = redis.from_url(url, socket_connect_timeout=1)
-            await asyncio.wait_for(client.ping(), timeout=2)
-            await client.close()
-            return True
-        except Exception:
-            return False
 
     async def _check_postgres(self) -> bool:
         """Quick check if PostgreSQL is available."""
@@ -323,17 +307,6 @@ class ResourceService:
             )
             await conn.close()
             return True
-        except Exception:
-            return False
-
-    async def _check_qdrant(self) -> bool:
-        """Quick check if Qdrant is available."""
-        try:
-            import httpx
-            url = self.config.qdrant_url if self.config else "http://localhost:6333"
-            async with httpx.AsyncClient(timeout=2) as client:
-                resp = await client.get(f"{url}/collections")
-                return resp.status_code == 200
         except Exception:
             return False
 
@@ -443,8 +416,6 @@ class ResourceService:
         lines.append("")
         lines.append("Services:")
         lines.append(f"  [{'OK' if self.resources.postgres_available else '--'}] PostgreSQL")
-        lines.append(f"  [{'OK' if self.resources.redis_available else '--'}] Redis")
-        lines.append(f"  [{'OK' if self.resources.qdrant_available else '--'}] Qdrant")
         lines.append(f"  [{'OK' if self.resources.lm_studio_available else '--'}] LM Studio")
 
         lines.append("")
@@ -632,9 +603,7 @@ class ResourceService:
                 "ram_available_mb": self.resources.ram_available_mb,
             },
             "services": {
-                "redis": self.resources.redis_available,
                 "postgres": self.resources.postgres_available,
-                "qdrant": self.resources.qdrant_available,
                 "lm_studio": self.resources.lm_studio_available,
             },
             "pools": {

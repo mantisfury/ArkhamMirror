@@ -370,7 +370,10 @@ class VectorService:
 
         # Configure cloud embedding
         self._cloud_api_key = api_key
-        self._cloud_api_url = os.environ.get("EMBED_API_URL", "https://api.openai.com/v1")
+        # No default - must be explicitly configured for cloud embeddings
+        self._cloud_api_url = os.environ.get("EMBED_API_URL", "")
+        if not self._cloud_api_url:
+            raise ValueError("EMBED_API_URL environment variable required for cloud embeddings")
         self._cloud_embedding_model = model_name
         self._default_dimension = dims
         self._use_cloud_embeddings = True
