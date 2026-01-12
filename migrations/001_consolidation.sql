@@ -16,6 +16,7 @@ CREATE EXTENSION IF NOT EXISTS pg_trgm;  -- For text search optimization
 -- STEP 2: Create Schemas
 -- ============================================
 
+CREATE SCHEMA IF NOT EXISTS arkham_frame;
 CREATE SCHEMA IF NOT EXISTS arkham_vectors;
 CREATE SCHEMA IF NOT EXISTS arkham_jobs;
 
