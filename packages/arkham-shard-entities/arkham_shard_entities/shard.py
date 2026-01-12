@@ -843,6 +843,67 @@ class EntitiesShard(ArkhamShard):
 
         return mentions
 
+    async def get_entities_for_document(self, document_id: str) -> List[Dict[str, Any]]:
+        """
+        Get all entities mentioned in a specific document.
+
+        Args:
+            document_id: Document ID to get entities for
+
+        Returns:
+            List of entity dicts with mention details
+        """
+        if not self._db:
+            raise RuntimeError("Entities Shard not initialized")
+
+        # Query entities that have mentions in this document
+        query = """
+            SELECT DISTINCT e.id, e.name, e.entity_type, e.canonical_id, e.aliases,
+                   e.metadata, e.mention_count, e.created_at, e.updated_at,
+                   em.mention_text, em.confidence, em.start_offset, em.end_offset
+            FROM arkham_entities e
+            INNER JOIN arkham_entity_mentions em ON e.id = em.entity_id
+            WHERE em.document_id = :document_id
+        """
+        params: Dict[str, Any] = {"document_id": document_id}
+
+        # Add tenant filtering if tenant context is available
+        tenant_id = self.get_tenant_id_or_none()
+        if tenant_id:
+            query += " AND e.tenant_id = :tenant_id"
+            params["tenant_id"] = str(tenant_id)
+
+        query += " ORDER BY em.confidence DESC, e.name"
+
+        rows = await self._db.fetch_all(query, params)
+
+        # Group by entity, collecting all mentions
+        entities_map: Dict[str, Dict[str, Any]] = {}
+        for row in rows:
+            entity_id = row["id"]
+            if entity_id not in entities_map:
+                entities_map[entity_id] = {
+                    "id": entity_id,
+                    "name": row["name"],
+                    "entity_type": row["entity_type"],
+                    "canonical_id": row.get("canonical_id"),
+                    "aliases": self._parse_jsonb(row.get("aliases"), []),
+                    "metadata": self._parse_jsonb(row.get("metadata"), {}),
+                    "mention_count": row.get("mention_count", 1),
+                    "created_at": row.get("created_at").isoformat() if row.get("created_at") else None,
+                    "updated_at": row.get("updated_at").isoformat() if row.get("updated_at") else None,
+                    "mentions": [],
+                }
+            # Add this mention
+            entities_map[entity_id]["mentions"].append({
+                "text": row.get("mention_text", ""),
+                "confidence": row.get("confidence", 1.0),
+                "start_offset": row.get("start_offset"),
+                "end_offset": row.get("end_offset"),
+            })
+
+        return list(entities_map.values())
+
     async def merge_entities(
         self, source_id: str, target_id: str
     ) -> Dict[str, Any]:

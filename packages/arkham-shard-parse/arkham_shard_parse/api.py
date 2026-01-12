@@ -281,10 +281,26 @@ async def get_entities(doc_id: str):
     """
     Get extracted entities for a document.
 
-    Returns entities that were previously extracted and stored.
+    Returns entities that were previously extracted and stored in the entities shard.
     """
-    # TODO: Entities are extracted but not stored to a dedicated table yet
-    # For now, return empty. Future: store entities in arkham_frame.entities table
+    if not _parse_shard or not _parse_shard._frame:
+        raise HTTPException(status_code=503, detail="Parse shard not initialized")
+
+    # Try to get entities from the entities shard
+    try:
+        # Get the entities shard from the frame's shards dict
+        entities_shard = _parse_shard._frame.shards.get("entities")
+        if entities_shard and hasattr(entities_shard, "get_entities_for_document"):
+            entities = await entities_shard.get_entities_for_document(doc_id)
+            return {
+                "document_id": doc_id,
+                "entities": entities,
+                "total": len(entities),
+            }
+    except Exception as e:
+        logger.warning(f"Could not fetch entities from entities shard: {e}")
+
+    # Fallback: return empty if entities shard not available
     return {
         "document_id": doc_id,
         "entities": [],

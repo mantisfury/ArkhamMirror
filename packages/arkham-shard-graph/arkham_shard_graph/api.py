@@ -1955,13 +1955,50 @@ async def calculate_centrality(
             results = _algorithms.calculate_pagerank(graph, limit)
         elif metric_enum == CentralityMetric.ALL:
             # Calculate all metrics and merge
-            degree = _algorithms.calculate_degree_centrality(graph, limit)
-            betweenness = _algorithms.calculate_betweenness_centrality(graph, limit)
-            pagerank = _algorithms.calculate_pagerank(graph, limit)
+            degree = _algorithms.calculate_degree_centrality(graph, limit * 2)
+            betweenness = _algorithms.calculate_betweenness_centrality(graph, limit * 2)
+            pagerank = _algorithms.calculate_pagerank(graph, limit * 2)
 
-            # Use PageRank as primary, add others as metadata
-            results = pagerank
-            # TODO: Merge multiple metrics into results
+            # Build maps for quick lookup
+            degree_map = {r.entity_id: r.score for r in degree}
+            betweenness_map = {r.entity_id: r.score for r in betweenness}
+            pagerank_map = {r.entity_id: r.score for r in pagerank}
+
+            # Merge: collect all unique entities
+            all_entity_ids = set(degree_map.keys()) | set(betweenness_map.keys()) | set(pagerank_map.keys())
+
+            # Build merged results with composite score
+            merged = []
+            entity_labels = {r.entity_id: (r.label, r.entity_type) for r in degree + betweenness + pagerank}
+
+            for entity_id in all_entity_ids:
+                d_score = degree_map.get(entity_id, 0.0)
+                b_score = betweenness_map.get(entity_id, 0.0)
+                p_score = pagerank_map.get(entity_id, 0.0)
+
+                # Composite score: weighted average (PageRank dominant)
+                composite = 0.2 * d_score + 0.3 * b_score + 0.5 * p_score
+
+                label, entity_type = entity_labels.get(entity_id, (entity_id, ""))
+
+                from .models import CentralityResult
+                merged.append(CentralityResult(
+                    entity_id=entity_id,
+                    label=label,
+                    score=composite,
+                    rank=0,  # Will be set after sorting
+                    entity_type=entity_type,
+                    degree_score=d_score,
+                    betweenness_score=b_score,
+                    pagerank_score=p_score,
+                ))
+
+            # Sort by composite score and assign ranks
+            merged.sort(key=lambda x: x.score, reverse=True)
+            for i, r in enumerate(merged[:limit]):
+                r.rank = i + 1
+
+            results = merged[:limit]
 
         return CentralityResponse(
             project_id=project_id,

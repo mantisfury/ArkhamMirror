@@ -34,6 +34,7 @@ class SearchShard(ArkhamShard):
         self.keyword_engine = None
         self.hybrid_engine = None
         self.filter_optimizer = None
+        self._db = None
 
     async def initialize(self, frame) -> None:
         """
@@ -94,6 +95,10 @@ class SearchShard(ArkhamShard):
         if database_service:
             self.filter_optimizer = FilterOptimizer(database_service)
 
+        # Create search schema and tables
+        if database_service:
+            await self._create_schema(database_service)
+
         # Initialize API
         init_api(
             semantic_engine=self.semantic_engine,
@@ -135,6 +140,95 @@ class SearchShard(ArkhamShard):
     def get_routes(self):
         """Return FastAPI router for this shard."""
         return router
+
+    async def _create_schema(self, db) -> None:
+        """Create search-related database tables."""
+        self._db = db
+
+        try:
+            # Create schema for search shard
+            await db.execute("CREATE SCHEMA IF NOT EXISTS arkham_search")
+
+            # AI feedback table
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS arkham_search.ai_feedback (
+                    id TEXT PRIMARY KEY,
+                    session_id TEXT NOT NULL,
+                    message_id TEXT,
+                    rating TEXT NOT NULL,
+                    feedback_text TEXT,
+                    context JSONB DEFAULT '{}',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    tenant_id UUID
+                )
+            """)
+
+            # Create indexes
+            await db.execute("""
+                CREATE INDEX IF NOT EXISTS idx_ai_feedback_session
+                ON arkham_search.ai_feedback(session_id)
+            """)
+            await db.execute("""
+                CREATE INDEX IF NOT EXISTS idx_ai_feedback_rating
+                ON arkham_search.ai_feedback(rating)
+            """)
+            await db.execute("""
+                CREATE INDEX IF NOT EXISTS idx_ai_feedback_created
+                ON arkham_search.ai_feedback(created_at DESC)
+            """)
+
+            logger.info("Search schema and tables created")
+        except Exception as e:
+            logger.warning(f"Failed to create search schema: {e}")
+
+    async def store_feedback(
+        self,
+        feedback_id: str,
+        session_id: str,
+        rating: str,
+        message_id: str | None = None,
+        feedback_text: str | None = None,
+        context: dict | None = None,
+    ) -> bool:
+        """
+        Store AI feedback in the database.
+
+        Args:
+            feedback_id: Unique feedback ID
+            session_id: Session ID
+            rating: Rating (up/down)
+            message_id: Optional message ID
+            feedback_text: Optional feedback text
+            context: Optional context dict
+
+        Returns:
+            True if stored successfully
+        """
+        if not self._db:
+            return False
+
+        import json
+
+        try:
+            await self._db.execute(
+                """
+                INSERT INTO arkham_search.ai_feedback
+                (id, session_id, message_id, rating, feedback_text, context)
+                VALUES (:id, :session_id, :message_id, :rating, :feedback_text, :context)
+                """,
+                {
+                    "id": feedback_id,
+                    "session_id": session_id,
+                    "message_id": message_id,
+                    "rating": rating,
+                    "feedback_text": feedback_text,
+                    "context": json.dumps(context or {}),
+                }
+            )
+            return True
+        except Exception as e:
+            logger.error(f"Failed to store feedback: {e}")
+            return False
 
     async def _on_document_indexed(self, event: dict) -> None:
         """

@@ -671,11 +671,19 @@ async def submit_ai_feedback(request: Request, body: AIFeedbackRequest):
             source="search-shard",
         )
 
-    # TODO: Store feedback in database for analysis
-    # For now, just log and emit event
-    logger.info(
-        f"AI Feedback received: session={body.session_id}, "
-        f"rating={body.rating}, text={body.feedback_text or 'none'}"
+    # Store feedback in database
+    stored = await shard.store_feedback(
+        feedback_id=feedback_id,
+        session_id=body.session_id,
+        rating=body.rating,
+        message_id=body.message_id,
+        feedback_text=body.feedback_text,
+        context=body.context,
     )
+
+    if stored:
+        logger.info(f"AI Feedback stored: session={body.session_id}, rating={body.rating}")
+    else:
+        logger.warning(f"AI Feedback not stored (DB unavailable): session={body.session_id}")
 
     return AIFeedbackResponse(success=True, feedback_id=feedback_id)

@@ -212,16 +212,28 @@ class CentralityResult:
     score: float
     rank: int
     entity_type: str = ""
+    # Additional metrics for "all" mode
+    degree_score: float | None = None
+    betweenness_score: float | None = None
+    pagerank_score: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary."""
-        return {
+        result = {
             "entity_id": self.entity_id,
             "label": self.label,
             "score": self.score,
             "rank": self.rank,
             "entity_type": self.entity_type,
         }
+        # Include individual metric scores if available
+        if self.degree_score is not None:
+            result["degree_score"] = self.degree_score
+        if self.betweenness_score is not None:
+            result["betweenness_score"] = self.betweenness_score
+        if self.pagerank_score is not None:
+            result["pagerank_score"] = self.pagerank_score
+        return result
 
 
 @dataclass
