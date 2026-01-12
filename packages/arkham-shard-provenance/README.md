@@ -352,10 +352,15 @@ POST /api/provenance/audit/export?chain_id=chain_abc&format=json
 | `/provenance/audit` | Audit trail |
 | `/provenance/lineage` | Data lineage |
 
+## Tech Stack
+
+- **PostgreSQL 14+** - Single database for all persistence
+- **PostgreSQL job queue** - Background jobs using SKIP LOCKED pattern
+
 ## Dependencies
 
 ### Required Services
-- **database** - Chain and lineage persistence
+- **database** - Chain and lineage persistence (PostgreSQL)
 - **events** - Track all creation/completion events
 
 ### Optional Services

@@ -276,16 +276,22 @@ Response:
 | `/claims/verified` | Verified claims |
 | `/claims/disputed` | Disputed claims |
 
+## Tech Stack
+
+- **PostgreSQL 14+** - Single database for all persistence
+- **pgvector extension** - Vector similarity search for claim matching
+- **PostgreSQL job queue** - Background jobs using SKIP LOCKED pattern
+
 ## Dependencies
 
 ### Required Services
-- **database** - Claim and evidence storage
+- **database** - Claim and evidence storage (PostgreSQL)
 - **events** - Event publishing
 
 ### Optional Services
 - **llm** - AI-powered claim extraction
-- **vectors** - Semantic similarity for matching
-- **workers** - Background extraction jobs
+- **vectors** - Semantic similarity for matching (pgvector)
+- **workers** - Background extraction jobs (PostgreSQL SKIP LOCKED)
 
 ## URL State
 

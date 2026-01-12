@@ -246,11 +246,17 @@ GET /api/anomalies/outliers?limit=20&min_z_score=3.0
 |-------|-------------|
 | `/anomalies` | Anomalies list |
 
+## Tech Stack
+
+- **PostgreSQL 14+** - Single database for all persistence
+- **pgvector extension** - Vector similarity search for embedding-based detection
+- **PostgreSQL job queue** - Background jobs using SKIP LOCKED pattern
+
 ## Dependencies
 
 ### Required Services
-- **database** - Anomaly storage
-- **vectors** - Embedding-based detection
+- **database** - Anomaly storage (PostgreSQL)
+- **vectors** - Embedding-based detection (pgvector)
 - **events** - Event publishing
 
 ### Optional Services

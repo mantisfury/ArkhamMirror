@@ -261,12 +261,18 @@ Response:
 |-------|-------------|
 | `/contradictions` | Contradictions list |
 
+## Tech Stack
+
+- **PostgreSQL 14+** - Single database for all persistence
+- **pgvector extension** - Vector similarity search for claim matching
+- **PostgreSQL job queue** - Background jobs using SKIP LOCKED pattern
+
 ## Dependencies
 
 ### Required Services
-- **database** - Contradiction storage
+- **database** - Contradiction storage (PostgreSQL)
 - **events** - Event publishing
-- **vectors** - Semantic similarity matching
+- **vectors** - Semantic similarity matching (pgvector)
 
 ### Optional Services
 - **llm** - AI-powered extraction and verification
@@ -286,7 +292,7 @@ Response:
    - Simple heuristic extraction (fast fallback)
 
 2. **Semantic Matching**: Find similar claim pairs
-   - Embed claims using vector service
+   - Embed claims using pgvector
    - Filter by similarity threshold
 
 3. **Contradiction Verification**: Verify each potential contradiction

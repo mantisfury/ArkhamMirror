@@ -16,7 +16,7 @@ The Dashboard shard provides centralized system monitoring and administration ca
 
 ### Health Monitoring
 - Real-time service status (Database, Vectors, LLM, Workers, Events)
-- Queue statistics with pending/active/completed/failed counts
+- PostgreSQL-backed queue statistics with pending/active/completed/failed counts
 - Docker environment detection and indicator
 
 ### LLM Configuration
@@ -189,7 +189,7 @@ The Dashboard shard does not create its own database tables. It reads from Frame
 ### Optional Services
 - `llm` - LLM configuration and testing
 - `resources` - Hardware tier information
-- `vectors` - Vector store status
+- `vectors` - pgvector status (PostgreSQL extension)
 
 ## Configuration
 

@@ -106,7 +106,7 @@ await db.vacuum_analyze()          # Run VACUUM ANALYZE on all schemas
 
 ### Vector Service
 
-Qdrant vector store for embeddings and similarity search.
+pgvector-based vector storage for embeddings and similarity search, using PostgreSQL's native vector extension.
 
 ```python
 vectors = frame.vectors
@@ -118,7 +118,7 @@ if vectors.is_available():
         vector = await vectors.embed_text("search query")
         vectors_batch = await vectors.embed_texts(["text1", "text2"])
 
-# Collection management
+# Collection management (creates tables with vector columns)
 await vectors.create_collection("my_collection", vector_size=384)
 await vectors.delete_collection("my_collection")
 collections = await vectors.list_collections()
@@ -131,7 +131,7 @@ point = VectorPoint(id="doc1", vector=[0.1, 0.2, ...], payload={"title": "Doc"})
 await vectors.upsert("arkham_documents", [point])
 await vectors.delete_vectors("arkham_documents", ["doc1"])
 
-# Search
+# Search (uses pgvector's ivfflat or hnsw indexes)
 results = await vectors.search(
     collection="arkham_documents",
     query_vector=[0.1, 0.2, ...],
@@ -144,7 +144,7 @@ results = await vectors.search(
 results = await vectors.search_text("arkham_documents", "search query", limit=10)
 ```
 
-**Standard Collections:**
+**Standard Collections (stored as PostgreSQL tables):**
 - `arkham_documents` - Document embeddings
 - `arkham_chunks` - Chunk embeddings
 - `arkham_entities` - Entity embeddings
@@ -249,7 +249,7 @@ await events.unsubscribe("document.*", handle_document)
 
 ### Worker Pools
 
-Redis job queues with priority handling and subprocess management.
+PostgreSQL-backed job queues using SKIP LOCKED pattern for reliable, transactional job processing.
 
 ```python
 workers = frame.workers
@@ -594,12 +594,12 @@ build-backend = "hatchling.build"
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `DATABASE_URL` | `postgresql://anom:anompass@localhost:5435/anomdb` | PostgreSQL connection |
-| `REDIS_URL` | `redis://localhost:6380` | Redis connection |
-| `QDRANT_URL` | `http://localhost:6343` | Qdrant connection |
+| `DATABASE_URL` | `postgresql://anom:anompass@localhost:5435/anomdb` | PostgreSQL connection (includes pgvector) |
 | `LM_STUDIO_URL` | `http://localhost:1234/v1` | LM Studio endpoint |
 | `EMBED_MODEL` | `all-MiniLM-L6-v2` | Embedding model name |
 | `ARKHAM_SERVE_SHELL` | `false` | Serve Shell UI from Frame |
+
+**Note:** PostgreSQL 14+ with pgvector extension is the only required infrastructure dependency. Job queues and vector storage are both handled within PostgreSQL.
 
 ### Configuration Service
 
@@ -608,8 +608,6 @@ config = frame.config
 
 # Get configuration values
 db_url = config.database_url
-redis_url = config.redis_url
-qdrant_url = config.qdrant_url
 llm_endpoint = config.llm_endpoint
 
 # Get custom values (dot notation)
@@ -663,10 +661,10 @@ pip install -e ".[dev]"
 - `fastapi>=0.104.0`
 - `uvicorn>=0.24.0`
 - `sqlalchemy>=2.0.0`
+- `asyncpg>=0.29.0` - Async PostgreSQL driver
+- `pgvector>=0.2.0` - Vector operations for PostgreSQL
 - `httpx>=0.25.0`
 - `pyyaml>=6.0`
-- `redis>=5.0.0`
-- `qdrant-client>=1.6.0`
 - `psycopg2-binary>=2.9.0`
 - `python-multipart>=0.0.6`
 - `python-dotenv>=1.0.0`
@@ -776,9 +774,9 @@ collection = frame.get_collection_name("documents")
 
 | Service | Default Port | Purpose |
 |---------|--------------|---------|
-| PostgreSQL | 5435 | Document and entity storage |
-| Redis | 6380 | Job queues and pub/sub |
-| Qdrant | 6343 | Vector storage |
+| PostgreSQL 14+ | 5435 | All data storage (documents, entities, job queues, vectors) |
+
+PostgreSQL must have the **pgvector** extension installed for vector storage capabilities.
 
 ### Optional Services
 

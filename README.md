@@ -153,7 +153,7 @@ SHATTERED uses the **Voltron** architectural philosophy: a modular, plug-and-pla
 
 | Type | Description |
 |------|-------------|
-| **Semantic Search** | Vector similarity using Qdrant embeddings |
+| **Semantic Search** | Vector similarity using pgvector embeddings |
 | **Keyword Search** | PostgreSQL full-text search with BM25 ranking |
 | **Hybrid Search** | Combined semantic + keyword with configurable weights |
 | **Similarity Search** | Find documents similar to a reference document |
@@ -181,11 +181,11 @@ The Frame provides 17 core services available to all shards:
 | **ResourceService** | Hardware detection, GPU/CPU management, tier assignment |
 | **StorageService** | File/blob storage with categories and lifecycle |
 | **DatabaseService** | PostgreSQL with per-shard schema isolation |
-| **VectorService** | Qdrant vector store for embeddings and similarity search |
+| **VectorService** | pgvector-based vector storage for embeddings and similarity search |
 | **LLMService** | OpenAI-compatible LLM integration (LM Studio, Ollama, vLLM) |
 | **ChunkService** | 8 text chunking strategies (semantic, sentence, fixed, etc.) |
 | **EventBus** | Pub/sub messaging for inter-shard communication |
-| **WorkerService** | Redis job queues with 14 specialized worker pools |
+| **WorkerService** | PostgreSQL-based job queues (SKIP LOCKED) with specialized worker pools |
 | **DocumentService** | Document CRUD with content and metadata access |
 | **EntityService** | Entity extraction, relationships, and deduplication |
 | **ProjectService** | Project organization and management |
@@ -264,10 +264,9 @@ The Frame provides 17 core services available to all shards:
 |-----------|------------|
 | **Runtime** | Python 3.10+ |
 | **API Framework** | FastAPI with async/await |
-| **Database** | PostgreSQL 14+ |
-| **Job Queue** | Redis with 14 worker pools |
-| **Vector Store** | Qdrant |
-| **Task Queue** | ARQ (Redis-based) |
+| **Database** | PostgreSQL 14+ with pgvector extension |
+| **Job Queue** | PostgreSQL (SKIP LOCKED pattern) |
+| **Vector Store** | pgvector (PostgreSQL extension) |
 
 ### Frontend
 
@@ -297,10 +296,8 @@ The Frame provides 17 core services available to all shards:
 ### Prerequisites
 
 - Python 3.10+
-- Node.js 18+
-- PostgreSQL 14+
-- Redis 6+
-- Qdrant (for vector search)
+- Node.js 18+ (for local UI development only)
+- PostgreSQL 14+ with pgvector extension
 
 ### Installation
 
@@ -331,48 +328,47 @@ npm install
 Create a `.env` file or set environment variables:
 
 ```bash
-# Required
-DATABASE_URL=postgresql://user:pass@localhost:5435/shattered
-REDIS_URL=redis://localhost:6380
-QDRANT_URL=http://localhost:6343
+# Required - PostgreSQL with pgvector extension
+DATABASE_URL=postgresql://user:pass@localhost:5432/shattered
 
-# Optional - LLM Integration
-LM_STUDIO_URL=http://localhost:1234/v1
-OPENAI_API_KEY=sk-...
+# Optional - LLM Integration (OpenAI-compatible endpoint)
+LLM_ENDPOINT=http://localhost:1234/v1
+LLM_API_KEY=your-api-key
 
-# Optional - Email Notifications
-SMTP_HOST=smtp.example.com
-SMTP_PORT=587
-SMTP_USER=user@example.com
-SMTP_PASSWORD=...
+# Optional - Embedding Model (default: all-MiniLM-L6-v2)
+EMBED_MODEL=all-MiniLM-L6-v2
+
+# Optional - Vision LLM for OCR
+VLM_ENDPOINT=http://localhost:1234/v1
+
+# Optional - Auth (required for production)
+AUTH_SECRET_KEY=generate-with-openssl-rand-hex-32
 ```
 
 ### Running
 
 ```bash
-# Terminal 1: Start the Frame API
+# Terminal 1: Start the Frame API (auto-discovers installed shards)
 python -m uvicorn arkham_frame.main:app --host 127.0.0.1 --port 8100
 
-# Terminal 2: Start the UI
+# Terminal 2 (optional): Start the UI for development
 cd packages/arkham-shard-shell
 npm run dev
 
-# Terminal 3 (optional): Start workers for background processing
-python -m arkham_frame.workers --pool cpu-light --count 2
-python -m arkham_frame.workers --pool cpu-parse --count 2
-python -m arkham_frame.workers --pool gpu-embed --count 1
+# Workers start automatically with the Frame
+# Background jobs use PostgreSQL SKIP LOCKED pattern
 ```
 
 ### Access Points
 
 | Interface | URL |
 |-----------|-----|
-| **Web UI** | http://localhost:3100 |
+| **Web UI** | http://localhost:8100 (served by Frame) |
 | **API Documentation** | http://localhost:8100/docs |
 | **OpenAPI Spec** | http://localhost:8100/openapi.json |
-| **Health Check** | http://localhost:8100/health |
+| **Health Check** | http://localhost:8100/api/health |
 
-### Docker Deployment
+### Docker Deployment (Recommended)
 
 ```bash
 # Copy environment template
@@ -382,12 +378,18 @@ cp .env.example .env
 python -c "import secrets; print('AUTH_SECRET_KEY=' + secrets.token_urlsafe(32))"
 # Add the output to your .env file
 
-# Start all services
+# Start all services (PostgreSQL + App)
 docker compose up -d
 
 # Access the application
 open http://localhost:8100
 ```
+
+The Docker setup includes:
+- PostgreSQL 14 with pgvector extension pre-installed
+- All shards and the UI bundled in a single container
+- Automatic database migrations on startup
+- No external dependencies (Redis, Qdrant not required)
 
 **First-time Setup**: When you first access the application, you'll be prompted to create an admin account. This sets up your tenant and initial credentials.
 
@@ -645,15 +647,18 @@ Each shard has its own README with API documentation, events, and usage examples
 
 | Metric | Value |
 |--------|-------|
+| **Lines of Code** | ~217,000 |
 | **Total Packages** | 26 (25 shards + shell) |
 | **Frame Services** | 17 |
 | **API Endpoints** | 400+ |
 | **Graph Visualization Modes** | 10+ |
-| **Worker Pools** | 14 |
 | **Chunking Strategies** | 8 |
+| **Infrastructure** | PostgreSQL-only (pgvector + SKIP LOCKED) |
 
 ### Recent Major Features
 
+- **PostgreSQL-only architecture** - Eliminated Redis and Qdrant dependencies
+- **pgvector integration** - Native PostgreSQL vector search
 - AI Junior Analyst integration across all analysis shards
 - Full ACH implementation with premortem, cone of plausibility, corpus search
 - Link Analysis mode (i2-style) for graph visualization

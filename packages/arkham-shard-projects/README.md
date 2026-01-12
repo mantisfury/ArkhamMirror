@@ -13,7 +13,7 @@ The Projects shard provides workspace management capabilities for SHATTERED, all
 ### Key Capabilities
 
 1. **Project Management** - Create and configure project workspaces
-2. **Vector Collection Isolation** - Project-scoped Qdrant collections with configurable embedding models
+2. **Vector Collection Isolation** - Project-scoped pgvector tables with configurable embedding models
 3. **Document Grouping** - Associate documents with projects
 4. **Permission Control** - Role-based access to project resources
 5. **Activity Tracking** - Monitor project changes and member activity
@@ -26,13 +26,13 @@ The Projects shard provides workspace management capabilities for SHATTERED, all
 - Project settings and custom metadata
 - Member and document counts tracked automatically
 
-### Vector Collection Isolation
-- **Project-scoped collections**: Each project gets isolated vector collections
+### Vector Collection Isolation (pgvector)
+- **Project-scoped tables**: Each project gets isolated vector tables in PostgreSQL
   - `project_{id}_documents` - Document embeddings
   - `project_{id}_chunks` - Chunk embeddings
   - `project_{id}_entities` - Entity embeddings
 - **Configurable embedding models** per project
-- **Automatic collection creation** on project creation
+- **Automatic table creation** on project creation
 - **Safe model switching** with dimension validation
 
 ### Supported Embedding Models
@@ -207,7 +207,7 @@ Note: If the new model has different dimensions, `wipe_collections: true` is req
 
 ### Optional Services
 - **storage** - Project-specific file storage
-- **vectors** - For project-scoped collections (Qdrant)
+- **vectors** - For project-scoped collections (pgvector)
 
 ## URL State
 

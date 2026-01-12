@@ -285,15 +285,20 @@ Returns documents that can be summarized, optionally filtered by whether they al
 | `/summary/collections` | Collection summaries |
 | `/summary/generate` | Generate new summary |
 
+## Tech Stack
+
+- **PostgreSQL 14+** - Single database for all persistence
+- **PostgreSQL job queue** - Background jobs using SKIP LOCKED pattern
+
 ## Dependencies
 
 ### Required Services
-- **database** - Summary storage
+- **database** - Summary storage (PostgreSQL)
 - **events** - Event publishing
 
 ### Optional Services
 - **llm** - AI summarization (highly recommended)
-- **workers** - Background batch processing
+- **workers** - Background batch processing (PostgreSQL SKIP LOCKED)
 
 ## URL State
 

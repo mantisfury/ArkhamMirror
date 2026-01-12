@@ -239,12 +239,15 @@ Response includes document IDs, mention text, and offsets.
 ## Dependencies
 
 ### Required Services
-- **database** - Entity storage and persistence
+- **database** - PostgreSQL 14+ for entity storage and persistence
 - **events** - Event publishing
 
 ### Optional Services
-- **vectors** - Vector similarity for merge suggestions
+- **vectors** - pgvector for vector similarity merge suggestions
 - **entities** - Frame's EntityService for advanced features
+
+### Infrastructure Notes
+This shard uses PostgreSQL for all persistence. Vector similarity for entity matching uses pgvector when available. The single database dependency (PostgreSQL with pgvector extension) eliminates the need for external vector stores.
 
 ## URL State
 

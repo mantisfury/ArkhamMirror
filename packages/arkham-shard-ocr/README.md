@@ -225,13 +225,16 @@ OCR processing uses dedicated GPU worker pools:
 ## Dependencies
 
 ### Required Services
-- **database** - Result storage
+- **database** - PostgreSQL 14+ for result storage
 - **storage** - File access
-- **workers** - GPU worker pools
+- **workers** - PostgreSQL job queue (SKIP LOCKED pattern)
 - **events** - Event publishing
 
 ### Optional Services
 - **documents** - Document access for multi-page OCR
+
+### Infrastructure Notes
+This shard uses PostgreSQL for all persistence and job queuing. No Redis or external queue system is required. OCR results and cache are stored in PostgreSQL.
 
 ## URL State
 

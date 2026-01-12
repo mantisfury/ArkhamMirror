@@ -242,13 +242,16 @@ Uses semantic similarity to group related content. Best quality but slower.
 ## Dependencies
 
 ### Required Services
-- **database** - Chunk and entity storage
-- **workers** - Background parsing jobs
+- **database** - PostgreSQL 14+ for chunk and entity storage
+- **workers** - PostgreSQL job queue (SKIP LOCKED pattern)
 - **events** - Event publishing
 
 ### Optional Services
 - **documents** - Document content access
 - **entities** - Entity storage
+
+### Infrastructure Notes
+This shard uses PostgreSQL for all persistence and job queuing. No Redis or external queue system is required. Parsed chunks are stored in PostgreSQL and can be vectorized using pgvector.
 
 ## URL State
 

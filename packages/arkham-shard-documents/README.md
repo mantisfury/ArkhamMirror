@@ -238,12 +238,15 @@ Returns: Server-Sent Events stream with analysis chunks
 ## Dependencies
 
 ### Required Services
-- **database** - Document metadata persistence
+- **database** - PostgreSQL 14+ for document metadata persistence
 - **events** - Event publishing
 
 ### Optional Services
 - **storage** - File storage access
 - **documents** - Frame DocumentService for CRUD
+
+### Infrastructure Notes
+This shard uses PostgreSQL for all persistence. The single database dependency (PostgreSQL with pgvector extension) provides document storage, metadata, and vector search capabilities.
 
 ## URL State
 

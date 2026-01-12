@@ -320,15 +320,21 @@ POST /api/ach/ai/scenarios
 | `/ach/new` | Create new analysis |
 | `/ach/scenarios` | Scenario planning |
 
+## Tech Stack
+
+- **PostgreSQL 14+** - Single database for all persistence
+- **pgvector extension** - Vector similarity search for corpus evidence
+- **PostgreSQL job queue** - Background jobs using SKIP LOCKED pattern
+
 ## Dependencies
 
 ### Required Services
-- **database** - Matrix, evidence, premortem persistence
+- **database** - Matrix, evidence, premortem persistence (PostgreSQL)
 - **events** - Event publishing
 
 ### Optional Services
 - **llm** - AI-powered analysis, suggestions, premortem
-- **vectors** - Corpus evidence search
+- **vectors** - Corpus evidence search (pgvector)
 
 ## URL State
 

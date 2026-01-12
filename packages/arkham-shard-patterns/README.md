@@ -292,16 +292,22 @@ Response:
 | `/patterns/behavioral` | Behavioral patterns |
 | `/patterns/temporal` | Temporal patterns |
 
+## Tech Stack
+
+- **PostgreSQL 14+** - Single database for all persistence
+- **pgvector extension** - Vector similarity search for pattern matching
+- **PostgreSQL job queue** - Background jobs using SKIP LOCKED pattern
+
 ## Dependencies
 
 ### Required Services
-- **database** - Pattern and match storage
+- **database** - Pattern and match storage (PostgreSQL)
 - **events** - Event publishing
 
 ### Optional Services
 - **llm** - AI-powered pattern analysis
-- **vectors** - Semantic similarity for pattern matching
-- **workers** - Background pattern detection jobs
+- **vectors** - Semantic similarity for pattern matching (pgvector)
+- **workers** - Background pattern detection jobs (PostgreSQL SKIP LOCKED)
 
 ## URL State
 

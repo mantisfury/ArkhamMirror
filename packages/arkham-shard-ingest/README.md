@@ -245,13 +245,16 @@ PATCH /api/ingest/settings
 ## Dependencies
 
 ### Required Services
-- **database** - Job and batch persistence
+- **database** - PostgreSQL 14+ for job and batch persistence
 - **storage** - File storage
-- **workers** - Processing queues
+- **workers** - PostgreSQL job queue (SKIP LOCKED pattern)
 - **events** - Event publishing
 
 ### Optional Services
-- **vectors** - For embedding results
+- **vectors** - pgvector for embedding results
+
+### Infrastructure Notes
+This shard uses PostgreSQL for all persistence and job queuing. No Redis or external queue system is required. Job queues use PostgreSQL's SKIP LOCKED pattern for efficient concurrent processing.
 
 ## URL State
 

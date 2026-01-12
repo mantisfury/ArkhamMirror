@@ -314,16 +314,22 @@ Response:
 | `/credibility/low` | Low credibility sources |
 | `/credibility/sources` | Source analysis |
 
+## Tech Stack
+
+- **PostgreSQL 14+** - Single database for all persistence
+- **pgvector extension** - Vector similarity search for semantic analysis
+- **PostgreSQL job queue** - Background jobs using SKIP LOCKED pattern
+
 ## Dependencies
 
 ### Required Services
-- **database** - Assessment storage
+- **database** - Assessment storage (PostgreSQL)
 - **events** - Event publishing
 
 ### Optional Services
 - **llm** - AI-powered assessment
-- **vectors** - Semantic analysis
-- **workers** - Background jobs
+- **vectors** - Semantic analysis (pgvector)
+- **workers** - Background jobs (PostgreSQL SKIP LOCKED)
 
 ## URL State
 

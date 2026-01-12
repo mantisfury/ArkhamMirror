@@ -8,7 +8,13 @@
 
 ## Overview
 
-The Embed shard handles vector embedding generation and management for SHATTERED. It generates embeddings for text and documents, stores them in Qdrant, and provides similarity search and nearest neighbor queries. Supports multiple embedding models with project-scoped vector collections.
+The Embed shard handles vector embedding generation and management for SHATTERED. It generates embeddings for text and documents, stores them in PostgreSQL using pgvector, and provides similarity search and nearest neighbor queries. Supports multiple embedding models with project-scoped vector collections.
+
+### Infrastructure
+
+- **Database**: PostgreSQL 14+ with pgvector extension
+- **Vector Storage**: `arkham_vectors.embeddings` table
+- **Job Queue**: PostgreSQL with SKIP LOCKED pattern (no Redis)
 
 ### Key Capabilities
 
@@ -232,12 +238,16 @@ POST /api/embed/model/switch
 
 ## Project-Scoped Collections
 
-When a project is active, collection names are automatically scoped:
-- `documents` becomes `project_{id}_documents`
-- `chunks` becomes `project_{id}_chunks`
-- `entities` becomes `project_{id}_entities`
+When a project is active, embeddings are scoped by project_id in the `arkham_vectors.embeddings` table. This allows different projects to maintain separate vector spaces.
 
-This allows different projects to use different embedding models.
+The embeddings table schema includes:
+- `id` - Unique embedding identifier
+- `doc_id` - Associated document ID
+- `chunk_id` - Associated chunk ID
+- `project_id` - Project scope (nullable)
+- `embedding` - Vector data (pgvector)
+- `model` - Embedding model used
+- `created_at` - Timestamp
 
 ## UI Routes
 
@@ -248,8 +258,8 @@ This allows different projects to use different embedding models.
 ## Dependencies
 
 ### Required Services
-- **vectors** - Qdrant vector store
-- **workers** - Background embedding jobs
+- **database** - PostgreSQL 14+ with pgvector extension
+- **workers** - Background embedding jobs (PostgreSQL SKIP LOCKED)
 - **events** - Event publishing
 
 ### Optional Services
@@ -282,8 +292,8 @@ Document embedding is processed by the `gpu-embed` worker pool. Jobs include all
 
 ### Dimension Changes
 When switching to a model with different dimensions:
-1. All vector collections must be wiped
-2. Collections are recreated with new dimensions
+1. Existing embeddings with different dimensions must be deleted
+2. The embeddings table supports multiple dimensions via pgvector
 3. All documents need re-embedding
 4. Requires `confirm_wipe: true` in request
 

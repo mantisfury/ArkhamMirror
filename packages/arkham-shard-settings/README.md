@@ -30,10 +30,10 @@ The Settings shard provides a centralized interface for managing application set
 - Batch processing sizes
 
 ### Data Management
-- Storage overview (database, vectors, file storage)
+- Storage overview (PostgreSQL database, pgvector collections, file storage)
 - Clear local storage (browser cache)
 - Clear temporary files
-- Clear vector embeddings
+- Clear vector embeddings (pgvector tables)
 - Clear database (preserves settings)
 - Reset all data (complete fresh start)
 - Settings export/import

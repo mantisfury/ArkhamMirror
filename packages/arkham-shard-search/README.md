@@ -290,7 +290,7 @@ Returns streaming response with search results and AI-generated summary.
 
 ### Required Services
 - **database** - Keyword search (PostgreSQL full-text)
-- **vectors** - Semantic search (Qdrant)
+- **vectors** - Semantic search (pgvector PostgreSQL extension)
 - **events** - Event publishing
 
 ### Optional Services
