@@ -762,6 +762,36 @@ class WorkerService:
                 result=json.loads(row['result']) if isinstance(row['result'], str) else row['result'],
             )
 
+    async def get_job_result(self, job_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Get just the result field for a job.
+
+        This is more efficient than get_job_from_db when you only need the result.
+
+        Args:
+            job_id: Job ID to fetch result for
+
+        Returns:
+            Result dict, or None if job not found or has no result
+        """
+        if not self._available or not self._db_pool:
+            # Check cache
+            job = self._jobs.get(job_id)
+            return job.result if job else None
+
+        async with self._db_pool.acquire() as conn:
+            row = await conn.fetchrow("""
+                SELECT result FROM arkham_jobs.jobs WHERE id = $1
+            """, job_id)
+
+            if not row or not row['result']:
+                return None
+
+            result = row['result']
+            if isinstance(result, str):
+                return json.loads(result)
+            return result
+
     # --- Queue Stats ---
 
     async def get_queue_stats(self) -> List[Dict[str, Any]]:

@@ -216,7 +216,19 @@ class IngestShard(ArkhamShard):
         if not job:
             return  # Not our job
 
-        result = payload.get("result", {})
+        # Result may not be in the event payload (pg_notify has 8KB limit)
+        # Fetch it from the database if not present
+        result = payload.get("result")
+        logger.debug(f"Job {job_id} event result present: {bool(result)}")
+        if not result:
+            logger.info(f"Job {job_id}: Fetching result from database (not in event payload)")
+            result = await self._fetch_job_result(job_id)
+            if result is None:
+                logger.warning(f"Job {job_id}: No result found in database")
+                result = {}
+            else:
+                text_len = len(result.get("text", "")) if result else 0
+                logger.info(f"Job {job_id}: Fetched result with {text_len} chars of text")
 
         # Advance to next worker or complete
         advanced = await self.job_dispatcher.advance(job, result)
@@ -307,13 +319,18 @@ class IngestShard(ArkhamShard):
 
             # If we have extracted text from the result, add it as a page
             text = result.get("text", "")
+            logger.info(f"Job {job.id}: Document {doc.id} - text length: {len(text)} chars")
             if text:
                 page_count = result.get("pages", 1)
+                logger.info(f"Job {job.id}: Adding page with {len(text)} chars to document {doc.id}")
                 await doc_service.add_page(
                     doc_id=doc.id,
                     page_number=1,
                     text=text,
                 )
+                logger.info(f"Job {job.id}: Page added successfully")
+            else:
+                logger.warning(f"Job {job.id}: No text in result for document {doc.id}")
 
             logger.info(f"Registered document {doc.id} from job {job.id}")
 
@@ -339,6 +356,35 @@ class IngestShard(ArkhamShard):
 
         except Exception as e:
             logger.error(f"Failed to register document for job {job.id}: {e}", exc_info=True)
+            return None
+
+    async def _fetch_job_result(self, job_id: str) -> dict | None:
+        """
+        Fetch job result from the arkham_jobs.jobs table.
+
+        The pg_notify payload has an 8KB limit, so results are stored in the
+        database rather than sent in the notification. This method fetches
+        the result for a completed job.
+
+        Args:
+            job_id: Job ID to fetch result for
+
+        Returns:
+            Result dict, or None if not found
+        """
+        try:
+            worker_service = self._frame.get_service("workers")
+            if not worker_service:
+                logger.warning("Worker service not available, cannot fetch job result")
+                return None
+
+            # Use worker service's connection to fetch result
+            result = await worker_service.get_job_result(job_id)
+            if result:
+                logger.debug(f"Fetched result for job {job_id}: {len(str(result))} chars")
+            return result
+        except Exception as e:
+            logger.warning(f"Failed to fetch result for job {job_id}: {e}")
             return None
 
     async def _on_job_failed(self, event: dict) -> None:

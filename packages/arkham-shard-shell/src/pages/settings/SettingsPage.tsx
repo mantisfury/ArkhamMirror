@@ -102,12 +102,15 @@ interface ModelInfo {
   error: string | null;
   required_by: string[];
   is_default: boolean;
+  is_selected: boolean;
 }
 
 interface ModelsData {
   offline_mode: boolean;
   cache_path: string;
   models: ModelInfo[];
+  selected_embedding_model: string | null;
+  selected_ocr_model: string | null;
 }
 
 // Notification channel types
@@ -1377,14 +1380,15 @@ export function SettingsPage() {
                       {modelsData.models
                         .filter(m => m.model_type === 'embedding')
                         .map(model => (
-                          <div key={model.id} className={`model-item ${model.status}`}>
+                          <div key={model.id} className={`model-item ${model.status} ${model.is_selected ? 'selected' : ''}`}>
                             <div className="model-icon">
-                              <Icon name={model.status === 'installed' ? 'CheckCircle' : 'Circle'} size={20} />
+                              <Icon name={model.is_selected ? 'CheckCircle2' : model.status === 'installed' ? 'CheckCircle' : 'Circle'} size={20} />
                             </div>
                             <div className="model-info">
                               <div className="model-header">
                                 <span className="model-name">{model.name}</span>
-                                {model.is_default && <span className="default-badge">Default</span>}
+                                {model.is_selected && <span className="selected-badge">Selected</span>}
+                                {model.is_default && !model.is_selected && <span className="default-badge">Default</span>}
                                 <span className="model-size">{model.size_mb} MB</span>
                               </div>
                               <p className="model-description">{model.description}</p>
@@ -1436,14 +1440,15 @@ export function SettingsPage() {
                       {modelsData.models
                         .filter(m => m.model_type === 'ocr')
                         .map(model => (
-                          <div key={model.id} className={`model-item ${model.status}`}>
+                          <div key={model.id} className={`model-item ${model.status} ${model.is_selected ? 'selected' : ''}`}>
                             <div className="model-icon">
-                              <Icon name={model.status === 'installed' ? 'CheckCircle' : 'Circle'} size={20} />
+                              <Icon name={model.is_selected ? 'CheckCircle2' : model.status === 'installed' ? 'CheckCircle' : 'Circle'} size={20} />
                             </div>
                             <div className="model-info">
                               <div className="model-header">
                                 <span className="model-name">{model.name}</span>
-                                {model.is_default && <span className="default-badge">Default</span>}
+                                {model.is_selected && <span className="selected-badge">Selected</span>}
+                                {model.is_default && !model.is_selected && <span className="default-badge">Default</span>}
                                 <span className="model-size">{model.size_mb} MB</span>
                               </div>
                               <p className="model-description">{model.description}</p>

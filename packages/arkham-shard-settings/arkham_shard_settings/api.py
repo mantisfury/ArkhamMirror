@@ -622,6 +622,7 @@ class ModelInfoResponse(BaseModel):
     error: Optional[str] = None
     required_by: List[str] = []
     is_default: bool = False
+    is_selected: bool = False  # Currently active/selected model
 
 
 class ModelsListResponse(BaseModel):
@@ -629,6 +630,8 @@ class ModelsListResponse(BaseModel):
     offline_mode: bool
     cache_path: str
     models: List[ModelInfoResponse]
+    selected_embedding_model: Optional[str] = None  # Currently selected embedding model ID
+    selected_ocr_model: Optional[str] = None  # Currently selected OCR model (language)
 
 
 class ModelDownloadResponse(BaseModel):
@@ -669,9 +672,31 @@ async def list_models(
 
     models = models_service.list_models(model_type=type_filter)
 
+    # Get currently selected models from settings
+    selected_embedding = None
+    selected_ocr = "paddleocr-en"  # Default OCR model
+    try:
+        embed_setting = await shard.get_setting("advanced.embedding_model")
+        if embed_setting and embed_setting.value:
+            # Map HuggingFace path to our model ID
+            embed_value = embed_setting.value
+            model_id_map = {
+                "sentence-transformers/all-MiniLM-L6-v2": "all-MiniLM-L6-v2",
+                "sentence-transformers/all-mpnet-base-v2": "all-mpnet-base-v2",
+                "BAAI/bge-m3": "bge-m3",
+                "BAAI/bge-large-en-v1.5": "bge-large-en-v1.5",
+                "sentence-transformers/multi-qa-MiniLM-L6-cos-v1": "multi-qa-MiniLM-L6-cos-v1",
+                "sentence-transformers/paraphrase-MiniLM-L6-v2": "paraphrase-MiniLM-L6-v2",
+            }
+            selected_embedding = model_id_map.get(embed_value, embed_value)
+    except Exception:
+        pass  # Use defaults if settings unavailable
+
     return ModelsListResponse(
         offline_mode=models_service.offline_mode,
         cache_path=models_service.cache_path or "",
+        selected_embedding_model=selected_embedding,
+        selected_ocr_model=selected_ocr,
         models=[
             ModelInfoResponse(
                 id=m.id,
@@ -684,6 +709,10 @@ async def list_models(
                 error=m.error,
                 required_by=m.required_by,
                 is_default=m.is_default,
+                is_selected=(
+                    (m.model_type.value == "embedding" and m.id == selected_embedding) or
+                    (m.model_type.value == "ocr" and m.id == selected_ocr)
+                ),
             )
             for m in models
         ],

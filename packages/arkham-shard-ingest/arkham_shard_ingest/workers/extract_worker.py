@@ -129,6 +129,8 @@ class ExtractWorker(BaseWorker):
                 ".doc": "docx",  # Old Word format (may not work)
                 ".xlsx": "xlsx",
                 ".xls": "xlsx",  # Old Excel format (may not work)
+                ".csv": "csv",
+                ".tsv": "csv",  # Tab-separated values
                 ".txt": "txt",
                 ".text": "txt",
                 ".md": "txt",
@@ -144,13 +146,13 @@ class ExtractWorker(BaseWorker):
             raise ValueError(
                 f"Could not determine file type. "
                 "Provide file_type parameter or use a supported extension: "
-                "pdf, docx, xlsx, txt"
+                "pdf, docx, xlsx, csv, txt, eml"
             )
 
-        if file_type not in ["pdf", "docx", "xlsx", "txt", "eml"]:
+        if file_type not in ["pdf", "docx", "xlsx", "csv", "txt", "eml"]:
             raise ValueError(
                 f"Unsupported file_type: {file_type}. "
-                "Supported types: pdf, docx, xlsx, txt, eml"
+                "Supported types: pdf, docx, xlsx, csv, txt, eml"
             )
 
         # Check file exists
@@ -176,6 +178,8 @@ class ExtractWorker(BaseWorker):
                 result = await self._extract_xlsx(path)
             elif file_type == "txt":
                 result = await self._extract_text(path)
+            elif file_type == "csv":
+                result = await self._extract_csv(path)
             elif file_type == "eml":
                 result = await self._extract_eml(path)
             else:
@@ -499,6 +503,99 @@ class ExtractWorker(BaseWorker):
 
             except Exception as e:
                 raise Exception(f"Text file reading error: {str(e)}")
+
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, extract)
+
+    async def _extract_csv(self, path: Path) -> Dict[str, Any]:
+        """
+        Extract text from CSV or TSV file.
+
+        Converts tabular data to readable text format with headers and rows.
+
+        Args:
+            path: Path to CSV/TSV file
+
+        Returns:
+            dict with text, row count, and column info
+        """
+        import csv
+
+        def extract():
+            try:
+                # Detect delimiter (CSV vs TSV)
+                delimiter = "	" if path.suffix.lower() == ".tsv" else ","
+
+                # Try different encodings
+                encodings = ["utf-8", "utf-16", "latin-1", "cp1252"]
+                rows = None
+
+                for encoding in encodings:
+                    try:
+                        with open(path, "r", encoding=encoding, newline="") as f:
+                            # Sniff to detect actual delimiter if not TSV
+                            if path.suffix.lower() \!= ".tsv":
+                                sample = f.read(4096)
+                                f.seek(0)
+                                try:
+                                    dialect = csv.Sniffer().sniff(sample, delimiters=",;	|")
+                                    delimiter = dialect.delimiter
+                                except csv.Error:
+                                    delimiter = ","  # Default to comma
+
+                            reader = csv.reader(f, delimiter=delimiter)
+                            rows = list(reader)
+                        break
+                    except UnicodeDecodeError:
+                        continue
+
+                if rows is None:
+                    raise Exception("Could not decode CSV file with any supported encoding")
+
+                if not rows:
+                    return {
+                        "text": "",
+                        "pages": 0,
+                        "document_metadata": {"columns": 0, "rows": 0},
+                    }
+
+                # Format as readable text
+                # First row is typically headers
+                headers = rows[0] if rows else []
+                data_rows = rows[1:] if len(rows) > 1 else []
+
+                text_parts = []
+
+                # Add header line
+                if headers:
+                    text_parts.append("--- Columns ---")
+                    text_parts.append(" | ".join(str(h) for h in headers))
+                    text_parts.append("")
+                    text_parts.append("--- Data ---")
+
+                # Add data rows
+                for row in data_rows:
+                    # Format each row, optionally with column names
+                    if headers and len(row) == len(headers):
+                        # Format as "Column: Value" pairs for better readability
+                        pairs = [f"{headers[i]}: {row[i]}" for i in range(len(row))]
+                        text_parts.append(" | ".join(pairs))
+                    else:
+                        text_parts.append(" | ".join(str(cell) for cell in row))
+
+                return {
+                    "text": "
+".join(text_parts),
+                    "pages": len(data_rows),  # Use row count as page proxy
+                    "document_metadata": {
+                        "columns": len(headers),
+                        "rows": len(data_rows),
+                        "headers": headers[:20],  # First 20 column names
+                    },
+                }
+
+            except Exception as e:
+                raise Exception(f"CSV reading error: {str(e)}")
 
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(None, extract)

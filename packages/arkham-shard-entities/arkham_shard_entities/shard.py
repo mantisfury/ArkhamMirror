@@ -317,6 +317,121 @@ class EntitiesShard(ArkhamShard):
             updated_at=row.get("updated_at"),
         )
 
+    # --- Entity Filtering ---
+
+    # Minimum requirements for valid entities
+    _MIN_ENTITY_LENGTH = 2
+    _MIN_WORD_LENGTH_FOR_SINGLE_WORD = 3
+    _MAX_ENTITY_LENGTH = 200
+
+    def _is_valid_entity(self, entity_text: str, entity_type: str) -> bool:
+        """
+        Filter out garbage/noise entities that don't provide analytical value.
+
+        Filters entities like "1", "24/7", single characters, common words,
+        pure punctuation, etc. that clutter analysis.
+
+        Args:
+            entity_text: The entity text to validate
+            entity_type: The entity type (PERSON, ORG, etc.)
+
+        Returns:
+            True if entity should be kept, False if it should be filtered out
+        """
+        import re
+
+        # Basic length checks
+        if len(entity_text) < self._MIN_ENTITY_LENGTH:
+            return False
+        if len(entity_text) > self._MAX_ENTITY_LENGTH:
+            return False
+
+        # Normalize for pattern matching
+        text_lower = entity_text.lower().strip()
+
+        # Garbage patterns that indicate noise entities
+        garbage_patterns = [
+            r"^\d+$",  # Pure numbers: "1", "24", "100"
+            r"^\d+/\d+$",  # Fractions/ratios: "24/7", "1/2"
+            r"^\d+:\d+$",  # Times: "10:30", "24:00"
+            r"^\d+[.,]\d+$",  # Decimals: "1.5", "3,000"
+            r"^\d+%$",  # Percentages: "50%"
+            r"^[$]\d+",  # Currency: "$100"
+            r"^\d+[$]",  # Currency: "100$"
+            r"^.{1,2}$",  # Single or double characters
+            r"^\d+(st|nd|rd|th)$",  # Ordinals: "1st", "2nd"
+        ]
+
+        for pattern in garbage_patterns:
+            if re.match(pattern, text_lower, re.IGNORECASE):
+                logger.debug(f"Filtered entity '{entity_text}' - matched garbage pattern")
+                return False
+
+        # Common noise words to filter
+        noise_words = {
+            # Articles and conjunctions
+            "the", "a", "an", "and", "or", "but", "if", "then",
+            # Be verbs
+            "is", "are", "was", "were", "be", "been", "being",
+            # Pronouns
+            "this", "that", "these", "those", "it", "its",
+            "he", "she", "they", "we", "you", "i", "my", "your", "his", "her",
+            # Question words
+            "what", "which", "who", "whom", "whose", "when", "where", "why", "how",
+            # Quantifiers
+            "all", "any", "both", "each", "few", "more", "most", "other",
+            "some", "such", "no", "nor", "not", "only",
+            # Time words
+            "today", "tomorrow", "yesterday", "now", "then", "soon", "later",
+            "always", "never",
+            # Days
+            "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
+            # Months (often extracted as entities incorrectly)
+            "january", "february", "march", "april", "may", "june",
+            "july", "august", "september", "october", "november", "december",
+            # Ordinals
+            "first", "second", "third", "fourth", "fifth",
+            "sixth", "seventh", "eighth", "ninth", "tenth",
+            # Common abbreviations
+            "etc", "vs", "mr", "mrs", "ms", "dr", "jr", "sr", "inc", "llc", "ltd", "corp",
+        }
+
+        if text_lower in noise_words:
+            logger.debug(f"Filtered entity '{entity_text}' - common noise word")
+            return False
+
+        # Single word entities need to be substantial
+        words = entity_text.split()
+        if len(words) == 1:
+            # Single word must be at least N characters
+            if len(entity_text) < self._MIN_WORD_LENGTH_FOR_SINGLE_WORD:
+                logger.debug(f"Filtered entity '{entity_text}' - single word too short")
+                return False
+            # Single word shouldn't be all digits
+            if entity_text.isdigit():
+                logger.debug(f"Filtered entity '{entity_text}' - pure numeric")
+                return False
+            # Filter generic terms for specific entity types
+            if entity_type in ("PERSON", "ORG", "GPE", "ORGANIZATION"):
+                generic_terms = {
+                    "company", "group", "team", "organization", "department",
+                    "person", "individual", "someone", "anyone", "everyone",
+                    "city", "town", "country", "state", "place", "location",
+                    "office", "building", "center", "centre", "area", "region",
+                }
+                if text_lower in generic_terms:
+                    logger.debug(f"Filtered entity '{entity_text}' - generic term for {entity_type}")
+                    return False
+
+        # Filter entities that are mostly punctuation or special characters
+        alpha_count = sum(1 for c in entity_text if c.isalpha())
+        if alpha_count == 0 or (alpha_count / len(entity_text)) < 0.5:
+            logger.debug(f"Filtered entity '{entity_text}' - low alphabetic ratio")
+            return False
+
+        # Entity passes all filters
+        return True
+
     # --- Event Handlers ---
 
     async def _on_entity_extracted(self, event: dict):
@@ -324,6 +439,7 @@ class EntitiesShard(ArkhamShard):
         Handle entity extraction event from parse shard.
 
         Populates arkham_entities and arkham_entity_mentions tables.
+        Applies smart filtering to remove noise/garbage entities.
 
         Args:
             event: Event data with document_id and entities list
@@ -343,9 +459,20 @@ class EntitiesShard(ArkhamShard):
             logger.warning("Database not available for entity storage")
             return
 
-        logger.info(f"Processing {len(entities)} entities for document {document_id}")
+        # Filter entities before processing
+        original_count = len(entities)
+        filtered_entities = [
+            e for e in entities
+            if self._is_valid_entity(e.get("text", "").strip(), e.get("entity_type", "OTHER"))
+        ]
+        filtered_count = original_count - len(filtered_entities)
 
-        for entity_data in entities:
+        if filtered_count > 0:
+            logger.info(f"Filtered {filtered_count}/{original_count} noise entities for document {document_id}")
+
+        logger.info(f"Processing {len(filtered_entities)} entities for document {document_id}")
+
+        for entity_data in filtered_entities:
             try:
                 entity_text = entity_data.get("text", "").strip()
                 entity_type = entity_data.get("entity_type", "OTHER")

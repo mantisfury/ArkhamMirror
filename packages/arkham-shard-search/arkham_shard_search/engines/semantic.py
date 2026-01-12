@@ -67,7 +67,8 @@ class SemanticSearchEngine:
             return []
 
         # Get project-scoped collection name
-        collection_name = self._get_collection_name("chunks")
+        # Note: embeddings are stored in "documents" collection by embed shard
+        collection_name = self._get_collection_name("documents")
         logger.debug(f"Searching collection: {collection_name}")
 
         # Search pgvector for similar vectors

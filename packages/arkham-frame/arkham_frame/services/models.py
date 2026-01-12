@@ -402,23 +402,56 @@ class ModelService:
         await asyncio.get_event_loop().run_in_executor(None, _download)
 
     async def _download_ocr_model(self, model_id: str):
-        """Download a PaddleOCR model."""
-        import asyncio
+        """
+        Download a PaddleOCR model.
 
-        def _download():
-            try:
-                from paddleocr import PaddleOCR
-                lang = "en" if model_id == "paddleocr-en" else "ch"
-                logger.info(f"Downloading PaddleOCR model: {lang}")
-                # This triggers the download
-                PaddleOCR(use_angle_cls=True, lang=lang)
+        Uses subprocess to avoid PDX reinitialization errors when PaddleOCR
+        was already loaded in the current process.
+        """
+        import asyncio
+        import subprocess
+        import sys
+
+        lang = "en" if model_id == "paddleocr-en" else "ch"
+        logger.info(f"Downloading PaddleOCR model: {lang}")
+
+        # Run in subprocess to avoid "PDX has already been initialized" error
+        # This happens when PaddleOCR was used earlier in the same process
+        script = f"""
+import os
+os.environ["FLAGS_log_level"] = "3"  # Suppress paddle logging
+try:
+    from paddleocr import PaddleOCR
+    ocr = PaddleOCR(use_angle_cls=True, lang="{lang}")
+    print("SUCCESS")
+except ImportError as e:
+    print(f"IMPORT_ERROR: {{e}}")
+except Exception as e:
+    print(f"ERROR: {{e}}")
+"""
+
+        def _run_subprocess():
+            result = subprocess.run(
+                [sys.executable, "-c", script],
+                capture_output=True,
+                text=True,
+                timeout=300,  # 5 minute timeout for download
+            )
+            output = result.stdout.strip()
+            stderr = result.stderr.strip()
+
+            if "SUCCESS" in output:
                 logger.info(f"Successfully downloaded PaddleOCR: {lang}")
-            except ImportError:
+                return True
+            elif "IMPORT_ERROR" in output:
                 raise RuntimeError(
                     "paddleocr not installed. Install with: pip install paddleocr paddlepaddle"
                 )
+            else:
+                error_msg = output or stderr or "Unknown error"
+                raise RuntimeError(f"Failed to download PaddleOCR model: {error_msg}")
 
-        await asyncio.get_event_loop().run_in_executor(None, _download)
+        await asyncio.get_event_loop().run_in_executor(None, _run_subprocess)
 
     def is_model_available(self, model_id: str) -> bool:
         """

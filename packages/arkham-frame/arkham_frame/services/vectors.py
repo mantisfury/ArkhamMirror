@@ -724,6 +724,12 @@ class VectorService:
                     raise CollectionNotFoundError(collection)
 
                 # Batch upsert
+                # Note: payload may be dict or already a JSON string - handle both
+                def serialize_payload(payload):
+                    if isinstance(payload, str):
+                        return payload  # Already JSON string
+                    return json.dumps(payload)
+
                 await conn.executemany("""
                     INSERT INTO arkham_vectors.embeddings (id, collection, embedding, payload)
                     VALUES ($1, $2, $3::vector, $4::jsonb)
@@ -732,7 +738,7 @@ class VectorService:
                         payload = EXCLUDED.payload,
                         updated_at = CURRENT_TIMESTAMP
                 """, [
-                    (p.id, collection, str(p.vector), json.dumps(p.payload))
+                    (p.id, collection, str(p.vector), serialize_payload(p.payload))
                     for p in points
                 ])
 
