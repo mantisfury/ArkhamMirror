@@ -1495,15 +1495,49 @@ export function SettingsPage() {
                     </h3>
                     <div className="info-box">
                       <p>
-                        To deploy in an air-gapped environment without internet access:
+                        <strong>SHATTERED is 100% air-gap capable</strong> when configured correctly. Follow these steps:
                       </p>
+
+                      <h4>1. Pre-cache ML Models</h4>
                       <ol>
-                        <li>Download required models on a connected machine using the buttons above</li>
+                        <li>Download required embedding models on a connected machine using the buttons above</li>
                         <li>Models are cached in: <code>{modelsData.cache_path || '~/.cache/huggingface/hub'}</code></li>
-                        <li>Copy the cache directory to your air-gapped system</li>
-                        <li>Set <code>ARKHAM_OFFLINE_MODE=true</code> to prevent download attempts</li>
+                        <li>Copy the entire cache directory to your air-gapped system</li>
+                        <li>Set environment variable: <code>ARKHAM_OFFLINE_MODE=true</code></li>
                         <li>Optionally set <code>ARKHAM_MODEL_CACHE=/path/to/cache</code> for custom location</li>
                       </ol>
+
+                      <h4>2. Local LLM Setup</h4>
+                      <p>Configure a local LLM endpoint (LM Studio, Ollama, or vLLM):</p>
+                      <ul>
+                        <li>LM Studio: <code>http://localhost:1234/v1</code></li>
+                        <li>Ollama: <code>http://localhost:11434/v1</code></li>
+                        <li>vLLM: <code>http://localhost:8000/v1</code></li>
+                      </ul>
+
+                      <h4>3. Geographic Visualization (Optional)</h4>
+                      <p style={{ color: 'var(--warning-color)' }}>
+                        <Icon name="AlertTriangle" size={14} style={{ display: 'inline', verticalAlign: 'middle', marginRight: '4px' }} />
+                        The <strong>Geo View</strong> tab in the Graph page requires internet access for map tiles from OpenStreetMap.
+                      </p>
+                      <p>To disable geographic features for full air-gap operation:</p>
+                      <ul>
+                        <li>Simply avoid using the "Geo View" tab - all other graph views work offline</li>
+                        <li>For advanced users: set up a local tile server with offline OpenStreetMap data</li>
+                      </ul>
+
+                      <h4>4. Environment Variables Summary</h4>
+                      <pre style={{ background: 'var(--bg-tertiary)', padding: '0.75rem', borderRadius: '4px', fontSize: '0.75rem', overflow: 'auto' }}>
+{`# Required for air-gap
+ARKHAM_OFFLINE_MODE=true
+DATABASE_URL=postgresql://user:pass@localhost:5432/shattered
+
+# Local LLM (choose one)
+LLM_ENDPOINT=http://localhost:1234/v1
+
+# Optional: custom model cache
+ARKHAM_MODEL_CACHE=/path/to/cache`}
+                      </pre>
                     </div>
                   </section>
                 </>

@@ -521,6 +521,96 @@ TRAEFIK_DASHBOARD_AUTH=admin:$apr1$...  # output from htpasswd
 
 ---
 
+## Air-Gap Deployment
+
+SHATTERED is **100% air-gap capable** when configured correctly. Deploy in isolated networks with no internet access.
+
+### Requirements
+
+- PostgreSQL 14+ with pgvector extension
+- Local LLM server (LM Studio, Ollama, or vLLM)
+- Pre-cached embedding models
+
+### Setup Steps
+
+#### 1. Pre-cache Embedding Models
+
+On a **connected machine**:
+
+```bash
+# Start the application
+docker compose up -d
+
+# Navigate to Settings → ML Models
+# Download desired embedding models using the UI
+
+# Models are cached in: ~/.cache/huggingface/hub
+```
+
+Copy the cache directory to your air-gapped system.
+
+#### 2. Configure Environment
+
+```bash
+# .env for air-gapped deployment
+DATABASE_URL=postgresql://user:pass@localhost:5432/shattered
+
+# Enable offline mode (prevents model download attempts)
+ARKHAM_OFFLINE_MODE=true
+
+# Custom model cache location (if different from default)
+ARKHAM_MODEL_CACHE=/path/to/huggingface/hub
+
+# Local LLM endpoint
+LLM_ENDPOINT=http://localhost:1234/v1
+
+# Vision LLM for OCR (optional)
+VLM_ENDPOINT=http://localhost:1234/v1
+```
+
+#### 3. Local LLM Options
+
+| Server | Default Endpoint | Notes |
+|--------|-----------------|-------|
+| LM Studio | `http://localhost:1234/v1` | GUI-based, easy setup |
+| Ollama | `http://localhost:11434/v1` | CLI-based, many models |
+| vLLM | `http://localhost:8000/v1` | High-performance serving |
+
+#### 4. Feature Availability
+
+| Feature | Air-Gap Status | Notes |
+|---------|----------------|-------|
+| Document Processing | Full | PDF, DOCX, images, etc. |
+| OCR | Full | PaddleOCR works offline |
+| Vision LLM OCR | Full | Requires local VLM (e.g., Qwen-VL) |
+| Embeddings | Full | Pre-cache models first |
+| Semantic Search | Full | pgvector is fully local |
+| Entity Extraction | Full | spaCy models are local |
+| LLM Analysis | Full | Requires local LLM server |
+| **Geo View** | **Limited** | Requires internet for map tiles* |
+
+*The **Geo View** tab in the Graph page fetches map tiles from OpenStreetMap. For full air-gap operation:
+- Avoid using the Geo View tab (all other graph views work offline)
+- For advanced users: set up a local tile server with offline OpenStreetMap data
+
+### Air-Gap Verification
+
+After deployment, verify no external connections:
+
+```bash
+# Monitor network traffic (Linux)
+ss -tuln | grep ESTAB
+
+# Or use netstat
+netstat -an | grep ESTABLISHED
+
+# The only connections should be to:
+# - localhost (PostgreSQL, LLM server)
+# - Your local network (if applicable)
+```
+
+---
+
 ## Use Cases
 
 SHATTERED supports diverse investigative workflows:

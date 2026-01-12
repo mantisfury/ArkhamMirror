@@ -4330,3 +4330,53 @@
 .leaflet-popup-close-button:hover {
   color: var(--text-primary) !important;
 }
+
+/* ============================================
+   New View Containers
+   ============================================ */
+
+/* Geo View Container */
+.geo-view-container {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+}
+
+.geo-warning-banner {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 1rem;
+  background: linear-gradient(135deg, rgba(251, 191, 36, 0.15), rgba(245, 158, 11, 0.1));
+  border-bottom: 1px solid rgba(251, 191, 36, 0.3);
+  color: #d97706;
+  font-size: 0.75rem;
+}
+
+.geo-warning-banner svg {
+  flex-shrink: 0;
+}
+
+/* Argumentation View Container */
+.argumentation-view-container {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+  overflow: auto;
+}
+
+/* Causal View Container */
+.causal-view-container {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+  overflow: auto;
+}

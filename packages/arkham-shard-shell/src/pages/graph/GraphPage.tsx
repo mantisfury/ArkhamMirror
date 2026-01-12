@@ -14,7 +14,7 @@ import { useToast } from '../../context/ToastContext';
 import { useFetch } from '../../hooks/useFetch';
 import { useGraphSettings } from './hooks/useGraphSettings';
 import { useUrlParams } from './hooks/useUrlParams';
-import { GraphControls, DataSourcesPanel, LayoutModeControls, AssociationMatrix, MatrixControls, SankeyDiagram, SankeyControls } from './components';
+import { GraphControls, DataSourcesPanel, LayoutModeControls, AssociationMatrix, MatrixControls, SankeyDiagram, SankeyControls, GeoGraphView, GeoGraphControls, ArgumentationView, ArgumentationControls, CausalGraphView, CausalGraphControls } from './components';
 import type { FlowData } from './components';
 import { EgoMetricsPanel } from './components/EgoMetricsPanel';
 import { fetchScores, type EntityScore } from './api';
@@ -106,7 +106,7 @@ const ENTITY_TYPE_COLORS: Record<string, string> = {
   unknown: '#718096',
 };
 
-type TabId = 'graph' | 'matrix' | 'sankey' | 'controls' | 'sources';
+type TabId = 'graph' | 'matrix' | 'sankey' | 'geo' | 'argumentation' | 'causal' | 'controls' | 'sources';
 
 export function GraphPage() {
   const { toast } = useToast();
@@ -159,6 +159,19 @@ export function GraphPage() {
   const [sankeyAggregateByType, setSankeyAggregateByType] = useState(false);
   const [sankeyMinWeight, setSankeyMinWeight] = useState(0);
   const [sankeyMaxLinks, setSankeyMaxLinks] = useState(50);
+
+  // Geo view state
+  const [geoClusterRadius, setGeoClusterRadius] = useState(50);
+  const [geoShowEdges, setGeoShowEdges] = useState(true);
+  const [geoShowLabels, setGeoShowLabels] = useState(true);
+
+  // Argumentation view state
+  const [argShowLabels, setArgShowLabels] = useState(true);
+  const [argHighlightLeading, setArgHighlightLeading] = useState(true);
+
+  // Causal view state
+  const [causalShowLabels, setCausalShowLabels] = useState(true);
+  const [causalShowStrength, setCausalShowStrength] = useState(true);
 
   // Container ref for responsive sizing
   const containerRef = useRef<HTMLDivElement>(null);
@@ -1103,6 +1116,28 @@ export function GraphPage() {
           Sankey View
         </button>
         <button
+          className={`graph-tab ${activeTab === 'geo' ? 'active' : ''}`}
+          onClick={() => setActiveTab('geo')}
+          title="Geographic visualization (requires internet for map tiles)"
+        >
+          <Icon name="Map" size={16} />
+          Geo View
+        </button>
+        <button
+          className={`graph-tab ${activeTab === 'argumentation' ? 'active' : ''}`}
+          onClick={() => setActiveTab('argumentation')}
+        >
+          <Icon name="MessageSquare" size={16} />
+          Argumentation
+        </button>
+        <button
+          className={`graph-tab ${activeTab === 'causal' ? 'active' : ''}`}
+          onClick={() => setActiveTab('causal')}
+        >
+          <Icon name="ArrowRight" size={16} />
+          Causal
+        </button>
+        <button
           className={`graph-tab ${activeTab === 'controls' ? 'active' : ''}`}
           onClick={() => setActiveTab('controls')}
         >
@@ -1120,7 +1155,7 @@ export function GraphPage() {
 
       <div className="graph-layout">
         {/* Sidebar - content changes based on tab */}
-        <aside className={`graph-sidebar ${(activeTab !== 'graph' && activeTab !== 'matrix' && activeTab !== 'sankey') ? 'wide' : ''} ${sidebarCollapsed ? 'collapsed' : ''}`}>
+        <aside className={`graph-sidebar ${(activeTab !== 'graph' && activeTab !== 'matrix' && activeTab !== 'sankey' && activeTab !== 'geo' && activeTab !== 'argumentation' && activeTab !== 'causal') ? 'wide' : ''} ${sidebarCollapsed ? 'collapsed' : ''}`}>
           {/* Collapse toggle button */}
           <button
             className="sidebar-collapse-toggle"
@@ -1151,6 +1186,29 @@ export function GraphPage() {
               onMaxLinksChange={setSankeyMaxLinks}
               onRefresh={loadSankeyFlows}
               isLoading={sankeyLoading}
+            />
+          ) : activeTab === 'geo' ? (
+            <GeoGraphControls
+              clusterRadius={geoClusterRadius}
+              onClusterRadiusChange={setGeoClusterRadius}
+              showEdges={geoShowEdges}
+              onShowEdgesChange={setGeoShowEdges}
+              showLabels={geoShowLabels}
+              onShowLabelsChange={setGeoShowLabels}
+            />
+          ) : activeTab === 'argumentation' ? (
+            <ArgumentationControls
+              showLabels={argShowLabels}
+              onShowLabelsChange={setArgShowLabels}
+              highlightLeading={argHighlightLeading}
+              onHighlightLeadingChange={setArgHighlightLeading}
+            />
+          ) : activeTab === 'causal' ? (
+            <CausalGraphControls
+              showLabels={causalShowLabels}
+              onShowLabelsChange={setCausalShowLabels}
+              showStrength={causalShowStrength}
+              onShowStrengthChange={setCausalShowStrength}
             />
           ) : activeTab === 'matrix' ? (
             <MatrixControls
@@ -1435,13 +1493,72 @@ export function GraphPage() {
             </div>
           )}
 
+          {/* Geo View - Note: Requires internet for map tiles */}
+          {activeTab === 'geo' && (
+            <div className="geo-view-container">
+              <div className="geo-warning-banner">
+                <Icon name="Wifi" size={16} />
+                <span>Geographic view requires internet access for map tiles from OpenStreetMap.</span>
+              </div>
+              <GeoGraphView
+                projectId={projectId}
+                onNodeClick={(nodeId) => {
+                  const node = forceGraphData.nodes.find(n => n.id === nodeId);
+                  if (node) {
+                    setSelectedNode(node);
+                  }
+                }}
+                onEdgeClick={(source, target) => {
+                  setHighlightedPath(new Set([source, target]));
+                  toast.info(`Connection: ${source} - ${target}`);
+                }}
+                height={containerSize.height - 60}
+              />
+            </div>
+          )}
+
+          {/* Argumentation View */}
+          {activeTab === 'argumentation' && (
+            <div className="argumentation-view-container">
+              <ArgumentationView
+                projectId={projectId}
+                onNodeClick={(nodeId, nodeType) => {
+                  toast.info(`${nodeType}: ${nodeId}`);
+                }}
+                onEdgeClick={(source, target, edgeType) => {
+                  toast.info(`${edgeType}: ${source} → ${target}`);
+                }}
+                width={containerSize.width - 40}
+                height={containerSize.height - 40}
+              />
+            </div>
+          )}
+
+          {/* Causal View */}
+          {activeTab === 'causal' && (
+            <div className="causal-view-container">
+              <CausalGraphView
+                projectId={projectId}
+                onNodeClick={(nodeId) => {
+                  toast.info(`Node: ${nodeId}`);
+                }}
+                onEdgeClick={(cause, effect) => {
+                  toast.info(`Causal link: ${cause} → ${effect}`);
+                }}
+                width={containerSize.width - 40}
+                height={containerSize.height - 40}
+              />
+            </div>
+          )}
+
           {/* Graph View */}
-          {activeTab !== 'matrix' && activeTab !== 'sankey' && loading ? (
+          {activeTab === 'graph' || activeTab === 'controls' || activeTab === 'sources' ? (
+            loading ? (
             <div className="graph-loading">
               <Icon name="Loader2" size={48} className="spin" />
               <span>Loading graph...</span>
             </div>
-          ) : activeTab !== 'matrix' && activeTab !== 'sankey' && error ? (
+          ) : error ? (
             <div className="graph-error">
               <Icon name="AlertCircle" size={48} />
               <span>Failed to load graph</span>
@@ -1449,7 +1566,7 @@ export function GraphPage() {
                 Retry
               </button>
             </div>
-          ) : activeTab !== 'matrix' && activeTab !== 'sankey' && forceGraphData.nodes.length > 0 ? (
+          ) : forceGraphData.nodes.length > 0 ? (
             <div className="graph-visualization">
               <ForceGraph2D
                 graphData={forceGraphData}
@@ -1526,7 +1643,7 @@ export function GraphPage() {
                 }}
               />
             </div>
-          ) : activeTab !== 'matrix' && activeTab !== 'sankey' ? (
+          ) : (
             <div className="graph-empty">
               <Icon name="Network" size={64} />
               <h3>No Graph Data</h3>
@@ -1536,6 +1653,7 @@ export function GraphPage() {
                 Build Graph
               </button>
             </div>
+          )
           ) : null}
         </main>
       </div>
