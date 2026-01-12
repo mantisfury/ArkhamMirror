@@ -675,7 +675,7 @@ class AnomaliesShard(ArkhamShard):
 
         # Get doc_ids if not provided
         if not doc_ids and self._db_service:
-            query = "SELECT id FROM arkham_documents WHERE 1=1"
+            query = "SELECT id FROM arkham_frame.documents WHERE 1=1"
             params: Dict[str, Any] = {}
 
             # Add tenant filtering if tenant context is available

@@ -285,6 +285,9 @@ async def create_matrix(request: CreateMatrixRequest):
         project_id=request.project_id,
     )
 
+    # Ensure matrix is persisted to database before returning
+    await _matrix_manager.save_matrix_async(matrix)
+
     # Emit event
     if _event_bus:
         await _event_bus.emit(
@@ -344,6 +347,9 @@ async def update_matrix(matrix_id: str, request: UpdateMatrixRequest):
 
     if not matrix:
         raise HTTPException(status_code=404, detail=f"Matrix not found: {matrix_id}")
+
+    # Ensure matrix is persisted to database
+    await _matrix_manager.save_matrix_async(matrix)
 
     # Emit event
     if _event_bus:
@@ -641,6 +647,9 @@ async def add_hypothesis(request: AddHypothesisRequest):
     if not hypothesis:
         raise HTTPException(status_code=500, detail="Failed to add hypothesis")
 
+    # Ensure hypothesis is persisted to database
+    await _matrix_manager.save_hypothesis_async(hypothesis)
+
     # Emit event
     if _event_bus:
         await _event_bus.emit(
@@ -709,6 +718,9 @@ async def add_evidence(request: AddEvidenceRequest):
 
     if not evidence:
         raise HTTPException(status_code=500, detail="Failed to add evidence")
+
+    # Ensure evidence is persisted to database
+    await _matrix_manager.save_evidence_async(evidence)
 
     # Emit event
     if _event_bus:
@@ -785,6 +797,9 @@ async def update_rating(request: UpdateRatingRequest):
 
     if not rating:
         raise HTTPException(status_code=404, detail="Evidence or hypothesis not found")
+
+    # Ensure rating is persisted to database
+    await _matrix_manager.save_rating_async(rating)
 
     # Emit event
     if _event_bus:

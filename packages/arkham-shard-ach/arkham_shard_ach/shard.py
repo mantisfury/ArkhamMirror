@@ -274,10 +274,11 @@ class ACHShard(ArkhamShard):
             # ===========================================
 
             # Matrices table
+            # tenant_id is nullable to allow operation without multi-tenancy
             await self._db.execute("""
                 CREATE TABLE IF NOT EXISTS arkham_ach.matrices (
                     id TEXT PRIMARY KEY,
-                    tenant_id UUID NOT NULL,
+                    tenant_id UUID,
                     title TEXT NOT NULL,
                     description TEXT,
                     question TEXT,
@@ -300,6 +301,20 @@ class ACHShard(ArkhamShard):
                         WHERE table_schema = 'arkham_ach' AND table_name = 'matrices' AND column_name = 'tenant_id'
                     ) THEN
                         ALTER TABLE arkham_ach.matrices ADD COLUMN tenant_id UUID;
+                    END IF;
+                END $$;
+            """)
+
+            # Make tenant_id nullable if it was previously NOT NULL (migration)
+            await self._db.execute("""
+                DO $$
+                BEGIN
+                    IF EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = 'arkham_ach' AND table_name = 'matrices'
+                          AND column_name = 'tenant_id' AND is_nullable = 'NO'
+                    ) THEN
+                        ALTER TABLE arkham_ach.matrices ALTER COLUMN tenant_id DROP NOT NULL;
                     END IF;
                 END $$;
             """)

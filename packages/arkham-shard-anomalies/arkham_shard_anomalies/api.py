@@ -140,9 +140,9 @@ async def detect_anomalies(request: DetectRequest):
         # Get documents to analyze
         doc_ids = request.doc_ids
         if not doc_ids and _db:
-            # If no specific doc_ids, get all documents
+            # If no specific doc_ids, get all documents from arkham_frame.documents
             rows = await _db.fetch_all(
-                "SELECT id FROM arkham_documents LIMIT 1000"
+                "SELECT id FROM arkham_frame.documents LIMIT 1000"
             )
             doc_ids = [row["id"] for row in rows] if rows else []
 
@@ -698,7 +698,7 @@ async def get_document_preview(doc_id: str):
     try:
         row = await _db.fetch_one(
             """SELECT id, file_name, file_type, file_size, content, created_at
-               FROM arkham_documents WHERE id = :doc_id""",
+               FROM arkham_frame.documents WHERE id = :doc_id""",
             {"doc_id": doc_id}
         )
 

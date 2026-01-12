@@ -60,15 +60,47 @@ class MatrixManager:
         Uses the existing event loop if available, otherwise creates one.
         This allows the MatrixManager's sync methods to call the shard's
         async persistence methods.
+
+        IMPORTANT: When called from an async context, this schedules the task
+        and adds it to a background task set. The task will complete but may
+        not finish before the current request ends. For critical saves,
+        use the async save methods directly from async code.
         """
         try:
             loop = asyncio.get_running_loop()
-            # We're in an async context, schedule as a task
-            # Note: This won't block, so caller needs to handle this
-            return asyncio.create_task(coro)
+            # We're in an async context - schedule task and ensure it completes
+            task = loop.create_task(coro)
+            # Add callback to log errors since we can't await here
+            def log_result(t):
+                try:
+                    t.result()
+                except Exception as e:
+                    logger.error(f"Async persistence failed: {e}")
+            task.add_done_callback(log_result)
+            return task
         except RuntimeError:
-            # No running loop, create one
+            # No running loop, create one (sync context)
             return asyncio.run(coro)
+
+    async def save_matrix_async(self, matrix: ACHMatrix) -> None:
+        """Async method to save a matrix - use from async code for guaranteed persistence."""
+        if self._shard:
+            await self._shard._save_matrix(matrix)
+
+    async def save_hypothesis_async(self, hypothesis: Hypothesis) -> None:
+        """Async method to save a hypothesis - use from async code for guaranteed persistence."""
+        if self._shard:
+            await self._shard._save_hypothesis(hypothesis)
+
+    async def save_evidence_async(self, evidence: Evidence) -> None:
+        """Async method to save evidence - use from async code for guaranteed persistence."""
+        if self._shard:
+            await self._shard._save_evidence(evidence)
+
+    async def save_rating_async(self, rating: Rating) -> None:
+        """Async method to save a rating - use from async code for guaranteed persistence."""
+        if self._shard:
+            await self._shard._upsert_rating(rating)
 
     def create_matrix(
         self,

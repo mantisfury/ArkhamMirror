@@ -245,7 +245,7 @@ class MatrixExport:
     """Export format for an ACH matrix."""
     matrix: ACHMatrix
     format: str
-    content: str | dict[str, Any]
+    content: str | bytes | dict[str, Any]  # bytes for PDF binary content
     generated_at: datetime = field(default_factory=datetime.utcnow)
 
 

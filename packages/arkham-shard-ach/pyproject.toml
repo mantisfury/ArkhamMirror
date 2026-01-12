@@ -8,6 +8,7 @@ requires-python = ">=3.10"
 dependencies = [
     "arkham-frame>=0.1.0",
     "pydantic>=2.0.0",
+    "reportlab>=4.0.0",
 ]
 
 [project.optional-dependencies]

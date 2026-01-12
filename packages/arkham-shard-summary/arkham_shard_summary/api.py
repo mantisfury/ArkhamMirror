@@ -650,12 +650,12 @@ async def browse_documents(
             ))
 
     except Exception as e:
-        # Try arkham_documents as fallback
+        # Try arkham_frame.documents as fallback
         try:
-            count_query = "SELECT COUNT(*) as count FROM arkham_documents WHERE 1=1"
+            count_query = "SELECT COUNT(*) as count FROM arkham_frame.documents WHERE 1=1"
             query = """
                 SELECT id, file_name, file_type, file_size, created_at
-                FROM arkham_documents
+                FROM arkham_frame.documents
                 WHERE 1=1
             """
             params = {}

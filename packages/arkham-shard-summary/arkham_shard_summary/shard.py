@@ -1052,12 +1052,12 @@ Length: {length_map.get(request.target_length, "medium-length")}
         except Exception as e:
             logger.debug(f"Could not fetch from arkham_frame.documents: {e}")
 
-        # Try arkham_documents table (older schema)
+        # Try arkham_frame.documents table
         try:
             row = await self._db.fetch_one(
                 """
                 SELECT id, file_name, content
-                FROM arkham_documents
+                FROM arkham_frame.documents
                 WHERE id = :id
                 """,
                 {"id": doc_id}
@@ -1068,7 +1068,7 @@ Length: {length_map.get(request.target_length, "medium-length")}
                 if content:
                     return f"# {filename}\n\n{content}"
         except Exception as e:
-            logger.debug(f"Could not fetch from arkham_documents: {e}")
+            logger.debug(f"Could not fetch from arkham_frame.documents: {e}")
 
         return None
 
