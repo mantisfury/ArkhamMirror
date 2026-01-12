@@ -270,7 +270,7 @@ export function WorkersTab() {
   const { health } = useHealth();
   const [actionMessage, setActionMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
-  const redisAvailable = health?.workers.available ?? false;
+  const dbAvailable = health?.workers.available ?? false;
 
   const showMessage = (type: 'success' | 'error', text: string) => {
     setActionMessage({ type, text });
@@ -384,34 +384,34 @@ export function WorkersTab() {
 
       <section className="status-section">
         <h3>
-          <Icon name="Server" size={18} />
-          Redis Connection
+          <Icon name="Database" size={18} />
+          Job Queue Connection
           <button className="btn-icon btn-refresh" onClick={refreshAll} title="Refresh">
             <Icon name="RefreshCw" size={16} />
           </button>
         </h3>
         <div className="config-card">
           <div className="config-header">
-            <span className={`status-badge ${redisAvailable ? 'success' : 'error'}`}>
-              {redisAvailable ? 'Connected' : 'Disconnected'}
+            <span className={`status-badge ${dbAvailable ? 'success' : 'error'}`}>
+              {dbAvailable ? 'Connected' : 'Disconnected'}
             </span>
-            {redisAvailable && (
+            {dbAvailable && (
               <span className="worker-summary">
                 {workers.length} worker{workers.length !== 1 ? 's' : ''} active
               </span>
             )}
           </div>
-          {!redisAvailable && (
+          {!dbAvailable && (
             <div className="config-details">
               <p className="error-text">
-                Redis is not available. Make sure the Docker container is running.
+                PostgreSQL is not available. Make sure the database is running.
               </p>
             </div>
           )}
         </div>
       </section>
 
-      {redisAvailable && (
+      {dbAvailable && (
         <section className="pools-section">
           <h3>
             <Icon name="Layers" size={18} />

@@ -70,7 +70,7 @@ This checklist verifies that all required components are present and properly st
 - [x] LRU caching
 - [x] Text chunking
 - [x] Similarity calculations (cosine, euclidean, dot)
-- [x] Vector storage (Qdrant)
+- [x] Vector storage (pgvector)
 - [x] Event subscriptions
 - [x] Event publishing
 
@@ -104,7 +104,7 @@ This checklist verifies that all required components are present and properly st
 - [x] Cache size (`EMBED_CACHE_SIZE`)
 
 ### Service Dependencies
-- [x] Requires `vectors` service (Qdrant)
+- [x] Requires `vectors` service (pgvector)
 - [x] Requires `events` service (Event bus)
 - [x] Optional `workers` service (Job queue)
 - [x] Optional `documents` service

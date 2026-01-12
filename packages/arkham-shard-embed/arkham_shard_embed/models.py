@@ -79,7 +79,7 @@ class NearestRequest:
     query: str | list[float]  # Text or pre-computed embedding
     limit: int = 10
     min_similarity: float = 0.5
-    collection: str = "documents"  # Qdrant collection name
+    collection: str = "documents"  # Vector collection name
     filters: dict[str, Any] | None = None
 
 

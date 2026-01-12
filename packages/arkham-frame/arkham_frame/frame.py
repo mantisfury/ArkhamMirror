@@ -33,7 +33,7 @@ class ArkhamFrame:
         - entities: Entity service
         - projects: Project management
         - chunks: Text chunking and tokenization
-        - vectors: Vector store (Qdrant)
+        - vectors: Vector store (pgvector)
         - llm: LLM service
         - events: Event bus
         - workers: Worker management

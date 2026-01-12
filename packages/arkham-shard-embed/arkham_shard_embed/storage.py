@@ -23,7 +23,7 @@ class VectorStore:
         Initialize the vector store.
 
         Args:
-            vectors_service: The Frame's vectors service (Qdrant client wrapper)
+            vectors_service: The Frame's vectors service (pgvector wrapper)
         """
         self.vectors_service = vectors_service
 
@@ -35,7 +35,7 @@ class VectorStore:
         recreate: bool = False
     ) -> bool:
         """
-        Create a Qdrant collection for storing embeddings.
+        Create a collection for storing embeddings.
 
         Args:
             collection_name: Name of the collection
@@ -68,7 +68,7 @@ class VectorStore:
 
     async def delete_collection(self, collection_name: str) -> bool:
         """
-        Delete a Qdrant collection.
+        Delete a collection.
 
         Args:
             collection_name: Name of the collection to delete
@@ -196,7 +196,7 @@ class VectorStore:
             query_vector: The query embedding vector
             limit: Maximum number of results
             score_threshold: Minimum similarity score
-            filters: Qdrant filter conditions
+            filters: Payload filter conditions
 
         Returns:
             List of search results with scores and payloads

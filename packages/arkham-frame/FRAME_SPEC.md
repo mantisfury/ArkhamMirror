@@ -16,10 +16,10 @@ The Frame is the core orchestrator of SHATTERED. This document defines the Frame
 2. Frame Initialization:
    a. ConfigService initialized (environment vars + optional YAML)
    b. DatabaseService initialized (PostgreSQL via SQLAlchemy)
-   c. VectorService initialized (Qdrant connection)
+   c. VectorService initialized (pgvector via PostgreSQL)
    d. LLMService initialized (OpenAI-compatible endpoint)
    e. EventBus initialized (in-memory pub/sub)
-   f. WorkerService initialized (Redis queue connection)
+   f. WorkerService initialized (PostgreSQL job queue)
    g. Document/Entity/Project services initialized
 3. Shard Discovery (via entry_points):
    a. Load arkham.shards entry point group
@@ -79,10 +79,10 @@ The Frame is the core orchestrator of SHATTERED. This document defines the Frame
 |---------|---------|------|-------------|
 | config | `config` | ConfigService | Environment/YAML configuration |
 | database | `database`, `db` | DatabaseService | PostgreSQL with schema isolation |
-| vectors | `vectors` | VectorService | Qdrant vector store |
+| vectors | `vectors` | VectorService | pgvector (PostgreSQL) |
 | llm | `llm` | LLMService | OpenAI-compatible LLM |
 | events | `events` | EventBus | Pub/sub messaging |
-| workers | `workers` | WorkerService | Redis job queues |
+| workers | `workers` | WorkerService | PostgreSQL job queues |
 | documents | `documents` | DocumentService | Document CRUD |
 | entities | `entities` | EntityService | Entity CRUD |
 | projects | `projects` | ProjectService | Project management |
@@ -414,9 +414,7 @@ If a shard throws during request handling:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `DATABASE_URL` | `postgresql://anom:anompass@localhost:5435/anomdb` | PostgreSQL connection |
-| `REDIS_URL` | `redis://localhost:6380` | Redis connection |
-| `QDRANT_URL` | `http://localhost:6343` | Qdrant connection |
+| `DATABASE_URL` | `postgresql://arkham:arkhampass@localhost:5432/arkhamdb` | PostgreSQL connection |
 | `LM_STUDIO_URL` | `http://localhost:1234/v1` | LLM endpoint |
 | `CONFIG_PATH` | None | Path to YAML config file |
 | `ARKHAM_SERVE_SHELL` | `false` | Enable Shell static serving |

@@ -2153,7 +2153,7 @@ class ProvenanceShard(ArkhamShard):
         Infer artifact type from table name and event type.
 
         Args:
-            table_name: Database table name (e.g., "arkham_documents", "qdrant_vectors")
+            table_name: Database table name (e.g., "arkham_documents", "arkham_vectors.vectors")
             event_type: Event name (e.g., "embed.document.completed")
 
         Returns:
@@ -2168,7 +2168,7 @@ class ProvenanceShard(ArkhamShard):
             "arkham_claims": "claim",
             "arkham_frame.entities": "entity",
             "arkham_frame.documents": "document",
-            "qdrant_vectors": "embedding",
+            "arkham_vectors.vectors": "embedding",
             "arkham_ach_matrices": "ach_matrix",
             "arkham_ach_hypotheses": "hypothesis",
             "arkham_ach_evidence": "evidence",

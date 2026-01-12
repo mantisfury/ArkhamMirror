@@ -364,9 +364,8 @@ class WorkerRunner:
                 # Cleanup dead processes
                 await self.cleanup_dead_processes()
 
-                # Note: With PostgreSQL-based workers, the arkham_jobs.workers table
-                # tracks worker state. Stuck worker detection is handled differently
-                # than the old Redis-based registry approach.
+                # Note: The arkham_jobs.workers table tracks worker state
+                # and stuck worker detection is handled via heartbeat monitoring.
 
             except Exception as e:
                 logger.error(f"Monitor loop error: {e}")

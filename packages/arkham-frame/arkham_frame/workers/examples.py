@@ -115,46 +115,50 @@ async def test_worker_infrastructure():
     Quick test of worker infrastructure.
 
     Run this to verify workers can connect and process jobs.
+    Uses PostgreSQL for job queuing (arkham_jobs schema).
     """
     import os
-    import redis.asyncio as aioredis
     import json
     import uuid
+    import asyncpg
 
-    redis_url = os.environ.get("REDIS_URL", "redis://localhost:6379")
+    database_url = os.environ.get(
+        "DATABASE_URL",
+        "postgresql://arkham:arkhampass@localhost:5432/arkhamdb"
+    )
 
     print("Testing Worker Infrastructure")
     print("=" * 50)
 
-    # 1. Test Redis connection
-    print("\n1. Testing Redis connection...")
+    # 1. Test PostgreSQL connection
+    print("\n1. Testing PostgreSQL connection...")
     try:
-        r = aioredis.from_url(redis_url)
-        await r.ping()
-        print(f"   OK - Connected to {redis_url}")
+        conn = await asyncpg.connect(database_url)
+        await conn.execute("SELECT 1")
+        print(f"   OK - Connected to PostgreSQL")
     except Exception as e:
         print(f"   FAILED - {e}")
-        print("   Make sure Redis is running!")
+        print("   Make sure PostgreSQL is running!")
         return False
 
     # 2. Enqueue a test job
     print("\n2. Enqueueing test job...")
     job_id = f"test-{uuid.uuid4().hex[:8]}"
-    queue_key = "arkham:queue:cpu-light"
-    job_key = f"arkham:job:{job_id}"
 
-    await r.zadd(queue_key, {job_id: 1})
-    await r.hset(job_key, mapping={
-        "pool": "cpu-light",
-        "payload": json.dumps({"message": "Test message", "delay": 0.1}),
-        "priority": 1,
-        "status": "pending",
-    })
-    print(f"   OK - Created job {job_id}")
+    try:
+        await conn.execute("""
+            INSERT INTO arkham_jobs.jobs (id, pool, payload, priority, status)
+            VALUES ($1, $2, $3, $4, $5)
+        """, job_id, "cpu-light", json.dumps({"message": "Test message", "delay": 0.1}), 1, "pending")
+        print(f"   OK - Created job {job_id}")
+    except Exception as e:
+        print(f"   FAILED - {e}")
+        await conn.close()
+        return False
 
     # 3. Start a worker
     print("\n3. Starting EchoWorker...")
-    worker = EchoWorker(redis_url=redis_url, worker_id="test-worker")
+    worker = EchoWorker(database_url=database_url, worker_id="test-worker")
 
     # Run worker for a short time
     async def run_briefly():
@@ -178,14 +182,14 @@ async def test_worker_infrastructure():
 
     # 4. Check job status
     print("\n4. Checking job status...")
-    status = await r.hget(job_key, "status")
-    if status:
-        status = status.decode() if isinstance(status, bytes) else status
+    status = await conn.fetchval("""
+        SELECT status FROM arkham_jobs.jobs WHERE id = $1
+    """, job_id)
     print(f"   Job status: {status}")
 
     # Cleanup
-    await r.delete(job_key)
-    await r.close()
+    await conn.execute("DELETE FROM arkham_jobs.jobs WHERE id = $1", job_id)
+    await conn.close()
 
     if status == "completed":
         print("\n" + "=" * 50)

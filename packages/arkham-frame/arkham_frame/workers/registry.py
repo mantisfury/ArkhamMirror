@@ -1,15 +1,18 @@
 """
 WorkerRegistry - Track active workers across all pools.
 
-Provides discovery and health monitoring of workers.
+Provides discovery and health monitoring of workers using PostgreSQL.
+Workers register themselves in arkham_jobs.workers table.
 """
 
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Any
 import asyncio
-import json
 import logging
+import os
+
+import asyncpg
 
 logger = logging.getLogger(__name__)
 
@@ -64,86 +67,65 @@ class WorkerRegistry:
     """
     Registry for tracking active workers.
 
-    Uses Redis to discover workers and their status.
-    Workers register themselves and send heartbeats.
+    Uses PostgreSQL arkham_jobs.workers table to discover workers and their status.
+    Workers register themselves and send heartbeats directly to the database.
     """
 
-    def __init__(self, redis_url: str = None):
+    def __init__(self, database_url: str = None):
         """
         Initialize registry.
 
         Args:
-            redis_url: Redis connection URL
+            database_url: PostgreSQL connection URL
         """
-        self.redis_url = redis_url
-        self._redis = None
+        self.database_url = database_url
+        self._pool: Optional[asyncpg.Pool] = None
         self._cache: Dict[str, WorkerInfo] = {}
         self._cache_time: Optional[datetime] = None
         self._cache_ttl = 5  # Seconds
 
-    async def connect(self, redis_client=None):
+    async def connect(self, pool: asyncpg.Pool = None):
         """
-        Connect to Redis.
+        Connect to PostgreSQL.
 
         Args:
-            redis_client: Existing Redis client to use (optional)
+            pool: Existing connection pool to use (optional)
         """
-        if redis_client:
-            self._redis = redis_client
+        if pool:
+            self._pool = pool
             return
 
-        if not self.redis_url:
-            import os
-            self.redis_url = os.environ.get("REDIS_URL", "redis://localhost:6379")
+        if not self.database_url:
+            self.database_url = os.environ.get(
+                "DATABASE_URL",
+                "postgresql://arkham:arkhampass@localhost:5432/arkhamdb"
+            )
 
         try:
-            import redis.asyncio as aioredis
-            self._redis = aioredis.from_url(self.redis_url)
-            await self._redis.ping()
+            self._pool = await asyncpg.create_pool(self.database_url, min_size=1, max_size=5)
         except Exception as e:
-            logger.error(f"Registry Redis connection failed: {e}")
-            self._redis = None
+            logger.error(f"Registry PostgreSQL connection failed: {e}")
+            self._pool = None
 
     async def disconnect(self):
-        """Disconnect from Redis."""
-        if self._redis:
-            await self._redis.close()
-            self._redis = None
+        """Disconnect from PostgreSQL."""
+        if self._pool:
+            await self._pool.close()
+            self._pool = None
 
-    def _parse_worker_data(self, worker_id: str, data: Dict) -> WorkerInfo:
-        """Parse worker data from Redis."""
-        # Handle bytes keys/values
-        def get_val(key, default=None):
-            val = data.get(key.encode()) if isinstance(key, str) else data.get(key)
-            if val is None:
-                val = data.get(key, default)
-            if isinstance(val, bytes):
-                val = val.decode()
-            return val if val is not None else default
-
-        started_at_str = get_val("started_at")
-        try:
-            started_at = datetime.fromisoformat(started_at_str) if started_at_str else datetime.utcnow()
-        except (ValueError, TypeError):
-            started_at = datetime.utcnow()
-
-        last_hb_str = get_val("last_heartbeat")
-        try:
-            last_heartbeat = datetime.fromisoformat(last_hb_str) if last_hb_str else None
-        except (ValueError, TypeError):
-            last_heartbeat = None
-
+    def _parse_worker_row(self, row: asyncpg.Record) -> WorkerInfo:
+        """Parse worker data from database row."""
         return WorkerInfo(
-            worker_id=worker_id,
-            pool=get_val("pool", "unknown"),
-            name=get_val("name", "Unknown"),
-            state=get_val("state", "unknown"),
-            pid=int(get_val("pid", 0)),
-            started_at=started_at,
-            last_heartbeat=last_heartbeat,
-            jobs_completed=int(get_val("jobs_completed", 0)),
-            jobs_failed=int(get_val("jobs_failed", 0)),
-            current_job=get_val("current_job") or None,
+            worker_id=row['id'],
+            pool=row['pool'],
+            name=row['name'],
+            state=row['state'],
+            pid=row['pid'] or 0,
+            started_at=row['started_at'] or datetime.utcnow(),
+            last_heartbeat=row['last_heartbeat'],
+            jobs_completed=row['jobs_completed'] or 0,
+            jobs_failed=row['jobs_failed'] or 0,
+            current_job=row['current_job'],
         )
 
     async def get_all_workers(self, use_cache: bool = True) -> List[WorkerInfo]:
@@ -156,7 +138,7 @@ class WorkerRegistry:
         Returns:
             List of WorkerInfo objects
         """
-        if not self._redis:
+        if not self._pool:
             return []
 
         # Check cache
@@ -169,29 +151,19 @@ class WorkerRegistry:
         self._cache.clear()
 
         try:
-            # Scan for worker keys
-            cursor = 0
-            while True:
-                cursor, keys = await self._redis.scan(
-                    cursor=cursor,
-                    match="arkham:worker:*",
-                    count=100,
-                )
+            async with self._pool.acquire() as conn:
+                rows = await conn.fetch("""
+                    SELECT id, pool, name, state, pid, hostname,
+                           started_at, last_heartbeat,
+                           jobs_completed, jobs_failed, current_job
+                    FROM arkham_jobs.workers
+                    ORDER BY pool, started_at
+                """)
 
-                for key in keys:
-                    if isinstance(key, bytes):
-                        key = key.decode()
-
-                    worker_id = key.replace("arkham:worker:", "")
-                    data = await self._redis.hgetall(key)
-
-                    if data:
-                        info = self._parse_worker_data(worker_id, data)
-                        workers.append(info)
-                        self._cache[worker_id] = info
-
-                if cursor == 0:
-                    break
+                for row in rows:
+                    info = self._parse_worker_row(row)
+                    workers.append(info)
+                    self._cache[info.worker_id] = info
 
             self._cache_time = datetime.utcnow()
 
@@ -210,17 +182,23 @@ class WorkerRegistry:
         Returns:
             WorkerInfo or None
         """
-        if not self._redis:
+        if not self._pool:
             return None
 
         try:
-            key = f"arkham:worker:{worker_id}"
-            data = await self._redis.hgetall(key)
+            async with self._pool.acquire() as conn:
+                row = await conn.fetchrow("""
+                    SELECT id, pool, name, state, pid, hostname,
+                           started_at, last_heartbeat,
+                           jobs_completed, jobs_failed, current_job
+                    FROM arkham_jobs.workers
+                    WHERE id = $1
+                """, worker_id)
 
-            if not data:
-                return None
+                if not row:
+                    return None
 
-            return self._parse_worker_data(worker_id, data)
+                return self._parse_worker_row(row)
 
         except Exception as e:
             logger.error(f"Failed to get worker {worker_id}: {e}")
@@ -319,49 +297,25 @@ class WorkerRegistry:
         Returns:
             Number of workers cleaned up
         """
-        if not self._redis:
+        if not self._pool:
             return 0
 
-        count = 0
-        workers = await self.get_all_workers(use_cache=False)
-
-        for worker in workers:
-            # Worker is dead if no heartbeat for 2+ minutes
-            if not worker.last_heartbeat:
-                continue
-
-            age = (datetime.utcnow() - worker.last_heartbeat).total_seconds()
-            if age > 120:
-                try:
-                    key = f"arkham:worker:{worker.worker_id}"
-                    await self._redis.delete(key)
-
-                    pool_key = f"arkham:pool:{worker.pool}:workers"
-                    await self._redis.srem(pool_key, worker.worker_id)
-
-                    count += 1
-                    logger.info(f"Cleaned up dead worker {worker.worker_id}")
-
-                except Exception as e:
-                    logger.error(f"Failed to cleanup worker {worker.worker_id}: {e}")
-
-        return count
-
-    async def publish_event(self, event_type: str, data: Dict[str, Any]):
-        """
-        Publish an event to the event channel.
-
-        Args:
-            event_type: Event type
-            data: Event data
-        """
-        if not self._redis:
-            return
-
         try:
-            await self._redis.publish("arkham:events", json.dumps({
-                "event": event_type,
-                **data,
-            }))
+            async with self._pool.acquire() as conn:
+                # Delete workers with no heartbeat for 2+ minutes
+                result = await conn.execute("""
+                    DELETE FROM arkham_jobs.workers
+                    WHERE last_heartbeat < NOW() - INTERVAL '2 minutes'
+                """)
+
+                # Parse "DELETE X" to get count
+                count = int(result.split()[-1]) if result else 0
+
+                if count > 0:
+                    logger.info(f"Cleaned up {count} dead workers")
+
+                return count
+
         except Exception as e:
-            logger.error(f"Failed to publish event: {e}")
+            logger.error(f"Failed to cleanup dead workers: {e}")
+            return 0

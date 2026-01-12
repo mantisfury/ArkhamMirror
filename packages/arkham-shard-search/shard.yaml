@@ -29,7 +29,7 @@ navigation:
 dependencies:
   services:
     - database            # Keyword search (PostgreSQL full-text)
-    - vectors             # Semantic search (Qdrant)
+    - vectors             # Semantic search (pgvector)
     - events              # Event publishing/subscription
   optional:
     - llm                 # Query expansion, natural language processing

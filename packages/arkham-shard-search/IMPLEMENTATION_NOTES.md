@@ -21,7 +21,7 @@ arkham-shard-search/
     ├── ranking.py               # Result ranking and reranking
     └── engines/
         ├── __init__.py          # Exports all engines
-        ├── semantic.py          # Vector search using Qdrant
+        ├── semantic.py          # Vector search using pgvector
         ├── keyword.py           # Full-text search using PostgreSQL
         └── hybrid.py            # Reciprocal Rank Fusion merging
 ```
@@ -31,7 +31,7 @@ arkham-shard-search/
 ### 1. Search Engines
 
 **SemanticSearchEngine** (semantic.py):
-- Vector similarity search via Qdrant
+- Vector similarity search via pgvector
 - Embedding-based query matching
 - Find similar documents by vector
 - Filter support for vector queries
@@ -97,7 +97,7 @@ All routes have `/api/search` prefix:
 ## Frame Services Used
 
 ### Required
-- `vectors` - Qdrant vector store (for semantic search)
+- `vectors` - pgvector vector store (for semantic search)
 - `database` or `db` - PostgreSQL (for keyword search)
 - `events` - Event bus for notifications
 
@@ -143,7 +143,7 @@ The following are stubbed with TODO comments and will need actual implementation
 
 1. **Semantic Engine**:
    - Query embedding generation
-   - Qdrant vector search calls
+   - pgvector vector search calls
    - Vector retrieval for similarity search
 
 2. **Keyword Engine**:
@@ -240,7 +240,7 @@ This shard assumes Frame provides:
 1. Service registry (`frame.get_service()`)
 2. Shard registry (`frame.get_shard()`)
 3. Event bus with `emit()`, `subscribe()`, `unsubscribe()`
-4. Vector service interface (Qdrant wrapper)
+4. Vector service interface (pgvector wrapper)
 5. Database service interface (PostgreSQL wrapper)
 
 All of these already exist in Frame based on the Ingest shard pattern.
@@ -249,7 +249,7 @@ All of these already exist in Frame based on the Ingest shard pattern.
 
 To make this production-ready:
 
-1. Implement actual Qdrant search calls in semantic.py
+1. Implement actual pgvector search calls in semantic.py
 2. Implement PostgreSQL full-text search in keyword.py
 3. Add search result caching
 4. Add query logging and analytics

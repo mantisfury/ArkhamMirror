@@ -6,7 +6,7 @@
 
 ## Overview
 
-The Embed Shard is a core component of the ArkhamFrame modular architecture, providing document embedding and vector operations for semantic search and similarity matching. It handles text-to-vector conversion using state-of-the-art transformer models and manages vector storage in Qdrant.
+The Embed Shard is a core component of the ArkhamFrame modular architecture, providing document embedding and vector operations for semantic search and similarity matching. It handles text-to-vector conversion using state-of-the-art transformer models and manages vector storage in pgvector.
 
 ## Package Structure
 
@@ -17,7 +17,7 @@ arkham-shard-embed/
 │   ├── shard.py                 # EmbedShard class (main entry)
 │   ├── api.py                   # FastAPI endpoints (10+ routes)
 │   ├── embedder.py              # EmbeddingManager (core logic)
-│   ├── storage.py               # VectorStore (Qdrant wrapper)
+│   ├── storage.py               # VectorStore (pgvector wrapper)
 │   └── models.py                # Data models and types
 ├── examples/                     # Usage examples
 │   ├── __init__.py
@@ -146,7 +146,7 @@ arkham-shard-embed/
 ### Frame Service Dependencies
 
 **Required**:
-- `vectors` - Qdrant vector storage
+- `vectors` - pgvector vector storage
 - `events` - Event bus for pub/sub
 
 **Optional**:

@@ -96,7 +96,7 @@ All production schema requirements met:
 
 ### Integration Points
 The embed shard properly integrates with:
-- **VectorService**: For storing embeddings in Qdrant
+- **VectorService**: For storing embeddings in pgvector
 - **WorkerService**: Uses `gpu-embed` pool for background processing
 - **DocumentService**: Optional integration for auto-embedding documents
 - **EventBus**: Publishes embedding events, subscribes to document events

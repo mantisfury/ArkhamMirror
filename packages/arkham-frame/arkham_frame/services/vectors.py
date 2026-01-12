@@ -4,7 +4,7 @@ VectorService - pgvector vector store with IVFFlat indexes and embedding.
 Provides vector storage, similarity search, and embedding generation
 for semantic search capabilities using PostgreSQL + pgvector.
 
-Replaces Qdrant with a single-database architecture.
+Uses a single-database architecture with pgvector extension.
 """
 
 from typing import Optional, List, Dict, Any, Tuple

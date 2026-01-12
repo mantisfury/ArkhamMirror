@@ -266,7 +266,7 @@ class EmbedShard(ArkhamShard):
                     vector_size=model_info.dimensions,
                 )
 
-            # Upsert to Qdrant
+            # Upsert to vector store
             await vectors_service.upsert(
                 collection=collection_name,
                 points=points,
@@ -286,7 +286,7 @@ class EmbedShard(ArkhamShard):
                         "vector_ids": vector_ids,
                         "chunk_ids": chunk_ids,
                         "output_ids": vector_ids,  # For provenance linking
-                        "output_table": "qdrant_vectors",
+                        "output_table": "arkham_vectors.vectors",
                     },
                     source="embed-shard",
                 )

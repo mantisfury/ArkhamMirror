@@ -211,7 +211,7 @@ class SemanticSearchEngine:
         collection_name = self._get_collection_name("documents")
         logger.debug(f"Searching collection: {collection_name}")
 
-        # Get document vector from Qdrant
+        # Get document vector from vector store
         try:
             doc_vector = await self.vectors.get_vector(collection=collection_name, id=doc_id)
         except Exception as e:

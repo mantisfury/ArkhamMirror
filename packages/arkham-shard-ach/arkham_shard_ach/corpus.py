@@ -20,12 +20,13 @@ logger = logging.getLogger(__name__)
 class CorpusSearchService:
     """
     Search document corpus for evidence relevant to hypotheses.
-    
+
     Uses VectorService for semantic search and LLMService for
     evidence classification and extraction.
     """
 
-    COLLECTION_CHUNKS = "documents"
+    # Use arkham_documents to match VectorService standard collection naming
+    COLLECTION_CHUNKS = "arkham_documents"
 
     def __init__(self, vectors_service, documents_service, llm_service):
         """
@@ -125,8 +126,7 @@ class CorpusSearchService:
         if scope.project_id:
             filter_dict["project_id"] = scope.project_id
 
-        # Note: Qdrant MatchValue doesn't support 'in' operator directly
-        # For single document, use direct match; for multiple, need MatchAny
+        # Note: For single document, use direct match; for multiple, use 'any' match
         if scope.document_ids:
             if len(scope.document_ids) == 1:
                 filter_dict["doc_id"] = scope.document_ids[0]

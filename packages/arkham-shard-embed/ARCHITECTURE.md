@@ -82,7 +82,7 @@ This document describes the architecture of the Embed Shard.
 **Responsibility**: Vector database operations
 
 **Components**:
-- `VectorStore` class wrapping Qdrant
+- `VectorStore` class wrapping pgvector
   - Collection management
   - Vector upsert (single and batch)
   - Similarity search
@@ -174,7 +174,7 @@ EmbedWorker (gpu-embed pool)
      │
      ├──→ Generate embeddings
      │
-     ├──→ Store in Qdrant
+     ├──→ Store in pgvector
      │
      ▼
 Emit completion event
@@ -195,7 +195,7 @@ API Endpoint (/api/embed/nearest)
      ▼
 VectorStore.search()
      │
-     ├──→ Query Qdrant
+     ├──→ Query pgvector
      │
      ├──→ Apply filters
      │
@@ -259,7 +259,7 @@ Queue Embedding Job
 
 ### Required Services
 
-1. **Vectors Service** (Qdrant client)
+1. **Vectors Service** (pgvector client)
    - Vector storage and retrieval
    - Collection management
    - Similarity search
@@ -446,7 +446,7 @@ Without Cache               With Cache
 **Horizontal Scaling**:
 - Multiple worker instances
 - Load balancing across workers
-- Shared Qdrant instance
+- Shared pgvector instance
 
 **Vertical Scaling**:
 - Larger GPU

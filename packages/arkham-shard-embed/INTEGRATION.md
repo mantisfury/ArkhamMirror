@@ -62,7 +62,7 @@ ArkhamFrame will automatically discover and load it on startup.
 The Embed Shard requires these Frame services:
 
 **Required:**
-- `vectors` - Qdrant vector storage service
+- `vectors` - Vector storage service (pgvector)
 - `events` - Event bus for pub/sub
 
 **Optional:**
@@ -227,7 +227,7 @@ python -m arkham_frame.workers.embed_worker
 
 ## Vector Storage
 
-Embeddings are stored in Qdrant collections:
+Embeddings are stored in PostgreSQL using pgvector:
 
 ### Default Collection: documents
 
