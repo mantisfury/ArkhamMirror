@@ -352,9 +352,43 @@ async def get_documents_for_embedding(
             offset=offset,
         )
 
-        # Get embedding counts for each document from vector store
+        # Get collection name for embeddings
         collection_name = get_collection_name("documents")
-        vectors_service = _vector_store.vectors_service if _vector_store else None
+
+        # Build a dict of doc_id -> embedding count using SQL
+        embedding_counts = {}
+        chunk_counts = {}
+
+        if _db_service:
+            try:
+                # Get embedding counts per document from pgvector
+                # Embeddings store document_id in the payload JSONB
+                embed_results = await _db_service.fetch_all(
+                    """SELECT payload->>'document_id' as doc_id, COUNT(*) as count
+                       FROM arkham_vectors.embeddings
+                       WHERE collection = :collection
+                         AND payload->>'document_id' IS NOT NULL
+                       GROUP BY payload->>'document_id'""",
+                    {"collection": collection_name}
+                )
+                for row in embed_results:
+                    if row.get("doc_id"):
+                        embedding_counts[row["doc_id"]] = row.get("count", 0)
+            except Exception as e:
+                logger.debug(f"Could not get embedding counts: {e}")
+
+            try:
+                # Get chunk counts per document
+                chunk_results = await _db_service.fetch_all(
+                    """SELECT document_id, COUNT(*) as count
+                       FROM arkham_frame.chunks
+                       GROUP BY document_id"""
+                )
+                for row in chunk_results:
+                    if row.get("document_id"):
+                        chunk_counts[row["document_id"]] = row.get("count", 0)
+            except Exception as e:
+                logger.debug(f"Could not get chunk counts: {e}")
 
         result_docs = []
         for doc in docs:
@@ -366,35 +400,9 @@ async def get_documents_for_embedding(
             if not doc_id:
                 continue
 
-            # Get embedding count for this document
-            embedding_count = 0
-            if vectors_service:
-                try:
-                    # Search for vectors with this doc_id in payload
-                    results = await vectors_service.scroll(
-                        collection=collection_name,
-                        scroll_filter={"must": [{"key": "doc_id", "match": {"value": doc_id}}]},
-                        limit=1,
-                        with_payload=False,
-                        with_vectors=False,
-                    )
-                    embedding_count = len(results[0]) if results and results[0] else 0
-                except Exception as e:
-                    logger.debug(f"Could not get embedding count for {doc_id}: {e}")
-
-            # Get chunk count from database if available
-            chunk_count = 0
-            if _db_service:
-                try:
-                    result = await _db_service.fetch_one(
-                        """SELECT COUNT(*) as count FROM arkham_frame.chunks
-                           WHERE document_id = :doc_id""",
-                        {"doc_id": doc_id}
-                    )
-                    if result:
-                        chunk_count = result.get("count", 0)
-                except Exception as e:
-                    logger.debug(f"Could not get chunk count for {doc_id}: {e}")
+            # Look up counts from pre-fetched data
+            embedding_count = embedding_counts.get(doc_id, 0)
+            chunk_count = chunk_counts.get(doc_id, 0)
 
             # Filter if only_unembedded is requested
             if only_unembedded and embedding_count > 0:
@@ -626,37 +634,37 @@ async def list_models():
 
     # Get current model info
     current_model = _embedding_manager.get_model_info()
+    current_model_name = _embedding_manager._model_name if _embedding_manager._model_name else _embedding_manager.config.model
+    is_loaded = current_model.loaded
 
-    # List of known models (could be expanded)
-    models = [
-        current_model,
-        ModelInfo(
-            name="BAAI/bge-m3",
-            dimensions=1024,
-            max_length=8192,
-            size_mb=2200.0,
-            loaded=(current_model.name == "BAAI/bge-m3"),
-            description="Multilingual, high-quality embeddings"
-        ),
-        ModelInfo(
-            name="all-MiniLM-L6-v2",
-            dimensions=384,
-            max_length=512,
-            size_mb=80.0,
-            loaded=(current_model.name == "all-MiniLM-L6-v2"),
-            description="Lightweight, fast embeddings"
-        ),
-    ]
+    # Build list of known models with correct loaded state
+    models = []
 
-    # Remove duplicates
-    seen = set()
-    unique_models = []
-    for model in models:
-        if model.name not in seen:
-            seen.add(model.name)
-            unique_models.append(model)
+    # Add current model first (from actual model info)
+    models.append(ModelInfo(
+        name=current_model_name,
+        dimensions=current_model.dimensions if is_loaded else KNOWN_MODELS.get(current_model_name, {}).get("dimensions", 0),
+        max_length=current_model.max_length if is_loaded else KNOWN_MODELS.get(current_model_name, {}).get("max_length", 512),
+        size_mb=KNOWN_MODELS.get(current_model_name, {}).get("size_mb", 0.0),
+        loaded=is_loaded,
+        device=current_model.device,
+        description=KNOWN_MODELS.get(current_model_name, {}).get("description", current_model.description),
+    ))
 
-    return unique_models
+    # Add other known models
+    for name, info in KNOWN_MODELS.items():
+        if name == current_model_name:
+            continue  # Already added above
+        models.append(ModelInfo(
+            name=name,
+            dimensions=info["dimensions"],
+            max_length=info["max_length"],
+            size_mb=info["size_mb"],
+            loaded=False,
+            description=info["description"]
+        ))
+
+    return models
 
 
 @router.post("/config")
@@ -814,20 +822,29 @@ async def get_available_models():
     Get list of available embedding models with their specifications.
     """
     current_model = None
+    current_loaded = False
+
     if _embedding_manager:
         current_info = _embedding_manager.get_model_info()
-        current_model = current_info.name if current_info.loaded else None
+        current_loaded = current_info.loaded
+        # Use _model_name if loaded, otherwise fall back to config model
+        if current_loaded and _embedding_manager._model_name:
+            current_model = _embedding_manager._model_name
+        else:
+            # Model not loaded yet, use config model name to show which will be loaded
+            current_model = _embedding_manager.config.model
 
     models = []
     for name, info in KNOWN_MODELS.items():
+        is_current = name == current_model
         models.append({
             "name": name,
             "dimensions": info["dimensions"],
             "max_length": info["max_length"],
             "size_mb": info["size_mb"],
             "description": info["description"],
-            "loaded": name == current_model,
-            "is_current": name == current_model,
+            "loaded": is_current and current_loaded,
+            "is_current": is_current,
         })
 
     return models

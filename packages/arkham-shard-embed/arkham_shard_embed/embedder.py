@@ -325,16 +325,27 @@ class EmbeddingManager:
         Get cache statistics.
 
         Returns:
-            Dictionary with cache info
+            Dictionary with cache info including hit_rate
         """
         if not self._cache_enabled:
-            return {"enabled": False}
+            return {
+                "enabled": False,
+                "hits": 0,
+                "misses": 0,
+                "size": 0,
+                "max_size": 0,
+                "hit_rate": 0.0,
+            }
 
         cache_info = self._embed_cached.cache_info()
+        total = cache_info.hits + cache_info.misses
+        hit_rate = cache_info.hits / total if total > 0 else 0.0
+
         return {
             "enabled": True,
             "hits": cache_info.hits,
             "misses": cache_info.misses,
             "size": cache_info.currsize,
             "max_size": cache_info.maxsize,
+            "hit_rate": hit_rate,
         }
