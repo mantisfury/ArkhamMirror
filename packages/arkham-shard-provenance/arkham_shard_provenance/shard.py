@@ -225,7 +225,7 @@ class ProvenanceShard(ArkhamShard):
             )
         """)
 
-        # Audit table - tracks access and modifications
+        # Audit table - tracks access and modifications to records
         await self._db.execute("""
             CREATE TABLE IF NOT EXISTS arkham_provenance_audit (
                 id TEXT PRIMARY KEY,
@@ -234,6 +234,19 @@ class ProvenanceShard(ArkhamShard):
                 actor TEXT,
                 details JSONB DEFAULT '{}',
                 occurred_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        # Chain audit table - tracks chain/link events (no FK to allow flexible logging)
+        await self._db.execute("""
+            CREATE TABLE IF NOT EXISTS arkham_provenance_chain_audit (
+                id TEXT PRIMARY KEY,
+                chain_id TEXT NOT NULL,
+                action TEXT NOT NULL,
+                actor TEXT,
+                details JSONB DEFAULT '{}',
+                occurred_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                tenant_id UUID
             )
         """)
 
@@ -266,6 +279,22 @@ class ProvenanceShard(ArkhamShard):
         await self._db.execute("""
             CREATE INDEX IF NOT EXISTS idx_audit_occurred
             ON arkham_provenance_audit(occurred_at DESC)
+        """)
+
+        # Indexes for chain audit table
+        await self._db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_chain_audit_chain
+            ON arkham_provenance_chain_audit(chain_id)
+        """)
+
+        await self._db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_chain_audit_occurred
+            ON arkham_provenance_chain_audit(occurred_at DESC)
+        """)
+
+        await self._db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_chain_audit_tenant
+            ON arkham_provenance_chain_audit(tenant_id)
         """)
 
         # Indexes for chains table
@@ -704,6 +733,252 @@ class ProvenanceShard(ArkhamShard):
 
         return [self._row_to_audit(row) for row in rows]
 
+    async def list_audit_records(
+        self,
+        chain_id: Optional[str] = None,
+        event_type: Optional[str] = None,
+        event_source: Optional[str] = None,
+        limit: int = 20,
+        offset: int = 0,
+    ) -> tuple[List[Dict[str, Any]], int]:
+        """
+        List audit log records with filtering.
+
+        Queries from arkham_provenance_chain_audit table which tracks
+        chain and link events.
+
+        Args:
+            chain_id: Filter by chain ID
+            event_type: Filter by event type (e.g., 'chain.created', 'link.added')
+            event_source: Filter by event source (actor)
+            limit: Maximum records to return
+            offset: Number of records to skip
+
+        Returns:
+            Tuple of (list of audit records, total count)
+        """
+        if not self._db:
+            raise RuntimeError("Shard not initialized")
+
+        # Build query for chain audit records
+        conditions = []
+        params: Dict[str, Any] = {"limit": limit, "offset": offset}
+
+        tenant_id = self.get_tenant_id_or_none()
+        if tenant_id:
+            conditions.append("a.tenant_id = :tenant_id")
+            params["tenant_id"] = str(tenant_id)
+
+        if chain_id:
+            conditions.append("a.chain_id = :chain_id")
+            params["chain_id"] = chain_id
+
+        if event_type:
+            conditions.append("a.action LIKE :event_type")
+            params["event_type"] = f"%{event_type}%"
+
+        if event_source:
+            conditions.append("a.actor LIKE :event_source")
+            params["event_source"] = f"%{event_source}%"
+
+        where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+
+        # Get count
+        count_result = await self._db.fetch_one(
+            f"SELECT COUNT(*) as count FROM arkham_provenance_chain_audit a {where_clause}",
+            params
+        )
+        total = count_result["count"] if count_result else 0
+
+        # Get records
+        rows = await self._db.fetch_all(
+            f"""
+            SELECT
+                a.id,
+                a.chain_id,
+                a.action as event_type,
+                COALESCE(a.actor, 'system') as event_source,
+                a.details as event_data,
+                a.occurred_at as timestamp,
+                a.actor as user_id
+            FROM arkham_provenance_chain_audit a
+            {where_clause}
+            ORDER BY a.occurred_at DESC
+            LIMIT :limit OFFSET :offset
+            """,
+            params
+        )
+
+        records = []
+        for row in rows:
+            event_data = self._parse_jsonb(row.get("event_data"), {})
+            records.append({
+                "id": row["id"],
+                "chain_id": row.get("chain_id"),
+                "event_type": row["event_type"],
+                "event_source": row["event_source"],
+                "event_data": event_data,
+                "timestamp": row["timestamp"].isoformat() if row.get("timestamp") else None,
+                "user_id": row.get("user_id"),
+            })
+
+        return records, total
+
+    async def get_chain_audit_records(self, chain_id: str) -> List[Dict[str, Any]]:
+        """
+        Get complete audit trail for a specific chain.
+
+        Includes all events related to the chain: creation, updates,
+        link additions/removals, verifications.
+
+        Args:
+            chain_id: Chain identifier
+
+        Returns:
+            List of audit records for the chain
+        """
+        if not self._db:
+            raise RuntimeError("Shard not initialized")
+
+        tenant_id = self.get_tenant_id_or_none()
+        tenant_filter = " AND tenant_id = :tenant_id" if tenant_id else ""
+        params: Dict[str, Any] = {"chain_id": chain_id}
+        if tenant_id:
+            params["tenant_id"] = str(tenant_id)
+
+        # Query chain audit records directly by chain_id
+        rows = await self._db.fetch_all(
+            f"""
+            SELECT
+                a.id,
+                a.chain_id,
+                a.action as event_type,
+                COALESCE(a.actor, 'system') as event_source,
+                a.details as event_data,
+                a.occurred_at as timestamp,
+                a.actor as user_id
+            FROM arkham_provenance_chain_audit a
+            WHERE a.chain_id = :chain_id{tenant_filter}
+            ORDER BY a.occurred_at DESC
+            """,
+            params
+        )
+
+        records = []
+        for row in rows:
+            event_data = self._parse_jsonb(row.get("event_data"), {})
+            records.append({
+                "id": row["id"],
+                "chain_id": row.get("chain_id"),
+                "event_type": row["event_type"],
+                "event_source": row["event_source"],
+                "event_data": event_data,
+                "timestamp": row["timestamp"].isoformat() if row.get("timestamp") else None,
+                "user_id": row.get("user_id"),
+            })
+        return records
+
+    async def export_audit_records(
+        self,
+        chain_id: Optional[str] = None,
+        export_format: str = "json",
+    ) -> Dict[str, Any]:
+        """
+        Export audit records to a structured format.
+
+        Args:
+            chain_id: Optional chain ID to filter (None = all)
+            export_format: Export format (json, csv)
+
+        Returns:
+            Dict with export metadata and records
+        """
+        if not self._db:
+            raise RuntimeError("Shard not initialized")
+
+        from datetime import datetime
+
+        # Get records
+        if chain_id:
+            records = await self.get_chain_audit_records(chain_id)
+        else:
+            records, _ = await self.list_audit_records(limit=10000, offset=0)
+
+        # Flatten event_data for CSV export
+        flat_records = []
+        for record in records:
+            flat_record = {
+                "id": record["id"],
+                "chain_id": record.get("chain_id"),
+                "event_type": record["event_type"],
+                "event_source": record["event_source"],
+                "timestamp": record.get("timestamp"),
+                "user_id": record.get("user_id"),
+            }
+            # Flatten event_data into the record
+            event_data = record.get("event_data", {})
+            if isinstance(event_data, dict):
+                for key, value in event_data.items():
+                    if isinstance(value, (str, int, float, bool)) or value is None:
+                        flat_record[f"data_{key}"] = value
+                    else:
+                        import json
+                        flat_record[f"data_{key}"] = json.dumps(value)
+            flat_records.append(flat_record)
+
+        return {
+            "exported_at": datetime.utcnow().isoformat(),
+            "chain_id": chain_id,
+            "record_count": len(flat_records),
+            "format": export_format,
+            "records": flat_records,
+        }
+
+    async def log_chain_event(
+        self,
+        chain_id: str,
+        event_type: str,
+        actor: Optional[str] = None,
+        details: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """
+        Log an audit event for a chain.
+
+        Uses a dedicated chain_audit table to avoid FK constraints with
+        arkham_provenance_records.
+
+        Args:
+            chain_id: Chain ID
+            event_type: Type of event (e.g., 'created', 'updated', 'verified')
+            actor: Who performed the action
+            details: Additional details
+        """
+        if not self._db:
+            raise RuntimeError("Shard not initialized")
+
+        import uuid
+        import json
+
+        audit_id = str(uuid.uuid4())
+        tenant_id = self.get_tenant_id_or_none()
+
+        # Use the chain_audit table (no FK constraints)
+        await self._db.execute(
+            """
+            INSERT INTO arkham_provenance_chain_audit
+            (id, chain_id, action, actor, details, tenant_id)
+            VALUES (:id, :chain_id, :action, :actor, :details, :tenant_id)
+            """,
+            {
+                "id": audit_id,
+                "chain_id": chain_id,
+                "action": event_type,
+                "actor": actor or "system",
+                "details": json.dumps(details or {}),
+                "tenant_id": str(tenant_id) if tenant_id else None,
+            }
+        )
+
     async def add_transformation(
         self,
         record_id: str,
@@ -1098,6 +1373,14 @@ class ProvenanceShard(ArkhamShard):
                 source="provenance-shard"
             )
 
+        # Log audit event
+        await self.log_chain_event(
+            chain_id=chain_id,
+            event_type="chain.created",
+            actor=created_by,
+            details={"title": title, "type": chain_type, "project_id": project_id}
+        )
+
         return await self.get_chain_impl(chain_id)
 
     async def get_chain_impl(self, chain_id: str) -> Optional[Dict[str, Any]]:
@@ -1233,6 +1516,14 @@ class ProvenanceShard(ArkhamShard):
                 "provenance.chain.updated",
                 {"id": chain_id, "status": status},
                 source="provenance-shard"
+            )
+
+        # Log audit event
+        if chain:
+            await self.log_chain_event(
+                chain_id=chain_id,
+                event_type="chain.updated",
+                details={"title": title, "description": description, "status": status}
             )
 
         return chain
@@ -1431,6 +1722,19 @@ class ProvenanceShard(ArkhamShard):
                 source="provenance-shard"
             )
 
+        # Log audit event
+        await self.log_chain_event(
+            chain_id=chain_id,
+            event_type="link.added",
+            details={
+                "link_id": link_id,
+                "source_artifact_id": source_artifact_id,
+                "target_artifact_id": target_artifact_id,
+                "link_type": link_type,
+                "confidence": confidence
+            }
+        )
+
         # Return the created link with artifact details
         if tenant_id:
             row = await self._db.fetch_one(
@@ -1599,6 +1903,15 @@ class ProvenanceShard(ArkhamShard):
                 "provenance.link.verified",
                 {"id": link_id, "verified_by": verified_by},
                 source="provenance-shard"
+            )
+
+        # Log audit event
+        if row:
+            await self.log_chain_event(
+                chain_id=row["chain_id"],
+                event_type="link.verified",
+                actor=verified_by,
+                details={"link_id": link_id, "notes": notes}
             )
 
         return self._row_to_link(row) if row else None

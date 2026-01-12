@@ -603,6 +603,7 @@ async def get_downstream(artifact_id: str, request: Request):
 
 @router.get("/audit", response_model=AuditListResponse)
 async def list_audit_records(
+    request: Request,
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
     chain_id: Optional[str] = None,
@@ -622,19 +623,29 @@ async def list_audit_records(
     Returns:
         Paginated list of audit records
     """
-    # TODO: Implement actual audit log retrieval
-    logger.info(f"Listing audit records: chain={chain_id}, type={event_type}")
-
-    return {
-        "items": [],
-        "total": 0,
-        "page": page,
-        "page_size": page_size,
-    }
+    shard = get_shard(request)
+    try:
+        offset = (page - 1) * page_size
+        items, total = await shard.list_audit_records(
+            chain_id=chain_id,
+            event_type=event_type,
+            event_source=event_source,
+            limit=page_size,
+            offset=offset,
+        )
+        return {
+            "items": items,
+            "total": total,
+            "page": page,
+            "page_size": page_size,
+        }
+    except Exception as e:
+        logger.error(f"Error listing audit records: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/audit/{chain_id}", response_model=List[AuditRecord])
-async def get_chain_audit(chain_id: str):
+async def get_chain_audit(chain_id: str, request: Request):
     """
     Get complete audit trail for a chain.
 
@@ -644,29 +655,32 @@ async def get_chain_audit(chain_id: str):
     Returns:
         List of audit records for the chain
     """
-    # TODO: Implement chain audit retrieval
-    logger.info(f"Getting audit trail for chain: {chain_id}")
-
-    return []
+    shard = get_shard(request)
+    try:
+        records = await shard.get_chain_audit_records(chain_id)
+        return records
+    except Exception as e:
+        logger.error(f"Error getting chain audit: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.post("/audit/export")
 async def export_audit(
+    request: Request,
     chain_id: Optional[str] = None,
-    format: str = Query("json", regex="^(json|csv|pdf)$"),
+    format: str = Query("json", pattern="^(json|csv)$"),
 ):
     """
     Export audit trail to file.
 
     Args:
         chain_id: Optional chain ID to filter (None = all)
-        format: Export format (json, csv, pdf)
+        format: Export format (json, csv)
 
     Returns:
-        Export file URL or content
+        Export file content as download
     """
-    # TODO: Implement audit export
-    logger.info(f"Exporting audit: chain={chain_id}, format={format}")
+    shard = get_shard(request)
 
     if not _storage:
         raise HTTPException(
@@ -674,7 +688,44 @@ async def export_audit(
             detail="Storage service unavailable - export disabled"
         )
 
-    raise HTTPException(status_code=501, detail="Not implemented")
+    try:
+        export_data = await shard.export_audit_records(chain_id=chain_id, export_format=format)
+
+        if format == "json":
+            import json
+            content = json.dumps(export_data, indent=2)
+            media_type = "application/json"
+            filename = f"audit_export_{chain_id or 'all'}.json"
+        else:  # csv
+            import csv
+            import io
+            output = io.StringIO()
+            if export_data["records"]:
+                # Collect all possible field names from all records
+                all_fields = set()
+                for record in export_data["records"]:
+                    all_fields.update(record.keys())
+                # Sort fields for consistent ordering (base fields first, data_ fields after)
+                base_fields = ["id", "chain_id", "event_type", "event_source", "timestamp", "user_id"]
+                data_fields = sorted([f for f in all_fields if f.startswith("data_")])
+                fieldnames = [f for f in base_fields if f in all_fields] + data_fields
+
+                writer = csv.DictWriter(output, fieldnames=fieldnames, extrasaction='ignore')
+                writer.writeheader()
+                writer.writerows(export_data["records"])
+            content = output.getvalue()
+            media_type = "text/csv"
+            filename = f"audit_export_{chain_id or 'all'}.csv"
+
+        from fastapi.responses import Response
+        return Response(
+            content=content,
+            media_type=media_type,
+            headers={"Content-Disposition": f"attachment; filename={filename}"}
+        )
+    except Exception as e:
+        logger.error(f"Error exporting audit: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # --- Verification Endpoints ---
