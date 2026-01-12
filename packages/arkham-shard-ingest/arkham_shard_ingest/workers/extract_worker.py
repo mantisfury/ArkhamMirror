@@ -534,7 +534,7 @@ class ExtractWorker(BaseWorker):
                     try:
                         with open(path, "r", encoding=encoding, newline="") as f:
                             # Sniff to detect actual delimiter if not TSV
-                            if path.suffix.lower() \!= ".tsv":
+                            if path.suffix.lower() != ".tsv":
                                 sample = f.read(4096)
                                 f.seek(0)
                                 try:
@@ -584,8 +584,7 @@ class ExtractWorker(BaseWorker):
                         text_parts.append(" | ".join(str(cell) for cell in row))
 
                 return {
-                    "text": "
-".join(text_parts),
+                    "text": "\n".join(text_parts),
                     "pages": len(data_rows),  # Use row count as page proxy
                     "document_metadata": {
                         "columns": len(headers),

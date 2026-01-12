@@ -155,7 +155,11 @@ RUN mkdir -p /app/data_silo/documents \
              /app/data_silo/exports \
              /app/data_silo/temp \
              /app/data_silo/models \
-             /app/config
+             /app/config \
+             /app/migrations
+
+# Copy database migrations
+COPY migrations/*.sql /app/migrations/
 
 # Copy entrypoint script and fix line endings (Windows CRLF -> Unix LF)
 COPY docker/entrypoint.sh /entrypoint.sh

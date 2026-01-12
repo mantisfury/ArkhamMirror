@@ -37,6 +37,27 @@ if [ -n "$DATABASE_URL" ]; then
     if ! pg_isready -h "$DB_HOST" -p "$DB_PORT" > /dev/null 2>&1; then
         echo "Warning: PostgreSQL not ready after 60 seconds, continuing anyway..."
     fi
+
+    # -------------------------------------------------------------------------
+    # Run database migrations (idempotent - safe to run multiple times)
+    # -------------------------------------------------------------------------
+    echo "Running database migrations..."
+
+    # Check if cleanup_stale_workers function exists (a reliable indicator that
+    # the full 001_consolidation.sql migration has run, not just partial schemas)
+    MIGRATION_COMPLETE=$(psql "$DATABASE_URL" -tAc "SELECT 1 FROM pg_proc WHERE proname = 'cleanup_stale_workers' AND pronamespace = 'arkham_jobs'::regnamespace" 2>/dev/null || echo "0")
+
+    if [ "$MIGRATION_COMPLETE" != "1" ]; then
+        echo "  Running database migrations..."
+        if [ -f "/app/migrations/001_consolidation.sql" ]; then
+            psql "$DATABASE_URL" -f /app/migrations/001_consolidation.sql 2>&1 | grep -E "^(NOTICE|ERROR)" || true
+            echo "  Database migrations complete."
+        else
+            echo "  Warning: Migration file not found, skipping..."
+        fi
+    else
+        echo "  Database already initialized."
+    fi
 fi
 
 # -----------------------------------------------------------------------------

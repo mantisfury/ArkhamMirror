@@ -22,7 +22,7 @@ FILE_TYPE_ROUTES = {
     },
     # Spreadsheets - extract to structured data
     "spreadsheet": {
-        "extensions": [".xlsx", ".xls", ".csv", ".ods"],
+        "extensions": [".xlsx", ".xls", ".csv", ".tsv", ".ods"],
         "pipeline": ["cpu-extract"],
     },
     # Plain text - direct to parsing
