@@ -203,10 +203,12 @@ async def list_entities(
         show_merged=show_merged
     )
 
-    # Get total count for pagination
-    # For now, return the items we got
-    # TODO: Add total count query for accurate pagination
-    total = len(entities)
+    # Get total count for accurate pagination
+    total = await shard.count_entities(
+        search=q,
+        entity_type=filter,
+        show_merged=show_merged
+    )
 
     return EntityListResponse(
         items=[entity_to_response(e) for e in entities],

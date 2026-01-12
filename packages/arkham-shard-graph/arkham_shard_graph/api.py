@@ -269,13 +269,63 @@ async def calculate_scores(request: ScoreConfigRequest) -> ScoreResponseModel:
             entity_type_weights=request.entity_type_weights or {},
         )
 
-        # TODO: Fetch entity mentions from database for frequency/recency/corroboration
-        # For now, use node properties
+        # Fetch entity mentions from database for frequency/recency/corroboration
         entity_mentions: dict[str, list[dict]] = {}
+        if _db_service:
+            try:
+                # Get mentions with document info for all entities in the graph
+                node_ids = list(graph.nodes())
+                if node_ids:
+                    # Fetch mentions grouped by entity
+                    mention_rows = await _db_service.fetch_all(
+                        """
+                        SELECT
+                            em.entity_id,
+                            em.document_id,
+                            em.mention_text,
+                            em.confidence,
+                            em.created_at,
+                            d.filename as document_name
+                        FROM arkham_entity_mentions em
+                        LEFT JOIN arkham_frame.documents d ON em.document_id = d.id
+                        ORDER BY em.entity_id, em.created_at DESC
+                        """
+                    )
+                    for row in mention_rows:
+                        entity_id = row.get("entity_id")
+                        if entity_id not in entity_mentions:
+                            entity_mentions[entity_id] = []
+                        entity_mentions[entity_id].append({
+                            "document_id": row.get("document_id"),
+                            "document_name": row.get("document_name"),
+                            "mention_text": row.get("mention_text"),
+                            "confidence": row.get("confidence", 1.0),
+                            "created_at": row.get("created_at").isoformat() if row.get("created_at") else None,
+                        })
+            except Exception as e:
+                logger.warning(f"Failed to fetch entity mentions: {e}")
 
-        # TODO: Fetch credibility ratings from credibility shard
-        # For now, use empty dict (neutral scores)
+        # Fetch credibility ratings from credibility shard tables
         credibility_ratings: dict[str, float] = {}
+        if _db_service:
+            try:
+                # Query credibility assessments (entity-level credibility scores)
+                cred_rows = await _db_service.fetch_all(
+                    """
+                    SELECT entity_id, AVG(overall_score) as avg_score
+                    FROM arkham_credibility.assessments
+                    WHERE entity_id IS NOT NULL
+                    GROUP BY entity_id
+                    """
+                )
+                for row in cred_rows:
+                    entity_id = row.get("entity_id")
+                    avg_score = row.get("avg_score")
+                    if entity_id and avg_score is not None:
+                        credibility_ratings[entity_id] = float(avg_score)
+            except Exception as e:
+                # Credibility tables may not exist yet
+                logger.debug(f"Could not fetch credibility ratings: {e}")
 
         # Calculate scores
         scores = _scorer.calculate_scores(

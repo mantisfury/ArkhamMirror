@@ -696,6 +696,52 @@ class EntitiesShard(ArkhamShard):
 
         return entities
 
+    async def count_entities(
+        self,
+        search: Optional[str] = None,
+        entity_type: Optional[str] = None,
+        show_merged: bool = False
+    ) -> int:
+        """
+        Count entities with optional filtering.
+
+        Args:
+            search: Search query for entity name
+            entity_type: Filter by entity type
+            show_merged: Include merged entities
+
+        Returns:
+            Total count of matching entities
+        """
+        if not self._db:
+            raise RuntimeError("Entities Shard not initialized")
+
+        query = "SELECT COUNT(*) as count FROM arkham_entities WHERE 1=1"
+        params: Dict[str, Any] = {}
+
+        # Add tenant filtering if tenant context is available
+        tenant_id = self.get_tenant_id_or_none()
+        if tenant_id:
+            query += " AND tenant_id = :tenant_id"
+            params["tenant_id"] = str(tenant_id)
+
+        # Filter out merged entities by default
+        if not show_merged:
+            query += " AND canonical_id IS NULL"
+
+        # Filter by entity type
+        if entity_type:
+            query += " AND entity_type = :entity_type"
+            params["entity_type"] = entity_type
+
+        # Search by name
+        if search:
+            query += " AND name ILIKE :search"
+            params["search"] = f"%{search}%"
+
+        row = await self._db.fetch_one(query, params)
+        return row["count"] if row else 0
+
     async def get_entity(self, entity_id: str) -> Optional[Entity]:
         """
         Public method to get an entity by ID.

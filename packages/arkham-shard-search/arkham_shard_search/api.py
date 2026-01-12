@@ -216,9 +216,22 @@ async def search(request: SearchRequest):
             source="search-shard",
         )
 
-    # Build response
-    total = len(results)  # TODO: Get actual total from database
-    has_more = (request.offset + len(results)) < total
+    # Get facets for filtering UI
+    facets = {}
+    if _filter_optimizer:
+        try:
+            facets = await _filter_optimizer.get_available_filters(request.query)
+        except Exception as e:
+            logger.warning(f"Failed to get facets: {e}")
+
+    # Calculate total: if we got fewer results than limit, we know the total
+    # Otherwise, estimate based on whether there are more results
+    total = len(results)
+    if len(results) == request.limit:
+        # There may be more results - estimate total from facets if available
+        if facets.get("date_ranges", {}).get("last_year", {}).get("count"):
+            total = max(total, facets["date_ranges"]["last_year"]["count"])
+    has_more = len(results) == request.limit
 
     return SearchResponse(
         query=request.query,
@@ -226,7 +239,7 @@ async def search(request: SearchRequest):
         total=total,
         items=[_result_to_dict(r) for r in results],
         duration_ms=duration_ms,
-        facets={},  # TODO: Add facet aggregations
+        facets=facets,
         offset=request.offset,
         limit=request.limit,
         has_more=has_more,
