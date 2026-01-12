@@ -358,7 +358,8 @@ async def clear_temp_storage(request: Request):
         raise HTTPException(status_code=503, detail="Storage service not available")
 
     try:
-        files_deleted = await storage.cleanup_temp(force=True)
+        # Use cleanup_temp_files with max_age_hours=0 to delete all temp files
+        files_deleted = await storage.cleanup_temp_files(max_age_hours=0)
         return DataActionResponse(
             success=True,
             message=f"Cleared {files_deleted} temporary file(s)",
@@ -592,7 +593,8 @@ async def reset_all_data(request: Request):
     storage = frame.get_service("storage")
     if storage:
         try:
-            files_deleted = await storage.cleanup_temp(force=True)
+            # Use cleanup_temp_files with max_age_hours=0 to delete all temp files
+            files_deleted = await storage.cleanup_temp_files(max_age_hours=0)
             results["temp_storage"] = {"success": True, "message": f"Cleared {files_deleted} files"}
         except Exception as e:
             results["temp_storage"] = {"success": False, "message": str(e)}
