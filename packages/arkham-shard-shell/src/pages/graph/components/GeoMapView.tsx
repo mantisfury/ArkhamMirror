@@ -1,12 +1,15 @@
 /**
- * GeoMapView - Simple SVG-based geographic visualization
+ * GeoMapView - Interactive geographic visualization
  *
- * Uses a simple equirectangular projection to display points on a world map.
- * No external mapping libraries required.
+ * Uses MapLibre GL for full zoom/pan capabilities with OpenStreetMap tiles.
+ * Falls back to SVG-based view if MapLibre fails to load (air-gapped mode).
  */
 
-import { useMemo, useState } from 'react';
-import type { GeoGraphData } from './GeoGraphView';
+import { useMemo, useState, useCallback, useEffect, useRef } from 'react';
+import Map, { Marker, Source, Layer, NavigationControl, Popup } from 'react-map-gl/maplibre';
+import type { MapRef } from 'react-map-gl/maplibre';
+import type { GeoGraphData, GeoNode } from './GeoGraphView';
+import 'maplibre-gl/dist/maplibre-gl.css';
 
 interface GeoMapViewProps {
   data: GeoGraphData;
@@ -18,103 +21,162 @@ interface GeoMapViewProps {
   entityColors: Record<string, string>;
 }
 
-// Convert lat/lng to SVG coordinates using equirectangular projection
+// Dark mode style using CartoDB dark tiles (free, no API key required)
+const MAP_STYLE = {
+  version: 8 as const,
+  sources: {
+    carto: {
+      type: 'raster' as const,
+      tiles: [
+        'https://a.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png',
+        'https://b.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png',
+        'https://c.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png',
+      ],
+      tileSize: 256,
+      attribution:
+        '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/attributions">CARTO</a>',
+    },
+  },
+  layers: [
+    {
+      id: 'carto-dark',
+      type: 'raster' as const,
+      source: 'carto',
+      minzoom: 0,
+      maxzoom: 19,
+    },
+  ],
+};
+
+// ============================================================================
+// SVG Fallback for Air-Gapped Mode
+// ============================================================================
+
+const WORLD_MAP_URL =
+  'https://raw.githubusercontent.com/datasets/geo-countries/master/data/countries.geojson';
+
+const MAP_BOUNDS = {
+  minLat: -60,
+  maxLat: 85,
+  minLng: -180,
+  maxLng: 180,
+};
+
 function latLngToSvg(
   lat: number,
   lng: number,
   width: number,
-  height: number,
-  bounds?: { minLat: number; maxLat: number; minLng: number; maxLng: number }
+  height: number
 ): { x: number; y: number } {
-  // Use provided bounds or default to world view
-  const minLat = bounds?.minLat ?? -60;
-  const maxLat = bounds?.maxLat ?? 80;
-  const minLng = bounds?.minLng ?? -180;
-  const maxLng = bounds?.maxLng ?? 180;
-
-  // Add padding
-  const latRange = maxLat - minLat;
-  const lngRange = maxLng - minLng;
-  const padding = 0.1;
-
-  const adjMinLat = minLat - latRange * padding;
-  const adjMaxLat = maxLat + latRange * padding;
-  const adjMinLng = minLng - lngRange * padding;
-  const adjMaxLng = maxLng + lngRange * padding;
-
-  const x = ((lng - adjMinLng) / (adjMaxLng - adjMinLng)) * width;
-  const y = ((adjMaxLat - lat) / (adjMaxLat - adjMinLat)) * height; // Flip Y axis
-
+  const { minLat, maxLat, minLng, maxLng } = MAP_BOUNDS;
+  const x = ((lng - minLng) / (maxLng - minLng)) * width;
+  const y = ((maxLat - lat) / (maxLat - minLat)) * height;
   return { x, y };
 }
 
-export default function GeoMapView({
+function geoJsonToPath(geometry: any, width: number, height: number): string {
+  const toPoint = (coord: number[]) => {
+    const { x, y } = latLngToSvg(coord[1], coord[0], width, height);
+    return `${x},${y}`;
+  };
+
+  const ringToPath = (ring: number[][]) => {
+    if (ring.length === 0) return '';
+    return `M${toPoint(ring[0])} ${ring
+      .slice(1)
+      .map((c) => `L${toPoint(c)}`)
+      .join(' ')} Z`;
+  };
+
+  if (geometry.type === 'Polygon') {
+    return geometry.coordinates.map(ringToPath).join(' ');
+  } else if (geometry.type === 'MultiPolygon') {
+    return geometry.coordinates
+      .map((polygon: number[][][]) => polygon.map(ringToPath).join(' '))
+      .join(' ');
+  }
+  return '';
+}
+
+function SvgFallbackMap({
   data,
   showEdges,
-  showClusters: _showClusters,
   selectedNodeId,
   onNodeClick,
   onEdgeClick,
   entityColors,
-}: GeoMapViewProps) {
-  // Note: showClusters is available but not yet implemented in SVG view
-  void _showClusters;
+}: Omit<GeoMapViewProps, 'showClusters'>) {
   const [hoveredNode, setHoveredNode] = useState<string | null>(null);
-  const [tooltip, setTooltip] = useState<{ x: number; y: number; node: typeof data.nodes[0] } | null>(null);
+  const [tooltip, setTooltip] = useState<{
+    x: number;
+    y: number;
+    node: GeoNode;
+  } | null>(null);
+  const [worldMapPaths, setWorldMapPaths] = useState<string[]>([]);
+  const [mapLoading, setMapLoading] = useState(true);
 
-  const width = 900;
+  const width = 960;
   const height = 500;
 
-  // Calculate bounds from data
-  const bounds = useMemo(() => {
-    if (data?.bounds) {
-      return {
-        minLat: data.bounds.min_lat,
-        maxLat: data.bounds.max_lat,
-        minLng: data.bounds.min_lng,
-        maxLng: data.bounds.max_lng,
-      };
-    }
-    return undefined;
-  }, [data?.bounds]);
+  useEffect(() => {
+    const fetchMap = async () => {
+      try {
+        const response = await fetch(WORLD_MAP_URL);
+        if (response.ok) {
+          const geojson = await response.json();
+          const paths = geojson.features
+            .map((feature: any) => geoJsonToPath(feature.geometry, width, height))
+            .filter((p: string) => p.length > 0);
+          setWorldMapPaths(paths);
+        }
+      } catch (err) {
+        console.warn('Failed to load world map:', err);
+      } finally {
+        setMapLoading(false);
+      }
+    };
+    fetchMap();
+  }, []);
 
-  // Build coordinate lookup for edges
   const nodeCoords = useMemo(() => {
     const coords: Record<string, { x: number; y: number; lat: number; lng: number }> = {};
     if (data?.nodes) {
       for (const node of data.nodes) {
         if (typeof node.latitude === 'number' && typeof node.longitude === 'number') {
-          const { x, y } = latLngToSvg(node.latitude, node.longitude, width, height, bounds);
+          const { x, y } = latLngToSvg(node.latitude, node.longitude, width, height);
           coords[node.id] = { x, y, lat: node.latitude, lng: node.longitude };
         }
       }
     }
     return coords;
-  }, [data?.nodes, bounds]);
+  }, [data?.nodes]);
 
-  // Filter valid nodes
   const validNodes = useMemo(() => {
-    return (data?.nodes || []).filter(node =>
-      typeof node.latitude === 'number' &&
-      typeof node.longitude === 'number' &&
-      !isNaN(node.latitude) &&
-      !isNaN(node.longitude) &&
-      node.latitude >= -90 && node.latitude <= 90 &&
-      node.longitude >= -180 && node.longitude <= 180
+    return (data?.nodes || []).filter(
+      (node) =>
+        typeof node.latitude === 'number' &&
+        typeof node.longitude === 'number' &&
+        !isNaN(node.latitude) &&
+        !isNaN(node.longitude) &&
+        node.latitude >= -90 &&
+        node.latitude <= 90 &&
+        node.longitude >= -180 &&
+        node.longitude <= 180
     );
   }, [data?.nodes]);
 
-  // Filter valid edges
   const validEdges = useMemo(() => {
-    return (data?.edges || []).filter(edge =>
-      nodeCoords[edge.source] && nodeCoords[edge.target]
+    return (data?.edges || []).filter(
+      (edge) => nodeCoords[edge.source] && nodeCoords[edge.target]
     );
   }, [data?.edges, nodeCoords]);
 
-  const handleNodeHover = (node: typeof data.nodes[0], event: React.MouseEvent) => {
+  const handleNodeHover = (node: GeoNode, event: React.MouseEvent) => {
     setHoveredNode(node.id);
     const rect = event.currentTarget.getBoundingClientRect();
-    const containerRect = event.currentTarget.closest('.geo-svg-container')?.getBoundingClientRect();
+    const containerRect = event.currentTarget
+      .closest('.geo-svg-container')
+      ?.getBoundingClientRect();
     if (containerRect) {
       setTooltip({
         x: rect.left - containerRect.left + rect.width / 2,
@@ -130,7 +192,10 @@ export default function GeoMapView({
   };
 
   return (
-    <div className="geo-svg-container" style={{ position: 'relative', width: '100%', height: '100%', overflow: 'auto' }}>
+    <div
+      className="geo-svg-container"
+      style={{ position: 'relative', width: '100%', height: '100%', overflow: 'auto' }}
+    >
       <svg
         viewBox={`0 0 ${width} ${height}`}
         style={{
@@ -141,70 +206,101 @@ export default function GeoMapView({
           borderRadius: '8px',
         }}
       >
-        {/* Simple world outline */}
         <defs>
           <pattern id="grid" width="50" height="50" patternUnits="userSpaceOnUse">
-            <path d="M 50 0 L 0 0 0 50" fill="none" stroke="rgba(255,255,255,0.1)" strokeWidth="0.5"/>
+            <path
+              d="M 50 0 L 0 0 0 50"
+              fill="none"
+              stroke="rgba(255,255,255,0.1)"
+              strokeWidth="0.5"
+            />
           </pattern>
         </defs>
         <rect width={width} height={height} fill="url(#grid)" />
 
-        {/* Equator and prime meridian */}
+        {worldMapPaths.length > 0 && (
+          <g className="world-map-countries">
+            {worldMapPaths.map((path, idx) => (
+              <path
+                key={`country-${idx}`}
+                d={path}
+                fill="rgba(55, 65, 81, 0.6)"
+                stroke="rgba(107, 114, 128, 0.5)"
+                strokeWidth="0.5"
+              />
+            ))}
+          </g>
+        )}
+
+        {mapLoading && (
+          <text
+            x={width / 2}
+            y={height / 2}
+            textAnchor="middle"
+            fill="rgba(255,255,255,0.5)"
+            fontSize="14"
+          >
+            Loading map...
+          </text>
+        )}
+
         <line
-          x1={0} y1={height / 2} x2={width} y2={height / 2}
+          x1={0}
+          y1={height / 2}
+          x2={width}
+          y2={height / 2}
           stroke="rgba(255,255,255,0.2)"
           strokeWidth="1"
           strokeDasharray="5,5"
         />
         <line
-          x1={width / 2} y1={0} x2={width / 2} y2={height}
+          x1={width / 2}
+          y1={0}
+          x2={width / 2}
+          y2={height}
           stroke="rgba(255,255,255,0.2)"
           strokeWidth="1"
           strokeDasharray="5,5"
         />
 
-        {/* Edges */}
-        {showEdges && validEdges.map((edge, idx) => {
-          const source = nodeCoords[edge.source];
-          const target = nodeCoords[edge.target];
-          const isSelected = selectedNodeId === edge.source || selectedNodeId === edge.target;
+        {showEdges &&
+          validEdges.map((edge, idx) => {
+            const source = nodeCoords[edge.source];
+            const target = nodeCoords[edge.target];
+            const isSelected =
+              selectedNodeId === edge.source || selectedNodeId === edge.target;
 
-          return (
-            <line
-              key={`edge-${idx}`}
-              x1={source.x}
-              y1={source.y}
-              x2={target.x}
-              y2={target.y}
-              stroke={isSelected ? '#3b82f6' : 'rgba(148, 163, 184, 0.4)'}
-              strokeWidth={isSelected ? 2 : 1}
-              style={{ cursor: 'pointer' }}
-              onClick={() => onEdgeClick?.(edge.source, edge.target)}
-            />
-          );
-        })}
+            return (
+              <line
+                key={`edge-${idx}`}
+                x1={source.x}
+                y1={source.y}
+                x2={target.x}
+                y2={target.y}
+                stroke={isSelected ? '#3b82f6' : 'rgba(148, 163, 184, 0.4)'}
+                strokeWidth={isSelected ? 2 : 1}
+                style={{ cursor: 'pointer' }}
+                onClick={() => onEdgeClick?.(edge.source, edge.target)}
+              />
+            );
+          })}
 
-        {/* Nodes */}
         {validNodes.map((node) => {
           const coords = nodeCoords[node.id];
           if (!coords) return null;
 
-          const color = entityColors[node.entity_type?.toLowerCase()] || entityColors.default || '#64748b';
+          const color =
+            entityColors[node.entity_type?.toLowerCase()] ||
+            entityColors.default ||
+            '#64748b';
           const isSelected = selectedNodeId === node.id;
           const isHovered = hoveredNode === node.id;
           const radius = isSelected ? 8 : isHovered ? 7 : 5;
 
           return (
             <g key={node.id}>
-              {/* Glow effect for selected/hovered */}
               {(isSelected || isHovered) && (
-                <circle
-                  cx={coords.x}
-                  cy={coords.y}
-                  r={radius + 4}
-                  fill={color}
-                  opacity={0.3}
-                />
+                <circle cx={coords.x} cy={coords.y} r={radius + 4} fill={color} opacity={0.3} />
               )}
               <circle
                 cx={coords.x}
@@ -218,7 +314,6 @@ export default function GeoMapView({
                 onMouseEnter={(e) => handleNodeHover(node, e)}
                 onMouseLeave={handleNodeLeave}
               />
-              {/* Label for selected node */}
               {isSelected && (
                 <text
                   x={coords.x}
@@ -237,7 +332,6 @@ export default function GeoMapView({
         })}
       </svg>
 
-      {/* Tooltip */}
       {tooltip && (
         <div
           style={{
@@ -260,12 +354,11 @@ export default function GeoMapView({
           <div style={{ fontWeight: 600, marginBottom: '4px' }}>{tooltip.node.label}</div>
           <div style={{ color: '#94a3b8', fontSize: '11px' }}>{tooltip.node.entity_type}</div>
           <div style={{ color: '#64748b', fontSize: '10px', marginTop: '4px' }}>
-            {tooltip.node.latitude.toFixed(4)}, {tooltip.node.longitude.toFixed(4)}
+            {tooltip.node.latitude?.toFixed(4)}, {tooltip.node.longitude?.toFixed(4)}
           </div>
         </div>
       )}
 
-      {/* Info overlay */}
       <div
         style={{
           position: 'absolute',
@@ -278,7 +371,273 @@ export default function GeoMapView({
           fontSize: '11px',
         }}
       >
-        Click on a point to select it. {validNodes.length} locations shown.
+        Air-gapped mode (no zoom). {validNodes.length} locations shown.
+      </div>
+    </div>
+  );
+}
+
+// ============================================================================
+// MapLibre Interactive Map (Online Mode)
+// ============================================================================
+
+export default function GeoMapView({
+  data,
+  showEdges,
+  showClusters: _showClusters,
+  selectedNodeId,
+  onNodeClick,
+  onEdgeClick,
+  entityColors,
+}: GeoMapViewProps) {
+  void _showClusters; // Not yet implemented
+
+  const [mapRef, setMapRef] = useState<MapRef | null>(null);
+  const [popupInfo, setPopupInfo] = useState<GeoNode | null>(null);
+  const [mapError, setMapError] = useState<string | null>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  // Filter valid nodes with coordinates
+  const validNodes = useMemo(() => {
+    return (data?.nodes || []).filter(
+      (node) =>
+        typeof node.latitude === 'number' &&
+        typeof node.longitude === 'number' &&
+        !isNaN(node.latitude) &&
+        !isNaN(node.longitude)
+    );
+  }, [data?.nodes]);
+
+  // Calculate initial view state to fit all points
+  const initialViewState = useMemo(() => {
+    if (validNodes.length === 0) {
+      return { longitude: 0, latitude: 20, zoom: 1.5 };
+    }
+
+    const lngs = validNodes.map((n) => n.longitude!);
+    const lats = validNodes.map((n) => n.latitude!);
+    const minLng = Math.min(...lngs);
+    const maxLng = Math.max(...lngs);
+    const minLat = Math.min(...lats);
+    const maxLat = Math.max(...lats);
+
+    const centerLng = (minLng + maxLng) / 2;
+    const centerLat = (minLat + maxLat) / 2;
+
+    const lngSpan = maxLng - minLng;
+    const latSpan = maxLat - minLat;
+    const maxSpan = Math.max(lngSpan, latSpan);
+
+    let zoom = 1.5;
+    if (maxSpan < 0.1) zoom = 14;
+    else if (maxSpan < 0.5) zoom = 12;
+    else if (maxSpan < 1) zoom = 10;
+    else if (maxSpan < 5) zoom = 7;
+    else if (maxSpan < 20) zoom = 5;
+    else if (maxSpan < 60) zoom = 3;
+    else if (maxSpan < 120) zoom = 2;
+
+    return { longitude: centerLng, latitude: centerLat, zoom };
+  }, [validNodes]);
+
+  // Build GeoJSON for edges
+  const edgesGeoJson = useMemo(() => {
+    if (!showEdges || !data?.edges || validNodes.length === 0) {
+      return { type: 'FeatureCollection' as const, features: [] as any[] };
+    }
+
+    const nodeMap = new globalThis.Map(validNodes.map((n) => [n.id, n]));
+    const features: any[] = [];
+
+    for (const edge of data.edges) {
+      const source = nodeMap.get(edge.source);
+      const target = nodeMap.get(edge.target);
+      if (!source || !target) continue;
+
+      const isSelected =
+        selectedNodeId === edge.source || selectedNodeId === edge.target;
+
+      features.push({
+        type: 'Feature',
+        geometry: {
+          type: 'LineString',
+          coordinates: [
+            [source.longitude!, source.latitude!],
+            [target.longitude!, target.latitude!],
+          ],
+        },
+        properties: {
+          source: edge.source,
+          target: edge.target,
+          weight: edge.weight || 1,
+          selected: isSelected,
+        },
+      });
+    }
+
+    return { type: 'FeatureCollection' as const, features };
+  }, [data?.edges, validNodes, showEdges, selectedNodeId]);
+
+  // Handle marker click
+  const handleMarkerClick = useCallback(
+    (node: GeoNode, e: MouseEvent) => {
+      e.stopPropagation();
+      setPopupInfo(node);
+      onNodeClick(node.id);
+    },
+    [onNodeClick]
+  );
+
+  // Fit bounds when data changes
+  useEffect(() => {
+    if (mapRef && validNodes.length > 1) {
+      const lngs = validNodes.map((n) => n.longitude!);
+      const lats = validNodes.map((n) => n.latitude!);
+
+      mapRef.fitBounds(
+        [
+          [Math.min(...lngs) - 1, Math.min(...lats) - 1],
+          [Math.max(...lngs) + 1, Math.max(...lats) + 1],
+        ],
+        { padding: 50, duration: 1000 }
+      );
+    }
+  }, [mapRef, validNodes]);
+
+  // If map fails to load (air-gapped), show SVG fallback
+  if (mapError) {
+    return (
+      <SvgFallbackMap
+        data={data}
+        showEdges={showEdges}
+        selectedNodeId={selectedNodeId}
+        onNodeClick={onNodeClick}
+        onEdgeClick={onEdgeClick}
+        entityColors={entityColors}
+      />
+    );
+  }
+
+  return (
+    <div ref={containerRef} style={{ width: '100%', height: '100%', position: 'relative' }}>
+      <Map
+        ref={(ref) => setMapRef(ref)}
+        initialViewState={initialViewState}
+        style={{ width: '100%', height: '100%', minHeight: '400px' }}
+        mapStyle={MAP_STYLE}
+        onError={(e) => {
+          console.warn('MapLibre error:', e);
+          setMapError(e.error?.message || 'Map load failed');
+        }}
+        attributionControl={false}
+      >
+        <NavigationControl position="top-right" />
+
+        {/* Edge lines */}
+        <Source id="edges" type="geojson" data={edgesGeoJson}>
+          <Layer
+            id="edge-lines"
+            type="line"
+            paint={{
+              'line-color': [
+                'case',
+                ['get', 'selected'],
+                '#3b82f6',
+                'rgba(148, 163, 184, 0.5)',
+              ],
+              'line-width': ['case', ['get', 'selected'], 2, 1],
+            }}
+          />
+        </Source>
+
+        {/* Node markers */}
+        {validNodes.map((node) => {
+          const color =
+            entityColors[node.entity_type?.toLowerCase()] ||
+            entityColors.default ||
+            '#ef4444';
+          const isSelected = selectedNodeId === node.id;
+
+          return (
+            <Marker
+              key={node.id}
+              longitude={node.longitude!}
+              latitude={node.latitude!}
+              anchor="center"
+              onClick={(e) =>
+                handleMarkerClick(node, e.originalEvent)
+              }
+            >
+              <div
+                style={{
+                  width: isSelected ? 18 : 14,
+                  height: isSelected ? 18 : 14,
+                  borderRadius: '50%',
+                  backgroundColor: color,
+                  border: isSelected ? '3px solid white' : '2px solid rgba(255,255,255,0.7)',
+                  boxShadow: isSelected
+                    ? '0 0 10px rgba(59, 130, 246, 0.8)'
+                    : '0 2px 4px rgba(0,0,0,0.3)',
+                  cursor: 'pointer',
+                  transition: 'all 0.2s ease',
+                }}
+                title={node.label}
+              />
+            </Marker>
+          );
+        })}
+
+        {/* Popup for selected node */}
+        {popupInfo && (
+          <Popup
+            longitude={popupInfo.longitude!}
+            latitude={popupInfo.latitude!}
+            anchor="bottom"
+            onClose={() => setPopupInfo(null)}
+            closeButton={true}
+            closeOnClick={false}
+            offset={15}
+          >
+            <div style={{ padding: '0.5rem', maxWidth: '220px', color: '#1f2937' }}>
+              <div style={{ fontWeight: 'bold', marginBottom: '0.25rem', fontSize: '0.875rem' }}>
+                {popupInfo.label}
+              </div>
+              {popupInfo.entity_type && (
+                <div style={{ fontSize: '0.75rem', color: '#6b7280', marginBottom: '0.25rem' }}>
+                  Type: {popupInfo.entity_type}
+                </div>
+              )}
+              <div style={{ fontSize: '0.75rem', color: '#9ca3af' }}>
+                {popupInfo.latitude?.toFixed(4)}, {popupInfo.longitude?.toFixed(4)}
+              </div>
+              {popupInfo.city && (
+                <div style={{ fontSize: '0.75rem', color: '#9ca3af' }}>
+                  {popupInfo.city}{popupInfo.country ? `, ${popupInfo.country}` : ''}
+                </div>
+              )}
+            </div>
+          </Popup>
+        )}
+      </Map>
+
+      {/* Stats overlay */}
+      <div
+        style={{
+          position: 'absolute',
+          bottom: '2rem',
+          left: '0.5rem',
+          background: 'rgba(15, 23, 42, 0.85)',
+          color: 'white',
+          padding: '0.5rem 0.75rem',
+          borderRadius: '0.375rem',
+          fontSize: '0.75rem',
+          backdropFilter: 'blur(4px)',
+        }}
+      >
+        {validNodes.length} locations • {data?.edges?.length || 0} connections
+        <div style={{ fontSize: '0.625rem', color: '#94a3b8', marginTop: '2px' }}>
+          Scroll to zoom • Drag to pan
+        </div>
       </div>
     </div>
   );
