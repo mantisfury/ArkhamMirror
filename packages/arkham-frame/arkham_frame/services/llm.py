@@ -200,7 +200,9 @@ class LLMService:
         await self._load_persisted_settings()
 
         endpoint = self.config.llm_endpoint or "http://localhost:1234/v1"
-        self._model_name = self.config.get("llm.model", "local-model")
+        # Use default if config value is empty/None
+        configured_model = self.config.get("llm.model")
+        self._model_name = configured_model if configured_model else "local-model"
 
         # Load API key from environment (never from config file for security)
         # Supports multiple env var names for compatibility with various providers

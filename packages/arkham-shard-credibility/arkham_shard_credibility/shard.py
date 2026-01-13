@@ -1177,6 +1177,10 @@ Return as JSON with factors and overall score."""
                 source=self.name,
             )
 
+        # Sync deception score to credibility if enabled
+        if assessment.affects_credibility:
+            await self._sync_deception_to_credibility(assessment)
+
         return assessment
 
     async def recalculate_deception_score(self, assessment_id: str) -> Optional[DeceptionAssessment]:
@@ -1201,6 +1205,10 @@ Return as JSON with factors and overall score."""
 
         assessment.updated_at = datetime.utcnow()
         await self._save_deception_assessment(assessment, update=True)
+
+        # Sync deception score to credibility if enabled
+        if assessment.affects_credibility:
+            await self._sync_deception_to_credibility(assessment)
 
         return assessment
 
@@ -1343,6 +1351,103 @@ IMPORTANT: Use the exact indicator IDs from the questions above (e.g., "{indicat
             return "high"
         else:
             return "critical"
+
+    async def _sync_deception_to_credibility(self, deception: DeceptionAssessment) -> None:
+        """
+        Sync deception assessment score to linked credibility assessment.
+
+        Deception score (0-100) indicates likelihood of deception:
+        - 0 = no deception indicators
+        - 100 = strong deception indicators
+
+        Credibility score is inverted: high deception = low credibility
+        The deception score is weighted by credibility_weight (default 0.3).
+        """
+        if not deception.affects_credibility:
+            return
+
+        # Only sync if there's meaningful data (at least one checklist completed)
+        if deception.completed_checklists == 0:
+            logger.debug(f"Skipping credibility sync - no checklists completed for {deception.id}")
+            return
+
+        # Convert deception score to credibility impact
+        # Deception score of 100 (high deception) = credibility of 0 (unreliable)
+        # Deception score of 0 (no deception) = credibility of 100 (verified)
+        deception_credibility = 100 - deception.overall_score
+
+        # Create credibility factors from completed checklists
+        factors = []
+        checklist_weight = 0.25  # Each checklist gets equal weight
+
+        for checklist, name in [
+            (deception.mom_checklist, "MOM Analysis"),
+            (deception.pop_checklist, "POP Analysis"),
+            (deception.moses_checklist, "MOSES Analysis"),
+            (deception.eve_checklist, "EVE Analysis"),
+        ]:
+            if checklist and checklist.completed_at:
+                # Invert the checklist score (high deception indicator = low credibility)
+                checklist_credibility = 100 - checklist.overall_score
+                factors.append(CredibilityFactor(
+                    factor_type=f"deception_{name.lower().replace(' ', '_')}",
+                    weight=checklist_weight,
+                    score=checklist_credibility,
+                    notes=f"{name}: {checklist.risk_level} risk ({checklist.overall_score}% deception indicators)",
+                ))
+
+        if not factors:
+            return
+
+        # Calculate weighted score from factors
+        total_weight = sum(f.weight for f in factors)
+        if total_weight > 0:
+            final_score = int(sum(f.score * f.weight for f in factors) / total_weight)
+        else:
+            final_score = deception_credibility
+
+        # Confidence based on how many checklists were completed
+        confidence = deception.confidence if deception.confidence > 0 else 0.5
+
+        try:
+            # Check if linked assessment exists
+            if deception.linked_assessment_id:
+                existing = await self.get_assessment(deception.linked_assessment_id)
+                if existing:
+                    # Update existing assessment
+                    await self.update_assessment(
+                        assessment_id=deception.linked_assessment_id,
+                        score=final_score,
+                        confidence=confidence,
+                        factors=factors,
+                        notes=f"Auto-updated from deception assessment {deception.id}. "
+                              f"Deception risk: {deception.risk_level} ({deception.overall_score}%)",
+                    )
+                    logger.info(f"Updated credibility assessment {deception.linked_assessment_id} "
+                               f"from deception {deception.id}: score={final_score}")
+                    return
+
+            # Create new credibility assessment
+            assessment = await self.create_assessment(
+                source_type=deception.source_type,
+                source_id=deception.source_id,
+                score=final_score,
+                confidence=confidence,
+                factors=factors,
+                assessed_by=AssessmentMethod.AUTOMATED,
+                notes=f"Auto-generated from deception assessment {deception.id}. "
+                      f"Deception risk: {deception.risk_level} ({deception.overall_score}%)",
+            )
+
+            # Link the new assessment back to deception
+            deception.linked_assessment_id = assessment.id
+            await self._save_deception_assessment(deception, update=True)
+
+            logger.info(f"Created credibility assessment {assessment.id} "
+                       f"from deception {deception.id}: score={final_score}")
+
+        except Exception as e:
+            logger.error(f"Failed to sync deception to credibility: {e}")
 
     async def _save_deception_assessment(self, assessment: DeceptionAssessment, update: bool = False) -> None:
         """Save a deception assessment to the database."""

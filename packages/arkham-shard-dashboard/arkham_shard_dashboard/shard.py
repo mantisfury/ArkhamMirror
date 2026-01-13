@@ -111,9 +111,11 @@ class DashboardShard(ArkhamShard):
 
     async def get_llm_config(self) -> Dict[str, Any]:
         """Get current LLM configuration."""
+        # Get model from LLM service (which may have auto-detected it)
+        model = self.frame.llm.get_model() if self.frame.llm else "local-model"
         config = {
             "endpoint": self.frame.config.llm_endpoint,
-            "model": self.frame.config.get("llm.model", "local-model"),
+            "model": model,
             "available": self.frame.llm.is_available() if self.frame.llm else False,
             "api_key_configured": False,
             "api_key_source": None,
