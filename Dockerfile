@@ -99,7 +99,7 @@ RUN python -m spacy download en_core_web_sm || echo "spaCy model download skippe
 # -----------------------------------------------------------------------------
 FROM python:3.11-slim AS runtime
 
-LABEL org.opencontainers.image.source="https://github.com/mantisfury/SHATTERED"
+LABEL org.opencontainers.image.source="https://github.com/mantisfury/ArkhamMirror"
 LABEL org.opencontainers.image.description="SHATTERED - Modular Document Analysis Platform"
 LABEL org.opencontainers.image.licenses="MIT"
 LABEL org.opencontainers.image.title="Shattered KANDOR"
