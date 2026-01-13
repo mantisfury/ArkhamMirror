@@ -2,6 +2,7 @@
 name = "arkham-shard-documents"
 version = "0.1.0"
 description = "Document browser with viewer and metadata editor for ArkhamFrame"
+license = {text = "MIT"}
 readme = "README.md"
 requires-python = ">=3.10"
 

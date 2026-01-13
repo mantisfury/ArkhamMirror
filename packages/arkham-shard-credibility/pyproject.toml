@@ -2,6 +2,7 @@
 name = "arkham-shard-credibility"
 version = "0.1.0"
 description = "Source credibility assessment and scoring for ArkhamFrame - evaluate reliability of documents, entities, and sources"
+license = {text = "MIT"}
 readme = "README.md"
 requires-python = ">=3.10"
 

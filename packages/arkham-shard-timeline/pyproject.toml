@@ -2,6 +2,7 @@
 name = "arkham-shard-timeline"
 version = "0.1.0"
 description = "Timeline extraction and visualization shard for ArkhamFrame"
+license = {text = "MIT"}
 readme = "README.md"
 requires-python = ">=3.10"
 

@@ -2,6 +2,7 @@
 name = "arkham-shard-letters"
 version = "0.1.0"
 description = "Letter generation shard for ArkhamFrame - create formal letters from templates including FOIA requests, complaints, and legal correspondence"
+license = {text = "MIT"}
 readme = "README.md"
 requires-python = ">=3.10"
 

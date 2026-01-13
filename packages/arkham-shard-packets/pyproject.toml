@@ -2,6 +2,7 @@
 name = "arkham-shard-packets"
 version = "0.1.0"
 description = "Investigation packet management for ArkhamFrame - bundle and share documents, entities, and analyses"
+license = {text = "MIT"}
 readme = "README.md"
 requires-python = ">=3.10"
 

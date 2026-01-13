@@ -2,6 +2,7 @@
 name = "arkham-shard-ocr"
 version = "0.1.0"
 description = "OCR processing shard for ArkhamFrame"
+license = {text = "MIT"}
 readme = "README.md"
 requires-python = ">=3.10"
 

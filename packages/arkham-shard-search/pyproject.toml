@@ -2,6 +2,7 @@
 name = "arkham-shard-search"
 version = "0.1.0"
 description = "Search shard for ArkhamFrame"
+license = {text = "MIT"}
 readme = "README.md"
 requires-python = ">=3.10"
 

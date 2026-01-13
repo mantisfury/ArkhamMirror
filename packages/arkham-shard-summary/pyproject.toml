@@ -2,6 +2,7 @@
 name = "arkham-shard-summary"
 version = "0.1.0"
 description = "Auto-summarization of documents, collections, and analysis results using LLM"
+license = {text = "MIT"}
 readme = "README.md"
 requires-python = ">=3.10"
 

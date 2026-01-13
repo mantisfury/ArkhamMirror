@@ -2,6 +2,7 @@
 name = "arkham-shard-anomalies"
 version = "0.1.0"
 description = "Anomaly detection shard for ArkhamFrame"
+license = {text = "MIT"}
 readme = "README.md"
 requires-python = ">=3.10"
 

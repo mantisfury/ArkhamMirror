@@ -2,6 +2,7 @@
 name = "arkham-shard-patterns"
 version = "0.1.0"
 description = "Cross-document pattern detection shard for ArkhamFrame - identifies recurring themes, behaviors, and relationships"
+license = {text = "MIT"}
 readme = "README.md"
 requires-python = ">=3.10"
 
