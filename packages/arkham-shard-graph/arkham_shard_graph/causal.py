@@ -158,9 +158,10 @@ class CausalGraphEngine:
                 mechanism=edge.properties.get("mechanism", "") if edge.properties else "",
             ))
 
+        graph_id = getattr(graph, 'id', None) or getattr(graph, 'project_id', 'unknown')
         causal_graph = CausalGraph(
-            id=f"causal_{graph.id}",
-            name=f"Causal Graph: {graph.id}",
+            id=f"causal_{graph_id}",
+            name=f"Causal Graph: {graph_id}",
             nodes=nodes,
             edges=edges,
         )

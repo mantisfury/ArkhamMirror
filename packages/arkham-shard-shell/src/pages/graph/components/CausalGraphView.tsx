@@ -144,38 +144,53 @@ export function CausalGraphView({
     fetchCausalGraph();
   }, [projectId]);
 
-  // Calculate positions based on causal ordering
+  // Calculate positions - use grid layout for large graphs
   const positions = useMemo(() => {
     if (!data) return [];
 
     const positions: NodePosition[] = [];
+    const nodeCount = data.nodes.length;
+
+    // For large graphs (>50 nodes), always use grid layout
+    // Otherwise try to use causal ordering if it makes sense
+    const useGridLayout = nodeCount > 50 || data.causal_ordering.length === nodeCount;
+
+    // Calculate grid dimensions for proper spacing
+    const cols = Math.ceil(Math.sqrt(nodeCount));
+    const rows = Math.ceil(nodeCount / cols);
+    const nodeSpacing = 80; // Fixed spacing between nodes
+
+    // Calculate actual canvas size needed (allow scrolling)
+    const canvasWidth = Math.max(width, cols * nodeSpacing + 160);
+    const canvasHeight = Math.max(height, rows * nodeSpacing + 120);
     const margin = { top: 60, bottom: 60, left: 80, right: 80 };
 
-    // Use causal ordering for layers
-    const ordering = data.causal_ordering;
-    const layerCount = ordering.length;
+    if (useGridLayout) {
+      // Grid layout for large graphs - better visibility
+      const nodeMap = new Map(data.nodes.map(n => [n.id, n]));
+      const ordering = data.causal_ordering.length > 0 ? data.causal_ordering : data.nodes.map(n => n.id);
 
-    if (layerCount === 0) {
-      // No ordering available, use simple grid
-      const cols = Math.ceil(Math.sqrt(data.nodes.length));
-      data.nodes.forEach((node, i) => {
+      ordering.forEach((nodeId, i) => {
+        const node = nodeMap.get(nodeId);
+        if (!node) return;
+
         const row = Math.floor(i / cols);
         const col = i % cols;
         positions.push({
           id: node.id,
-          x: margin.left + (col + 0.5) * ((width - margin.left - margin.right) / cols),
-          y: margin.top + (row + 0.5) * ((height - margin.top - margin.bottom) / Math.ceil(data.nodes.length / cols)),
+          x: margin.left + col * nodeSpacing + nodeSpacing / 2,
+          y: margin.top + row * nodeSpacing + nodeSpacing / 2,
           node,
         });
       });
     } else {
-      // Position nodes in layers based on causal ordering
-      const layerSpacing = (height - margin.top - margin.bottom) / Math.max(layerCount - 1, 1);
+      // Layered layout for smaller graphs with meaningful ordering
+      const layerSpacing = (canvasHeight - margin.top - margin.bottom) / Math.max(data.causal_ordering.length - 1, 1);
       const nodeMap = new Map(data.nodes.map(n => [n.id, n]));
 
       // Group nodes by their position in ordering
       const layers: Map<number, CausalNode[]> = new Map();
-      ordering.forEach((nodeId, layerIndex) => {
+      data.causal_ordering.forEach((nodeId, layerIndex) => {
         const node = nodeMap.get(nodeId);
         if (node) {
           if (!layers.has(layerIndex)) layers.set(layerIndex, []);
@@ -184,11 +199,11 @@ export function CausalGraphView({
       });
 
       layers.forEach((layerNodes, layerIndex) => {
-        const nodeSpacing = (width - margin.left - margin.right) / Math.max(layerNodes.length, 1);
+        const nodeSpacingH = (canvasWidth - margin.left - margin.right) / Math.max(layerNodes.length, 1);
         layerNodes.forEach((node, nodeIndex) => {
           positions.push({
             id: node.id,
-            x: margin.left + (nodeIndex + 0.5) * nodeSpacing,
+            x: margin.left + (nodeIndex + 0.5) * nodeSpacingH,
             y: margin.top + layerIndex * layerSpacing,
             node,
           });
@@ -235,7 +250,7 @@ export function CausalGraphView({
     }
   }, [projectId, selectedTreatment, selectedOutcome]);
 
-  // Render D3 visualization
+  // Render D3 visualization with zoom support
   useEffect(() => {
     if (!svgRef.current || !data || positions.length === 0) return;
 
@@ -243,6 +258,35 @@ export function CausalGraphView({
     svg.selectAll('*').remove();
 
     const positionMap = new Map(positions.map(p => [p.id, p]));
+
+    // Calculate required canvas size
+    const nodeCount = data.nodes.length;
+    const cols = Math.ceil(Math.sqrt(nodeCount));
+    const rows = Math.ceil(nodeCount / cols);
+    const nodeSpacing = 80;
+    const canvasWidth = Math.max(width, cols * nodeSpacing + 200);
+    const canvasHeight = Math.max(height, rows * nodeSpacing + 200);
+
+    // Create main container group for zoom/pan
+    const container = svg.append('g').attr('class', 'container');
+
+    // Add zoom behavior
+    const zoom = d3.zoom<SVGSVGElement, unknown>()
+      .scaleExtent([0.1, 4])
+      .on('zoom', (event) => {
+        container.attr('transform', event.transform);
+      });
+
+    svg.call(zoom);
+
+    // Fit to view initially if many nodes
+    if (nodeCount > 30) {
+      const scale = Math.min(width / canvasWidth, height / canvasHeight) * 0.9;
+      const initialTransform = d3.zoomIdentity
+        .translate(width / 2 - canvasWidth * scale / 2, 20)
+        .scale(scale);
+      svg.call(zoom.transform, initialTransform);
+    }
 
     // Check if edge is on highlighted path
     const isEdgeHighlighted = (cause: string, effect: string): boolean => {
@@ -255,7 +299,7 @@ export function CausalGraphView({
     };
 
     // Create arrow marker
-    const defs = svg.append('defs');
+    const defs = container.append('defs');
     defs.append('marker')
       .attr('id', 'arrow-causal')
       .attr('viewBox', '0 -5 10 10')
@@ -281,7 +325,7 @@ export function CausalGraphView({
       .attr('fill', '#3b82f6');
 
     // Draw edges
-    const edgeGroup = svg.append('g').attr('class', 'edges');
+    const edgeGroup = container.append('g').attr('class', 'edges');
 
     data.edges.forEach(edge => {
       const sourcePos = positionMap.get(edge.cause);
@@ -322,7 +366,7 @@ export function CausalGraphView({
     });
 
     // Draw nodes
-    const nodeGroup = svg.append('g').attr('class', 'nodes');
+    const nodeGroup = container.append('g').attr('class', 'nodes');
 
     positions.forEach(pos => {
       const isConfounder = confounders.some(c => c.id === pos.node.id);

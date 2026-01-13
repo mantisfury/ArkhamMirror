@@ -92,6 +92,40 @@ def init_api(builder, algorithms, exporter, storage=None, event_bus=None, scorer
     logger.info("Graph API initialized")
 
 
+async def _get_or_build_graph(project_id: str, document_ids: list[str] | None = None):
+    """
+    Get graph from storage or build it if not available.
+
+    Args:
+        project_id: Project ID to get graph for
+        document_ids: Optional list of document IDs to filter by
+
+    Returns:
+        Graph object or None if not available
+    """
+    graph = None
+
+    # Try loading from storage first
+    if _storage:
+        try:
+            graph = await _storage.load_graph(project_id)
+        except Exception as e:
+            logger.debug(f"Could not load graph from storage: {e}")
+
+    # Build if not in storage
+    if not graph and _builder:
+        try:
+            graph = await _builder.build_graph(
+                project_id=project_id,
+                document_ids=document_ids,
+            )
+        except Exception as e:
+            logger.error(f"Error building graph: {e}")
+            return None
+
+    return graph
+
+
 # --- Endpoints ---
 
 
@@ -3034,7 +3068,7 @@ async def list_ach_matrices_for_graph(
                 "message": "ACH shard not installed or no matrices available",
             }
 
-        # Fetch matrices
+        # Fetch matrices (include those with NULL project_id for backward compatibility)
         matrices_result = await _db_service.fetch_all(
             """
             SELECT m.id, m.title, m.description, m.status, m.created_at,
@@ -3043,7 +3077,7 @@ async def list_ach_matrices_for_graph(
             FROM arkham_ach.matrices m
             LEFT JOIN arkham_ach.hypotheses h ON h.matrix_id = m.id
             LEFT JOIN arkham_ach.evidence e ON e.matrix_id = m.id
-            WHERE m.project_id = :project_id
+            WHERE m.project_id = :project_id OR m.project_id IS NULL OR m.project_id = ''
             GROUP BY m.id, m.title, m.description, m.status, m.created_at
             ORDER BY m.created_at DESC
             """,
@@ -3459,7 +3493,17 @@ async def get_geo_graph(
 
     try:
         doc_ids = document_ids.split(",") if document_ids else None
-        graph = await _get_or_build_graph(project_id, doc_ids)
+
+        # For geo view, we only need entities with metadata (for coordinates)
+        # Skip expensive co-occurrence queries since we don't need edges
+        if _builder:
+            graph = await _builder.build_graph(
+                project_id=project_id,
+                document_ids=doc_ids,
+                include_cooccurrences=False,  # Skip expensive O(n²) co-occurrence query
+            )
+        else:
+            graph = await _get_or_build_graph(project_id, doc_ids)
 
         if not graph:
             return {

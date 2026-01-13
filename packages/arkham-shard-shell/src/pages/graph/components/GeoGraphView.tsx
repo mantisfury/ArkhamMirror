@@ -9,19 +9,8 @@
  * - Zoom-dependent detail levels
  */
 
-import { useState, useEffect, useCallback } from 'react';
-import { MapContainer, TileLayer, Marker, Polyline, Popup, useMap, CircleMarker } from 'react-leaflet';
-import L from 'leaflet';
-import 'leaflet/dist/leaflet.css';
+import { useState, useEffect, useCallback, lazy, Suspense } from 'react';
 import { Icon } from '../../../components/common/Icon';
-
-// Fix Leaflet default icon issue
-delete (L.Icon.Default.prototype as any)._getIconUrl;
-L.Icon.Default.mergeOptions({
-  iconRetinaUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-icon-2x.png',
-  iconUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-icon.png',
-  shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-shadow.png',
-});
 
 // Types
 export interface GeoNode {
@@ -89,46 +78,12 @@ const ENTITY_COLORS: Record<string, string> = {
   address: '#f59e0b',
   person: '#ef4444',
   organization: '#06b6d4',
+  other: '#64748b',
   default: '#64748b',
 };
 
-// Create custom icon for entity type
-function createMarkerIcon(entityType: string, isSelected: boolean = false): L.DivIcon {
-  const color = ENTITY_COLORS[entityType.toLowerCase()] || ENTITY_COLORS.default;
-  const size = isSelected ? 16 : 12;
-
-  return L.divIcon({
-    className: 'geo-marker-icon',
-    html: `<div style="
-      width: ${size}px;
-      height: ${size}px;
-      background: ${color};
-      border: 2px solid white;
-      border-radius: 50%;
-      box-shadow: 0 2px 4px rgba(0,0,0,0.3);
-      ${isSelected ? 'transform: scale(1.3);' : ''}
-    "></div>`,
-    iconSize: [size, size],
-    iconAnchor: [size / 2, size / 2],
-  });
-}
-
-// Map bounds fitter component
-function MapBoundsFitter({ bounds }: { bounds: GeoBounds | null }) {
-  const map = useMap();
-
-  useEffect(() => {
-    if (bounds) {
-      const leafletBounds = L.latLngBounds(
-        [bounds.min_lat, bounds.min_lng],
-        [bounds.max_lat, bounds.max_lng]
-      );
-      map.fitBounds(leafletBounds, { padding: [50, 50] });
-    }
-  }, [bounds, map]);
-
-  return null;
-}
+// Lazy load the map component to avoid SSR issues
+const LazyMapView = lazy(() => import('./GeoMapView'));
 
 export function GeoGraphView({
   projectId,
@@ -137,7 +92,7 @@ export function GeoGraphView({
   height = 600,
 }: GeoGraphViewProps) {
   const [data, setData] = useState<GeoGraphData | null>(null);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [showEdges, setShowEdges] = useState(true);
@@ -173,17 +128,11 @@ export function GeoGraphView({
     fetchGeoData();
   }, [fetchGeoData]);
 
-  // Build coordinate lookup for edges
-  const nodeCoords = data?.nodes.reduce((acc, node) => {
-    acc[node.id] = [node.latitude, node.longitude] as [number, number];
-    return acc;
-  }, {} as Record<string, [number, number]>) || {};
-
   // Handle node click
-  const handleNodeClick = (nodeId: string) => {
+  const handleNodeClick = useCallback((nodeId: string) => {
     setSelectedNodeId(prev => prev === nodeId ? null : nodeId);
     onNodeClick?.(nodeId);
-  };
+  }, [onNodeClick]);
 
   // Empty/loading states
   if (loading) {
@@ -215,9 +164,6 @@ export function GeoGraphView({
       </div>
     );
   }
-
-  const defaultCenter: [number, number] = data.bounds?.center || [0, 0];
-  const defaultZoom = data.bounds ? 4 : 2;
 
   return (
     <div className="geo-view">
@@ -261,102 +207,24 @@ export function GeoGraphView({
         </div>
       </div>
 
-      {/* Map */}
+      {/* Map - Lazy loaded */}
       <div className="geo-map-container" style={{ height: height - 60 }}>
-        <MapContainer
-          center={defaultCenter}
-          zoom={defaultZoom}
-          style={{ height: '100%', width: '100%' }}
-          scrollWheelZoom={true}
-        >
-          <TileLayer
-            attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
-            url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+        <Suspense fallback={
+          <div className="geo-loading">
+            <Icon name="Loader2" size={32} className="spin" />
+            <span>Loading map...</span>
+          </div>
+        }>
+          <LazyMapView
+            data={data}
+            showEdges={showEdges}
+            showClusters={showClusters}
+            selectedNodeId={selectedNodeId}
+            onNodeClick={handleNodeClick}
+            onEdgeClick={onEdgeClick}
+            entityColors={ENTITY_COLORS}
           />
-
-          <MapBoundsFitter bounds={data.bounds} />
-
-          {/* Edges */}
-          {showEdges && data.edges.map((edge, idx) => {
-            const sourceCoords = nodeCoords[edge.source];
-            const targetCoords = nodeCoords[edge.target];
-
-            if (!sourceCoords || !targetCoords) return null;
-
-            const isSelected = selectedNodeId === edge.source || selectedNodeId === edge.target;
-
-            return (
-              <Polyline
-                key={`edge-${idx}`}
-                positions={[sourceCoords, targetCoords]}
-                pathOptions={{
-                  color: isSelected ? '#3b82f6' : '#64748b',
-                  weight: isSelected ? 3 : Math.max(1, Math.min(4, edge.weight * 2)),
-                  opacity: isSelected ? 0.9 : 0.5,
-                  dashArray: edge.relationship_type === 'related' ? '5,5' : undefined,
-                }}
-                eventHandlers={{
-                  click: () => onEdgeClick?.(edge.source, edge.target),
-                }}
-              >
-                <Popup>
-                  <div className="geo-popup">
-                    <strong>{edge.relationship_type}</strong>
-                    <div>Distance: {edge.distance_km.toFixed(1)} km</div>
-                  </div>
-                </Popup>
-              </Polyline>
-            );
-          })}
-
-          {/* Cluster circles */}
-          {showClusters && data.clusters.map((cluster) => (
-            <CircleMarker
-              key={cluster.id}
-              center={cluster.center}
-              radius={Math.max(20, Math.min(50, cluster.node_count * 5))}
-              pathOptions={{
-                color: '#8b5cf6',
-                fillColor: '#8b5cf6',
-                fillOpacity: 0.3,
-                weight: 2,
-              }}
-            >
-              <Popup>
-                <div className="geo-popup">
-                  <strong>Cluster</strong>
-                  <div>{cluster.node_count} locations</div>
-                  <div>Radius: {cluster.radius_km.toFixed(1)} km</div>
-                </div>
-              </Popup>
-            </CircleMarker>
-          ))}
-
-          {/* Node markers */}
-          {data.nodes.map((node) => (
-            <Marker
-              key={node.id}
-              position={[node.latitude, node.longitude]}
-              icon={createMarkerIcon(node.entity_type, selectedNodeId === node.id)}
-              eventHandlers={{
-                click: () => handleNodeClick(node.id),
-              }}
-            >
-              <Popup>
-                <div className="geo-popup">
-                  <strong>{node.label}</strong>
-                  <div className="entity-type">{node.entity_type}</div>
-                  {node.address && <div>{node.address}</div>}
-                  {node.city && <div>{node.city}</div>}
-                  {node.country && <div>{node.country}</div>}
-                  <div className="coords">
-                    {node.latitude.toFixed(4)}, {node.longitude.toFixed(4)}
-                  </div>
-                </div>
-              </Popup>
-            </Marker>
-          ))}
-        </MapContainer>
+        </Suspense>
       </div>
 
       {/* Legend */}

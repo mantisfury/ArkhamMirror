@@ -138,18 +138,17 @@ class GraphBuilder:
         if self.db_service:
             try:
                 # Build query with optional filters
-                # Use entities shard's arkham_entities table (aggregated entities with document_ids)
+                # Use arkham_frame.entities table (core entity storage)
                 query = """
                     SELECT
                         id,
-                        name as label,
+                        text as label,
                         entity_type,
                         metadata,
-                        mention_count as document_count,
-                        document_ids
-                    FROM arkham_entities
-                    WHERE canonical_id IS NULL  -- Only non-merged entities
-                      AND mention_count > 0
+                        1 as document_count,
+                        document_id
+                    FROM arkham_frame.entities
+                    WHERE canonical_id IS NULL
                 """
                 params: dict[str, Any] = {}
 
@@ -158,12 +157,12 @@ class GraphBuilder:
                     query += " AND entity_type = ANY(:entity_types)"
                     params["entity_types"] = entity_types
 
-                # Filter by documents (if specified) - uses JSONB containment
+                # Filter by documents (if specified)
                 if document_ids:
-                    query += " AND document_ids ?| :document_ids"
+                    query += " AND document_id = ANY(:document_ids)"
                     params["document_ids"] = document_ids
 
-                query += " ORDER BY mention_count DESC"
+                query += " ORDER BY created_at DESC"
                 query += " LIMIT 500"  # Reasonable limit for visualization
 
                 rows = await self.db_service.fetch_all(query, params)
@@ -237,29 +236,29 @@ class GraphBuilder:
         if self.db_service:
             try:
                 # Query co-occurrences: entities that appear in the same document
-                # Use arkham_entity_mentions table from entities shard
+                # Use arkham_frame.entities table directly
                 query = """
                     SELECT
-                        m1.entity_id as entity_a,
-                        m2.entity_id as entity_b,
-                        COUNT(DISTINCT m1.document_id) as co_occurrence_count,
-                        ARRAY_AGG(DISTINCT m1.document_id::text) as document_ids
-                    FROM arkham_entity_mentions m1
-                    JOIN arkham_entity_mentions m2
-                        ON m1.document_id = m2.document_id
-                        AND m1.entity_id < m2.entity_id  -- Avoid duplicates
-                    WHERE m1.entity_id = ANY(:entity_ids)
-                      AND m2.entity_id = ANY(:entity_ids)
+                        e1.id as entity_a,
+                        e2.id as entity_b,
+                        COUNT(DISTINCT e1.document_id) as co_occurrence_count,
+                        ARRAY_AGG(DISTINCT e1.document_id::text) as document_ids
+                    FROM arkham_frame.entities e1
+                    JOIN arkham_frame.entities e2
+                        ON e1.document_id = e2.document_id
+                        AND e1.id < e2.id  -- Avoid duplicates
+                    WHERE e1.id = ANY(:entity_ids)
+                      AND e2.id = ANY(:entity_ids)
                 """
                 params: dict[str, Any] = {"entity_ids": entity_ids}
 
                 if document_ids:
-                    query += " AND m1.document_id = ANY(:document_ids)"
+                    query += " AND e1.document_id = ANY(:document_ids)"
                     params["document_ids"] = document_ids
 
                 query += """
-                    GROUP BY m1.entity_id, m2.entity_id
-                    HAVING COUNT(DISTINCT m1.document_id) >= :min_count
+                    GROUP BY e1.id, e2.id
+                    HAVING COUNT(DISTINCT e1.document_id) >= :min_count
                     ORDER BY co_occurrence_count DESC
                     LIMIT 1000
                 """
@@ -336,7 +335,7 @@ class GraphBuilder:
             return relationships
 
         try:
-            # Use arkham_entity_relationships (populated by entities shard from parse events)
+            # Use arkham_frame.entity_relationships if it exists
             query = """
                 SELECT
                     source_id,
@@ -344,7 +343,7 @@ class GraphBuilder:
                     relationship_type,
                     confidence,
                     metadata
-                FROM arkham_entity_relationships
+                FROM arkham_frame.entity_relationships
                 WHERE source_id = ANY(:entity_ids)
                   AND target_id = ANY(:entity_ids)
             """

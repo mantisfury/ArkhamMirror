@@ -1589,29 +1589,36 @@ export function GraphPage() {
                 // Apply physics simulation settings
                 ref={(fg: ForceGraphMethods | null) => {
                   if (fg) {
-                    // Store ref for other operations
-                    (graphRef as any).current = fg;
-                    // Apply force simulation settings (only for force layout)
-                    if (layout.layoutType === 'force') {
-                      fg.d3Force('charge')?.strength(physics.chargeStrength);
-                      fg.d3Force('link')
-                        ?.distance(physics.linkDistance)
-                        ?.strength(physics.linkStrength);
-                      fg.d3Force('center')?.strength(physics.centerStrength);
-                      // Add collision force for minimum separation
-                      const d3 = (fg as any).d3Force;
-                      if (d3 && physics.collisionPadding > 0) {
-                        // Create collision force if needed
-                        const collision = d3('collision');
-                        if (collision) {
-                          collision.radius((node: GraphNode) => getNodeRadius(node) + physics.collisionPadding);
-                        }
+                    try {
+                      // Store ref for other operations
+                      (graphRef as any).current = fg;
+                      // Check if d3Force method exists and is callable
+                      if (typeof fg.d3Force !== 'function') {
+                        console.warn('ForceGraph ref received but d3Force is not available');
+                        return;
                       }
-                    } else {
-                      // For calculated layouts, minimize physics forces
-                      fg.d3Force('charge')?.strength(-10);
-                      fg.d3Force('link')?.strength(0);
-                      fg.d3Force('center')?.strength(0);
+                      // Apply force simulation settings (only for force layout)
+                      if (layout.layoutType === 'force') {
+                        fg.d3Force('charge')?.strength(physics.chargeStrength);
+                        fg.d3Force('link')
+                          ?.distance(physics.linkDistance)
+                          ?.strength(physics.linkStrength);
+                        fg.d3Force('center')?.strength(physics.centerStrength);
+                        // Add collision force for minimum separation
+                        if (physics.collisionPadding > 0) {
+                          const collision = fg.d3Force('collision');
+                          if (collision && typeof (collision as any).radius === 'function') {
+                            (collision as any).radius((node: GraphNode) => getNodeRadius(node) + physics.collisionPadding);
+                          }
+                        }
+                      } else {
+                        // For calculated layouts, minimize physics forces
+                        fg.d3Force('charge')?.strength(-10);
+                        fg.d3Force('link')?.strength(0);
+                        fg.d3Force('center')?.strength(0);
+                      }
+                    } catch (err) {
+                      console.warn('Error configuring force graph physics:', err);
                     }
                   }
                 }}

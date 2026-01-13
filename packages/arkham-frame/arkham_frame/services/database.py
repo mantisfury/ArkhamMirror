@@ -240,7 +240,7 @@ class DatabaseService:
             return {"success": False, "error": str(e)}
 
     async def reset_database(self) -> Dict[str, Any]:
-        """Drop and recreate all arkham schemas. DANGEROUS!"""
+        """Drop and recreate all arkham schemas and public arkham_* tables. DANGEROUS!"""
         if not self._connected:
             return {"success": False, "error": "Database not connected"}
 
@@ -249,8 +249,10 @@ class DatabaseService:
 
             schemas = await self.list_schemas()
             dropped = []
+            dropped_tables = []
 
             with self._engine.connect() as conn:
+                # Drop arkham_* schemas
                 for schema in schemas:
                     try:
                         conn.execute(text(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE'))
@@ -260,10 +262,34 @@ class DatabaseService:
                     except Exception as e:
                         logger.error(f"Failed to drop schema {schema}: {e}")
 
+                # Also drop arkham_* tables in public schema (e.g., arkham_entities)
+                try:
+                    result = conn.execute(text(
+                        "SELECT table_name FROM information_schema.tables "
+                        "WHERE table_schema = 'public' AND table_name LIKE 'arkham_%'"
+                    ))
+                    public_tables = [row[0] for row in result.fetchall()]
+
+                    for table in public_tables:
+                        try:
+                            conn.execute(text(f'DROP TABLE IF EXISTS "public"."{table}" CASCADE'))
+                            conn.commit()
+                            dropped_tables.append(table)
+                            logger.info(f"Dropped public table: {table}")
+                        except Exception as e:
+                            logger.error(f"Failed to drop table {table}: {e}")
+                except Exception as e:
+                    logger.error(f"Failed to list public arkham tables: {e}")
+
+            message = f"Dropped {len(dropped)} schemas: {', '.join(dropped)}"
+            if dropped_tables:
+                message += f"; {len(dropped_tables)} public tables: {', '.join(dropped_tables)}"
+
             return {
                 "success": True,
-                "message": f"Dropped {len(dropped)} schemas: {', '.join(dropped)}",
+                "message": message,
                 "schemas_dropped": dropped,
+                "tables_dropped": dropped_tables,
             }
         except Exception as e:
             logger.error(f"Database reset failed: {e}")

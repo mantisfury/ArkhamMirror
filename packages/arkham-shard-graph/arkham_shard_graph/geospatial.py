@@ -104,8 +104,10 @@ class GeoGraphEngine:
 
     # Common coordinate patterns
     COORD_PATTERNS = [
-        # Decimal degrees: 40.7128, -74.0060
-        r'(-?\d+\.?\d*)\s*,\s*(-?\d+\.?\d*)',
+        # Decimal degrees in parentheses: (40.7128, -74.0060) - most common format in our data
+        r'\(\s*(-?\d+\.\d+)\s*,\s*(-?\d+\.\d+)\s*\)',
+        # Decimal degrees without parentheses but with decimal points required
+        r'(-?\d+\.\d{2,})\s*,\s*(-?\d+\.\d{2,})',
         # DMS: 40°42'46"N 74°0'22"W
         r"(\d+)°(\d+)'(\d+(?:\.\d+)?)[\"″]?\s*([NS])\s+(\d+)°(\d+)'(\d+(?:\.\d+)?)[\"″]?\s*([EW])",
     ]
@@ -148,17 +150,48 @@ class GeoGraphEngine:
                     except (ValueError, TypeError):
                         lat, lng = None, None
 
-            # Try to parse coordinates from label or description
+            # Try to parse coordinates from label, description, or sentence
             if lat is None or lng is None:
-                text_to_parse = node.label or ""
-                if node.properties:
-                    text_to_parse += " " + str(node.properties.get("description", ""))
-                    text_to_parse += " " + str(node.properties.get("address", ""))
+                label = node.label or ""
 
-                coords = self._parse_coordinates(text_to_parse)
-                if coords:
-                    lat, lng = coords
-                    location_type = "parsed"
+                if node.properties:
+                    # Try to find coordinates associated with THIS entity's label in the sentence
+                    # This is the preferred method as it ensures we get the correct coordinates
+                    sentence = str(node.properties.get("sentence", ""))
+                    if sentence and label:
+                        # Check if label appears followed by coordinates somewhere in the sentence
+                        # Pattern: "Label, any words (lat, lng)" - e.g., "London, United Kingdom (51.5074, -0.1278)"
+                        # Also handles: "Label (lat, lng)" directly
+                        label_with_coords = re.search(
+                            rf'{re.escape(label)}[^(]*\((-?\d+\.\d+)\s*,\s*(-?\d+\.\d+)\)',
+                            sentence,
+                            re.IGNORECASE
+                        )
+                        if label_with_coords:
+                            try:
+                                parsed_lat = float(label_with_coords.group(1))
+                                parsed_lng = float(label_with_coords.group(2))
+                                if -90 <= parsed_lat <= 90 and -180 <= parsed_lng <= 180:
+                                    lat = parsed_lat
+                                    lng = parsed_lng
+                                    location_type = "parsed"
+                            except ValueError:
+                                pass
+
+                # Only use fallback parsing from label/description if we still don't have coordinates
+                # (Don't parse random coordinates from sentences not associated with this entity)
+                if lat is None or lng is None:
+                    text_to_parse = label
+                    if node.properties:
+                        text_to_parse += " " + str(node.properties.get("description", ""))
+                        text_to_parse += " " + str(node.properties.get("address", ""))
+                        # Note: We intentionally do NOT add sentence here to avoid
+                        # extracting coordinates belonging to other entities
+
+                    coords = self._parse_coordinates(text_to_parse)
+                    if coords:
+                        lat, lng = coords
+                        location_type = "parsed"
 
             # Skip nodes without valid coordinates
             if lat is None or lng is None:
@@ -188,19 +221,20 @@ class GeoGraphEngine:
         if not text:
             return None
 
-        # Try decimal degrees pattern
-        decimal_match = re.search(self.COORD_PATTERNS[0], text)
-        if decimal_match:
-            try:
-                lat = float(decimal_match.group(1))
-                lng = float(decimal_match.group(2))
-                if -90 <= lat <= 90 and -180 <= lng <= 180:
-                    return (lat, lng)
-            except ValueError:
-                pass
+        # Try decimal degrees patterns (first two patterns)
+        for i in range(2):
+            decimal_match = re.search(self.COORD_PATTERNS[i], text)
+            if decimal_match:
+                try:
+                    lat = float(decimal_match.group(1))
+                    lng = float(decimal_match.group(2))
+                    if -90 <= lat <= 90 and -180 <= lng <= 180:
+                        return (lat, lng)
+                except ValueError:
+                    pass
 
-        # Try DMS pattern
-        dms_match = re.search(self.COORD_PATTERNS[1], text, re.IGNORECASE)
+        # Try DMS pattern (third pattern)
+        dms_match = re.search(self.COORD_PATTERNS[2], text, re.IGNORECASE)
         if dms_match:
             try:
                 lat_deg = int(dms_match.group(1))
