@@ -2929,7 +2929,7 @@ async def get_argumentation_graph(
         # Fetch ratings
         ratings_result = await _db_service.fetch_all(
             """
-            SELECT evidence_id, hypothesis_id, rating, reasoning, confidence
+            SELECT evidence_id, hypothesis_id, rating, notes
             FROM arkham_ach.ratings
             WHERE matrix_id = :matrix_id
             """,
@@ -2941,35 +2941,50 @@ async def get_argumentation_graph(
                 "evidence_id": row["evidence_id"],
                 "hypothesis_id": row["hypothesis_id"],
                 "rating": row["rating"],
-                "reasoning": row["reasoning"] or "",
-                "confidence": row["confidence"],
+                "reasoning": row["notes"] or "",
+                "confidence": 1.0,  # Default confidence since column doesn't exist
             }
             for row in ratings_result
         ]
 
-        # Fetch scores if available
-        scores_result = await _db_service.fetch_all(
-            """
-            SELECT hypothesis_id, consistency_score, inconsistency_count,
-                   weighted_score, normalized_score, rank
-            FROM arkham_ach.hypothesis_scores
-            WHERE matrix_id = :matrix_id
-            ORDER BY rank
-            """,
-            {"matrix_id": matrix_id}
-        )
+        # Fetch scores if available (table may not exist)
+        scores = []
+        try:
+            # Check if hypothesis_scores table exists
+            table_check = await _db_service.fetch_one(
+                """
+                SELECT EXISTS (
+                    SELECT FROM information_schema.tables
+                    WHERE table_schema = 'arkham_ach'
+                    AND table_name = 'hypothesis_scores'
+                )
+                """
+            )
+            if table_check and table_check.get("exists"):
+                scores_result = await _db_service.fetch_all(
+                    """
+                    SELECT hypothesis_id, consistency_score, inconsistency_count,
+                           weighted_score, normalized_score, rank
+                    FROM arkham_ach.hypothesis_scores
+                    WHERE matrix_id = :matrix_id
+                    ORDER BY rank
+                    """,
+                    {"matrix_id": matrix_id}
+                )
 
-        scores = [
-            {
-                "hypothesis_id": row["hypothesis_id"],
-                "consistency_score": row["consistency_score"],
-                "inconsistency_count": row["inconsistency_count"],
-                "weighted_score": row["weighted_score"],
-                "normalized_score": row["normalized_score"],
-                "rank": row["rank"],
-            }
-            for row in scores_result
-        ]
+                scores = [
+                    {
+                        "hypothesis_id": row["hypothesis_id"],
+                        "consistency_score": row["consistency_score"],
+                        "inconsistency_count": row["inconsistency_count"],
+                        "weighted_score": row["weighted_score"],
+                        "normalized_score": row["normalized_score"],
+                        "rank": row["rank"],
+                    }
+                    for row in scores_result
+                ]
+        except Exception as score_err:
+            logger.warning(f"Could not fetch hypothesis scores: {score_err}")
 
         # Build matrix data dict
         matrix_data = {
