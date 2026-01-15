@@ -1,0 +1,447 @@
+/* RegexSearchPanel Styles */
+
+.regex-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  height: 100%;
+}
+
+/* Input Section */
+.regex-input-section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  padding: 1rem;
+  background: var(--surface-secondary);
+  border: 1px solid var(--border-primary);
+  border-radius: 0.5rem;
+}
+
+.regex-input-row {
+  display: flex;
+  gap: 0.75rem;
+  align-items: center;
+}
+
+.regex-input-wrapper {
+  flex: 1;
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.regex-input {
+  width: 100%;
+  padding: 0.625rem 2.5rem 0.625rem 0.75rem;
+  background: var(--surface-primary);
+  border: 1px solid var(--border-primary);
+  border-radius: 0.375rem;
+  color: var(--text-primary);
+  font-family: monospace;
+  font-size: 0.875rem;
+}
+
+.regex-input:focus {
+  outline: none;
+  border-color: var(--color-primary);
+}
+
+.regex-input::placeholder {
+  color: var(--text-tertiary);
+}
+
+.regex-input-icon {
+  position: absolute;
+  right: 0.75rem;
+  display: flex;
+  align-items: center;
+}
+
+/* Validation Feedback */
+.regex-validation {
+  padding: 0.5rem 0;
+}
+
+.regex-validation-msg {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.8125rem;
+}
+
+.regex-validation-warning {
+  color: var(--text-tertiary);
+  font-size: 0.75rem;
+}
+
+/* Performance indicators */
+.regex-perf-fast {
+  color: #10b981;
+}
+
+.regex-perf-moderate {
+  color: #f59e0b;
+}
+
+.regex-perf-slow {
+  color: #f97316;
+}
+
+.regex-perf-dangerous {
+  color: #ef4444;
+}
+
+.regex-perf-invalid {
+  color: #ef4444;
+}
+
+/* Flags */
+.regex-flags {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.regex-flags-label {
+  font-size: 0.8125rem;
+  color: var(--text-secondary);
+}
+
+.regex-flag-btn {
+  padding: 0.25rem 0.625rem;
+  background: var(--surface-primary);
+  border: 1px solid var(--border-primary);
+  border-radius: 0.25rem;
+  color: var(--text-secondary);
+  font-family: monospace;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.regex-flag-btn:hover {
+  background: var(--surface-secondary);
+  border-color: var(--text-tertiary);
+}
+
+.regex-flag-btn.active {
+  background: var(--color-primary);
+  border-color: var(--color-primary);
+  color: white;
+}
+
+/* Presets Section */
+.regex-presets-section {
+  background: var(--surface-secondary);
+  border: 1px solid var(--border-primary);
+  border-radius: 0.5rem;
+  overflow: hidden;
+}
+
+.regex-presets-toggle {
+  width: 100%;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.75rem 1rem;
+  background: transparent;
+  border: none;
+  color: var(--text-primary);
+  font-size: 0.875rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.regex-presets-toggle:hover {
+  background: var(--surface-primary);
+}
+
+.regex-presets-content {
+  padding: 0.75rem 1rem;
+  border-top: 1px solid var(--border-primary);
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.regex-presets-loading {
+  padding: 1rem;
+  text-align: center;
+  color: var(--text-secondary);
+  font-size: 0.875rem;
+}
+
+.regex-preset-category {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.regex-preset-category-header {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.025em;
+}
+
+.regex-preset-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.375rem;
+}
+
+.regex-preset-btn {
+  padding: 0.375rem 0.75rem;
+  background: var(--surface-primary);
+  border: 1px solid var(--border-primary);
+  border-radius: 0.375rem;
+  color: var(--text-primary);
+  font-size: 0.8125rem;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.regex-preset-btn:hover {
+  background: var(--color-primary);
+  border-color: var(--color-primary);
+  color: white;
+}
+
+/* Results Section */
+.regex-results {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface-secondary);
+  border: 1px solid var(--border-primary);
+  border-radius: 0.5rem;
+  overflow: hidden;
+  min-height: 200px;
+}
+
+.regex-results-loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.75rem;
+  padding: 2rem;
+  color: var(--text-secondary);
+}
+
+.regex-results-error {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 1rem;
+  color: #ef4444;
+  font-size: 0.875rem;
+}
+
+.regex-results-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.75rem 1rem;
+  background: var(--surface-primary);
+  border-bottom: 1px solid var(--border-primary);
+  font-size: 0.875rem;
+  color: var(--text-secondary);
+}
+
+.regex-results-header strong {
+  color: var(--text-primary);
+}
+
+.regex-results-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  padding: 2rem;
+  color: var(--text-tertiary);
+  text-align: center;
+}
+
+.regex-results-empty p {
+  margin: 0;
+  font-size: 0.875rem;
+}
+
+.regex-results-hint {
+  font-size: 0.75rem !important;
+  color: var(--text-tertiary);
+}
+
+/* Match List */
+.regex-match-list {
+  flex: 1;
+  overflow-y: auto;
+}
+
+.regex-match-item {
+  display: flex;
+  gap: 0.75rem;
+  padding: 0.75rem 1rem;
+  border-bottom: 1px solid var(--border-primary);
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.regex-match-item:last-child {
+  border-bottom: none;
+}
+
+.regex-match-item:hover {
+  background: var(--surface-primary);
+}
+
+.regex-match-item > svg {
+  flex-shrink: 0;
+  color: var(--text-tertiary);
+  margin-top: 0.125rem;
+}
+
+.regex-match-content {
+  flex: 1;
+  min-width: 0;
+}
+
+.regex-match-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.375rem;
+}
+
+.regex-match-title {
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+.regex-match-badge {
+  padding: 0.125rem 0.375rem;
+  background: var(--surface-secondary);
+  border-radius: 0.25rem;
+  font-size: 0.6875rem;
+  color: var(--text-tertiary);
+}
+
+.regex-match-context {
+  font-family: monospace;
+  font-size: 0.8125rem;
+  color: var(--text-secondary);
+  line-height: 1.5;
+  word-break: break-word;
+}
+
+.regex-context-text {
+  color: var(--text-secondary);
+}
+
+.regex-match-highlight {
+  background: rgba(59, 130, 246, 0.3);
+  color: #60a5fa;
+  padding: 0.0625rem 0.125rem;
+  border-radius: 0.125rem;
+}
+
+/* Spinner animation */
+.spin {
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Button styles - reusing common patterns */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  padding: 0.5rem 1rem;
+  border-radius: 0.375rem;
+  font-size: 0.875rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn-primary {
+  background: var(--color-primary);
+  border: none;
+  color: white;
+}
+
+.btn-primary:hover:not(:disabled) {
+  background: var(--color-primary-hover, #2563eb);
+}
+
+/* Detected Patterns Section */
+.regex-detected-badge {
+  padding: 0.125rem 0.5rem;
+  background: var(--color-primary);
+  border-radius: 0.75rem;
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: white;
+  margin-left: auto;
+  margin-right: 0.5rem;
+}
+
+.regex-detected-empty {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.75rem;
+  color: var(--text-tertiary);
+  font-size: 0.8125rem;
+}
+
+.regex-detected-count {
+  margin-left: 0.375rem;
+  padding: 0.0625rem 0.375rem;
+  background: rgba(255, 255, 255, 0.15);
+  border-radius: 0.25rem;
+  font-size: 0.6875rem;
+}
+
+/* Status indicators for detected patterns */
+.regex-detected-status-detected {
+  border-left: 2px solid #f59e0b;
+}
+
+.regex-detected-status-confirmed {
+  border-left: 2px solid #10b981;
+}
+
+.regex-detected-status-dismissed {
+  opacity: 0.5;
+  border-left: 2px solid var(--border-primary);
+}
+
+.regex-detected-status-archived {
+  opacity: 0.6;
+  border-left: 2px solid var(--text-tertiary);
+}

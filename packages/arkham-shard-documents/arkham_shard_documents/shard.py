@@ -9,6 +9,7 @@ from arkham_frame.shard_interface import ArkhamShard
 
 from .api import router
 from .models import DocumentRecord, DocumentStatus
+from .services import DeduplicationService
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +50,7 @@ class DocumentsShard(ArkhamShard):
         self._events = None
         self._storage = None
         self._document_service = None
+        self._deduplication_service = None
 
     async def initialize(self, frame) -> None:
         """
@@ -77,6 +79,10 @@ class DocumentsShard(ArkhamShard):
 
         if not self._document_service:
             logger.warning("Document service not available - using database directly")
+
+        # Initialize deduplication service
+        self._deduplication_service = DeduplicationService(self._db)
+        logger.info("Deduplication service initialized")
 
         # Create database schema
         await self._create_schema()
@@ -108,12 +114,18 @@ class DocumentsShard(ArkhamShard):
         self._events = None
         self._storage = None
         self._document_service = None
+        self._deduplication_service = None
 
         logger.info("Documents Shard shutdown complete")
 
     def get_routes(self):
         """Return FastAPI router for this shard."""
         return router
+
+    @property
+    def deduplication(self) -> DeduplicationService | None:
+        """Get deduplication service."""
+        return self._deduplication_service
 
     async def _create_schema(self) -> None:
         """
@@ -262,6 +274,63 @@ class DocumentsShard(ArkhamShard):
             ON arkham_document_views(tenant_id)
         """)
 
+        # ===========================================
+        # Deduplication Tables (arkham_documents schema)
+        # ===========================================
+        await self._db.execute("CREATE SCHEMA IF NOT EXISTS arkham_documents")
+
+        # Content hashes for deduplication
+        await self._db.execute("""
+            CREATE TABLE IF NOT EXISTS arkham_documents.content_hashes (
+                id TEXT PRIMARY KEY,
+                document_id TEXT NOT NULL UNIQUE,
+                content_md5 TEXT,
+                content_sha256 TEXT,
+                simhash BIGINT,
+                text_length INTEGER,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                tenant_id UUID
+            )
+        """)
+
+        # Merge history for audit trail
+        await self._db.execute("""
+            CREATE TABLE IF NOT EXISTS arkham_documents.merge_history (
+                id TEXT PRIMARY KEY,
+                primary_document_id TEXT NOT NULL,
+                merged_document_ids JSONB NOT NULL,
+                strategy TEXT,
+                cleanup_action TEXT,
+                references_updated INTEGER DEFAULT 0,
+                documents_cleaned INTEGER DEFAULT 0,
+                merged_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                merged_by TEXT,
+                tenant_id UUID
+            )
+        """)
+
+        # Indexes for deduplication
+        await self._db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_content_hashes_doc
+            ON arkham_documents.content_hashes(document_id)
+        """)
+        await self._db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_content_hashes_md5
+            ON arkham_documents.content_hashes(content_md5)
+        """)
+        await self._db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_content_hashes_sha256
+            ON arkham_documents.content_hashes(content_sha256)
+        """)
+        await self._db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_content_hashes_simhash
+            ON arkham_documents.content_hashes(simhash)
+        """)
+        await self._db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_merge_history_primary
+            ON arkham_documents.merge_history(primary_document_id)
+        """)
+
         logger.info("Documents shard database schema created")
 
     # --- Helper Methods ---
@@ -324,8 +393,8 @@ class DocumentsShard(ArkhamShard):
             id=row["id"],
             title=row.get("filename", ""),  # Frame uses filename, no separate title
             filename=row.get("filename", ""),
-            file_type=row.get("mime_type", ""),
-            file_size=row.get("file_size", 0),
+            file_type=row.get("mime_type") or "",  # Handle None values
+            file_size=row.get("file_size") or 0,
             status=DocumentStatus(row.get("status", "pending")),
             page_count=row.get("page_count", 0),
             chunk_count=row.get("chunk_count", 0),

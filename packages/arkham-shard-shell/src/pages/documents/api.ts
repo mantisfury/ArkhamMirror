@@ -90,6 +90,37 @@ export interface BatchResult {
   details?: Array<{ id: string; success?: boolean; error?: string }>;
 }
 
+// --- Deduplication Types ---
+
+export interface DocumentHash {
+  document_id: string;
+  content_md5: string;
+  content_sha256: string;
+  simhash: number;
+  text_length: number;
+}
+
+export interface DuplicateResult {
+  document_id: string;
+  title: string;
+  similarity_score: number;
+  hamming_distance: number;
+  match_type: 'exact' | 'similar';
+}
+
+export interface DeduplicationStats {
+  total_documents: number;
+  documents_with_hash: number;
+  unique_content_hashes: number;
+  potential_duplicates: number;
+}
+
+export interface MergeRequest {
+  source_ids: string[];
+  target_id: string;
+  strategy: 'soft_delete' | 'archive' | 'permanent_delete';
+}
+
 // --- API Functions ---
 
 async function fetchAPI<T>(endpoint: string, options?: RequestInit): Promise<T> {
@@ -184,6 +215,51 @@ export async function batchDeleteDocuments(documentIds: string[]): Promise<Batch
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ document_ids: documentIds }),
+  });
+}
+
+// --- Deduplication API Functions ---
+
+export async function computeDocumentHash(documentId: string): Promise<DocumentHash> {
+  return fetchAPI<DocumentHash>(`/${documentId}/compute-hash`, {
+    method: 'POST',
+  });
+}
+
+export async function findExactDuplicates(documentId: string): Promise<DuplicateResult[]> {
+  return fetchAPI<DuplicateResult[]>(`/${documentId}/duplicates/exact`);
+}
+
+export async function findSimilarDuplicates(
+  documentId: string,
+  threshold: number = 0.8
+): Promise<DuplicateResult[]> {
+  return fetchAPI<DuplicateResult[]>(`/${documentId}/duplicates/similar?threshold=${threshold}`);
+}
+
+export async function getDeduplicationStats(): Promise<DeduplicationStats> {
+  return fetchAPI<DeduplicationStats>('/deduplication/stats');
+}
+
+export async function scanForDuplicates(
+  projectId: string,
+  similarityThreshold: number = 0.8
+): Promise<DuplicateResult[]> {
+  return fetchAPI<DuplicateResult[]>(
+    `/deduplication/scan?project_id=${projectId}`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ similarity_threshold: similarityThreshold }),
+    }
+  );
+}
+
+export async function mergeDuplicates(request: MergeRequest): Promise<BatchResult> {
+  return fetchAPI<BatchResult>('/deduplication/merge', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(request),
   });
 }
 
@@ -318,4 +394,81 @@ export function useBatchDelete() {
   }, []);
 
   return { deleteDocuments, loading, error };
+}
+
+// --- Deduplication Hooks ---
+
+/**
+ * Hook for fetching deduplication stats
+ */
+export function useDeduplicationStats() {
+  return useFetch<DeduplicationStats>(`${API_PREFIX}/deduplication/stats`);
+}
+
+/**
+ * Hook for finding exact duplicates of a document
+ */
+export function useExactDuplicates(documentId: string | null) {
+  const url = documentId ? `${API_PREFIX}/${documentId}/duplicates/exact` : null;
+  return useFetch<DuplicateResult[]>(url);
+}
+
+/**
+ * Hook for finding similar duplicates of a document
+ */
+export function useSimilarDuplicates(documentId: string | null, threshold: number = 0.8) {
+  const url = documentId
+    ? `${API_PREFIX}/${documentId}/duplicates/similar?threshold=${threshold}`
+    : null;
+  return useFetch<DuplicateResult[]>(url);
+}
+
+/**
+ * Hook for computing document hash
+ */
+export function useComputeHash() {
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<Error | null>(null);
+
+  const computeHash = useCallback(async (documentId: string) => {
+    setLoading(true);
+    setError(null);
+    try {
+      const result = await computeDocumentHash(documentId);
+      return result;
+    } catch (err) {
+      const error = err instanceof Error ? err : new Error('Hash computation failed');
+      setError(error);
+      throw error;
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  return { computeHash, loading, error };
+}
+
+/**
+ * Hook for merging duplicates
+ */
+export function useMergeDuplicates() {
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<Error | null>(null);
+
+  const merge = useCallback(async (request: MergeRequest) => {
+    setLoading(true);
+    setError(null);
+    try {
+      const result = await mergeDuplicates(request);
+      return result;
+    } catch (err) {
+      const error = err instanceof Error ? err : new Error('Merge failed');
+      setError(error);
+      throw error;
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  return { merge, loading, error };
 }

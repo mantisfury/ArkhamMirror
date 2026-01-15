@@ -14,6 +14,7 @@ import {
   type DocumentChunk,
   type DocumentEntity,
 } from './api';
+import { DeduplicationPanel } from './DeduplicationPanel';
 import './DocumentViewer.css';
 
 interface DocumentViewerProps {
@@ -21,7 +22,7 @@ interface DocumentViewerProps {
   onClose: () => void;
 }
 
-type ViewerTab = 'content' | 'chunks' | 'entities' | 'metadata';
+type ViewerTab = 'content' | 'chunks' | 'entities' | 'metadata' | 'duplicates';
 
 const ENTITY_TYPE_COLORS: Record<string, string> = {
   PERSON: '#3b82f6',
@@ -130,9 +131,27 @@ export function DocumentViewer({ documentId, onClose }: DocumentViewerProps) {
         return renderEntitiesTab();
       case 'metadata':
         return renderMetadataTab();
+      case 'duplicates':
+        return renderDuplicatesTab();
       default:
         return null;
     }
+  };
+
+  const renderDuplicatesTab = () => {
+    return (
+      <DeduplicationPanel
+        documentId={documentId}
+        onViewDocument={(docId) => {
+          // Could navigate to the duplicate document
+          console.log('View duplicate document:', docId);
+        }}
+        onRefresh={() => {
+          // Refresh document data after merge
+          refetchContent();
+        }}
+      />
+    );
   };
 
   const renderContentTab = () => {
@@ -509,6 +528,13 @@ export function DocumentViewer({ documentId, onClose }: DocumentViewerProps) {
         >
           <Icon name="Info" size={16} />
           Metadata
+        </button>
+        <button
+          className={`tab-btn ${activeTab === 'duplicates' ? 'active' : ''}`}
+          onClick={() => setActiveTab('duplicates')}
+        >
+          <Icon name="Copy" size={16} />
+          Duplicates
         </button>
       </div>
 

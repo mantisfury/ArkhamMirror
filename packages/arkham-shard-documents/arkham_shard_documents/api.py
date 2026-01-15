@@ -662,3 +662,261 @@ async def ai_junior_analyst(request: Request, body: AIJuniorAnalystRequest):
             "X-Accel-Buffering": "no",
         },
     )
+
+
+# --- Deduplication Endpoints ---
+
+
+class DuplicateMatchResponse(BaseModel):
+    """A potential duplicate match."""
+    document_id: str
+    title: str
+    similarity_score: float
+    hamming_distance: int
+    match_type: str
+
+
+class DuplicateGroupResponse(BaseModel):
+    """A group of duplicate documents."""
+    group_id: str
+    primary_document_id: str
+    duplicate_ids: List[str]
+    similarity_threshold: float
+    detection_method: str
+
+
+class MergeRequest(BaseModel):
+    """Request to merge duplicate documents."""
+    primary_id: str
+    duplicate_ids: List[str]
+    strategy: str = "keep_primary"
+    preserve_references: bool = True
+    cleanup_action: str = "soft_delete"
+
+
+class MergeResponse(BaseModel):
+    """Response from merge operation."""
+    primary_id: str
+    merged_count: int
+    references_updated: int
+    documents_cleaned: int
+    cleanup_action: str
+
+
+class DeduplicationStats(BaseModel):
+    """Deduplication statistics."""
+    total_documents: int
+    documents_with_hash: int
+    unique_content_hashes: int
+    potential_duplicates: int
+
+
+@router.post("/{document_id}/compute-hash")
+async def compute_document_hash(document_id: str, request: Request):
+    """
+    Compute and store content hashes for a document.
+
+    Computes MD5, SHA256, and SimHash for deduplication.
+    """
+    shard = get_shard(request)
+
+    if not shard.deduplication:
+        raise HTTPException(status_code=503, detail="Deduplication service not available")
+
+    # Get document content
+    content = await shard.get_document_content(document_id)
+    if not content:
+        raise HTTPException(status_code=404, detail=f"Document content not found: {document_id}")
+
+    # Compute hashes
+    result = await shard.deduplication.compute_hash(
+        document_id=document_id,
+        text=content["content"],
+        store=True,
+    )
+
+    return {
+        "document_id": document_id,
+        "content_md5": result["content_md5"],
+        "content_sha256": result["content_sha256"],
+        "simhash": result["simhash"],
+        "text_length": result["text_length"],
+    }
+
+
+@router.get("/{document_id}/duplicates/exact", response_model=List[DuplicateMatchResponse])
+async def find_exact_duplicates(
+    document_id: str,
+    request: Request,
+    project_id: Optional[str] = Query(None, description="Limit to project"),
+):
+    """
+    Find exact duplicates of a document.
+
+    Uses content SHA256 hash for exact matching.
+    """
+    shard = get_shard(request)
+
+    if not shard.deduplication:
+        raise HTTPException(status_code=503, detail="Deduplication service not available")
+
+    matches = await shard.deduplication.find_exact_duplicates(
+        document_id=document_id,
+        project_id=project_id,
+    )
+
+    return [
+        DuplicateMatchResponse(
+            document_id=m.document_id,
+            title=m.title,
+            similarity_score=m.similarity_score,
+            hamming_distance=m.hamming_distance,
+            match_type=m.match_type,
+        )
+        for m in matches
+    ]
+
+
+@router.get("/{document_id}/duplicates/similar", response_model=List[DuplicateMatchResponse])
+async def find_similar_documents(
+    document_id: str,
+    request: Request,
+    threshold: float = Query(0.85, ge=0.0, le=1.0, description="Similarity threshold"),
+    project_id: Optional[str] = Query(None, description="Limit to project"),
+    limit: int = Query(20, ge=1, le=100, description="Maximum results"),
+):
+    """
+    Find similar documents using SimHash.
+
+    Returns documents with similarity above threshold.
+    """
+    shard = get_shard(request)
+
+    if not shard.deduplication:
+        raise HTTPException(status_code=503, detail="Deduplication service not available")
+
+    matches = await shard.deduplication.find_similar_documents(
+        document_id=document_id,
+        threshold=threshold,
+        project_id=project_id,
+        limit=limit,
+    )
+
+    return [
+        DuplicateMatchResponse(
+            document_id=m.document_id,
+            title=m.title,
+            similarity_score=m.similarity_score,
+            hamming_distance=m.hamming_distance,
+            match_type=m.match_type,
+        )
+        for m in matches
+    ]
+
+
+@router.post("/deduplication/scan", response_model=List[DuplicateGroupResponse])
+async def scan_project_duplicates(
+    request: Request,
+    project_id: str = Query(..., description="Project to scan"),
+    threshold: float = Query(0.85, ge=0.0, le=1.0, description="Similarity threshold"),
+):
+    """
+    Scan entire project for duplicate groups.
+
+    Returns groups of documents that appear to be duplicates.
+    """
+    shard = get_shard(request)
+
+    if not shard.deduplication:
+        raise HTTPException(status_code=503, detail="Deduplication service not available")
+
+    groups = await shard.deduplication.scan_project_duplicates(
+        project_id=project_id,
+        threshold=threshold,
+    )
+
+    return [
+        DuplicateGroupResponse(
+            group_id=g.group_id,
+            primary_document_id=g.primary_document_id,
+            duplicate_ids=g.duplicate_ids,
+            similarity_threshold=g.similarity_threshold,
+            detection_method=g.detection_method,
+        )
+        for g in groups
+    ]
+
+
+@router.post("/deduplication/merge", response_model=MergeResponse)
+async def merge_duplicates(body: MergeRequest, request: Request):
+    """
+    Merge duplicate documents into a primary document.
+
+    Cleanup actions:
+    - soft_delete: Mark duplicates as merged (recommended)
+    - archive: Move to archive status
+    - hard_delete: Permanently delete (irreversible)
+    - keep: Only update references, keep duplicates
+    """
+    shard = get_shard(request)
+
+    if not shard.deduplication:
+        raise HTTPException(status_code=503, detail="Deduplication service not available")
+
+    # Validate primary document exists
+    primary_doc = await shard.get_document(body.primary_id)
+    if not primary_doc:
+        raise HTTPException(status_code=404, detail=f"Primary document not found: {body.primary_id}")
+
+    result = await shard.deduplication.merge_documents(
+        primary_id=body.primary_id,
+        duplicate_ids=body.duplicate_ids,
+        strategy=body.strategy,
+        preserve_references=body.preserve_references,
+        cleanup_action=body.cleanup_action,
+    )
+
+    # Emit event
+    if shard._events:
+        await shard._events.emit(
+            "documents.duplicates.merged",
+            {
+                "primary_id": result.primary_id,
+                "merged_count": result.merged_count,
+                "cleanup_action": result.cleanup_action,
+            },
+            source="documents-shard",
+        )
+
+    return MergeResponse(
+        primary_id=result.primary_id,
+        merged_count=result.merged_count,
+        references_updated=result.references_updated,
+        documents_cleaned=result.documents_cleaned,
+        cleanup_action=result.cleanup_action,
+    )
+
+
+@router.get("/deduplication/stats", response_model=DeduplicationStats)
+async def get_deduplication_stats(
+    request: Request,
+    project_id: Optional[str] = Query(None, description="Filter by project"),
+):
+    """
+    Get deduplication statistics.
+
+    Returns counts of documents, unique hashes, and potential duplicates.
+    """
+    shard = get_shard(request)
+
+    if not shard.deduplication:
+        raise HTTPException(status_code=503, detail="Deduplication service not available")
+
+    stats = await shard.deduplication.get_deduplication_stats(project_id=project_id)
+
+    return DeduplicationStats(
+        total_documents=stats.get("total_documents", 0),
+        documents_with_hash=stats.get("documents_with_hash", 0),
+        unique_content_hashes=stats.get("unique_content_hashes", 0),
+        potential_duplicates=stats.get("potential_duplicates", 0),
+    )

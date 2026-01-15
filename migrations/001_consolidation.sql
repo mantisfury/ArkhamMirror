@@ -40,10 +40,12 @@ CREATE TABLE IF NOT EXISTS arkham_vectors.collections (
 );
 
 -- Main embeddings table
+-- Using untyped vector allows variable dimensions per collection/model
+-- Each collection tracks its own vector_size in arkham_vectors.collections
 CREATE TABLE IF NOT EXISTS arkham_vectors.embeddings (
     id VARCHAR(36) PRIMARY KEY,
     collection VARCHAR(100) NOT NULL,
-    embedding vector(2000),  -- Max pgvector dimension with index
+    embedding vector,  -- Untyped: supports 384 (MiniLM), 768 (mpnet), 1024 (bge-m3), etc.
     payload JSONB DEFAULT '{}',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP

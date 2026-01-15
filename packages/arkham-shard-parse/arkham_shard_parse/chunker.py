@@ -126,9 +126,19 @@ class TextChunker:
         Returns:
             List of text chunks
         """
-        # Simple sentence splitting on period, exclamation, question mark
+        # Sentence splitting that preserves emails, URLs, and abbreviations
+        # Only splits on punctuation that looks like a sentence boundary:
+        # - Period/!/? followed by whitespace and then an uppercase letter
+        # - Period/!/? followed by newline
+        # Does NOT split on periods in emails, URLs, abbreviations, or decimals
         import re
-        sentences = re.split(r'[.!?]+', text)
+
+        # Split on sentence-ending punctuation followed by whitespace and capital letter,
+        # or followed by newline/end of text
+        # This preserves: emails (agent.smith@cia.gov), URLs, abbreviations, decimals
+        sentence_pattern = r'(?<=[.!?])\s+(?=[A-Z])|(?<=[.!?])\s*(?=\n)'
+
+        sentences = re.split(sentence_pattern, text)
 
         chunks = []
         chunk_index = 0
@@ -210,8 +220,10 @@ class TextChunker:
         import re
         import numpy as np
 
-        # Split into sentences
-        sentences = re.split(r'(?<=[.!?])\s+', text)
+        # Split into sentences - preserve emails, URLs, abbreviations
+        # Only split on punctuation followed by whitespace and capital letter
+        sentence_pattern = r'(?<=[.!?])\s+(?=[A-Z])|(?<=[.!?])\s*(?=\n)'
+        sentences = re.split(sentence_pattern, text)
         sentences = [s.strip() for s in sentences if s.strip()]
 
         if len(sentences) < 3:
