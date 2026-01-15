@@ -946,6 +946,33 @@ Return as JSON with factors and overall score."""
 
         return {"score": 50, "factors": []}
 
+    async def _find_existing_credibility_assessment(
+        self,
+        source_type: SourceType,
+        source_id: str,
+    ) -> Optional[CredibilityAssessment]:
+        """Find an existing credibility assessment for a source (most recent)."""
+        if not self._db:
+            return None
+
+        query = """
+            SELECT * FROM arkham_credibility_assessments
+            WHERE source_type = :source_type AND source_id = :source_id
+        """
+        params = {"source_type": source_type.value, "source_id": source_id}
+
+        tenant_id = self.get_tenant_id_or_none()
+        if tenant_id:
+            query += " AND tenant_id = :tenant_id"
+            params["tenant_id"] = str(tenant_id)
+
+        query += " ORDER BY created_at DESC LIMIT 1"
+
+        row = await self._db.fetch_one(query, params)
+        if row:
+            return self._row_to_assessment(row)
+        return None
+
     # =========================================================================
     # DECEPTION DETECTION (MOM/POP/MOSES/EVE) METHODS
     # =========================================================================
@@ -957,11 +984,18 @@ Return as JSON with factors and overall score."""
         source_name: Optional[str] = None,
         linked_assessment_id: Optional[str] = None,
         affects_credibility: bool = True,
-        credibility_weight: float = 0.3,
+        credibility_weight: float = 0.7,
     ) -> DeceptionAssessment:
         """Create a new deception detection assessment with empty checklists."""
         assessment_id = str(uuid4())
         now = datetime.utcnow()
+
+        # Auto-link to existing credibility assessment if none provided
+        if not linked_assessment_id and affects_credibility:
+            existing = await self._find_existing_credibility_assessment(source_type, source_id)
+            if existing:
+                linked_assessment_id = existing.id
+                logger.info(f"Auto-linked deception assessment to existing credibility {existing.id}")
 
         # Create empty checklists with standard indicators
         mom_checklist = create_empty_checklist(DeceptionChecklistType.MOM)
@@ -1361,7 +1395,7 @@ IMPORTANT: Use the exact indicator IDs from the questions above (e.g., "{indicat
         - 100 = strong deception indicators
 
         Credibility score is inverted: high deception = low credibility
-        The deception score is weighted by credibility_weight (default 0.3).
+        The deception score is weighted by credibility_weight (default 0.7).
         """
         if not deception.affects_credibility:
             return
@@ -1377,8 +1411,14 @@ IMPORTANT: Use the exact indicator IDs from the questions above (e.g., "{indicat
         deception_credibility = 100 - deception.overall_score
 
         # Create credibility factors from completed checklists
+        # Use the same weights as the deception assessment calculation
+        checklist_weights = {
+            "MOM Analysis": 0.35,    # MOM most heavily weighted
+            "EVE Analysis": 0.25,    # Evidence evaluation second
+            "MOSES Analysis": 0.25,  # Manipulability third
+            "POP Analysis": 0.15,    # Past practices least (often unknown)
+        }
         factors = []
-        checklist_weight = 0.25  # Each checklist gets equal weight
 
         for checklist, name in [
             (deception.mom_checklist, "MOM Analysis"),
@@ -1391,7 +1431,7 @@ IMPORTANT: Use the exact indicator IDs from the questions above (e.g., "{indicat
                 checklist_credibility = 100 - checklist.overall_score
                 factors.append(CredibilityFactor(
                     factor_type=f"deception_{name.lower().replace(' ', '_')}",
-                    weight=checklist_weight,
+                    weight=checklist_weights[name],
                     score=checklist_credibility,
                     notes=f"{name}: {checklist.risk_level} risk ({checklist.overall_score}% deception indicators)",
                 ))
@@ -1405,6 +1445,25 @@ IMPORTANT: Use the exact indicator IDs from the questions above (e.g., "{indicat
             final_score = int(sum(f.score * f.weight for f in factors) / total_weight)
         else:
             final_score = deception_credibility
+
+        # SEVERITY OVERRIDE: High deception scores force low credibility
+        # This ensures that conclusive/strong deception evidence dramatically impacts credibility
+        # regardless of how other factors might average out
+        if deception.overall_score >= 80:  # Critical risk
+            # Conclusive deception: cap credibility at 15 (Unreliable)
+            final_score = min(final_score, 15)
+            logger.info(f"Deception severity override: critical risk ({deception.overall_score}%) "
+                       f"capped credibility at {final_score}")
+        elif deception.overall_score >= 60:  # High risk
+            # Strong deception: cap credibility at 30 (Low)
+            final_score = min(final_score, 30)
+            logger.info(f"Deception severity override: high risk ({deception.overall_score}%) "
+                       f"capped credibility at {final_score}")
+        elif deception.overall_score >= 40:  # Moderate risk
+            # Moderate deception: cap credibility at 50 (Medium)
+            final_score = min(final_score, 50)
+            logger.info(f"Deception severity override: moderate risk ({deception.overall_score}%) "
+                       f"capped credibility at {final_score}")
 
         # Confidence based on how many checklists were completed
         confidence = deception.confidence if deception.confidence > 0 else 0.5
@@ -1573,7 +1632,7 @@ IMPORTANT: Use the exact indicator IDs from the questions above (e.g., "{indicat
             confidence=row.get("confidence", 0.0),
             linked_assessment_id=row.get("linked_assessment_id"),
             affects_credibility=bool(row.get("affects_credibility", 1)),
-            credibility_weight=row.get("credibility_weight", 0.3),
+            credibility_weight=row.get("credibility_weight", 0.7),
             assessed_by=AssessmentMethod(row.get("assessed_by", "manual")),
             assessor_id=row.get("assessor_id"),
             summary=row.get("summary"),

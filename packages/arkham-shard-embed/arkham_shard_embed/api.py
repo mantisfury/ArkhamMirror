@@ -709,13 +709,63 @@ async def update_config(request: ConfigUpdateRequest):
 
 @router.get("/cache/stats")
 async def get_cache_stats():
-    """Get embedding cache statistics."""
-    if not _embedding_manager:
-        raise HTTPException(status_code=503, detail="Embedding service not initialized")
+    """
+    Get embedding statistics.
 
+    Returns actual embedding counts from the vector store database,
+    which is more meaningful than in-memory cache stats since most
+    embeddings are processed through the worker pool.
+    """
     try:
-        cache_info = _embedding_manager.get_cache_info()
-        return cache_info
+        # Get in-memory cache info if available
+        cache_info = {}
+        if _embedding_manager:
+            cache_info = _embedding_manager.get_cache_info()
+
+        # Get actual embedding stats from database
+        total_embeddings = 0
+        total_documents = 0
+        total_chunks = 0
+
+        if _db_service:
+            try:
+                # Count total embeddings in vector store
+                embed_count = await _db_service.fetch_one(
+                    "SELECT COUNT(*) as count FROM arkham_vectors.embeddings"
+                )
+                total_embeddings = embed_count.get("count", 0) if embed_count else 0
+
+                # Count unique documents with embeddings
+                doc_count = await _db_service.fetch_one(
+                    """SELECT COUNT(DISTINCT payload->>'document_id') as count
+                       FROM arkham_vectors.embeddings
+                       WHERE payload->>'document_id' IS NOT NULL"""
+                )
+                total_documents = doc_count.get("count", 0) if doc_count else 0
+
+                # Count total chunks in system
+                chunk_count = await _db_service.fetch_one(
+                    "SELECT COUNT(*) as count FROM arkham_frame.chunks"
+                )
+                total_chunks = chunk_count.get("count", 0) if chunk_count else 0
+            except Exception as db_err:
+                logger.debug(f"Could not get embedding counts from DB: {db_err}")
+
+        # Calculate coverage rate (embeddings vs chunks)
+        coverage_rate = total_embeddings / total_chunks if total_chunks > 0 else 0.0
+
+        return {
+            "enabled": cache_info.get("enabled", False),
+            "hits": total_embeddings,  # Total embeddings stored
+            "misses": max(0, total_chunks - total_embeddings),  # Chunks not yet embedded
+            "size": total_documents,  # Documents with embeddings
+            "max_size": total_chunks,  # Total chunks available
+            "hit_rate": coverage_rate,  # Embedding coverage percentage
+            # Additional context
+            "total_embeddings": total_embeddings,
+            "total_documents": total_documents,
+            "total_chunks": total_chunks,
+        }
     except Exception as e:
         logger.error(f"Failed to get cache stats: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to get cache stats: {str(e)}")

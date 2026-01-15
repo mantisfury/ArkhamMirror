@@ -42,6 +42,7 @@ const CHECKLIST_TYPES: DeceptionChecklistType[] = ['mom', 'pop', 'moses', 'eve']
 export function DeceptionPanel({
   sourceType,
   sourceId,
+  credibilityAssessmentId,
   onRiskChange,
 }: DeceptionPanelProps) {
   const { toast } = useToast();
@@ -110,6 +111,8 @@ export function DeceptionPanel({
   useEffect(() => {
     const fetchData = async () => {
       setLoading(true);
+      // Reset assessment state when source changes to avoid showing stale data
+      setAssessment(null);
       try {
         // Fetch source info for display
         await fetchSourceInfo();
@@ -161,9 +164,10 @@ export function DeceptionPanel({
           source_type: sourceType,
           source_id: sourceId,
           source_name: sourceInfo?.name,
+          linked_assessment_id: credibilityAssessmentId,
           assessed_by: 'manual',
           affects_credibility: true,
-          credibility_weight: 0.3,
+          credibility_weight: 0.7, // Higher weight for meaningful impact
         }),
       });
 
