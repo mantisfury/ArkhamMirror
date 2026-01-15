@@ -7,14 +7,12 @@ Quick reference for starting the SHATTERED development environment.
 ## Prerequisites
 
 ### Required Services
-- **PostgreSQL 14+** - Document and metadata storage
-- **Redis 6+** - Job queues and caching
-- **Qdrant** - Vector embeddings for semantic search
+- **PostgreSQL 15+** with **pgvector** extension - All data storage (documents, vectors, job queue)
 
 ### Development Tools
 - Python 3.10+
 - Node.js 18+
-- npm or pnpm
+- npm
 
 ---
 
@@ -23,14 +21,17 @@ Quick reference for starting the SHATTERED development environment.
 The easiest way to run SHATTERED is with Docker Compose:
 
 ```bash
-# Start all services (PostgreSQL, Redis, Qdrant, Frame, Shell)
+# Start all services (PostgreSQL + App)
 docker compose up -d
 
 # View logs
-docker compose logs -f
+docker compose logs -f app
 
 # Stop services
 docker compose down
+
+# Stop and delete all data
+docker compose down -v
 ```
 
 **Access Points:**
@@ -42,21 +43,21 @@ docker compose down
 
 ## Manual Setup (Development)
 
-### 1. Start External Services
+### 1. Start PostgreSQL with pgvector
 
-Start PostgreSQL, Redis, and Qdrant (via Docker or locally):
+Start PostgreSQL with the pgvector extension:
 
 ```bash
-# Using Docker for services only
-docker compose up -d postgres redis qdrant
+# Using Docker for PostgreSQL only
+docker compose up -d postgres
 ```
 
-Or configure your own instances and set environment variables:
+Or use a local PostgreSQL instance with pgvector installed:
 ```bash
-export DATABASE_URL=postgresql://user:pass@localhost:5432/shattered
-export REDIS_URL=redis://localhost:6379
-export QDRANT_URL=http://localhost:6333
+export DATABASE_URL=postgresql://arkham:arkhampass@localhost:5432/arkhamdb
 ```
+
+The migration script (`migrations/001_consolidation.sql`) creates required extensions and schemas automatically.
 
 ### 2. Install Python Packages
 
@@ -65,7 +66,7 @@ export QDRANT_URL=http://localhost:6333
 cd packages/arkham-frame && pip install -e .
 
 # Install all shards
-for dir in ../arkham-shard-*/; do pip install -e "$dir"; done
+for dir in packages/arkham-shard-*/; do pip install -e "$dir"; done
 
 # Or install specific shards
 pip install -e packages/arkham-shard-dashboard
@@ -121,6 +122,25 @@ When using Docker Compose, both UI and API are served from port 8100.
 
 ---
 
+## Architecture
+
+SHATTERED uses a **PostgreSQL-only** architecture:
+
+| Component | Technology | Purpose |
+|-----------|------------|---------|
+| **Database** | PostgreSQL 15+ | Relational data, schema per shard |
+| **Vectors** | pgvector extension | Semantic search, embeddings |
+| **Job Queue** | PostgreSQL (SKIP LOCKED) | Background task processing |
+| **Events** | PostgreSQL LISTEN/NOTIFY | Real-time event distribution |
+
+This consolidation (replacing Redis + Qdrant) provides:
+- Single dependency for deployment
+- Air-gap compatible operation
+- ACID transactions across vectors and data
+- Simplified operations
+
+---
+
 ## Available Shards (25)
 
 All shards auto-register when installed:
@@ -144,29 +164,59 @@ Copy `.env.example` to `.env` and customize:
 cp .env.example .env
 ```
 
-Key settings:
-- `APP_PORT` - API port (default: 8100)
-- `DATABASE_URL` - PostgreSQL connection
-- `REDIS_URL` - Redis connection
-- `QDRANT_URL` - Vector store connection
-- `LLM_ENDPOINT` - Optional LLM API (LM Studio, OpenAI, etc.)
-- `LLM_API_KEY` - API key if required
+### Required Settings
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DATABASE_URL` | `postgresql://arkham:arkhampass@localhost:5432/arkhamdb` | PostgreSQL connection |
+| `AUTH_SECRET_KEY` | (generate for prod) | JWT signing key - use `openssl rand -hex 32` |
+
+### Optional LLM Settings
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `LLM_ENDPOINT` | `http://localhost:1234/v1` | LLM API endpoint (LM Studio, OpenAI, etc.) |
+| `LM_STUDIO_URL` | - | Convenience variable for LM Studio |
+| `VLM_ENDPOINT` | - | Vision model for OCR (Qwen-VL, GPT-4o) |
+| `EMBED_MODEL` | `all-MiniLM-L6-v2` | Embedding model name |
+
+### API Keys (environment only, never in config files)
+- `LLM_API_KEY` - Generic LLM API key
+- `OPENAI_API_KEY` - OpenAI
+- `OPENROUTER_API_KEY` - OpenRouter
+- `ANTHROPIC_API_KEY` - Anthropic
+- `TOGETHER_API_KEY` - Together AI
+- `GROQ_API_KEY` - Groq
+
+### Other Settings
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `CORS_ORIGINS` | `localhost:5173,localhost:8100` | Allowed CORS origins |
+| `ARKHAM_OFFLINE_MODE` | `false` | Air-gap mode (no model downloads) |
+| `ARKHAM_SERVE_SHELL` | `false` | Serve static UI from backend |
 
 ---
 
-## Running Workers (Optional)
+## Worker Pools
 
-Background workers process jobs like document parsing and embedding:
+Workers auto-spawn when jobs are submitted. Available pools:
 
-```bash
-# List available worker pools
-python -m arkham_frame.workers --list-pools
+| Pool | Type | Workers | Purpose |
+|------|------|---------|---------|
+| `io-file` | IO | 20 | File operations |
+| `io-db` | IO | 10 | Database operations |
+| `cpu-light` | CPU | 50 | Light processing |
+| `cpu-heavy` | CPU | 6 | Heavy computations |
+| `cpu-ner` | CPU | 8 | Named Entity Recognition |
+| `cpu-extract` | CPU | 4 | Data extraction |
+| `cpu-image` | CPU | 4 | Image processing |
+| `cpu-archive` | CPU | 2 | Archive processing |
+| `gpu-paddle` | GPU | 1 | OCR (2GB VRAM) |
+| `gpu-qwen` | GPU | 1 | Vision tasks (8GB VRAM) |
+| `gpu-whisper` | GPU | 1 | Audio transcription (4GB VRAM) |
+| `gpu-embed` | GPU | 1 | Embedding generation (2GB VRAM) |
+| `llm-enrich` | LLM | 4 | Data enrichment |
+| `llm-analysis` | LLM | 2 | Analysis tasks |
 
-# Start workers for specific pools
-python -m arkham_frame.workers --pool cpu-light --count 2
-python -m arkham_frame.workers --pool cpu-parse --count 2
-python -m arkham_frame.workers --pool gpu-embed --count 1
-```
+Workers are managed via the Dashboard shard's Workers tab.
 
 ---
 
@@ -177,7 +227,6 @@ python -m arkham_frame.workers --pool gpu-embed --count 1
 2. Verify packages installed: `pip list | grep arkham`
 3. Check port availability: `netstat -an | grep 8100`
 4. Verify PostgreSQL is running and accessible
-5. Check Redis is running
 
 ### UI won't start
 1. Check Node version: `node --version` (need 18+)
@@ -187,11 +236,12 @@ python -m arkham_frame.workers --pool gpu-embed --count 1
 ### Database connection errors
 1. Verify PostgreSQL is running
 2. Check DATABASE_URL in .env
-3. Ensure database exists: `createdb shattered`
+3. Ensure database exists with pgvector extension
 
 ### Vector search not working
-1. Verify Qdrant is running: `curl http://localhost:6333/health`
-2. Check QDRANT_URL in .env
+1. Check pgvector extension is installed: `SELECT * FROM pg_extension WHERE extname = 'vector';`
+2. Verify embedding model is downloaded (check logs for download progress)
+3. For air-gap mode, ensure models are pre-cached in `ARKHAM_MODEL_CACHE`
 
 ### Shards not discovered
 1. Verify shard package installed: `pip show arkham-shard-ach`
@@ -201,8 +251,9 @@ python -m arkham_frame.workers --pool gpu-embed --count 1
 
 ### LLM features not working
 1. LLM is optional - app works without it
-2. Check LLM_ENDPOINT and LLM_API_KEY in .env
+2. Check LLM_ENDPOINT in .env
 3. Verify LLM service is running (LM Studio, Ollama, etc.)
+4. Check API key is set in environment (not config file)
 
 ---
 
@@ -212,7 +263,7 @@ python -m arkham_frame.workers --pool gpu-embed --count 1
 1. Create package in `packages/arkham-shard-{name}/`
 2. Use `arkham-shard-ach` as reference implementation
 3. Add `pyproject.toml` with entry_points
-4. Create `shard.yaml` manifest
+4. Create `shard.yaml` manifest (v5 format)
 5. Install with `pip install -e .`
 6. Restart backend to discover
 
@@ -222,7 +273,12 @@ python -m arkham_frame.workers --pool gpu-embed --count 1
 
 ### Checking shard registration
 ```bash
-curl http://localhost:8100/health | jq '.shards'
+curl http://localhost:8100/api/shards | jq
+```
+
+### Checking service health
+```bash
+curl http://localhost:8100/health | jq
 ```
 
 ---
