@@ -116,9 +116,11 @@ export interface DeduplicationStats {
 }
 
 export interface MergeRequest {
-  source_ids: string[];
-  target_id: string;
-  strategy: 'soft_delete' | 'archive' | 'permanent_delete';
+  primary_id: string;
+  duplicate_ids: string[];
+  strategy?: string;
+  preserve_references?: boolean;
+  cleanup_action: 'soft_delete' | 'archive' | 'hard_delete' | 'keep';
 }
 
 // --- API Functions ---

@@ -30,7 +30,7 @@ export function DeduplicationPanel({
   const [showSimilar, setShowSimilar] = useState(true);
   const [similarThreshold, setSimilarThreshold] = useState(0.8);
   const [selectedDuplicates, setSelectedDuplicates] = useState<Set<string>>(new Set());
-  const [mergeStrategy, setMergeStrategy] = useState<MergeRequest['strategy']>('soft_delete');
+  const [mergeStrategy, setMergeStrategy] = useState<MergeRequest['cleanup_action']>('soft_delete');
 
   const { computeHash, loading: hashLoading, error: hashError } = useComputeHash();
   const { merge, loading: mergeLoading } = useMergeDuplicates();
@@ -77,9 +77,10 @@ export function DeduplicationPanel({
 
     try {
       await merge({
-        source_ids: Array.from(selectedDuplicates),
-        target_id: documentId,
-        strategy: mergeStrategy,
+        primary_id: documentId,
+        duplicate_ids: Array.from(selectedDuplicates),
+        cleanup_action: mergeStrategy,
+        preserve_references: true,
       });
       setSelectedDuplicates(new Set());
       refetchExact();
@@ -261,12 +262,13 @@ export function DeduplicationPanel({
           </span>
           <select
             value={mergeStrategy}
-            onChange={(e) => setMergeStrategy(e.target.value as MergeRequest['strategy'])}
+            onChange={(e) => setMergeStrategy(e.target.value as MergeRequest['cleanup_action'])}
             className="dedup-select"
           >
             <option value="soft_delete">Soft Delete</option>
             <option value="archive">Archive</option>
-            <option value="permanent_delete">Permanent Delete</option>
+            <option value="hard_delete">Hard Delete</option>
+            <option value="keep">Keep All</option>
           </select>
           <button
             onClick={handleMerge}
