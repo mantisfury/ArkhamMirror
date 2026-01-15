@@ -1949,6 +1949,241 @@ async def find_path(request: PathRequest) -> PathResponse:
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# --- Advanced Pathfinding Endpoints ---
+
+
+class AllPathsRequest(BaseModel):
+    """Request for finding all paths between entities."""
+    project_id: str
+    source_entity_id: str
+    target_entity_id: str
+    max_depth: int = 6
+    max_paths: int = 10
+
+
+class AllPathsResponse(BaseModel):
+    """Response for all paths query."""
+    paths_found: int
+    paths: list[dict[str, Any]]
+
+
+class WeightedPathRequest(BaseModel):
+    """Request for weighted path finding."""
+    project_id: str
+    source_entity_id: str
+    target_entity_id: str
+    max_depth: int = 10
+    use_max_weight: bool = True  # True for strongest path, False for weakest
+
+
+class ConstrainedPathRequest(BaseModel):
+    """Request for constrained path finding."""
+    project_id: str
+    source_entity_id: str
+    target_entity_id: str
+    required_entities: list[str] | None = None
+    excluded_entities: list[str] | None = None
+    required_relationship_types: list[str] | None = None
+    min_edge_weight: float = 0.0
+    max_depth: int = 8
+
+
+class PathsThroughRequest(BaseModel):
+    """Request for finding paths through an entity."""
+    project_id: str
+    intermediate_entity_id: str
+    max_sources: int = 5
+    max_targets: int = 5
+    max_depth: int = 3
+
+
+@router.post("/paths/all")
+async def find_all_paths(request: AllPathsRequest) -> AllPathsResponse:
+    """
+    Find all paths between two entities.
+
+    Returns multiple paths up to max_paths, sorted by length.
+    Useful for discovering all connection routes.
+    """
+    if not _algorithms:
+        raise HTTPException(status_code=503, detail="Graph algorithms not available")
+
+    try:
+        # Get graph
+        if _storage:
+            graph = await _storage.load_graph(request.project_id)
+        elif _builder:
+            graph = await _builder.build_graph(project_id=request.project_id)
+        else:
+            raise HTTPException(status_code=503, detail="Graph service not available")
+
+        # Find all paths
+        paths = _algorithms.find_all_paths(
+            graph=graph,
+            source_entity_id=request.source_entity_id,
+            target_entity_id=request.target_entity_id,
+            max_depth=request.max_depth,
+            max_paths=request.max_paths,
+        )
+
+        return AllPathsResponse(
+            paths_found=len(paths),
+            paths=[p.to_dict() for p in paths],
+        )
+
+    except Exception as e:
+        logger.error(f"Error finding all paths: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/paths/weighted")
+async def find_weighted_path(request: WeightedPathRequest) -> PathResponse:
+    """
+    Find optimal weighted path between entities.
+
+    Uses Dijkstra's algorithm to find the path with:
+    - Maximum total weight (strongest connections) when use_max_weight=True
+    - Minimum total weight (weakest connections) when use_max_weight=False
+    """
+    if not _algorithms:
+        raise HTTPException(status_code=503, detail="Graph algorithms not available")
+
+    try:
+        # Get graph
+        if _storage:
+            graph = await _storage.load_graph(request.project_id)
+        elif _builder:
+            graph = await _builder.build_graph(project_id=request.project_id)
+        else:
+            raise HTTPException(status_code=503, detail="Graph service not available")
+
+        # Find weighted path
+        path = _algorithms.find_weighted_path(
+            graph=graph,
+            source_entity_id=request.source_entity_id,
+            target_entity_id=request.target_entity_id,
+            max_depth=request.max_depth,
+            use_max_weight=request.use_max_weight,
+        )
+
+        if not path:
+            return PathResponse(
+                path_found=False,
+                path_length=0,
+                path=[],
+                edges=[],
+                total_weight=0.0,
+            )
+
+        return PathResponse(
+            path_found=True,
+            path_length=path.path_length,
+            path=path.path,
+            edges=[e.to_dict() for e in path.edges],
+            total_weight=path.total_weight,
+        )
+
+    except Exception as e:
+        logger.error(f"Error finding weighted path: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/paths/constrained")
+async def find_constrained_path(request: ConstrainedPathRequest) -> PathResponse:
+    """
+    Find path with constraints on nodes and edges.
+
+    Supports:
+    - Required entities (must pass through)
+    - Excluded entities (must avoid)
+    - Relationship type filtering
+    - Minimum edge weight
+    """
+    if not _algorithms:
+        raise HTTPException(status_code=503, detail="Graph algorithms not available")
+
+    try:
+        # Get graph
+        if _storage:
+            graph = await _storage.load_graph(request.project_id)
+        elif _builder:
+            graph = await _builder.build_graph(project_id=request.project_id)
+        else:
+            raise HTTPException(status_code=503, detail="Graph service not available")
+
+        # Find constrained path
+        path = _algorithms.find_constrained_path(
+            graph=graph,
+            source_entity_id=request.source_entity_id,
+            target_entity_id=request.target_entity_id,
+            required_entities=request.required_entities,
+            excluded_entities=request.excluded_entities,
+            required_relationship_types=request.required_relationship_types,
+            min_edge_weight=request.min_edge_weight,
+            max_depth=request.max_depth,
+        )
+
+        if not path:
+            return PathResponse(
+                path_found=False,
+                path_length=0,
+                path=[],
+                edges=[],
+                total_weight=0.0,
+            )
+
+        return PathResponse(
+            path_found=True,
+            path_length=path.path_length,
+            path=path.path,
+            edges=[e.to_dict() for e in path.edges],
+            total_weight=path.total_weight,
+        )
+
+    except Exception as e:
+        logger.error(f"Error finding constrained path: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/paths/through")
+async def find_paths_through_entity(request: PathsThroughRequest) -> AllPathsResponse:
+    """
+    Find paths that pass through a specific entity.
+
+    Useful for identifying what connections an entity bridges
+    and understanding their position in the network.
+    """
+    if not _algorithms:
+        raise HTTPException(status_code=503, detail="Graph algorithms not available")
+
+    try:
+        # Get graph
+        if _storage:
+            graph = await _storage.load_graph(request.project_id)
+        elif _builder:
+            graph = await _builder.build_graph(project_id=request.project_id)
+        else:
+            raise HTTPException(status_code=503, detail="Graph service not available")
+
+        # Find paths through entity
+        paths = _algorithms.find_paths_through(
+            graph=graph,
+            intermediate_entity_id=request.intermediate_entity_id,
+            max_sources=request.max_sources,
+            max_targets=request.max_targets,
+            max_depth=request.max_depth,
+        )
+
+        return AllPathsResponse(
+            paths_found=len(paths),
+            paths=[p.to_dict() for p in paths],
+        )
+
+    except Exception as e:
+        logger.error(f"Error finding paths through entity: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/centrality/{project_id}")
 async def calculate_centrality(
     project_id: str,

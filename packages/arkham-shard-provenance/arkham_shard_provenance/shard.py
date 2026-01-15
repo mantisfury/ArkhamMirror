@@ -1,11 +1,14 @@
 """Provenance Shard - Evidence Chain Tracking and Data Lineage."""
 
+import json
 import logging
 from typing import Any, Dict, List, Optional
 
 from arkham_frame.shard_interface import ArkhamShard
 
 from .api import init_api, router
+from .forensics import MetadataForensicAnalyzer
+from .models import MetadataForensicScan, ForensicScanStatus
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +61,9 @@ class ProvenanceShard(ArkhamShard):
         self._lineage_tracker = None
         self._audit_logger = None
 
+        # Forensic analyzer
+        self.forensic_analyzer: MetadataForensicAnalyzer | None = None
+
     async def initialize(self, frame) -> None:
         """
         Initialize the Provenance shard with Frame services.
@@ -87,11 +93,16 @@ class ProvenanceShard(ArkhamShard):
         # Create database schema
         await self._create_schema()
 
+        # Initialize forensic analyzer
+        self.forensic_analyzer = MetadataForensicAnalyzer()
+        logger.info("Forensic metadata analyzer initialized")
+
         # Initialize API with shard instance (shard implements all managers)
         init_api(
             shard=self,
             event_bus=self._event_bus,
             storage=self._storage,
+            forensic_analyzer=self.forensic_analyzer,
         )
 
         # Subscribe to events for automatic tracking
@@ -419,6 +430,124 @@ class ProvenanceShard(ArkhamShard):
         await self._db.execute("""
             CREATE INDEX IF NOT EXISTS idx_provenance_audit_tenant
             ON arkham_provenance_audit(tenant_id)
+        """)
+
+        # ===========================================
+        # Metadata Forensics Tables
+        # ===========================================
+
+        # Create schema for forensics tables
+        await self._db.execute("""
+            CREATE SCHEMA IF NOT EXISTS arkham_provenance
+        """)
+
+        # Forensic scans table
+        await self._db.execute("""
+            CREATE TABLE IF NOT EXISTS arkham_provenance.forensic_scans (
+                id TEXT PRIMARY KEY,
+                doc_id TEXT NOT NULL,
+                scan_status TEXT DEFAULT 'pending',
+                file_hash_md5 TEXT,
+                file_hash_sha256 TEXT,
+                file_hash_sha512 TEXT,
+                file_size BIGINT,
+                exif_data JSONB DEFAULT '{}',
+                pdf_metadata JSONB DEFAULT '{}',
+                office_metadata JSONB DEFAULT '{}',
+                findings JSONB DEFAULT '[]',
+                integrity_status TEXT DEFAULT 'unknown',
+                confidence_score REAL DEFAULT 0.0,
+                timeline_events JSONB DEFAULT '[]',
+                scanned_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                metadata JSONB DEFAULT '{}',
+                tenant_id UUID
+            )
+        """)
+
+        # Metadata comparisons table
+        await self._db.execute("""
+            CREATE TABLE IF NOT EXISTS arkham_provenance.metadata_comparisons (
+                id TEXT PRIMARY KEY,
+                source_doc_id TEXT NOT NULL,
+                target_doc_id TEXT NOT NULL,
+                comparison_type TEXT NOT NULL,
+                match_score REAL DEFAULT 0.0,
+                differences JSONB DEFAULT '[]',
+                similarities JSONB DEFAULT '[]',
+                relationship_type TEXT,
+                confidence REAL DEFAULT 0.0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                created_by TEXT,
+                metadata JSONB DEFAULT '{}',
+                tenant_id UUID
+            )
+        """)
+
+        # Forensic timeline events (denormalized for fast queries)
+        await self._db.execute("""
+            CREATE TABLE IF NOT EXISTS arkham_provenance.forensic_timeline (
+                id TEXT PRIMARY KEY,
+                doc_id TEXT NOT NULL,
+                scan_id TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                event_timestamp TIMESTAMP,
+                event_source TEXT,
+                event_actor TEXT,
+                event_details JSONB DEFAULT '{}',
+                confidence REAL DEFAULT 1.0,
+                is_estimated BOOLEAN DEFAULT false,
+                tenant_id UUID
+            )
+        """)
+
+        # Indexes for forensics tables
+        await self._db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_forensic_scans_doc
+            ON arkham_provenance.forensic_scans(doc_id)
+        """)
+        await self._db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_forensic_scans_status
+            ON arkham_provenance.forensic_scans(scan_status)
+        """)
+        await self._db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_forensic_scans_integrity
+            ON arkham_provenance.forensic_scans(integrity_status)
+        """)
+        await self._db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_forensic_scans_hash
+            ON arkham_provenance.forensic_scans(file_hash_sha256)
+        """)
+        await self._db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_forensic_scans_tenant
+            ON arkham_provenance.forensic_scans(tenant_id)
+        """)
+        await self._db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_metadata_comparisons_source
+            ON arkham_provenance.metadata_comparisons(source_doc_id)
+        """)
+        await self._db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_metadata_comparisons_target
+            ON arkham_provenance.metadata_comparisons(target_doc_id)
+        """)
+        await self._db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_metadata_comparisons_tenant
+            ON arkham_provenance.metadata_comparisons(tenant_id)
+        """)
+        await self._db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_forensic_timeline_doc
+            ON arkham_provenance.forensic_timeline(doc_id)
+        """)
+        await self._db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_forensic_timeline_scan
+            ON arkham_provenance.forensic_timeline(scan_id)
+        """)
+        await self._db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_forensic_timeline_timestamp
+            ON arkham_provenance.forensic_timeline(event_timestamp)
+        """)
+        await self._db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_forensic_timeline_tenant
+            ON arkham_provenance.forensic_timeline(tenant_id)
         """)
 
         logger.info("Provenance database schema created")
@@ -2631,3 +2760,298 @@ class ProvenanceShard(ArkhamShard):
             Verification result with status and details
         """
         return await self.verify_chain_impl(chain_id)
+
+    # === Forensic Analysis Methods ===
+
+    async def _store_forensic_scan(self, scan: MetadataForensicScan) -> None:
+        """
+        Store a forensic scan result in the database.
+
+        Args:
+            scan: MetadataForensicScan result to store
+        """
+        if not self._db:
+            return
+
+        from datetime import datetime
+
+        tenant_id = self.get_tenant_id_or_none()
+
+        # Convert dataclass objects to JSON dicts
+        exif_data = {}
+        if scan.exif_data:
+            exif_data = {
+                "make": scan.exif_data.make,
+                "model": scan.exif_data.model,
+                "serial_number": scan.exif_data.serial_number,
+                "lens_model": scan.exif_data.lens_model,
+                "datetime_original": scan.exif_data.datetime_original.isoformat() if scan.exif_data.datetime_original else None,
+                "datetime_digitized": scan.exif_data.datetime_digitized.isoformat() if scan.exif_data.datetime_digitized else None,
+                "datetime_modified": scan.exif_data.datetime_modified.isoformat() if scan.exif_data.datetime_modified else None,
+                "gps_latitude": scan.exif_data.gps_latitude,
+                "gps_longitude": scan.exif_data.gps_longitude,
+                "gps_altitude": scan.exif_data.gps_altitude,
+                "software": scan.exif_data.software,
+                "width": scan.exif_data.width,
+                "height": scan.exif_data.height,
+                "raw_data": scan.exif_data.raw_data,
+            }
+
+        pdf_metadata = {}
+        if scan.pdf_metadata:
+            pdf_metadata = {
+                "title": scan.pdf_metadata.title,
+                "author": scan.pdf_metadata.author,
+                "subject": scan.pdf_metadata.subject,
+                "creator": scan.pdf_metadata.creator,
+                "producer": scan.pdf_metadata.producer,
+                "creation_date": scan.pdf_metadata.creation_date.isoformat() if scan.pdf_metadata.creation_date else None,
+                "modification_date": scan.pdf_metadata.modification_date.isoformat() if scan.pdf_metadata.modification_date else None,
+                "keywords": scan.pdf_metadata.keywords,
+                "xmp_data": scan.pdf_metadata.xmp_data,
+                "page_count": scan.pdf_metadata.page_count,
+                "pdf_version": scan.pdf_metadata.pdf_version,
+                "is_encrypted": scan.pdf_metadata.is_encrypted,
+            }
+
+        office_metadata = {}
+        if scan.office_metadata:
+            office_metadata = {
+                "title": scan.office_metadata.title,
+                "author": scan.office_metadata.author,
+                "subject": scan.office_metadata.subject,
+                "company": scan.office_metadata.company,
+                "manager": scan.office_metadata.manager,
+                "created": scan.office_metadata.created.isoformat() if scan.office_metadata.created else None,
+                "modified": scan.office_metadata.modified.isoformat() if scan.office_metadata.modified else None,
+                "last_modified_by": scan.office_metadata.last_modified_by,
+                "revision": scan.office_metadata.revision,
+                "keywords": scan.office_metadata.keywords,
+                "category": scan.office_metadata.category,
+                "comments": scan.office_metadata.comments,
+                "raw_data": scan.office_metadata.raw_data,
+            }
+
+        findings = [
+            {
+                "finding_type": f.finding_type,
+                "severity": f.severity,
+                "description": f.description,
+                "evidence": f.evidence,
+                "confidence": f.confidence,
+            }
+            for f in scan.findings
+        ]
+
+        timeline_events = [
+            {
+                "id": e.id,
+                "doc_id": e.doc_id,
+                "event_type": e.event_type,
+                "event_timestamp": e.event_timestamp.isoformat() if e.event_timestamp else None,
+                "event_source": e.event_source,
+                "event_actor": e.event_actor,
+                "event_details": e.event_details,
+                "confidence": e.confidence,
+                "is_estimated": e.is_estimated,
+            }
+            for e in scan.timeline_events
+        ]
+
+        await self._db.execute(
+            """
+            INSERT INTO arkham_provenance.forensic_scans (
+                id, doc_id, scan_status, file_hash_md5, file_hash_sha256, file_hash_sha512,
+                file_size, exif_data, pdf_metadata, office_metadata, findings,
+                integrity_status, confidence_score, timeline_events, scanned_at, metadata, tenant_id
+            ) VALUES (
+                :id, :doc_id, :scan_status, :file_hash_md5, :file_hash_sha256, :file_hash_sha512,
+                :file_size, :exif_data, :pdf_metadata, :office_metadata, :findings,
+                :integrity_status, :confidence_score, :timeline_events, :scanned_at, :metadata, :tenant_id
+            )
+            """,
+            {
+                "id": scan.id,
+                "doc_id": scan.doc_id,
+                "scan_status": scan.scan_status.value,
+                "file_hash_md5": scan.file_hash_md5,
+                "file_hash_sha256": scan.file_hash_sha256,
+                "file_hash_sha512": scan.file_hash_sha512,
+                "file_size": scan.file_size,
+                "exif_data": json.dumps(exif_data),
+                "pdf_metadata": json.dumps(pdf_metadata),
+                "office_metadata": json.dumps(office_metadata),
+                "findings": json.dumps(findings),
+                "integrity_status": scan.integrity_status.value,
+                "confidence_score": scan.confidence_score,
+                "timeline_events": json.dumps(timeline_events),
+                "scanned_at": scan.scanned_at.isoformat() if scan.scanned_at else datetime.utcnow().isoformat(),
+                "metadata": json.dumps(scan.metadata),
+                "tenant_id": str(tenant_id) if tenant_id else None,
+            }
+        )
+
+        # Also store timeline events in denormalized table for fast queries
+        for event in scan.timeline_events:
+            await self._db.execute(
+                """
+                INSERT INTO arkham_provenance.forensic_timeline (
+                    id, doc_id, scan_id, event_type, event_timestamp,
+                    event_source, event_actor, event_details, confidence, is_estimated, tenant_id
+                ) VALUES (
+                    :id, :doc_id, :scan_id, :event_type, :event_timestamp,
+                    :event_source, :event_actor, :event_details, :confidence, :is_estimated, :tenant_id
+                )
+                """,
+                {
+                    "id": event.id,
+                    "doc_id": event.doc_id,
+                    "scan_id": scan.id,
+                    "event_type": event.event_type,
+                    "event_timestamp": event.event_timestamp.isoformat() if event.event_timestamp else None,
+                    "event_source": event.event_source,
+                    "event_actor": event.event_actor,
+                    "event_details": json.dumps(event.event_details),
+                    "confidence": event.confidence,
+                    "is_estimated": event.is_estimated,
+                    "tenant_id": str(tenant_id) if tenant_id else None,
+                }
+            )
+
+    async def get_forensic_scan(self, scan_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Get a forensic scan by ID.
+
+        Args:
+            scan_id: Scan ID
+
+        Returns:
+            Scan data dict or None
+        """
+        if not self._db:
+            return None
+
+        tenant_id = self.get_tenant_id_or_none()
+        query = "SELECT * FROM arkham_provenance.forensic_scans WHERE id = :id"
+        params: Dict[str, Any] = {"id": scan_id}
+
+        if tenant_id:
+            query += " AND tenant_id = :tenant_id"
+            params["tenant_id"] = str(tenant_id)
+
+        row = await self._db.fetch_one(query, params)
+        if not row:
+            return None
+
+        result = dict(row)
+        # Parse JSONB fields
+        for field in ['exif_data', 'pdf_metadata', 'office_metadata', 'findings', 'timeline_events', 'metadata']:
+            if result.get(field):
+                result[field] = self._parse_jsonb(result[field], {})
+        return result
+
+    async def get_document_forensic_scans(self, doc_id: str) -> List[Dict[str, Any]]:
+        """
+        Get all forensic scans for a document.
+
+        Args:
+            doc_id: Document ID
+
+        Returns:
+            List of scan data dicts
+        """
+        if not self._db:
+            return []
+
+        tenant_id = self.get_tenant_id_or_none()
+        query = "SELECT * FROM arkham_provenance.forensic_scans WHERE doc_id = :doc_id"
+        params: Dict[str, Any] = {"doc_id": doc_id}
+
+        if tenant_id:
+            query += " AND tenant_id = :tenant_id"
+            params["tenant_id"] = str(tenant_id)
+
+        query += " ORDER BY scanned_at DESC"
+        rows = await self._db.fetch_all(query, params)
+
+        if not rows:
+            return []
+
+        results = []
+        for row in rows:
+            result = dict(row)
+            for field in ['exif_data', 'pdf_metadata', 'office_metadata', 'findings', 'timeline_events', 'metadata']:
+                if result.get(field):
+                    result[field] = self._parse_jsonb(result[field], {})
+            results.append(result)
+        return results
+
+    async def get_forensic_stats(self) -> Dict[str, Any]:
+        """
+        Get forensic scanning statistics.
+
+        Returns:
+            Statistics dictionary
+        """
+        if not self._db:
+            return {}
+
+        tenant_id = self.get_tenant_id_or_none()
+        tenant_filter = ""
+        params: Dict[str, Any] = {}
+
+        if tenant_id:
+            tenant_filter = " WHERE tenant_id = :tenant_id"
+            params["tenant_id"] = str(tenant_id)
+
+        # Total scans
+        total_row = await self._db.fetch_one(
+            f"SELECT COUNT(*) as count FROM arkham_provenance.forensic_scans{tenant_filter}",
+            params
+        )
+        total_scans = total_row.get("count", 0) if total_row else 0
+
+        # Scans by status
+        status_rows = await self._db.fetch_all(
+            f"""SELECT scan_status, COUNT(*) as count
+                FROM arkham_provenance.forensic_scans{tenant_filter}
+                GROUP BY scan_status""",
+            params
+        )
+        scans_by_status = {row["scan_status"]: row["count"] for row in status_rows} if status_rows else {}
+
+        # Integrity counts
+        integrity_rows = await self._db.fetch_all(
+            f"""SELECT integrity_status, COUNT(*) as count
+                FROM arkham_provenance.forensic_scans{tenant_filter}
+                GROUP BY integrity_status""",
+            params
+        )
+        integrity_counts = {row["integrity_status"]: row["count"] for row in integrity_rows} if integrity_rows else {}
+
+        # Documents with findings
+        findings_row = await self._db.fetch_one(
+            f"""SELECT COUNT(DISTINCT doc_id) as count
+                FROM arkham_provenance.forensic_scans
+                WHERE findings != '[]'{' AND tenant_id = :tenant_id' if tenant_id else ''}""",
+            params
+        )
+        docs_with_findings = findings_row.get("count", 0) if findings_row else 0
+
+        # Average confidence
+        avg_row = await self._db.fetch_one(
+            f"""SELECT AVG(confidence_score) as avg_confidence
+                FROM arkham_provenance.forensic_scans{tenant_filter}""",
+            params
+        )
+        avg_confidence = float(avg_row.get("avg_confidence", 0) or 0) if avg_row else 0.0
+
+        return {
+            "total_scans": total_scans,
+            "scans_by_status": scans_by_status,
+            "documents_with_findings": docs_with_findings,
+            "integrity_clean": integrity_counts.get("clean", 0),
+            "integrity_suspicious": integrity_counts.get("suspicious", 0),
+            "integrity_tampered": integrity_counts.get("tampered", 0),
+            "average_confidence": avg_confidence,
+        }

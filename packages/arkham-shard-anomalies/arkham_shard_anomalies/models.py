@@ -14,6 +14,11 @@ class AnomalyType(Enum):
     STRUCTURAL = "structural"  # Unusual document structure
     STATISTICAL = "statistical"  # Unusual word frequencies, patterns
     RED_FLAG = "red_flag"  # Sensitive content indicators
+    # Hidden content types
+    HIDDEN_CONTENT = "hidden_content"  # Steganography or hidden data
+    FILE_MISMATCH = "file_mismatch"  # Extension doesn't match content
+    HIGH_ENTROPY = "high_entropy"  # Unusually high entropy regions
+    EMBEDDED_PAYLOAD = "embedded_payload"  # Embedded files or payloads
 
 
 class AnomalyStatus(Enum):
@@ -203,3 +208,130 @@ class AnalystNote:
     author: str
     content: str
     created_at: datetime = field(default_factory=datetime.utcnow)
+
+
+# =============================================================================
+# Hidden Content Detection Models
+# =============================================================================
+
+
+class HiddenContentScanType(Enum):
+    """Type of hidden content scan."""
+    ENTROPY = "entropy"  # Shannon entropy analysis
+    LSB = "lsb"  # Least significant bit analysis
+    MAGIC = "magic"  # File type vs extension mismatch
+    STEGO = "stego"  # Full steganography detection
+    CHI_SQUARE = "chi_square"  # Chi-square analysis for LSB
+    HISTOGRAM = "histogram"  # Histogram analysis
+
+
+class HiddenContentScanStatus(Enum):
+    """Status of hidden content scan."""
+    PENDING = "pending"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
+@dataclass
+class EntropyRegion:
+    """A region of high entropy in a file."""
+    start_offset: int
+    end_offset: int
+    entropy_value: float
+    is_anomalous: bool
+    description: str = ""
+
+
+@dataclass
+class LSBAnalysisResult:
+    """Results from LSB bit pattern analysis."""
+    bit_ratio: float  # Ratio of 0s to 1s in LSB
+    chi_square_value: float
+    chi_square_p_value: float
+    is_suspicious: bool
+    confidence: float
+    sample_size: int
+
+
+@dataclass
+class StegoIndicator:
+    """An indicator of potential steganography."""
+    indicator_type: str  # "lsb_pattern", "entropy_spike", "chi_square"
+    confidence: float
+    location: str  # "global", "region:0-1024"
+    details: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class HiddenContentScan:
+    """Complete hidden content scan result."""
+    id: str
+    doc_id: str
+    scan_type: HiddenContentScanType
+    scan_status: HiddenContentScanStatus = HiddenContentScanStatus.PENDING
+
+    # Entropy analysis
+    entropy_global: float | None = None
+    entropy_regions: list[EntropyRegion] = field(default_factory=list)
+
+    # File type analysis
+    magic_expected: str | None = None
+    magic_actual: str | None = None
+    file_mismatch: bool = False
+
+    # LSB analysis
+    lsb_result: LSBAnalysisResult | None = None
+
+    # Steganography indicators
+    stego_indicators: list[StegoIndicator] = field(default_factory=list)
+    stego_confidence: float = 0.0
+
+    # Findings summary
+    findings: list[str] = field(default_factory=list)
+    anomaly_created: bool = False
+
+    # Metadata
+    created_at: datetime = field(default_factory=datetime.utcnow)
+    completed_at: datetime | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class HiddenContentConfig:
+    """Configuration for hidden content detection."""
+    # Entropy thresholds
+    entropy_threshold_high: float = 7.5  # Near-random (max 8.0)
+    entropy_threshold_suspicious: float = 7.0
+    entropy_chunk_size: int = 1024
+
+    # LSB analysis
+    lsb_sample_size: int = 10000
+    chi_square_threshold: float = 0.05
+
+    # Detection toggles
+    detect_entropy: bool = True
+    detect_magic_mismatch: bool = True
+    detect_lsb: bool = True
+    detect_chi_square: bool = True
+    detect_histogram: bool = True
+
+    # File type filters
+    analyze_images: bool = True
+    analyze_pdfs: bool = True
+    analyze_documents: bool = True
+
+    # Processing
+    max_file_size_mb: int = 100
+    timeout_seconds: int = 60
+
+
+@dataclass
+class HiddenContentStats:
+    """Statistics about hidden content scans."""
+    total_scans: int = 0
+    scans_by_type: dict[str, int] = field(default_factory=dict)
+    documents_with_findings: int = 0
+    file_type_mismatches: int = 0
+    high_entropy_files: int = 0
+    stego_candidates: int = 0
+    calculated_at: datetime = field(default_factory=datetime.utcnow)

@@ -13,6 +13,7 @@ class DocumentStatus(Enum):
     PROCESSED = "processed"
     FAILED = "failed"
     ARCHIVED = "archived"
+    MERGED = "merged"
 
 
 class ViewMode(Enum):

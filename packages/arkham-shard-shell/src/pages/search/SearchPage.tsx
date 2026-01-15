@@ -11,8 +11,9 @@ import { AIAnalystButton } from '../../components/AIAnalyst';
 import { useToast } from '../../context/ToastContext';
 import { SearchResultCard } from './SearchResultCard';
 import { RAGChatPanel } from './RAGChatPanel';
+import RegexSearchPanel from './RegexSearchPanel';
 import { useSearch, findSimilar } from './api';
-import type { SearchMode, SearchFilters, SearchResultItem } from './types';
+import type { SearchMode, SearchFilters, SearchResultItem, RegexMatch } from './types';
 
 export function SearchPage() {
   const { toast } = useToast();
@@ -215,6 +216,13 @@ export function SearchPage() {
             <Icon name="Type" size={16} />
             Keyword
           </button>
+          <button
+            className={`mode-button ${searchMode === 'regex' ? 'active' : ''}`}
+            onClick={() => setSearchMode('regex')}
+          >
+            <Icon name="Regex" size={16} />
+            Regex
+          </button>
         </div>
 
         {/* Filters Toggle */}
@@ -344,8 +352,20 @@ export function SearchPage() {
         </section>
       )}
 
-      {/* Results Section */}
-      {queryFromUrl && (
+      {/* Regex Search Panel - Shown when regex mode is selected */}
+      {searchMode === 'regex' && (
+        <section className="results-section regex-search-section">
+          <RegexSearchPanel
+            projectId={filters.project_id}
+            onMatchClick={(match: RegexMatch) => {
+              navigate(`/documents/${match.document_id}`);
+            }}
+          />
+        </section>
+      )}
+
+      {/* Results Section - Shown for non-regex modes */}
+      {searchMode !== 'regex' && queryFromUrl && (
         <section className="results-section">
           {loading && (
             <div className="results-loading">

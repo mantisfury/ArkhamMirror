@@ -37,6 +37,7 @@ class DocumentStatus(str, Enum):
     COMPLETED = "completed"
     FAILED = "failed"
     ARCHIVED = "archived"
+    MERGED = "merged"  # Document merged into another
 
 
 @dataclass
@@ -897,26 +898,32 @@ class DocumentService:
             if filters:
                 vector_filter.update(filters)
 
-            # Perform vector search
-            results = await self.vectors.search(
-                collection="documents",
-                query_text=query,
+            # Perform vector search using text query
+            # search_text handles embedding internally
+            results = await self.vectors.search_text(
+                collection="arkham_documents",  # Use correct collection name
+                text=query,
                 limit=limit,
                 filter=vector_filter if vector_filter else None,
             )
 
             search_results = []
             for result in results:
-                doc_id = result.get("document_id")
+                # SearchResult is a dataclass with .payload attribute
+                payload = result.payload if hasattr(result, 'payload') else result
+                doc_id = payload.get("document_id") if isinstance(payload, dict) else None
                 if doc_id:
                     doc = await self.get_document(doc_id)
                     if doc:
+                        # Extract score from SearchResult dataclass
+                        score = result.score if hasattr(result, 'score') else (payload.get("score", 0.0) if isinstance(payload, dict) else 0.0)
+                        highlights = payload.get("highlights", []) if isinstance(payload, dict) else []
                         search_results.append(
                             SearchResult(
                                 document=doc,
                                 chunk=None,  # Could load chunk if needed
-                                score=result.get("score", 0.0),
-                                highlights=result.get("highlights", []),
+                                score=score,
+                                highlights=highlights,
                             )
                         )
 

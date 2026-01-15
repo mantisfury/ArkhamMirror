@@ -172,3 +172,122 @@ export async function bulkUpdateStatus(
     }),
   });
 }
+
+// ============================================
+// Hidden Content Detection Operations
+// ============================================
+
+export interface HiddenContentScanRequest {
+  doc_id: string;
+  scan_type?: string;
+  config?: Record<string, unknown>;
+}
+
+export interface EntropyRegion {
+  start_offset: number;
+  end_offset: number;
+  entropy_value: number;
+  is_anomalous: boolean;
+  description: string;
+}
+
+export interface LSBAnalysisResult {
+  bit_ratio: number;
+  chi_square_value: number;
+  chi_square_p_value: number;
+  is_suspicious: boolean;
+  confidence: number;
+  sample_size: number;
+}
+
+export interface StegoIndicator {
+  indicator_type: string;
+  confidence: number;
+  location: string;
+  details: Record<string, unknown>;
+}
+
+export interface HiddenContentScan {
+  id: string;
+  doc_id: string;
+  scan_type: string;
+  scan_status: string;
+  entropy_global: number;
+  entropy_regions: EntropyRegion[];
+  magic_expected: string;
+  magic_actual: string;
+  file_mismatch: boolean;
+  lsb_result: LSBAnalysisResult | null;
+  stego_indicators: StegoIndicator[];
+  stego_confidence: number;
+  findings: string[];
+  created_at: string;
+  completed_at: string | null;
+}
+
+export interface HiddenContentScanResponse {
+  scan: HiddenContentScan;
+  anomaly_created: boolean;
+}
+
+export interface HiddenContentQuickScanRequest {
+  doc_ids: string[];
+}
+
+export interface QuickScanResult {
+  doc_id: string;
+  entropy_global?: number;
+  requires_full_scan?: boolean;
+  error?: string;
+}
+
+export interface HiddenContentQuickScanResponse {
+  scanned: number;
+  results: QuickScanResult[];
+  requires_full_scan_count: number;
+  requires_full_scan: string[];
+}
+
+export interface HiddenContentStats {
+  total_scans: number;
+  scans_by_type: Record<string, number>;
+  documents_with_findings: number;
+  high_entropy_files: number;
+  stego_candidates: number;
+}
+
+export async function scanHiddenContent(
+  request: HiddenContentScanRequest
+): Promise<HiddenContentScanResponse> {
+  return fetchAPI<HiddenContentScanResponse>('/hidden-content/scan', {
+    method: 'POST',
+    body: JSON.stringify(request),
+  });
+}
+
+export async function quickScanHiddenContent(
+  docIds: string[]
+): Promise<HiddenContentQuickScanResponse> {
+  return fetchAPI<HiddenContentQuickScanResponse>('/hidden-content/quick-scan', {
+    method: 'POST',
+    body: JSON.stringify({ doc_ids: docIds }),
+  });
+}
+
+export async function getHiddenContentScan(
+  scanId: string
+): Promise<{ scan: HiddenContentScan }> {
+  return fetchAPI<{ scan: HiddenContentScan }>(`/hidden-content/${scanId}`);
+}
+
+export async function getDocumentHiddenScans(
+  docId: string
+): Promise<{ scans: HiddenContentScan[]; total: number }> {
+  return fetchAPI<{ scans: HiddenContentScan[]; total: number }>(
+    `/hidden-content/document/${docId}`
+  );
+}
+
+export async function getHiddenContentStats(): Promise<{ stats: HiddenContentStats }> {
+  return fetchAPI<{ stats: HiddenContentStats }>('/hidden-content/stats');
+}

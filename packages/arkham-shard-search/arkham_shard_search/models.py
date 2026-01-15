@@ -11,6 +11,14 @@ class SearchMode(Enum):
     HYBRID = "hybrid"
     SEMANTIC = "semantic"
     KEYWORD = "keyword"
+    REGEX = "regex"
+
+
+class RegexFlag(Enum):
+    """Regex flags for pattern matching."""
+    CASE_INSENSITIVE = "case_insensitive"
+    MULTILINE = "multiline"
+    DOTALL = "dotall"
 
 
 class SortBy(Enum):
@@ -119,3 +127,57 @@ class SimilarityRequest:
     limit: int = 10
     min_similarity: float = 0.5
     filters: SearchFilters | None = None
+
+
+# --- Regex Search Models ---
+
+
+@dataclass
+class RegexMatch:
+    """Individual regex match result."""
+    document_id: str
+    document_title: str
+    page_number: int | None
+    chunk_id: str | None
+    match_text: str
+    context: str
+    start_offset: int
+    end_offset: int
+    line_number: int | None = None
+
+
+@dataclass
+class RegexSearchQuery:
+    """Regex search query parameters."""
+    pattern: str
+    flags: list[str] = field(default_factory=list)
+    project_id: str | None = None
+    document_ids: list[str] | None = None
+    limit: int = 100
+    offset: int = 0
+    highlight: bool = True
+    context_chars: int = 100
+
+
+@dataclass
+class RegexSearchResult:
+    """Regex search result container."""
+    pattern: str
+    matches: list[RegexMatch] = field(default_factory=list)
+    total_matches: int = 0
+    total_chunks_with_matches: int = 0
+    documents_searched: int = 0
+    duration_ms: float = 0.0
+    error: str | None = None
+
+
+@dataclass
+class RegexPreset:
+    """Predefined regex pattern."""
+    id: str
+    name: str
+    pattern: str
+    description: str
+    category: str  # pii, contact, financial, technical, custom
+    flags: list[str] = field(default_factory=list)
+    is_system: bool = True

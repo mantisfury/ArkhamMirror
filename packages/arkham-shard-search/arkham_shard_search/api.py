@@ -32,16 +32,18 @@ router = APIRouter(prefix="/api/search", tags=["search"])
 _semantic_engine = None
 _keyword_engine = None
 _hybrid_engine = None
+_regex_engine = None
 _filter_optimizer = None
 _event_bus = None
 
 
-def init_api(semantic_engine, keyword_engine, hybrid_engine, filter_optimizer, event_bus):
+def init_api(semantic_engine, keyword_engine, hybrid_engine, regex_engine, filter_optimizer, event_bus):
     """Initialize API with shard dependencies."""
-    global _semantic_engine, _keyword_engine, _hybrid_engine, _filter_optimizer, _event_bus
+    global _semantic_engine, _keyword_engine, _hybrid_engine, _regex_engine, _filter_optimizer, _event_bus
     _semantic_engine = semantic_engine
     _keyword_engine = keyword_engine
     _hybrid_engine = hybrid_engine
+    _regex_engine = regex_engine
     _filter_optimizer = filter_optimizer
     _event_bus = event_bus
 
@@ -727,3 +729,611 @@ async def submit_ai_feedback(request: Request, body: AIFeedbackRequest):
         logger.warning(f"AI Feedback not stored (DB unavailable): session={body.session_id}")
 
     return AIFeedbackResponse(success=True, feedback_id=feedback_id)
+
+
+# --- Regex Search ---
+
+
+class RegexSearchRequest(BaseModel):
+    """Request for regex search."""
+    pattern: str
+    flags: list[str] = []
+    project_id: str | None = None
+    document_ids: list[str] | None = None
+    limit: int = 100
+    offset: int = 0
+    highlight: bool = True
+    context_chars: int = 100
+
+
+class RegexMatchResponse(BaseModel):
+    """Individual regex match."""
+    document_id: str
+    document_title: str
+    page_number: int | None
+    chunk_id: str | None
+    match_text: str
+    context: str
+    start_offset: int
+    end_offset: int
+    line_number: int | None
+
+
+class RegexSearchResponse(BaseModel):
+    """Response for regex search."""
+    pattern: str
+    matches: list[RegexMatchResponse]
+    total_matches: int
+    total_chunks_with_matches: int
+    documents_searched: int
+    duration_ms: float
+    error: str | None = None
+
+
+class ValidatePatternRequest(BaseModel):
+    """Request to validate regex pattern."""
+    pattern: str
+
+
+class ValidatePatternResponse(BaseModel):
+    """Response for pattern validation."""
+    valid: bool
+    error: str | None = None
+    estimated_performance: str
+
+
+class RegexPresetResponse(BaseModel):
+    """Regex preset."""
+    id: str
+    name: str
+    pattern: str
+    description: str
+    category: str
+    flags: list[str] = []
+    is_system: bool = True
+
+
+class CreatePresetRequest(BaseModel):
+    """Request to create custom preset."""
+    name: str
+    pattern: str
+    description: str = ""
+    category: str = "custom"
+    flags: list[str] = []
+
+
+@router.post("/regex", response_model=RegexSearchResponse)
+async def search_regex(request: Request, body: RegexSearchRequest):
+    """
+    Search using regex pattern across document content.
+
+    Supports flags: case_insensitive, multiline, dotall
+
+    The search uses PostgreSQL native regex matching for scalability,
+    with pattern matching happening in the database.
+    """
+    if not _regex_engine:
+        raise HTTPException(status_code=503, detail="Regex search not initialized")
+
+    # Validate pattern first
+    valid, error, perf = _regex_engine.validate_pattern(body.pattern)
+    if not valid:
+        raise HTTPException(status_code=400, detail=f"Invalid regex pattern: {error}")
+    if perf == "dangerous":
+        raise HTTPException(
+            status_code=400,
+            detail="Pattern may cause performance issues (catastrophic backtracking)"
+        )
+
+    from .models import RegexSearchQuery
+
+    query = RegexSearchQuery(
+        pattern=body.pattern,
+        flags=body.flags,
+        project_id=body.project_id,
+        document_ids=body.document_ids,
+        limit=body.limit,
+        offset=body.offset,
+        highlight=body.highlight,
+        context_chars=body.context_chars,
+    )
+
+    try:
+        result = await _regex_engine.search(query)
+    except Exception as e:
+        logger.error(f"Regex search failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Search failed: {str(e)}")
+
+    # Emit event (following existing pattern)
+    if _event_bus:
+        await _event_bus.emit(
+            "search.regex.executed",
+            {
+                "pattern": body.pattern,
+                "flags": body.flags,
+                "matches_count": result.total_matches,
+                "documents_searched": result.documents_searched,
+                "duration_ms": result.duration_ms,
+            },
+            source="search-shard",
+        )
+
+    return RegexSearchResponse(
+        pattern=result.pattern,
+        matches=[
+            RegexMatchResponse(
+                document_id=m.document_id,
+                document_title=m.document_title,
+                page_number=m.page_number,
+                chunk_id=m.chunk_id,
+                match_text=m.match_text,
+                context=m.context,
+                start_offset=m.start_offset,
+                end_offset=m.end_offset,
+                line_number=m.line_number,
+            )
+            for m in result.matches
+        ],
+        total_matches=result.total_matches,
+        total_chunks_with_matches=result.total_chunks_with_matches,
+        documents_searched=result.documents_searched,
+        duration_ms=result.duration_ms,
+        error=result.error,
+    )
+
+
+@router.post("/regex/validate", response_model=ValidatePatternResponse)
+async def validate_regex_pattern(body: ValidatePatternRequest):
+    """
+    Validate a regex pattern and estimate performance.
+
+    Returns validation status, error message (if invalid),
+    and performance estimate (fast/moderate/slow/dangerous).
+    """
+    if not _regex_engine:
+        raise HTTPException(status_code=503, detail="Regex search not initialized")
+
+    valid, error, perf = _regex_engine.validate_pattern(body.pattern)
+
+    return ValidatePatternResponse(
+        valid=valid,
+        error=error,
+        estimated_performance=perf,
+    )
+
+
+@router.get("/regex/presets", response_model=list[RegexPresetResponse])
+async def get_regex_presets(category: str | None = None):
+    """
+    Get available regex presets.
+
+    Categories: pii, contact, financial, technical, temporal, custom
+
+    Returns both system presets and custom user-defined presets.
+    """
+    if not _regex_engine:
+        raise HTTPException(status_code=503, detail="Regex search not initialized")
+
+    presets = await _regex_engine.get_presets(category=category)
+
+    return [
+        RegexPresetResponse(
+            id=p["id"],
+            name=p["name"],
+            pattern=p["pattern"],
+            description=p.get("description", ""),
+            category=p["category"],
+            flags=p.get("flags", []),
+            is_system=p.get("is_system", True),
+        )
+        for p in presets
+    ]
+
+
+@router.post("/regex/presets", response_model=RegexPresetResponse)
+async def create_regex_preset(request: Request, body: CreatePresetRequest):
+    """
+    Create a custom regex preset.
+
+    Custom presets are stored in the database and can be
+    retrieved alongside system presets.
+    """
+    if not _regex_engine:
+        raise HTTPException(status_code=503, detail="Regex search not initialized")
+
+    # Validate pattern
+    valid, error, _ = _regex_engine.validate_pattern(body.pattern)
+    if not valid:
+        raise HTTPException(status_code=400, detail=f"Invalid pattern: {error}")
+
+    # Get tenant_id if available (following codebase pattern)
+    shard = get_shard(request)
+    tenant_id = shard.get_tenant_id_or_none() if hasattr(shard, 'get_tenant_id_or_none') else None
+
+    try:
+        preset = await _regex_engine.save_custom_preset(
+            name=body.name,
+            pattern=body.pattern,
+            description=body.description,
+            category=body.category,
+            flags=body.flags,
+            tenant_id=str(tenant_id) if tenant_id else None,
+        )
+    except Exception as e:
+        logger.error(f"Failed to create preset: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to create preset: {str(e)}")
+
+    # Emit event
+    if _event_bus:
+        await _event_bus.emit(
+            "search.regex.preset_created",
+            {"preset_id": preset["id"], "name": preset["name"]},
+            source="search-shard",
+        )
+
+    return RegexPresetResponse(**preset)
+
+
+@router.delete("/regex/presets/{preset_id}")
+async def delete_regex_preset(request: Request, preset_id: str):
+    """
+    Delete a custom regex preset.
+
+    System presets cannot be deleted.
+    """
+    if not _regex_engine:
+        raise HTTPException(status_code=503, detail="Regex search not initialized")
+
+    # Get tenant_id if available
+    shard = get_shard(request)
+    tenant_id = shard.get_tenant_id_or_none() if hasattr(shard, 'get_tenant_id_or_none') else None
+
+    try:
+        deleted = await _regex_engine.delete_custom_preset(
+            preset_id=preset_id,
+            tenant_id=str(tenant_id) if tenant_id else None,
+        )
+    except Exception as e:
+        logger.error(f"Failed to delete preset: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to delete preset: {str(e)}")
+
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Preset not found or is a system preset")
+
+    return {"success": True, "preset_id": preset_id}
+
+
+# --- Pattern Extractions API ---
+
+
+class PatternExtractionResponse(BaseModel):
+    """Individual pattern extraction."""
+    id: str
+    document_id: str
+    preset_id: str
+    preset_name: str | None
+    category: str | None
+    match_text: str
+    context: str | None
+    page_number: int | None
+    chunk_id: str | None
+    start_offset: int | None
+    end_offset: int | None
+    line_number: int | None
+    extracted_at: str | None
+
+
+class ExtractionsListResponse(BaseModel):
+    """Response for pattern extractions list."""
+    extractions: list[PatternExtractionResponse]
+    total: int
+    document_id: str | None = None
+    preset_id: str | None = None
+    category: str | None = None
+
+
+class ExtractionStatsResponse(BaseModel):
+    """Response for extraction statistics."""
+    total_extractions: int
+    documents_with_patterns: int
+    by_category: dict[str, int]
+    by_preset: dict[str, int]
+
+
+@router.get("/regex/extractions", response_model=ExtractionsListResponse)
+async def get_pattern_extractions(
+    request: Request,
+    document_id: str | None = None,
+    preset_id: str | None = None,
+    category: str | None = None,
+    limit: int = 100,
+    offset: int = 0,
+):
+    """
+    Get auto-extracted pattern matches.
+
+    These are patterns automatically extracted when documents are parsed.
+    Filter by document_id, preset_id, or category.
+    """
+    shard = get_shard(request)
+
+    if not shard._db:
+        raise HTTPException(status_code=503, detail="Database not available")
+
+    query = """
+        SELECT id, document_id, preset_id, preset_name, category, match_text,
+               context, page_number, chunk_id, start_offset, end_offset,
+               line_number, extracted_at
+        FROM arkham_search.pattern_extractions
+        WHERE 1=1
+    """
+    params: dict = {}
+
+    if document_id:
+        query += " AND document_id = :document_id"
+        params["document_id"] = document_id
+
+    if preset_id:
+        query += " AND preset_id = :preset_id"
+        params["preset_id"] = preset_id
+
+    if category:
+        query += " AND category = :category"
+        params["category"] = category
+
+    # Get total count
+    count_query = """
+        SELECT COUNT(*) as total FROM arkham_search.pattern_extractions WHERE 1=1
+    """
+    if document_id:
+        count_query += " AND document_id = :document_id"
+    if preset_id:
+        count_query += " AND preset_id = :preset_id"
+    if category:
+        count_query += " AND category = :category"
+
+    try:
+        count_row = await shard._db.fetch_one(count_query, params)
+        total = count_row["total"] if count_row else 0
+    except Exception:
+        total = 0
+
+    query += " ORDER BY extracted_at DESC LIMIT :limit OFFSET :offset"
+    params["limit"] = limit
+    params["offset"] = offset
+
+    try:
+        rows = await shard._db.fetch_all(query, params)
+    except Exception as e:
+        logger.error(f"Failed to fetch extractions: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to fetch extractions: {str(e)}")
+
+    extractions = [
+        PatternExtractionResponse(
+            id=row["id"],
+            document_id=row["document_id"],
+            preset_id=row["preset_id"],
+            preset_name=row["preset_name"],
+            category=row["category"],
+            match_text=row["match_text"],
+            context=row["context"],
+            page_number=row["page_number"],
+            chunk_id=row["chunk_id"],
+            start_offset=row["start_offset"],
+            end_offset=row["end_offset"],
+            line_number=row["line_number"],
+            extracted_at=str(row["extracted_at"]) if row["extracted_at"] else None,
+        )
+        for row in rows
+    ]
+
+    return ExtractionsListResponse(
+        extractions=extractions,
+        total=total,
+        document_id=document_id,
+        preset_id=preset_id,
+        category=category,
+    )
+
+
+@router.get("/regex/extractions/stats", response_model=ExtractionStatsResponse)
+async def get_extraction_stats(
+    request: Request,
+    project_id: str | None = None,
+):
+    """
+    Get statistics on pattern extractions.
+
+    Returns counts by category and preset.
+    """
+    shard = get_shard(request)
+
+    if not shard._db:
+        raise HTTPException(status_code=503, detail="Database not available")
+
+    try:
+        # Total extractions
+        total_row = await shard._db.fetch_one(
+            "SELECT COUNT(*) as total FROM arkham_search.pattern_extractions"
+        )
+        total = total_row["total"] if total_row else 0
+
+        # Documents with patterns
+        doc_row = await shard._db.fetch_one(
+            "SELECT COUNT(DISTINCT document_id) as cnt FROM arkham_search.pattern_extractions"
+        )
+        docs_with_patterns = doc_row["cnt"] if doc_row else 0
+
+        # By category
+        cat_rows = await shard._db.fetch_all(
+            "SELECT category, COUNT(*) as cnt FROM arkham_search.pattern_extractions GROUP BY category"
+        )
+        by_category = {row["category"]: row["cnt"] for row in cat_rows} if cat_rows else {}
+
+        # By preset
+        preset_rows = await shard._db.fetch_all(
+            "SELECT preset_id, COUNT(*) as cnt FROM arkham_search.pattern_extractions GROUP BY preset_id"
+        )
+        by_preset = {row["preset_id"]: row["cnt"] for row in preset_rows} if preset_rows else {}
+
+    except Exception as e:
+        logger.error(f"Failed to fetch extraction stats: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to fetch stats: {str(e)}")
+
+    return ExtractionStatsResponse(
+        total_extractions=total,
+        documents_with_patterns=docs_with_patterns,
+        by_category=by_category,
+        by_preset=by_preset,
+    )
+
+
+@router.post("/regex/extract/{document_id}")
+async def trigger_pattern_extraction(
+    request: Request,
+    document_id: str,
+    preset_ids: list[str] | None = None,
+):
+    """
+    Manually trigger pattern extraction for a specific document.
+
+    By default runs all system presets. Optionally specify preset_ids
+    to run only specific presets.
+    """
+    import re
+    import uuid
+
+    shard = get_shard(request)
+
+    if not shard._db:
+        raise HTTPException(status_code=503, detail="Database not available")
+
+    # Check document exists
+    doc_row = await shard._db.fetch_one(
+        "SELECT id FROM arkham_frame.documents WHERE id = :doc_id",
+        {"doc_id": document_id}
+    )
+    if not doc_row:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    # Fetch chunks
+    chunks = await shard._db.fetch_all(
+        """
+        SELECT id, text, chunk_index, page_number
+        FROM arkham_frame.chunks
+        WHERE document_id = :doc_id
+        ORDER BY chunk_index
+        """,
+        {"doc_id": document_id}
+    )
+
+    if not chunks:
+        return {"document_id": document_id, "extractions": 0, "message": "No chunks found"}
+
+    # Get presets to use
+    from .engines.regex import REGEX_PRESETS
+
+    if preset_ids:
+        presets = [p for p in REGEX_PRESETS if p["id"] in preset_ids]
+        # Also get custom presets from DB
+        if shard._db:
+            custom_query = """
+                SELECT id, name, pattern, category FROM arkham_search.regex_presets
+                WHERE id = ANY(:ids)
+            """
+            custom_rows = await shard._db.fetch_all(custom_query, {"ids": preset_ids})
+            for row in custom_rows:
+                presets.append({
+                    "id": row["id"],
+                    "name": row["name"],
+                    "pattern": row["pattern"],
+                    "category": row["category"],
+                })
+    else:
+        presets = list(REGEX_PRESETS)
+
+    # Clear existing extractions for this document (re-extract)
+    await shard._db.execute(
+        "DELETE FROM arkham_search.pattern_extractions WHERE document_id = :doc_id",
+        {"doc_id": document_id}
+    )
+
+    # Extract patterns
+    extractions = []
+    for preset in presets:
+        preset_id = preset["id"]
+        preset_name = preset["name"]
+        category = preset["category"]
+        pattern = preset["pattern"]
+
+        try:
+            compiled = re.compile(pattern, re.IGNORECASE)
+        except re.error:
+            continue
+
+        for chunk in chunks:
+            text = chunk["text"] or ""
+            chunk_id = chunk["id"]
+            page_number = chunk["page_number"]
+
+            for match in compiled.finditer(text):
+                match_text = match.group(0)
+                match_start = match.start()
+                match_end = match.end()
+
+                ctx_start = max(0, match_start - 50)
+                ctx_end = min(len(text), match_end + 50)
+                context = text[ctx_start:ctx_end]
+                if ctx_start > 0:
+                    context = "..." + context
+                if ctx_end < len(text):
+                    context = context + "..."
+
+                line_number = text[:match_start].count('\n') + 1
+
+                extractions.append({
+                    "id": str(uuid.uuid4())[:12],
+                    "document_id": document_id,
+                    "preset_id": preset_id,
+                    "preset_name": preset_name,
+                    "category": category,
+                    "match_text": match_text,
+                    "context": context,
+                    "page_number": page_number,
+                    "chunk_id": chunk_id,
+                    "start_offset": match_start,
+                    "end_offset": match_end,
+                    "line_number": line_number,
+                })
+
+    # Store extractions
+    for ext in extractions:
+        await shard._db.execute(
+            """
+            INSERT INTO arkham_search.pattern_extractions
+            (id, document_id, preset_id, preset_name, category, match_text,
+             context, page_number, chunk_id, start_offset, end_offset, line_number)
+            VALUES (:id, :document_id, :preset_id, :preset_name, :category, :match_text,
+                    :context, :page_number, :chunk_id, :start_offset, :end_offset, :line_number)
+            ON CONFLICT (id) DO NOTHING
+            """,
+            ext
+        )
+
+    # Emit event
+    if _event_bus:
+        await _event_bus.emit(
+            "search.patterns.extracted",
+            {
+                "document_id": document_id,
+                "total_matches": len(extractions),
+                "manual_trigger": True,
+            },
+            source="search-shard",
+        )
+
+    return {
+        "document_id": document_id,
+        "extractions": len(extractions),
+        "presets_used": [p["id"] for p in presets],
+    }

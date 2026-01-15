@@ -516,7 +516,7 @@ class DeceptionAssessmentCreate(BaseModel):
     source_name: Optional[str] = Field(None, description="Human-readable source name")
     linked_assessment_id: Optional[str] = None
     affects_credibility: bool = True
-    credibility_weight: float = Field(0.3, ge=0.0, le=1.0)
+    credibility_weight: float = Field(0.7, ge=0.0, le=1.0, description="Weight in credibility calc (higher = more impact)")
 
 
 class DeceptionChecklistUpdate(BaseModel):

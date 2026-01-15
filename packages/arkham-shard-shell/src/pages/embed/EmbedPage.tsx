@@ -691,12 +691,12 @@ export function EmbedPage() {
         )}
       </section>
 
-      {/* Cache Statistics */}
+      {/* Embedding Statistics */}
       <section className="cache-stats-section">
         <div className="section-header">
           <h2>
             <Icon name="Database" size={20} />
-            Cache Statistics
+            Embedding Statistics
           </h2>
           <button
             className="button-secondary"
@@ -720,23 +720,23 @@ export function EmbedPage() {
         {loadingCache ? (
           <div className="loading-state">
             <Icon name="Loader" size={24} className="spinner" />
-            Loading cache stats...
+            Loading stats...
           </div>
         ) : cacheStats ? (
           <div className="stats-grid">
             <div className="stat-card">
-              <Icon name="TrendingUp" size={24} className="stat-icon" style={{ color: '#22c55e' }} />
+              <Icon name="Box" size={24} className="stat-icon" style={{ color: '#22c55e' }} />
               <div className="stat-content">
                 <div className="stat-value">{formatNumber(cacheStats.hits)}</div>
-                <div className="stat-label">Hits</div>
+                <div className="stat-label">Embeddings</div>
               </div>
             </div>
 
             <div className="stat-card">
-              <Icon name="TrendingDown" size={24} className="stat-icon" style={{ color: '#ef4444' }} />
+              <Icon name="Clock" size={24} className="stat-icon" style={{ color: '#ef4444' }} />
               <div className="stat-content">
                 <div className="stat-value">{formatNumber(cacheStats.misses)}</div>
-                <div className="stat-label">Misses</div>
+                <div className="stat-label">Pending</div>
               </div>
             </div>
 
@@ -744,24 +744,24 @@ export function EmbedPage() {
               <Icon name="Percent" size={24} className="stat-icon" style={{ color: '#3b82f6' }} />
               <div className="stat-content">
                 <div className="stat-value">{(cacheStats.hit_rate * 100).toFixed(1)}%</div>
-                <div className="stat-label">Hit Rate</div>
+                <div className="stat-label">Coverage</div>
               </div>
             </div>
 
             <div className="stat-card">
-              <Icon name="HardDrive" size={24} className="stat-icon" style={{ color: '#f59e0b' }} />
+              <Icon name="FileText" size={24} className="stat-icon" style={{ color: '#f59e0b' }} />
               <div className="stat-content">
                 <div className="stat-value">
                   {cacheStats.size}/{cacheStats.max_size}
                 </div>
-                <div className="stat-label">Cache Size</div>
+                <div className="stat-label">Docs / Chunks</div>
               </div>
             </div>
           </div>
         ) : (
           <div className="empty-state">
             <Icon name="AlertCircle" size={48} />
-            <p>No cache statistics available</p>
+            <p>No statistics available</p>
           </div>
         )}
       </section>

@@ -84,6 +84,317 @@ class GraphAlgorithms:
 
         return None
 
+    def find_all_paths(
+        self,
+        graph: Graph,
+        source_entity_id: str,
+        target_entity_id: str,
+        max_depth: int = 6,
+        max_paths: int = 10,
+    ) -> list[GraphPath]:
+        """
+        Find all paths between two entities up to max_depth.
+
+        Uses DFS with backtracking to enumerate paths.
+
+        Args:
+            graph: Graph to search
+            source_entity_id: Source entity ID
+            target_entity_id: Target entity ID
+            max_depth: Maximum path length
+            max_paths: Maximum number of paths to return
+
+        Returns:
+            List of GraphPath objects, shortest first
+        """
+        adjacency = self._build_adjacency_dict(graph.edges)
+        all_paths: list[GraphPath] = []
+
+        def dfs(current: str, target: str, path: list[str], visited: set[str]):
+            if len(all_paths) >= max_paths:
+                return
+
+            if len(path) > max_depth + 1:
+                return
+
+            if current == target:
+                # Found a path
+                edges = self._get_path_edges(graph.edges, path)
+                total_weight = sum(e.weight for e in edges)
+                all_paths.append(GraphPath(
+                    source_entity_id=source_entity_id,
+                    target_entity_id=target_entity_id,
+                    path=path.copy(),
+                    edges=edges,
+                    total_weight=total_weight,
+                    path_length=len(path) - 1,
+                ))
+                return
+
+            for neighbor in adjacency.get(current, []):
+                if neighbor not in visited:
+                    visited.add(neighbor)
+                    path.append(neighbor)
+                    dfs(neighbor, target, path, visited)
+                    path.pop()
+                    visited.remove(neighbor)
+
+        # Start DFS
+        dfs(source_entity_id, target_entity_id, [source_entity_id], {source_entity_id})
+
+        # Sort by path length (shortest first)
+        all_paths.sort(key=lambda p: p.path_length)
+
+        return all_paths
+
+    def find_weighted_path(
+        self,
+        graph: Graph,
+        source_entity_id: str,
+        target_entity_id: str,
+        max_depth: int = 10,
+        use_max_weight: bool = True,
+    ) -> GraphPath | None:
+        """
+        Find optimal weighted path using Dijkstra's algorithm.
+
+        Can find either maximum weight path (strongest connections)
+        or minimum weight path (weakest connections).
+
+        Args:
+            graph: Graph to search
+            source_entity_id: Source entity ID
+            target_entity_id: Target entity ID
+            max_depth: Maximum path length
+            use_max_weight: If True, find path with maximum total weight
+
+        Returns:
+            GraphPath if found, None otherwise
+        """
+        import heapq
+
+        # Build weighted adjacency
+        adjacency = self._build_weighted_adjacency(graph.edges)
+
+        # For max weight, we negate weights and use min-heap
+        # For min weight, we use positive weights
+        def get_edge_cost(weight: float) -> float:
+            if use_max_weight:
+                return -weight  # Negate for max-heap behavior
+            return weight
+
+        # Dijkstra's algorithm
+        # heap entries: (cost, path_length, node_id, path)
+        heap = [(0.0, 0, source_entity_id, [source_entity_id])]
+        visited: dict[str, float] = {}
+
+        while heap:
+            cost, path_len, current, path = heapq.heappop(heap)
+
+            if path_len > max_depth:
+                continue
+
+            if current in visited:
+                continue
+            visited[current] = cost
+
+            if current == target_entity_id:
+                # Found target - reconstruct path
+                edges = self._get_path_edges(graph.edges, path)
+                total_weight = sum(e.weight for e in edges)
+                return GraphPath(
+                    source_entity_id=source_entity_id,
+                    target_entity_id=target_entity_id,
+                    path=path,
+                    edges=edges,
+                    total_weight=total_weight,
+                    path_length=len(path) - 1,
+                )
+
+            for neighbor, weight in adjacency.get(current, []):
+                if neighbor not in visited:
+                    new_cost = cost + get_edge_cost(weight)
+                    heapq.heappush(
+                        heap,
+                        (new_cost, path_len + 1, neighbor, path + [neighbor])
+                    )
+
+        return None
+
+    def find_constrained_path(
+        self,
+        graph: Graph,
+        source_entity_id: str,
+        target_entity_id: str,
+        required_entities: list[str] | None = None,
+        excluded_entities: list[str] | None = None,
+        required_relationship_types: list[str] | None = None,
+        min_edge_weight: float = 0.0,
+        max_depth: int = 8,
+    ) -> GraphPath | None:
+        """
+        Find path with constraints on nodes and edges.
+
+        Args:
+            graph: Graph to search
+            source_entity_id: Source entity ID
+            target_entity_id: Target entity ID
+            required_entities: Entities that MUST be on the path
+            excluded_entities: Entities that MUST NOT be on the path
+            required_relationship_types: Only traverse these relationship types
+            min_edge_weight: Minimum weight for edges to traverse
+            max_depth: Maximum path length
+
+        Returns:
+            GraphPath if found, None otherwise
+        """
+        required = set(required_entities or [])
+        excluded = set(excluded_entities or [])
+        required_types = set(required_relationship_types) if required_relationship_types else None
+
+        # Build filtered adjacency
+        adjacency: dict[str, list[tuple[str, float, str]]] = defaultdict(list)
+        for edge in graph.edges:
+            # Filter by relationship type
+            if required_types and edge.relationship_type not in required_types:
+                continue
+            # Filter by weight
+            if edge.weight < min_edge_weight:
+                continue
+
+            adjacency[edge.source].append((edge.target, edge.weight, edge.relationship_type))
+            adjacency[edge.target].append((edge.source, edge.weight, edge.relationship_type))
+
+        # Use BFS with required entity tracking
+        # State: (current_node, path, required_visited)
+        from collections import deque
+
+        initial_required = required & {source_entity_id}
+        queue = deque([(source_entity_id, [source_entity_id], initial_required)])
+        visited: dict[tuple[str, frozenset], bool] = {(source_entity_id, frozenset(initial_required)): True}
+
+        while queue:
+            current, path, req_visited = queue.popleft()
+
+            if len(path) > max_depth + 1:
+                continue
+
+            # Check if we found the target with all required nodes visited
+            if current == target_entity_id and req_visited >= required:
+                edges = self._get_path_edges(graph.edges, path)
+                total_weight = sum(e.weight for e in edges)
+                return GraphPath(
+                    source_entity_id=source_entity_id,
+                    target_entity_id=target_entity_id,
+                    path=path,
+                    edges=edges,
+                    total_weight=total_weight,
+                    path_length=len(path) - 1,
+                )
+
+            for neighbor, weight, rel_type in adjacency.get(current, []):
+                # Skip excluded entities
+                if neighbor in excluded:
+                    continue
+
+                # Skip already visited in this path
+                if neighbor in path:
+                    continue
+
+                # Update required visited
+                new_req = req_visited | ({neighbor} & required)
+                state_key = (neighbor, frozenset(new_req))
+
+                if state_key not in visited:
+                    visited[state_key] = True
+                    queue.append((neighbor, path + [neighbor], new_req))
+
+        return None
+
+    def find_paths_through(
+        self,
+        graph: Graph,
+        intermediate_entity_id: str,
+        max_sources: int = 5,
+        max_targets: int = 5,
+        max_depth: int = 3,
+    ) -> list[GraphPath]:
+        """
+        Find paths that pass through a specific entity.
+
+        Useful for finding what connections an entity bridges.
+
+        Args:
+            graph: Graph to search
+            intermediate_entity_id: Entity that paths must pass through
+            max_sources: Maximum source entities to consider
+            max_targets: Maximum target entities to consider
+            max_depth: Maximum hops on each side of intermediate
+
+        Returns:
+            List of paths passing through the intermediate entity
+        """
+        adjacency = self._build_adjacency_dict(graph.edges)
+
+        # Find entities reachable from intermediate (potential targets)
+        reachable_from: dict[str, int] = {}  # entity_id -> distance
+        queue = deque([(intermediate_entity_id, 0)])
+        visited = {intermediate_entity_id}
+
+        while queue:
+            current, dist = queue.popleft()
+            if dist > max_depth:
+                continue
+            if current != intermediate_entity_id:
+                reachable_from[current] = dist
+
+            for neighbor in adjacency.get(current, []):
+                if neighbor not in visited:
+                    visited.add(neighbor)
+                    queue.append((neighbor, dist + 1))
+
+        # Find entities that can reach intermediate (potential sources)
+        # (Same search since graph is undirected)
+        can_reach: dict[str, int] = reachable_from.copy()
+
+        # Select top sources and targets by degree (most connected)
+        node_degrees = {n.id: n.degree for n in graph.nodes}
+
+        source_candidates = sorted(
+            can_reach.keys(),
+            key=lambda x: node_degrees.get(x, 0),
+            reverse=True
+        )[:max_sources]
+
+        target_candidates = sorted(
+            reachable_from.keys(),
+            key=lambda x: node_degrees.get(x, 0),
+            reverse=True
+        )[:max_targets]
+
+        # Find paths between sources and targets that pass through intermediate
+        paths = []
+        for source in source_candidates:
+            for target in target_candidates:
+                if source == target:
+                    continue
+
+                # Find path requiring intermediate
+                path = self.find_constrained_path(
+                    graph,
+                    source,
+                    target,
+                    required_entities=[intermediate_entity_id],
+                    max_depth=max_depth * 2 + 1,
+                )
+                if path:
+                    paths.append(path)
+
+        # Sort by total weight descending
+        paths.sort(key=lambda p: p.total_weight, reverse=True)
+
+        return paths
+
     def calculate_degree_centrality(
         self, graph: Graph, limit: int = 50
     ) -> list[CentralityResult]:

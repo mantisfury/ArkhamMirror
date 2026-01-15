@@ -352,7 +352,16 @@ class DeceptionChecklist:
         }
 
     def calculate_score(self) -> int:
-        """Calculate checklist score from indicators."""
+        """
+        Calculate checklist score from indicators.
+
+        Only assessed indicators (strength != NONE) contribute to the score.
+        This prevents unassessed indicators from diluting the deception signal.
+
+        Returns 0-100 where:
+        - 0 = no deception indicators found
+        - 100 = conclusive deception indicators across all assessed questions
+        """
         if not self.indicators:
             return 0
 
@@ -364,11 +373,21 @@ class DeceptionChecklist:
             IndicatorStrength.CONCLUSIVE: 100,
         }
 
+        # Only count indicators that have been assessed (not NONE)
+        assessed_indicators = [
+            ind for ind in self.indicators
+            if ind.strength != IndicatorStrength.NONE
+        ]
+
+        if not assessed_indicators:
+            return 0
+
+        # Calculate score based only on assessed indicators
         total = sum(
             strength_scores.get(ind.strength, 0) * ind.confidence
-            for ind in self.indicators
+            for ind in assessed_indicators
         )
-        max_possible = len(self.indicators) * 100
+        max_possible = len(assessed_indicators) * 100
         return int((total / max_possible) * 100) if max_possible > 0 else 0
 
 
@@ -399,7 +418,7 @@ class DeceptionAssessment:
     # Integration with main credibility
     linked_assessment_id: Optional[str] = None  # Link to CredibilityAssessment
     affects_credibility: bool = True    # Whether to factor into credibility score
-    credibility_weight: float = 0.3     # Weight in credibility calculation
+    credibility_weight: float = 0.7     # Weight in credibility calculation (increased for meaningful impact)
 
     # Assessment metadata
     assessed_by: AssessmentMethod = AssessmentMethod.MANUAL

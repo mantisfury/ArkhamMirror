@@ -18,18 +18,21 @@ router = APIRouter(prefix="/api/provenance", tags=["provenance"])
 _shard: Optional["ProvenanceShard"] = None
 _event_bus = None
 _storage = None
+_forensic_analyzer = None
 
 
 def init_api(
     shard: "ProvenanceShard",
     event_bus,
     storage,
+    forensic_analyzer=None,
 ):
     """Initialize API with shard instance."""
-    global _shard, _event_bus, _storage
+    global _shard, _event_bus, _storage, _forensic_analyzer
     _shard = shard
     _event_bus = event_bus
     _storage = storage
+    _forensic_analyzer = forensic_analyzer
     logger.info("Provenance API initialized")
 
 
@@ -1048,3 +1051,435 @@ async def ai_junior_analyst(request: Request, body: AIJuniorAnalystRequest):
             "X-Accel-Buffering": "no",
         },
     )
+
+
+# =============================================================================
+# Metadata Forensics Endpoints
+# =============================================================================
+
+
+class ForensicScanRequest(BaseModel):
+    """Request to perform forensic scan on a document."""
+    doc_id: str
+
+
+class ForensicCompareRequest(BaseModel):
+    """Request to compare metadata between documents."""
+    source_doc_id: str
+    target_doc_id: str
+
+
+class ForensicScanResponse(BaseModel):
+    """Response from forensic scan."""
+    scan: dict
+
+
+class ForensicStatsResponse(BaseModel):
+    """Forensic statistics response."""
+    stats: dict
+
+
+@router.post("/forensics/scan", response_model=ForensicScanResponse)
+async def scan_forensics(
+    request: Request,
+    body: ForensicScanRequest,
+):
+    """
+    Perform forensic metadata analysis on a document.
+
+    Extracts and analyzes:
+    - EXIF data from images (camera info, GPS, timestamps)
+    - PDF metadata (author, creator, dates, XMP)
+    - Office document metadata (author, company, revision history)
+
+    Performs integrity analysis:
+    - Timestamp consistency checks
+    - Metadata stripping detection
+    - Editing software detection
+    - Timeline reconstruction
+
+    Args:
+        body: Request with doc_id
+
+    Returns:
+        Complete forensic analysis results
+    """
+    shard = get_shard(request)
+
+    if not shard.forensic_analyzer:
+        raise HTTPException(
+            status_code=503,
+            detail="Forensic analyzer not available"
+        )
+
+    if not shard._db:
+        raise HTTPException(status_code=503, detail="Database not available")
+
+    # Get document metadata and file path
+    doc_row = await shard._db.fetch_one(
+        """SELECT id, filename, storage_id, mime_type, file_size, metadata
+           FROM arkham_frame.documents WHERE id = :doc_id""",
+        {"doc_id": body.doc_id}
+    )
+
+    if not doc_row:
+        raise HTTPException(status_code=404, detail=f"Document {body.doc_id} not found")
+
+    # Get storage path from storage_id or metadata
+    storage_id = doc_row.get("storage_id")
+    metadata = doc_row.get("metadata") or {}
+    if isinstance(metadata, str):
+        import json
+        try:
+            metadata = json.loads(metadata)
+        except json.JSONDecodeError:
+            metadata = {}
+
+    storage_path = metadata.get("storage_path")
+    if not storage_id and not storage_path:
+        raise HTTPException(
+            status_code=400,
+            detail="Document has no associated file storage"
+        )
+
+    # Read file content using storage service
+    try:
+        if _storage and storage_id:
+            file_data = (await _storage.retrieve(storage_id))[0]
+        elif storage_path:
+            from pathlib import Path
+            file_data = Path(storage_path).read_bytes()
+        else:
+            raise ValueError("No storage path available")
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to read file: {e}"
+        )
+
+    mime_type = doc_row.get("mime_type", "")
+
+    # Perform forensic scan (use storage_path for file path reference)
+    file_path = storage_path or storage_id
+    scan_result = shard.forensic_analyzer.full_scan(
+        doc_id=body.doc_id,
+        file_path=file_path,
+        file_data=file_data,
+        mime_type=mime_type,
+    )
+
+    # Store the scan result
+    await shard._store_forensic_scan(scan_result)
+
+    # Emit event
+    if _event_bus:
+        await _event_bus.emit(
+            "provenance.forensics.scanned",
+            {
+                "doc_id": body.doc_id,
+                "scan_id": scan_result.id,
+                "integrity_status": scan_result.integrity_status.value,
+                "findings_count": len(scan_result.findings),
+            },
+            source="provenance-shard",
+        )
+
+    # Convert to response dict
+    scan_dict = {
+        "id": scan_result.id,
+        "doc_id": scan_result.doc_id,
+        "scan_status": scan_result.scan_status.value,
+        "file_hash_md5": scan_result.file_hash_md5,
+        "file_hash_sha256": scan_result.file_hash_sha256,
+        "file_hash_sha512": scan_result.file_hash_sha512,
+        "file_size": scan_result.file_size,
+        "exif_data": {
+            "make": scan_result.exif_data.make,
+            "model": scan_result.exif_data.model,
+            "serial_number": scan_result.exif_data.serial_number,
+            "datetime_original": scan_result.exif_data.datetime_original.isoformat() if scan_result.exif_data.datetime_original else None,
+            "datetime_digitized": scan_result.exif_data.datetime_digitized.isoformat() if scan_result.exif_data.datetime_digitized else None,
+            "datetime_modified": scan_result.exif_data.datetime_modified.isoformat() if scan_result.exif_data.datetime_modified else None,
+            "gps_latitude": scan_result.exif_data.gps_latitude,
+            "gps_longitude": scan_result.exif_data.gps_longitude,
+            "gps_altitude": scan_result.exif_data.gps_altitude,
+            "software": scan_result.exif_data.software,
+            "width": scan_result.exif_data.width,
+            "height": scan_result.exif_data.height,
+        } if scan_result.exif_data else None,
+        "pdf_metadata": {
+            "title": scan_result.pdf_metadata.title,
+            "author": scan_result.pdf_metadata.author,
+            "subject": scan_result.pdf_metadata.subject,
+            "creator": scan_result.pdf_metadata.creator,
+            "producer": scan_result.pdf_metadata.producer,
+            "creation_date": scan_result.pdf_metadata.creation_date.isoformat() if scan_result.pdf_metadata.creation_date else None,
+            "modification_date": scan_result.pdf_metadata.modification_date.isoformat() if scan_result.pdf_metadata.modification_date else None,
+            "keywords": scan_result.pdf_metadata.keywords,
+            "page_count": scan_result.pdf_metadata.page_count,
+            "pdf_version": scan_result.pdf_metadata.pdf_version,
+            "is_encrypted": scan_result.pdf_metadata.is_encrypted,
+        } if scan_result.pdf_metadata else None,
+        "office_metadata": {
+            "title": scan_result.office_metadata.title,
+            "author": scan_result.office_metadata.author,
+            "subject": scan_result.office_metadata.subject,
+            "company": scan_result.office_metadata.company,
+            "manager": scan_result.office_metadata.manager,
+            "created": scan_result.office_metadata.created.isoformat() if scan_result.office_metadata.created else None,
+            "modified": scan_result.office_metadata.modified.isoformat() if scan_result.office_metadata.modified else None,
+            "last_modified_by": scan_result.office_metadata.last_modified_by,
+            "revision": scan_result.office_metadata.revision,
+            "keywords": scan_result.office_metadata.keywords,
+            "category": scan_result.office_metadata.category,
+        } if scan_result.office_metadata else None,
+        "findings": [
+            {
+                "finding_type": f.finding_type,
+                "severity": f.severity,
+                "description": f.description,
+                "evidence": f.evidence,
+                "confidence": f.confidence,
+            }
+            for f in scan_result.findings
+        ],
+        "integrity_status": scan_result.integrity_status.value,
+        "confidence_score": scan_result.confidence_score,
+        "timeline_events": [
+            {
+                "id": e.id,
+                "doc_id": e.doc_id,
+                "event_type": e.event_type,
+                "event_timestamp": e.event_timestamp.isoformat() if e.event_timestamp else None,
+                "event_source": e.event_source,
+                "event_actor": e.event_actor,
+                "event_details": e.event_details,
+                "confidence": e.confidence,
+                "is_estimated": e.is_estimated,
+            }
+            for e in scan_result.timeline_events
+        ],
+        "scanned_at": scan_result.scanned_at.isoformat() if scan_result.scanned_at else None,
+    }
+
+    return ForensicScanResponse(scan=scan_dict)
+
+
+@router.post("/forensics/compare")
+async def compare_forensics(
+    request: Request,
+    body: ForensicCompareRequest,
+):
+    """
+    Compare metadata between two documents.
+
+    Analyzes similarities and differences:
+    - Hash matches (exact copies)
+    - Camera/device matches
+    - Author/creator matches
+    - Creation date proximity
+
+    Determines relationship type:
+    - Copy: Exact hash match
+    - Same source: Same device/serial number
+    - Same author: Same author metadata
+    - Same camera: Same camera make/model
+    - Unrelated: No significant matches
+
+    Args:
+        body: Request with source and target doc IDs
+
+    Returns:
+        Comparison results with match score and relationship
+    """
+    shard = get_shard(request)
+
+    if not shard.forensic_analyzer:
+        raise HTTPException(
+            status_code=503,
+            detail="Forensic analyzer not available"
+        )
+
+    # Get existing scans for both documents
+    source_scans = await shard.get_document_forensic_scans(body.source_doc_id)
+    target_scans = await shard.get_document_forensic_scans(body.target_doc_id)
+
+    if not source_scans:
+        raise HTTPException(
+            status_code=400,
+            detail=f"No forensic scan found for source document {body.source_doc_id}. Run /forensics/scan first."
+        )
+
+    if not target_scans:
+        raise HTTPException(
+            status_code=400,
+            detail=f"No forensic scan found for target document {body.target_doc_id}. Run /forensics/scan first."
+        )
+
+    # Use most recent scans
+    source_scan = source_scans[0]
+    target_scan = target_scans[0]
+
+    # Build MetadataForensicScan objects from stored data
+    from .models import (
+        MetadataForensicScan, ForensicScanStatus, IntegrityStatus,
+        ExifData, PdfMetadata, OfficeMetadata,
+    )
+    from datetime import datetime
+
+    def build_scan_from_dict(scan_dict: dict) -> MetadataForensicScan:
+        scan = MetadataForensicScan(
+            id=scan_dict.get("id", ""),
+            doc_id=scan_dict.get("doc_id", ""),
+            scan_status=ForensicScanStatus(scan_dict.get("scan_status", "completed")),
+            file_hash_md5=scan_dict.get("file_hash_md5"),
+            file_hash_sha256=scan_dict.get("file_hash_sha256"),
+            file_hash_sha512=scan_dict.get("file_hash_sha512"),
+            file_size=scan_dict.get("file_size"),
+            integrity_status=IntegrityStatus(scan_dict.get("integrity_status", "unknown")),
+            confidence_score=scan_dict.get("confidence_score", 0.0),
+        )
+
+        # Build EXIF data if present
+        exif = scan_dict.get("exif_data", {})
+        if exif and any(exif.values()):
+            scan.exif_data = ExifData(
+                make=exif.get("make"),
+                model=exif.get("model"),
+                serial_number=exif.get("serial_number"),
+                software=exif.get("software"),
+            )
+
+        # Build PDF metadata if present
+        pdf = scan_dict.get("pdf_metadata", {})
+        if pdf and any(pdf.values()):
+            scan.pdf_metadata = PdfMetadata(
+                title=pdf.get("title"),
+                author=pdf.get("author"),
+                creator=pdf.get("creator"),
+                producer=pdf.get("producer"),
+            )
+
+        # Build Office metadata if present
+        office = scan_dict.get("office_metadata", {})
+        if office and any(office.values()):
+            scan.office_metadata = OfficeMetadata(
+                title=office.get("title"),
+                author=office.get("author"),
+                company=office.get("company"),
+            )
+
+        return scan
+
+    source = build_scan_from_dict(source_scan)
+    target = build_scan_from_dict(target_scan)
+
+    # Perform comparison
+    comparison = shard.forensic_analyzer.compare_documents(source, target)
+
+    # Store comparison result
+    if shard._db:
+        import json
+        tenant_id = shard.get_tenant_id_or_none()
+        await shard._db.execute(
+            """
+            INSERT INTO arkham_provenance.metadata_comparisons (
+                id, source_doc_id, target_doc_id, comparison_type,
+                match_score, differences, similarities, relationship_type,
+                confidence, created_at, metadata, tenant_id
+            ) VALUES (
+                :id, :source_doc_id, :target_doc_id, :comparison_type,
+                :match_score, :differences, :similarities, :relationship_type,
+                :confidence, :created_at, :metadata, :tenant_id
+            )
+            """,
+            {
+                "id": comparison.id,
+                "source_doc_id": comparison.source_doc_id,
+                "target_doc_id": comparison.target_doc_id,
+                "comparison_type": comparison.comparison_type,
+                "match_score": comparison.match_score,
+                "differences": json.dumps(comparison.differences),
+                "similarities": json.dumps(comparison.similarities),
+                "relationship_type": comparison.relationship_type.value if comparison.relationship_type else None,
+                "confidence": comparison.confidence,
+                "created_at": comparison.created_at.isoformat() if comparison.created_at else datetime.utcnow().isoformat(),
+                "metadata": json.dumps(comparison.metadata),
+                "tenant_id": str(tenant_id) if tenant_id else None,
+            }
+        )
+
+    return {
+        "comparison": {
+            "id": comparison.id,
+            "source_doc_id": comparison.source_doc_id,
+            "target_doc_id": comparison.target_doc_id,
+            "comparison_type": comparison.comparison_type,
+            "match_score": comparison.match_score,
+            "differences": comparison.differences,
+            "similarities": comparison.similarities,
+            "relationship_type": comparison.relationship_type.value if comparison.relationship_type else None,
+            "confidence": comparison.confidence,
+        }
+    }
+
+
+@router.get("/forensics/stats", response_model=ForensicStatsResponse)
+async def get_forensic_stats(request: Request):
+    """
+    Get forensic analysis statistics.
+
+    Returns aggregated statistics about forensic scans:
+    - Total scans performed
+    - Scans by status
+    - Documents with findings
+    - Integrity status counts
+    - Average confidence score
+    """
+    shard = get_shard(request)
+
+    stats = await shard.get_forensic_stats()
+    return ForensicStatsResponse(stats=stats)
+
+
+@router.get("/forensics/document/{doc_id}")
+async def get_document_forensic_scans(
+    request: Request,
+    doc_id: str,
+):
+    """
+    Get all forensic scans for a document.
+
+    Args:
+        doc_id: Document ID
+
+    Returns:
+        List of scans for the document
+    """
+    shard = get_shard(request)
+
+    scans = await shard.get_document_forensic_scans(doc_id)
+    return {"scans": scans, "total": len(scans)}
+
+
+@router.get("/forensics/{scan_id}")
+async def get_forensic_scan(
+    request: Request,
+    scan_id: str,
+):
+    """
+    Get a specific forensic scan by ID.
+
+    Args:
+        scan_id: Scan ID to retrieve
+
+    Returns:
+        Scan details
+    """
+    shard = get_shard(request)
+
+    scan = await shard.get_forensic_scan(scan_id)
+    if not scan:
+        raise HTTPException(status_code=404, detail=f"Scan {scan_id} not found")
+
+    return {"scan": scan}
