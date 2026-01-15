@@ -1,0 +1,699 @@
+/**
+ * CytoscapeGraph.css - Styles for Cytoscape graph visualization components
+ *
+ * Includes styles for:
+ * - Main container
+ * - Controls panel
+ * - Performance mode panel
+ * - Expand neighbors panel
+ * - Tooltip
+ * - Animations
+ */
+
+/* ============================================
+   MAIN CONTAINER
+   ============================================ */
+
+.cytoscape-container {
+  width: 100%;
+  height: 100%;
+  min-height: 400px;
+  background-color: var(--bg-primary, #ffffff);
+  border-radius: 8px;
+  overflow: hidden;
+  position: relative;
+}
+
+/* ============================================
+   CYTOSCAPE CONTROLS
+   ============================================ */
+
+.cytoscape-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.cytoscape-controls .control-section {
+  padding: 12px;
+  background: var(--bg-secondary, #f7f7f7);
+  border: 1px solid var(--border-color, #e2e8f0);
+  border-radius: 8px;
+}
+
+.cytoscape-controls .control-section h4 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 12px 0;
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--text-primary, #1a202c);
+}
+
+.cytoscape-controls .select {
+  width: 100%;
+  padding: 8px 12px;
+  font-size: 0.9rem;
+  border: 1px solid var(--border-color, #e2e8f0);
+  border-radius: 6px;
+  background: var(--bg-primary, #ffffff);
+  color: var(--text-primary, #1a202c);
+  cursor: pointer;
+  transition: border-color 0.2s;
+}
+
+.cytoscape-controls .select:hover {
+  border-color: var(--primary-color, #3b82f6);
+}
+
+.cytoscape-controls .select:focus {
+  outline: none;
+  border-color: var(--primary-color, #3b82f6);
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.15);
+}
+
+.cytoscape-controls .control-hint {
+  margin: 8px 0 0 0;
+  font-size: 0.8rem;
+  color: var(--text-muted, #718096);
+}
+
+.cytoscape-controls .checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.9rem;
+  cursor: pointer;
+  color: var(--text-primary, #1a202c);
+}
+
+.cytoscape-controls .checkbox-label input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+  accent-color: var(--primary-color, #3b82f6);
+}
+
+.cytoscape-controls .button-group {
+  display: flex;
+  gap: 8px;
+}
+
+.cytoscape-controls .button-group .btn {
+  flex: 1;
+}
+
+/* Shortcuts section */
+.shortcuts-section {
+  background: var(--bg-tertiary, #edf2f7) !important;
+}
+
+.shortcuts-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.shortcut-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.8rem;
+  color: var(--text-secondary, #4a5568);
+}
+
+.shortcut-item kbd {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 24px;
+  padding: 2px 6px;
+  font-family: monospace;
+  font-size: 0.75rem;
+  background: var(--bg-primary, #ffffff);
+  border: 1px solid var(--border-color, #e2e8f0);
+  border-radius: 4px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+}
+
+/* ============================================
+   PERFORMANCE MODE PANEL
+   ============================================ */
+
+.performance-mode-panel {
+  background: var(--bg-secondary, #f7f7f7);
+  border: 1px solid var(--border-color, #e2e8f0);
+  border-radius: 8px;
+  padding: 12px;
+  margin-bottom: 12px;
+}
+
+.performance-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.performance-toggle {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.toggle-label {
+  font-weight: 500;
+  font-size: 0.9rem;
+  color: var(--text-primary, #1a202c);
+}
+
+.auto-suggest {
+  color: var(--warning-color, #f59e0b);
+  font-size: 0.8rem;
+  font-weight: 400;
+  margin-left: 4px;
+}
+
+.performance-indicator {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--success-color, #10b981);
+  font-size: 0.85rem;
+  font-weight: 500;
+}
+
+.settings-expand-btn {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+  padding: 6px 8px;
+  margin-bottom: 8px;
+  font-size: 0.8rem;
+  color: var(--text-secondary, #4a5568);
+  background: transparent;
+  border: 1px dashed var(--border-color, #e2e8f0);
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.settings-expand-btn:hover {
+  background: var(--bg-tertiary, #edf2f7);
+  border-color: var(--text-muted, #718096);
+}
+
+.performance-options {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 0;
+  border-top: 1px solid var(--border-color, #e2e8f0);
+  border-bottom: 1px solid var(--border-color, #e2e8f0);
+  margin: 8px 0;
+}
+
+.checkbox-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.85rem;
+  cursor: pointer;
+  color: var(--text-primary, #1a202c);
+}
+
+.checkbox-option input[type="checkbox"] {
+  width: 14px;
+  height: 14px;
+  cursor: pointer;
+  accent-color: var(--primary-color, #3b82f6);
+}
+
+.performance-stats {
+  display: flex;
+  gap: 16px;
+  font-size: 0.8rem;
+  color: var(--text-muted, #718096);
+  margin-top: 8px;
+}
+
+.performance-stats .stat {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.stat-warning {
+  color: var(--warning-color, #f59e0b);
+  margin-left: 2px;
+}
+
+.performance-tip {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px;
+  margin-top: 8px;
+  font-size: 0.8rem;
+  color: var(--text-secondary, #4a5568);
+  background: rgba(245, 158, 11, 0.1);
+  border: 1px solid rgba(245, 158, 11, 0.3);
+  border-radius: 6px;
+}
+
+/* Switch toggle styles */
+.switch {
+  position: relative;
+  display: inline-block;
+  width: 40px;
+  height: 20px;
+  flex-shrink: 0;
+}
+
+.switch input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.slider {
+  position: absolute;
+  cursor: pointer;
+  inset: 0;
+  background-color: var(--border-color, #cbd5e0);
+  transition: 0.3s;
+  border-radius: 20px;
+}
+
+.slider::before {
+  position: absolute;
+  content: "";
+  height: 16px;
+  width: 16px;
+  left: 2px;
+  bottom: 2px;
+  background-color: white;
+  transition: 0.3s;
+  border-radius: 50%;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+}
+
+input:checked + .slider {
+  background-color: var(--primary-color, #3b82f6);
+}
+
+input:focus + .slider {
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.2);
+}
+
+input:checked + .slider::before {
+  transform: translateX(20px);
+}
+
+/* ============================================
+   EXPAND NEIGHBORS PANEL
+   ============================================ */
+
+.expand-neighbors-panel {
+  background: var(--bg-secondary, #f7f7f7);
+  border: 1px solid var(--border-color, #e2e8f0);
+  border-radius: 8px;
+  padding: 12px;
+}
+
+.expand-neighbors-empty {
+  text-align: center;
+}
+
+.expand-neighbors-empty .empty-message {
+  margin: 12px 0 0 0;
+  font-size: 0.85rem;
+  color: var(--text-muted, #718096);
+}
+
+.expand-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border-color, #e2e8f0);
+}
+
+.expand-header h4 {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--text-primary, #1a202c);
+}
+
+.node-info {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.node-type-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  background: var(--primary-color, #3b82f6);
+  color: white;
+}
+
+.node-details {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.node-label {
+  font-weight: 600;
+  font-size: 1rem;
+  color: var(--text-primary, #1a202c);
+}
+
+.node-type-name {
+  font-size: 0.8rem;
+  color: var(--text-muted, #718096);
+  text-transform: capitalize;
+}
+
+.node-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  border-radius: 12px;
+  font-size: 0.75rem;
+  font-weight: 500;
+}
+
+.badge-seed {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.badge-depth {
+  background: var(--bg-tertiary, #edf2f7);
+  color: var(--text-secondary, #4a5568);
+}
+
+.badge-connections {
+  background: rgba(59, 130, 246, 0.1);
+  color: var(--primary-color, #3b82f6);
+}
+
+.expand-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.expand-actions .btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+
+.max-depth-notice,
+.fully-expanded-notice {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  background: var(--bg-tertiary, #edf2f7);
+  border-radius: 6px;
+  font-size: 0.85rem;
+  color: var(--text-muted, #718096);
+}
+
+.fully-expanded-notice {
+  color: var(--success-color, #10b981);
+  background: rgba(16, 185, 129, 0.1);
+}
+
+.expansion-stats {
+  padding: 10px;
+  background: var(--bg-tertiary, #edf2f7);
+  border-radius: 6px;
+  margin-bottom: 12px;
+}
+
+.stat-row {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.85rem;
+  padding: 2px 0;
+}
+
+.stat-label {
+  color: var(--text-muted, #718096);
+}
+
+.stat-value {
+  font-weight: 600;
+  color: var(--text-primary, #1a202c);
+}
+
+.depth-legend {
+  border-top: 1px solid var(--border-color, #e2e8f0);
+  padding-top: 12px;
+}
+
+.depth-legend h5 {
+  font-size: 0.8rem;
+  margin: 0 0 8px 0;
+  color: var(--text-muted, #718096);
+  font-weight: 500;
+}
+
+.legend-items {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.legend-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.8rem;
+  color: var(--text-secondary, #4a5568);
+}
+
+.legend-color {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.legend-color.depth-0 {
+  background: #f59e0b;
+}
+
+.legend-color.depth-1 {
+  background: #3b82f6;
+  opacity: 1;
+}
+
+.legend-color.depth-2 {
+  background: #3b82f6;
+  opacity: 0.75;
+}
+
+.legend-color.depth-3 {
+  background: #3b82f6;
+  opacity: 0.5;
+}
+
+/* ============================================
+   CYTOSCAPE TOOLTIP
+   ============================================ */
+
+.cytoscape-tooltip {
+  background: var(--bg-primary, #ffffff);
+  border: 1px solid var(--border-color, #e2e8f0);
+  border-radius: 8px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  padding: 0;
+  min-width: 180px;
+  max-width: 280px;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.tooltip-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  background: var(--bg-secondary, #f7f7f7);
+  border-bottom: 1px solid var(--border-color, #e2e8f0);
+}
+
+.tooltip-type-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  color: white;
+  flex-shrink: 0;
+}
+
+.tooltip-label {
+  font-weight: 600;
+  font-size: 0.95rem;
+  color: var(--text-primary, #1a202c);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tooltip-content {
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.tooltip-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 0.85rem;
+}
+
+.tooltip-key {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-muted, #718096);
+}
+
+.tooltip-value {
+  font-weight: 500;
+  color: var(--text-primary, #1a202c);
+}
+
+.tooltip-hint {
+  padding: 6px 12px;
+  font-size: 0.75rem;
+  color: var(--text-muted, #718096);
+  background: var(--bg-tertiary, #edf2f7);
+  text-align: center;
+}
+
+/* ============================================
+   ANIMATIONS
+   ============================================ */
+
+@keyframes spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.spin {
+  animation: spin 1s linear infinite;
+}
+
+/* Fade in animation for new elements */
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.cytoscape-tooltip {
+  animation: fadeIn 0.15s ease-out;
+}
+
+/* Pulse animation for expandable nodes indicator */
+@keyframes pulse {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.5;
+  }
+}
+
+.pulse {
+  animation: pulse 2s ease-in-out infinite;
+}
+
+/* ============================================
+   DARK MODE SUPPORT
+   ============================================ */
+
+@media (prefers-color-scheme: dark) {
+  .cytoscape-container {
+    background-color: var(--bg-primary, #1a202c);
+  }
+
+  .shortcut-item kbd {
+    background: var(--bg-tertiary, #2d3748);
+    border-color: var(--border-color, #4a5568);
+    color: var(--text-primary, #f7fafc);
+  }
+}
+
+/* ============================================
+   RESPONSIVE STYLES
+   ============================================ */
+
+@media (max-width: 768px) {
+  .cytoscape-controls .button-group {
+    flex-direction: column;
+  }
+
+  .performance-header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
+  }
+
+  .performance-stats {
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .node-badges {
+    gap: 4px;
+  }
+
+  .badge {
+    font-size: 0.7rem;
+    padding: 2px 6px;
+  }
+}
