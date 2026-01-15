@@ -248,3 +248,180 @@ class ChainExport:
     include_metadata: bool = True
     include_audit: bool = True
     include_verification: bool = True
+
+
+# =============================================================================
+# Metadata Forensics Models
+# =============================================================================
+
+
+class ForensicScanStatus(Enum):
+    """Status of a forensic scan."""
+    PENDING = "pending"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    PARTIAL = "partial"
+
+
+class IntegrityStatus(Enum):
+    """Integrity status of a document."""
+    CLEAN = "clean"
+    SUSPICIOUS = "suspicious"
+    TAMPERED = "tampered"
+    UNKNOWN = "unknown"
+
+
+class RelationshipType(Enum):
+    """Type of relationship between documents based on metadata."""
+    COPY = "copy"
+    DERIVATIVE = "derivative"
+    SAME_SOURCE = "same_source"
+    SAME_AUTHOR = "same_author"
+    SAME_CAMERA = "same_camera"
+    UNRELATED = "unrelated"
+
+
+@dataclass
+class ExifData:
+    """EXIF metadata from images."""
+    make: Optional[str] = None
+    model: Optional[str] = None
+    serial_number: Optional[str] = None
+    lens_model: Optional[str] = None
+
+    datetime_original: Optional[datetime] = None
+    datetime_digitized: Optional[datetime] = None
+    datetime_modified: Optional[datetime] = None
+
+    gps_latitude: Optional[float] = None
+    gps_longitude: Optional[float] = None
+    gps_altitude: Optional[float] = None
+
+    software: Optional[str] = None
+    width: Optional[int] = None
+    height: Optional[int] = None
+
+    raw_data: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class PdfMetadata:
+    """PDF document metadata."""
+    title: Optional[str] = None
+    author: Optional[str] = None
+    subject: Optional[str] = None
+    creator: Optional[str] = None
+    producer: Optional[str] = None
+    creation_date: Optional[datetime] = None
+    modification_date: Optional[datetime] = None
+    keywords: List[str] = field(default_factory=list)
+    xmp_data: Dict[str, Any] = field(default_factory=dict)
+    page_count: int = 0
+    pdf_version: Optional[str] = None
+    is_encrypted: bool = False
+
+
+@dataclass
+class OfficeMetadata:
+    """Office document (docx, xlsx, pptx) metadata."""
+    title: Optional[str] = None
+    author: Optional[str] = None
+    subject: Optional[str] = None
+    company: Optional[str] = None
+    manager: Optional[str] = None
+    created: Optional[datetime] = None
+    modified: Optional[datetime] = None
+    last_modified_by: Optional[str] = None
+    revision: Optional[int] = None
+    keywords: List[str] = field(default_factory=list)
+    category: Optional[str] = None
+    comments: Optional[str] = None
+    raw_data: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class ForensicFinding:
+    """A forensic analysis finding."""
+    finding_type: str  # timestamp_inconsistency, metadata_stripped, etc.
+    severity: str  # low, medium, high, critical
+    description: str
+    evidence: Dict[str, Any] = field(default_factory=dict)
+    confidence: float = 1.0
+
+
+@dataclass
+class TimelineEvent:
+    """An event in document timeline reconstructed from metadata."""
+    id: str
+    doc_id: str
+    event_type: str  # created, modified, accessed, printed
+    event_timestamp: Optional[datetime] = None
+    event_source: str = ""  # exif, pdf, office, filesystem
+    event_actor: Optional[str] = None
+    event_details: Dict[str, Any] = field(default_factory=dict)
+    confidence: float = 1.0
+    is_estimated: bool = False
+
+
+@dataclass
+class MetadataForensicScan:
+    """Complete forensic scan result."""
+    id: str
+    doc_id: str
+    scan_status: ForensicScanStatus = ForensicScanStatus.PENDING
+
+    # File hashes
+    file_hash_md5: Optional[str] = None
+    file_hash_sha256: Optional[str] = None
+    file_hash_sha512: Optional[str] = None
+    file_size: Optional[int] = None
+
+    # Extracted metadata by type
+    exif_data: Optional[ExifData] = None
+    pdf_metadata: Optional[PdfMetadata] = None
+    office_metadata: Optional[OfficeMetadata] = None
+
+    # Forensic findings
+    findings: List[ForensicFinding] = field(default_factory=list)
+    integrity_status: IntegrityStatus = IntegrityStatus.UNKNOWN
+    confidence_score: float = 0.0
+
+    # Reconstructed timeline
+    timeline_events: List[TimelineEvent] = field(default_factory=list)
+
+    # Metadata
+    scanned_at: datetime = field(default_factory=datetime.utcnow)
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class MetadataComparison:
+    """Comparison between two documents' metadata."""
+    id: str
+    source_doc_id: str
+    target_doc_id: str
+    comparison_type: str
+
+    match_score: float = 0.0
+    differences: List[Dict[str, Any]] = field(default_factory=list)
+    similarities: List[Dict[str, Any]] = field(default_factory=list)
+
+    relationship_type: Optional[RelationshipType] = None
+    confidence: float = 0.0
+
+    created_at: datetime = field(default_factory=datetime.utcnow)
+    created_by: Optional[str] = None
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class ForensicStats:
+    """Statistics about forensic scans."""
+    total_scans: int = 0
+    scans_by_status: Dict[str, int] = field(default_factory=dict)
+    documents_with_findings: int = 0
+    integrity_clean: int = 0
+    integrity_suspicious: int = 0
+    integrity_tampered: int = 0
+    average_confidence: float = 0.0
+    calculated_at: datetime = field(default_factory=datetime.utcnow)

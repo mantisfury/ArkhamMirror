@@ -8,8 +8,9 @@ from arkham_frame.shard_interface import ArkhamShard
 
 from .api import init_api, router
 from .detector import AnomalyDetector
+from .hidden_content import HiddenContentDetector
 from .storage import AnomalyStore
-from .models import DetectionConfig, Anomaly
+from .models import DetectionConfig, Anomaly, HiddenContentConfig, HiddenContentScan
 
 logger = logging.getLogger(__name__)
 
@@ -42,13 +43,16 @@ class AnomaliesShard(ArkhamShard):
     def __init__(self):
         super().__init__()
         self.detector: AnomalyDetector | None = None
+        self.hidden_detector: HiddenContentDetector | None = None
         self.store: AnomalyStore | None = None
         self._frame = None
         self._event_bus = None
         self._vector_service = None
         self._db_service = None
         self._workers = None
+        self._storage = None
         self._config = DetectionConfig()
+        self._hidden_config = HiddenContentConfig()
 
     async def initialize(self, frame) -> None:
         """
@@ -77,15 +81,18 @@ class AnomaliesShard(ArkhamShard):
         # Get optional services
         self._event_bus = frame.get_service("events")
         self._workers = frame.get_service("workers")
+        self._storage = frame.get_service("storage")
 
         # Create database schema
         await self._create_schema()
 
         # Initialize components
         self.detector = AnomalyDetector(config=self._config)
+        self.hidden_detector = HiddenContentDetector(config=self._hidden_config)
         self.store = AnomalyStore(db=self._db_service)
 
         logger.info("Anomaly detector initialized")
+        logger.info("Hidden content detector initialized")
         logger.info("Anomaly store initialized")
 
         # Initialize API
@@ -95,6 +102,8 @@ class AnomaliesShard(ArkhamShard):
             event_bus=self._event_bus,
             db=self._db_service,
             vectors=self._vector_service,
+            hidden_detector=self.hidden_detector,
+            storage=self._storage,
         )
 
         # Subscribe to events (correct event names from system)
@@ -244,6 +253,88 @@ class AnomaliesShard(ArkhamShard):
         await self._db_service.execute("""
             CREATE INDEX IF NOT EXISTS idx_arkham_anomaly_patterns_tenant
             ON arkham_anomaly_patterns(tenant_id)
+        """)
+
+        # ===========================================
+        # Hidden Content Detection Tables
+        # ===========================================
+
+        # Create schema for new tables (following project conventions)
+        await self._db_service.execute("""
+            CREATE SCHEMA IF NOT EXISTS arkham_anomalies
+        """)
+
+        # Hidden content scans table
+        await self._db_service.execute("""
+            CREATE TABLE IF NOT EXISTS arkham_anomalies.hidden_content_scans (
+                id TEXT PRIMARY KEY,
+                doc_id TEXT NOT NULL,
+                scan_type TEXT NOT NULL,
+                scan_status TEXT DEFAULT 'pending',
+                findings TEXT DEFAULT '[]',
+                entropy_score REAL,
+                entropy_regions TEXT DEFAULT '[]',
+                magic_expected TEXT,
+                magic_actual TEXT,
+                file_signature BYTEA,
+                lsb_analysis TEXT DEFAULT '{}',
+                stego_indicators TEXT DEFAULT '[]',
+                stego_confidence REAL DEFAULT 0.0,
+                created_at TEXT,
+                completed_at TEXT,
+                metadata TEXT DEFAULT '{}',
+                tenant_id UUID
+            )
+        """)
+
+        # File signatures table for corpus comparison
+        await self._db_service.execute("""
+            CREATE TABLE IF NOT EXISTS arkham_anomalies.file_signatures (
+                id TEXT PRIMARY KEY,
+                doc_id TEXT NOT NULL UNIQUE,
+                file_hash_md5 TEXT,
+                file_hash_sha256 TEXT,
+                file_hash_sha512 TEXT,
+                magic_type TEXT,
+                mime_type TEXT,
+                file_size BIGINT,
+                entropy_global REAL,
+                entropy_chunks TEXT DEFAULT '[]',
+                header_bytes BYTEA,
+                trailer_bytes BYTEA,
+                created_at TEXT,
+                tenant_id UUID
+            )
+        """)
+
+        # Indexes for hidden content tables
+        await self._db_service.execute("""
+            CREATE INDEX IF NOT EXISTS idx_hidden_scans_doc
+            ON arkham_anomalies.hidden_content_scans(doc_id)
+        """)
+        await self._db_service.execute("""
+            CREATE INDEX IF NOT EXISTS idx_hidden_scans_type
+            ON arkham_anomalies.hidden_content_scans(scan_type)
+        """)
+        await self._db_service.execute("""
+            CREATE INDEX IF NOT EXISTS idx_hidden_scans_status
+            ON arkham_anomalies.hidden_content_scans(scan_status)
+        """)
+        await self._db_service.execute("""
+            CREATE INDEX IF NOT EXISTS idx_hidden_scans_tenant
+            ON arkham_anomalies.hidden_content_scans(tenant_id)
+        """)
+        await self._db_service.execute("""
+            CREATE INDEX IF NOT EXISTS idx_file_sigs_doc
+            ON arkham_anomalies.file_signatures(doc_id)
+        """)
+        await self._db_service.execute("""
+            CREATE INDEX IF NOT EXISTS idx_file_sigs_hash
+            ON arkham_anomalies.file_signatures(file_hash_sha256)
+        """)
+        await self._db_service.execute("""
+            CREATE INDEX IF NOT EXISTS idx_file_sigs_tenant
+            ON arkham_anomalies.file_signatures(tenant_id)
         """)
 
         logger.debug("Anomalies schema created/verified")
@@ -616,18 +707,20 @@ class AnomaliesShard(ArkhamShard):
             return []
 
         try:
-            # Check if vector search is available
-            if hasattr(self._vector_service, 'search'):
-                # Search for similar documents
-                results = await self._vector_service.search(
-                    collection="documents",
-                    query=text[:1000],  # Use first 1000 chars as query
+            # Check if vector text search is available (embeds text then searches)
+            if hasattr(self._vector_service, 'search_text'):
+                # Search for similar documents using text query
+                # search_text handles embedding internally
+                results = await self._vector_service.search_text(
+                    collection="arkham_documents",  # Use correct collection name
+                    text=text[:1000],  # Use first 1000 chars as query
                     limit=10,
                 )
 
                 # If this document is very different from results, it might be anomalous
                 if results and len(results) > 0:
-                    avg_score = sum(r.get('score', 0) for r in results) / len(results)
+                    # SearchResult is a dataclass with .score attribute
+                    avg_score = sum(r.score if hasattr(r, 'score') else r.get('score', 0) for r in results) / len(results)
                     if avg_score < 0.3:  # Low similarity to corpus
                         return [Anomaly(
                             id=str(uuid.uuid4()),
@@ -832,4 +925,208 @@ class AnomaliesShard(ArkhamShard):
                 "false_positive_rate": stats.false_positive_rate,
                 "avg_confidence": stats.avg_confidence,
             },
+        }
+
+    # === Hidden Content Detection Methods ===
+
+    async def _store_hidden_content_scan(self, scan: HiddenContentScan) -> None:
+        """
+        Store a hidden content scan result in the database.
+
+        Args:
+            scan: HiddenContentScan result to store
+        """
+        if not self._db_service:
+            return
+
+        from datetime import datetime
+
+        tenant_id = self.get_tenant_id_or_none()
+
+        # Convert complex objects to JSON strings
+        entropy_regions = json.dumps([
+            {
+                "start_offset": r.start_offset,
+                "end_offset": r.end_offset,
+                "entropy_value": r.entropy_value,
+                "is_anomalous": r.is_anomalous,
+                "description": r.description,
+            }
+            for r in scan.entropy_regions
+        ])
+
+        lsb_analysis = json.dumps(
+            {
+                "bit_ratio": scan.lsb_result.bit_ratio,
+                "chi_square_value": scan.lsb_result.chi_square_value,
+                "chi_square_p_value": scan.lsb_result.chi_square_p_value,
+                "is_suspicious": scan.lsb_result.is_suspicious,
+                "confidence": scan.lsb_result.confidence,
+                "sample_size": scan.lsb_result.sample_size,
+            } if scan.lsb_result else {}
+        )
+
+        stego_indicators = json.dumps([
+            {
+                "indicator_type": i.indicator_type,
+                "confidence": i.confidence,
+                "location": i.location,
+                "details": i.details,
+            }
+            for i in scan.stego_indicators
+        ])
+
+        await self._db_service.execute(
+            """
+            INSERT INTO arkham_anomalies.hidden_content_scans (
+                id, doc_id, scan_type, scan_status, findings,
+                entropy_score, entropy_regions, magic_expected, magic_actual,
+                lsb_analysis, stego_indicators, stego_confidence,
+                created_at, completed_at, metadata, tenant_id
+            ) VALUES (
+                :id, :doc_id, :scan_type, :scan_status, :findings,
+                :entropy_score, :entropy_regions, :magic_expected, :magic_actual,
+                :lsb_analysis, :stego_indicators, :stego_confidence,
+                :created_at, :completed_at, :metadata, :tenant_id
+            )
+            """,
+            {
+                "id": scan.id,
+                "doc_id": scan.doc_id,
+                "scan_type": scan.scan_type.value,
+                "scan_status": scan.scan_status.value,
+                "findings": json.dumps(scan.findings),
+                "entropy_score": scan.entropy_global,
+                "entropy_regions": entropy_regions,
+                "magic_expected": scan.magic_expected,
+                "magic_actual": scan.magic_actual,
+                "lsb_analysis": lsb_analysis,
+                "stego_indicators": stego_indicators,
+                "stego_confidence": scan.stego_confidence,
+                "created_at": scan.created_at.isoformat() if scan.created_at else datetime.utcnow().isoformat(),
+                "completed_at": scan.completed_at.isoformat() if scan.completed_at else None,
+                "metadata": json.dumps(scan.metadata),
+                "tenant_id": str(tenant_id) if tenant_id else None,
+            }
+        )
+
+    async def get_hidden_content_scan(self, scan_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Get a hidden content scan by ID.
+
+        Args:
+            scan_id: Scan ID
+
+        Returns:
+            Scan data dict or None
+        """
+        if not self._db_service:
+            return None
+
+        tenant_id = self.get_tenant_id_or_none()
+        query = "SELECT * FROM arkham_anomalies.hidden_content_scans WHERE id = :id"
+        params: Dict[str, Any] = {"id": scan_id}
+
+        if tenant_id:
+            query += " AND tenant_id = :tenant_id"
+            params["tenant_id"] = str(tenant_id)
+
+        row = await self._db_service.fetch_one(query, params)
+        return dict(row) if row else None
+
+    async def get_document_hidden_scans(self, doc_id: str) -> list[Dict[str, Any]]:
+        """
+        Get all hidden content scans for a document.
+
+        Args:
+            doc_id: Document ID
+
+        Returns:
+            List of scan data dicts
+        """
+        if not self._db_service:
+            return []
+
+        tenant_id = self.get_tenant_id_or_none()
+        query = """
+            SELECT * FROM arkham_anomalies.hidden_content_scans
+            WHERE doc_id = :doc_id
+        """
+        params: Dict[str, Any] = {"doc_id": doc_id}
+
+        if tenant_id:
+            query += " AND tenant_id = :tenant_id"
+            params["tenant_id"] = str(tenant_id)
+
+        query += " ORDER BY created_at DESC"
+        rows = await self._db_service.fetch_all(query, params)
+        return [dict(row) for row in rows] if rows else []
+
+    async def get_hidden_content_stats(self) -> Dict[str, Any]:
+        """
+        Get hidden content detection statistics.
+
+        Returns:
+            Statistics dictionary
+        """
+        if not self._db_service:
+            return {}
+
+        tenant_id = self.get_tenant_id_or_none()
+        tenant_filter = ""
+        params: Dict[str, Any] = {}
+
+        if tenant_id:
+            tenant_filter = " WHERE tenant_id = :tenant_id"
+            params["tenant_id"] = str(tenant_id)
+
+        # Total scans
+        total_row = await self._db_service.fetch_one(
+            f"SELECT COUNT(*) as count FROM arkham_anomalies.hidden_content_scans{tenant_filter}",
+            params
+        )
+        total_scans = total_row.get("count", 0) if total_row else 0
+
+        # Scans by type
+        type_rows = await self._db_service.fetch_all(
+            f"""SELECT scan_type, COUNT(*) as count
+                FROM arkham_anomalies.hidden_content_scans{tenant_filter}
+                GROUP BY scan_type""",
+            params
+        )
+        scans_by_type = {row["scan_type"]: row["count"] for row in type_rows} if type_rows else {}
+
+        # Documents with findings
+        findings_row = await self._db_service.fetch_one(
+            f"""SELECT COUNT(DISTINCT doc_id) as count
+                FROM arkham_anomalies.hidden_content_scans
+                WHERE findings != '[]'{' AND tenant_id = :tenant_id' if tenant_id else ''}""",
+            params
+        )
+        docs_with_findings = findings_row.get("count", 0) if findings_row else 0
+
+        # High entropy files
+        entropy_row = await self._db_service.fetch_one(
+            f"""SELECT COUNT(*) as count
+                FROM arkham_anomalies.hidden_content_scans
+                WHERE entropy_score >= 7.5{' AND tenant_id = :tenant_id' if tenant_id else ''}""",
+            params
+        )
+        high_entropy = entropy_row.get("count", 0) if entropy_row else 0
+
+        # Stego candidates
+        stego_row = await self._db_service.fetch_one(
+            f"""SELECT COUNT(*) as count
+                FROM arkham_anomalies.hidden_content_scans
+                WHERE stego_confidence >= 0.5{' AND tenant_id = :tenant_id' if tenant_id else ''}""",
+            params
+        )
+        stego_candidates = stego_row.get("count", 0) if stego_row else 0
+
+        return {
+            "total_scans": total_scans,
+            "scans_by_type": scans_by_type,
+            "documents_with_findings": docs_with_findings,
+            "high_entropy_files": high_entropy,
+            "stego_candidates": stego_candidates,
         }

@@ -10,6 +10,7 @@ import { Icon } from '../../components/common/Icon';
 import { AIAnalystButton } from '../../components/AIAnalyst';
 import { useToast } from '../../context/ToastContext';
 import { useFetch } from '../../hooks/useFetch';
+import { ForensicsTab } from './ForensicsTab';
 import './ProvenancePage.css';
 
 // Types
@@ -81,7 +82,7 @@ interface LineageGraph {
   descendant_count: number;
 }
 
-type MainTab = 'artifacts' | 'chains' | 'lineage';
+type MainTab = 'artifacts' | 'chains' | 'lineage' | 'forensics';
 
 export function ProvenancePage() {
   const { toast } = useToast();
@@ -694,6 +695,13 @@ export function ProvenancePage() {
           <Icon name="GitBranch" size={18} />
           Lineage
         </button>
+        <button
+          className={`main-tab ${mainTab === 'forensics' ? 'active' : ''}`}
+          onClick={() => setMainTab('forensics')}
+        >
+          <Icon name="FileSearch" size={18} />
+          Forensics
+        </button>
       </div>
 
       {/* Tab Content */}
@@ -701,6 +709,7 @@ export function ProvenancePage() {
         {mainTab === 'artifacts' && renderArtifactsTab()}
         {mainTab === 'chains' && renderChainsTab()}
         {mainTab === 'lineage' && renderLineageTab()}
+        {mainTab === 'forensics' && <ForensicsTab />}
       </main>
 
       {/* Create Chain Dialog */}

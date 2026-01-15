@@ -11,6 +11,7 @@ import { Icon } from '../../components/common/Icon';
 import { LoadingSkeleton } from '../../components/common/LoadingSkeleton';
 import { AIAnalystButton } from '../../components/AIAnalyst';
 import { AnomalyDetail } from './AnomalyDetail';
+import { HiddenContentTab } from './HiddenContentTab';
 
 import * as api from './api';
 import './AnomaliesPage.css';
@@ -30,21 +31,61 @@ import {
   SEVERITY_OPTIONS,
 } from './types';
 
+// Tab types
+type AnomaliesTab = 'list' | 'hidden-content';
+
 // ============================================
 // Main Page Component
 // ============================================
 
 export function AnomaliesPage() {
-  const [searchParams, _setSearchParams] = useSearchParams();
-  void _setSearchParams;
+  const [searchParams, setSearchParams] = useSearchParams();
   const anomalyId = searchParams.get('anomalyId');
+  const tabParam = searchParams.get('tab') as AnomaliesTab | null;
+  const [activeTab, setActiveTab] = useState<AnomaliesTab>(tabParam || 'list');
 
   // Show detail view if anomalyId is set
   if (anomalyId) {
     return <AnomalyDetailView anomalyId={anomalyId} />;
   }
 
-  return <AnomaliesListView />;
+  const handleTabChange = (tab: AnomaliesTab) => {
+    setActiveTab(tab);
+    if (tab === 'list') {
+      setSearchParams({});
+    } else {
+      setSearchParams({ tab });
+    }
+  };
+
+  return (
+    <div className="anomalies-page">
+      {/* Tab Navigation */}
+      <div className="anomalies-tabs">
+        <button
+          className={`anomalies-tab ${activeTab === 'list' ? 'active' : ''}`}
+          onClick={() => handleTabChange('list')}
+        >
+          <Icon name="AlertTriangle" size={16} />
+          Anomalies
+        </button>
+        <button
+          className={`anomalies-tab ${activeTab === 'hidden-content' ? 'active' : ''}`}
+          onClick={() => handleTabChange('hidden-content')}
+        >
+          <Icon name="Eye" size={16} />
+          Hidden Content Detection
+        </button>
+      </div>
+
+      {/* Tab Content */}
+      {activeTab === 'list' ? (
+        <AnomaliesListView />
+      ) : (
+        <HiddenContentTab />
+      )}
+    </div>
+  );
 }
 
 // ============================================
@@ -197,31 +238,25 @@ function AnomaliesListView() {
   };
 
   if (loading && anomalies.length === 0) {
-    return (
-      <div className="anomalies-page">
-        <LoadingSkeleton type="list" />
-      </div>
-    );
+    return <LoadingSkeleton type="list" />;
   }
 
   if (error) {
     return (
-      <div className="anomalies-page">
-        <div className="anomalies-error">
-          <Icon name="AlertCircle" size={48} />
-          <h2>Failed to load anomalies</h2>
-          <p>{error}</p>
-          <button className="btn btn-primary" onClick={fetchAnomalies}>
-            <Icon name="RefreshCw" size={16} />
-            Retry
-          </button>
-        </div>
+      <div className="anomalies-error">
+        <Icon name="AlertCircle" size={48} />
+        <h2>Failed to load anomalies</h2>
+        <p>{error}</p>
+        <button className="btn btn-primary" onClick={fetchAnomalies}>
+          <Icon name="RefreshCw" size={16} />
+          Retry
+        </button>
       </div>
     );
   }
 
   return (
-    <div className="anomalies-page">
+    <>
       <header className="page-header">
         <div className="page-title">
           <Icon name="AlertTriangle" size={28} />
@@ -566,7 +601,7 @@ function AnomaliesListView() {
           onCancel={() => setShowDetectDialog(false)}
         />
       )}
-    </div>
+    </>
   );
 }
 

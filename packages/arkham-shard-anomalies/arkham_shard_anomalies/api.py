@@ -24,6 +24,11 @@ from .models import (
     AnomalyStats,
     StatusUpdate,
     AnalystNote,
+    # Hidden content models
+    HiddenContentConfig,
+    HiddenContentScan,
+    HiddenContentScanType,
+    HiddenContentStats,
 )
 
 logger = logging.getLogger(__name__)
@@ -32,20 +37,24 @@ router = APIRouter(prefix="/api/anomalies", tags=["anomalies"])
 
 # These get set by the shard on initialization
 _detector = None
+_hidden_detector = None
 _store = None
 _event_bus = None
 _db = None
 _vectors = None
+_storage = None
 
 
-def init_api(detector, store, event_bus, db=None, vectors=None):
+def init_api(detector, store, event_bus, db=None, vectors=None, hidden_detector=None, storage=None):
     """Initialize API with shard dependencies."""
-    global _detector, _store, _event_bus, _db, _vectors
+    global _detector, _hidden_detector, _store, _event_bus, _db, _vectors, _storage
     _detector = detector
+    _hidden_detector = hidden_detector
     _store = store
     _event_bus = event_bus
     _db = db
     _vectors = vectors
+    _storage = storage
 
 
 def get_shard(request: Request) -> "AnomaliesShard":
@@ -978,18 +987,20 @@ async def _detect_content_anomalies(doc_id: str, text: str) -> List[Anomaly]:
         # 2. Get embeddings for corpus
         # 3. Call _detector.detect_content_anomalies()
 
-        # Check if vector search is available
-        if hasattr(_vectors, 'search'):
-            # Search for similar documents
-            results = await _vectors.search(
-                collection="documents",
-                query=text[:1000],  # Use first 1000 chars as query
+        # Check if vector text search is available (embeds text then searches)
+        if hasattr(_vectors, 'search_text'):
+            # Search for similar documents using text query
+            # search_text handles embedding internally
+            results = await _vectors.search_text(
+                collection="arkham_documents",  # Use correct collection name
+                text=text[:1000],  # Use first 1000 chars as query
                 limit=10,
             )
 
             # If this document is very different from results, it might be anomalous
             if results and len(results) > 0:
-                avg_score = sum(r.get('score', 0) for r in results) / len(results)
+                # SearchResult is a dataclass with .score attribute
+                avg_score = sum(r.score if hasattr(r, 'score') else r.get('score', 0) for r in results) / len(results)
                 if avg_score < 0.3:  # Low similarity to corpus
                     import uuid
                     from datetime import datetime
@@ -1113,3 +1124,386 @@ async def ai_junior_analyst(request: Request, body: AIJuniorAnalystRequest):
             "X-Accel-Buffering": "no",
         },
     )
+
+
+# =============================================================================
+# Hidden Content Detection Endpoints
+# =============================================================================
+
+
+class HiddenContentScanRequest(BaseModel):
+    """Request to scan document for hidden content."""
+    doc_id: str
+    scan_type: str = "stego"  # entropy, lsb, magic, stego (full)
+    config: dict = {}
+
+
+class HiddenContentQuickScanRequest(BaseModel):
+    """Request for quick entropy-only scan."""
+    doc_ids: list[str]
+
+
+class HiddenContentScanResponse(BaseModel):
+    """Response from hidden content scan."""
+    scan: dict
+    anomaly_created: bool = False
+
+
+class HiddenContentListResponse(BaseModel):
+    """Paginated list of hidden content scans."""
+    total: int
+    items: list[dict]
+    offset: int
+    limit: int
+
+
+class HiddenContentStatsResponse(BaseModel):
+    """Hidden content detection statistics."""
+    stats: dict
+
+
+@router.post("/hidden-content/scan", response_model=HiddenContentScanResponse)
+async def scan_hidden_content(
+    request: Request,
+    body: HiddenContentScanRequest,
+):
+    """
+    Scan a document for hidden content.
+
+    Performs steganography and hidden data detection:
+    - Entropy analysis (detects encrypted/compressed data)
+    - LSB pattern analysis (detects image steganography)
+    - File type mismatch detection
+    - Histogram analysis for images
+
+    Args:
+        body: Scan request with doc_id and options
+
+    Returns:
+        Scan results with findings
+    """
+    shard = get_shard(request)
+
+    if not shard.hidden_detector:
+        raise HTTPException(
+            status_code=503,
+            detail="Hidden content detector not available"
+        )
+
+    # Get document metadata and file path
+    if not _db:
+        raise HTTPException(status_code=503, detail="Database not available")
+
+    doc_row = await _db.fetch_one(
+        """SELECT id, filename, storage_id, mime_type, file_size, metadata
+           FROM arkham_frame.documents WHERE id = :doc_id""",
+        {"doc_id": body.doc_id}
+    )
+
+    if not doc_row:
+        raise HTTPException(status_code=404, detail=f"Document {body.doc_id} not found")
+
+    # Get storage path from storage_id or metadata
+    storage_id = doc_row.get("storage_id")
+    metadata = doc_row.get("metadata") or {}
+    if isinstance(metadata, str):
+        import json
+        try:
+            metadata = json.loads(metadata)
+        except json.JSONDecodeError:
+            metadata = {}
+
+    storage_path = metadata.get("storage_path")
+    if not storage_id and not storage_path:
+        raise HTTPException(
+            status_code=400,
+            detail="Document has no associated file storage"
+        )
+
+    # Read file content using storage service
+    try:
+        if _storage and storage_id:
+            file_data = (await _storage.retrieve(storage_id))[0]
+        elif storage_path:
+            from pathlib import Path
+            file_data = Path(storage_path).read_bytes()
+        else:
+            raise ValueError("No storage path available")
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to read file: {e}"
+        )
+
+    # Get file extension
+    filename = doc_row.get("filename", "")
+    file_ext = "." + filename.rsplit(".", 1)[-1] if "." in filename else ""
+    mime_type = doc_row.get("mime_type", "")
+
+    # Configure detector if custom config provided
+    if body.config:
+        config = HiddenContentConfig(**body.config)
+        shard.hidden_detector.config = config
+
+    # Perform scan (use storage_path for file path reference)
+    file_path = storage_path or storage_id
+    scan_result = shard.hidden_detector.full_scan(
+        doc_id=body.doc_id,
+        file_path=file_path,
+        file_data=file_data,
+        file_extension=file_ext,
+        mime_type=mime_type,
+    )
+
+    # Store the scan result
+    await shard._store_hidden_content_scan(scan_result)
+
+    # Create anomaly if significant findings
+    anomaly_created = False
+    if scan_result.stego_confidence >= 0.7 or scan_result.file_mismatch:
+        import uuid
+        from datetime import datetime
+        from .models import AnomalyType, SeverityLevel, AnomalyStatus
+
+        severity = SeverityLevel.HIGH if scan_result.stego_confidence >= 0.8 else SeverityLevel.MEDIUM
+
+        anomaly = Anomaly(
+            id=str(uuid.uuid4()),
+            doc_id=body.doc_id,
+            anomaly_type=AnomalyType.HIDDEN_CONTENT,
+            status=AnomalyStatus.DETECTED,
+            score=scan_result.stego_confidence,
+            severity=severity,
+            confidence=scan_result.stego_confidence,
+            explanation="; ".join(scan_result.findings) if scan_result.findings else "Hidden content detected",
+            details={
+                "scan_id": scan_result.id,
+                "indicators": len(scan_result.stego_indicators),
+                "file_mismatch": scan_result.file_mismatch,
+                "entropy_global": scan_result.entropy_global,
+            },
+            detected_at=datetime.utcnow(),
+        )
+
+        await _store.create_anomaly(anomaly)
+        scan_result.anomaly_created = True
+        anomaly_created = True
+
+        # Emit event
+        if _event_bus:
+            await _event_bus.emit(
+                "anomalies.hidden_content.detected",
+                {
+                    "doc_id": body.doc_id,
+                    "scan_id": scan_result.id,
+                    "confidence": scan_result.stego_confidence,
+                    "findings_count": len(scan_result.findings),
+                },
+                source="anomalies-shard",
+            )
+
+    # Convert to response dict
+    scan_dict = {
+        "id": scan_result.id,
+        "doc_id": scan_result.doc_id,
+        "scan_type": scan_result.scan_type.value,
+        "scan_status": scan_result.scan_status.value,
+        "entropy_global": scan_result.entropy_global,
+        "entropy_regions": [
+            {
+                "start_offset": r.start_offset,
+                "end_offset": r.end_offset,
+                "entropy_value": r.entropy_value,
+                "is_anomalous": r.is_anomalous,
+                "description": r.description,
+            }
+            for r in scan_result.entropy_regions
+        ],
+        "magic_expected": scan_result.magic_expected,
+        "magic_actual": scan_result.magic_actual,
+        "file_mismatch": scan_result.file_mismatch,
+        "lsb_result": {
+            "bit_ratio": scan_result.lsb_result.bit_ratio,
+            "chi_square_value": scan_result.lsb_result.chi_square_value,
+            "chi_square_p_value": scan_result.lsb_result.chi_square_p_value,
+            "is_suspicious": scan_result.lsb_result.is_suspicious,
+            "confidence": scan_result.lsb_result.confidence,
+            "sample_size": scan_result.lsb_result.sample_size,
+        } if scan_result.lsb_result else None,
+        "stego_indicators": [
+            {
+                "indicator_type": i.indicator_type,
+                "confidence": i.confidence,
+                "location": i.location,
+                "details": i.details,
+            }
+            for i in scan_result.stego_indicators
+        ],
+        "stego_confidence": scan_result.stego_confidence,
+        "findings": scan_result.findings,
+        "created_at": scan_result.created_at.isoformat() if scan_result.created_at else None,
+        "completed_at": scan_result.completed_at.isoformat() if scan_result.completed_at else None,
+    }
+
+    return HiddenContentScanResponse(scan=scan_dict, anomaly_created=anomaly_created)
+
+
+@router.post("/hidden-content/quick-scan")
+async def quick_scan_hidden_content(
+    request: Request,
+    body: HiddenContentQuickScanRequest,
+):
+    """
+    Perform quick entropy-only scan on multiple documents.
+
+    Useful for fast screening of large document sets to identify
+    candidates for full steganography analysis.
+
+    Args:
+        body: Request with list of doc_ids
+
+    Returns:
+        List of quick scan results with recommendations
+    """
+    shard = get_shard(request)
+
+    if not shard.hidden_detector:
+        raise HTTPException(
+            status_code=503,
+            detail="Hidden content detector not available"
+        )
+
+    if not _db:
+        raise HTTPException(status_code=503, detail="Database not available")
+
+    results = []
+
+    for doc_id in body.doc_ids:
+        try:
+            # Get document file path
+            doc_row = await _db.fetch_one(
+                """SELECT storage_id, metadata FROM arkham_frame.documents WHERE id = :doc_id""",
+                {"doc_id": doc_id}
+            )
+
+            if not doc_row:
+                results.append({
+                    "doc_id": doc_id,
+                    "error": "Document not found",
+                })
+                continue
+
+            # Get storage path from storage_id or metadata
+            storage_id = doc_row.get("storage_id")
+            doc_metadata = doc_row.get("metadata") or {}
+            if isinstance(doc_metadata, str):
+                import json
+                try:
+                    doc_metadata = json.loads(doc_metadata)
+                except json.JSONDecodeError:
+                    doc_metadata = {}
+
+            storage_path = doc_metadata.get("storage_path")
+            if not storage_id and not storage_path:
+                results.append({
+                    "doc_id": doc_id,
+                    "error": "Document has no storage path",
+                })
+                continue
+
+            # Read file content
+            try:
+                if _storage and storage_id:
+                    file_data = (await _storage.retrieve(storage_id))[0]
+                elif storage_path:
+                    from pathlib import Path
+                    file_data = Path(storage_path).read_bytes()
+                else:
+                    raise ValueError("No storage path available")
+            except Exception as e:
+                results.append({
+                    "doc_id": doc_id,
+                    "error": f"Failed to read file: {e}",
+                })
+                continue
+
+            # Quick entropy scan
+            quick_result = shard.hidden_detector.quick_scan(doc_id, file_data)
+            results.append(quick_result)
+
+        except Exception as e:
+            results.append({
+                "doc_id": doc_id,
+                "error": str(e),
+            })
+
+    # Summary
+    requires_full_scan = [r for r in results if r.get("requires_full_scan")]
+
+    return {
+        "scanned": len(body.doc_ids),
+        "results": results,
+        "requires_full_scan_count": len(requires_full_scan),
+        "requires_full_scan": [r.get("doc_id") for r in requires_full_scan],
+    }
+
+
+@router.get("/hidden-content/stats", response_model=HiddenContentStatsResponse)
+async def get_hidden_content_stats(request: Request):
+    """
+    Get hidden content detection statistics.
+
+    Returns aggregated statistics about hidden content scans:
+    - Total scans performed
+    - Scans by type
+    - Documents with findings
+    - High entropy files
+    - Steganography candidates
+    """
+    shard = get_shard(request)
+
+    stats = await shard.get_hidden_content_stats()
+    return HiddenContentStatsResponse(stats=stats)
+
+
+@router.get("/hidden-content/document/{doc_id}")
+async def get_document_hidden_scans(
+    request: Request,
+    doc_id: str,
+):
+    """
+    Get all hidden content scans for a document.
+
+    Args:
+        doc_id: Document ID
+
+    Returns:
+        List of scans for the document
+    """
+    shard = get_shard(request)
+
+    scans = await shard.get_document_hidden_scans(doc_id)
+    return {"scans": scans, "total": len(scans)}
+
+
+@router.get("/hidden-content/{scan_id}")
+async def get_hidden_content_scan(
+    request: Request,
+    scan_id: str,
+):
+    """
+    Get a specific hidden content scan by ID.
+
+    Args:
+        scan_id: Scan ID to retrieve
+
+    Returns:
+        Scan details
+    """
+    shard = get_shard(request)
+
+    scan = await shard.get_hidden_content_scan(scan_id)
+    if not scan:
+        raise HTTPException(status_code=404, detail=f"Scan {scan_id} not found")
+
+    return {"scan": scan}
