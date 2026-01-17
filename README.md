@@ -15,6 +15,50 @@
 
 </div>
 
+<details>
+<summary><strong>Screenshots</strong> (click to expand)</summary>
+
+<br>
+
+### Dashboard & LLM Configuration
+Configure local or cloud LLM providers with one-click switching between LM Studio, Ollama, OpenAI, Groq, and custom endpoints.
+
+![Dashboard](docs/Screens/Dashboard.png)
+
+### ACH Analysis with AI Assistant
+Full Analysis of Competing Hypotheses implementation with AI-powered observations, recommendations, and devil's advocate mode.
+
+![ACH Matrix with AI](docs/Screens/ACHmatrixAIassist.png)
+
+### Graph Visualization
+Interactive network analysis with 10+ visualization modes including force-directed layouts and geospatial mapping.
+
+| Force-Directed | Geospatial |
+|----------------|------------|
+| ![Force Graph](docs/Screens/graphforce.png) | ![Geospatial](docs/Screens/geospatialgraph.png) |
+
+### Timeline Analysis
+Temporal event extraction with AI-powered analysis, conflict detection, and phase management.
+
+![Timeline](docs/Screens/timeline.png)
+
+### Pattern Detection
+Automated pattern recognition across documents with statistical analysis and AI interpretation.
+
+![Patterns](docs/Screens/patterns.png)
+
+### Credibility Assessment
+Source reliability scoring with deception detection checklists (MOM, POP, MOSES, EVE).
+
+![Credibility](docs/Screens/credibility.png)
+
+### Search with Regex Presets
+Hybrid semantic/keyword search with built-in regex patterns for PII, financial data, and technical indicators.
+
+![Search](docs/Screens/regex.png)
+
+</details>
+
 ---
 
 ## Philosophy
