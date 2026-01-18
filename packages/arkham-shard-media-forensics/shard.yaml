@@ -1,0 +1,56 @@
+# Media Forensics Shard - Image authenticity and metadata analysis
+# Production Manifest v1.0
+
+name: media-forensics
+version: "0.1.0"
+description: Media metadata extraction and forensic analysis for images
+entry_point: arkham_shard_media_forensics:MediaForensicsShard
+api_prefix: /api/media-forensics
+requires_frame: ">=0.1.0"
+
+navigation:
+  category: Analysis
+  order: 46
+  icon: ImageSearch
+  label: Media Forensics
+  route: /media-forensics
+  badge_endpoint: /api/media-forensics/analyses/count
+  badge_type: count
+
+dependencies:
+  services:
+    - database
+    - events
+    - storage
+  optional:
+    - llm
+  shards: []
+
+capabilities:
+  - exif_extraction
+  - perceptual_hashing
+  - c2pa_verification
+  - ela_analysis
+  - sun_position_verification
+  - similar_image_detection
+
+events:
+  publishes:
+    - media.metadata.extracted
+    - media.hash.computed
+    - media.c2pa.verified
+    - media.ela.generated
+    - media.similar.found
+  subscribes:
+    - document.ingested
+    - document.processed
+
+state:
+  strategy: url
+  url_params:
+    - documentId
+    - analysisId
+    - tab
+
+ui:
+  has_custom_ui: true

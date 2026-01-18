@@ -40,7 +40,7 @@ services:
       # Recommended: BAAI/bge-m3 (1024 dims, ~2.2GB, high quality)
       # Lightweight: all-MiniLM-L6-v2 (384 dims, ~80MB, fast)
       # WARNING: Once set, changing models requires rebuilding vector collections
-      - EMBED_MODEL=${EMBED_MODEL:-}
+      - EMBED_MODEL=${EMBED_MODEL:-all-MiniLM-L6-v2}
       # Serve the React shell from FastAPI
       - ARKHAM_SERVE_SHELL=true
       # Auth security (REQUIRED for production - generate with: openssl rand -hex 32)

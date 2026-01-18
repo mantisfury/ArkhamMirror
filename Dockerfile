@@ -78,6 +78,7 @@ COPY packages/arkham-shard-settings/ ./packages/arkham-shard-settings/
 COPY packages/arkham-shard-summary/ ./packages/arkham-shard-summary/
 COPY packages/arkham-shard-templates/ ./packages/arkham-shard-templates/
 COPY packages/arkham-shard-timeline/ ./packages/arkham-shard-timeline/
+COPY packages/arkham-shard-media-forensics/ ./packages/arkham-shard-media-forensics/
 
 # Install CPU-only PyTorch BEFORE shards to avoid downloading ~3GB of CUDA libraries
 # This must come before sentence-transformers (used by arkham-shard-embed)
@@ -147,6 +148,7 @@ COPY packages/arkham-shard-settings/shard.yaml /app/manifests/settings.yaml
 COPY packages/arkham-shard-summary/shard.yaml /app/manifests/summary.yaml
 COPY packages/arkham-shard-templates/shard.yaml /app/manifests/templates.yaml
 COPY packages/arkham-shard-timeline/shard.yaml /app/manifests/timeline.yaml
+COPY packages/arkham-shard-media-forensics/shard.yaml /app/manifests/media-forensics.yaml
 
 WORKDIR /app
 
