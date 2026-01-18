@@ -57,6 +57,11 @@ Hybrid semantic/keyword search with built-in regex patterns for PII, financial d
 
 ![Search](docs/Screens/regex.png)
 
+### Media Forensics
+Image authenticity analysis with EXIF extraction, Error Level Analysis (ELA), perceptual hashing, and reverse image search integration.
+
+![Media Forensics](docs/Screens/mediaforensics.png)
+
 </details>
 
 ---
@@ -113,7 +118,7 @@ SHATTERED uses the **Voltron** architectural philosophy: a modular, plug-and-pla
         +--------------------+--------------------+
         |         |          |          |         |
    +----v----+ +--v--+ +-----v-----+ +--v--+ +---v---+
-   |Dashboard| | ACH | |  Search   | |Graph| |Timeline|  <-- SHARDS (25)
+   |Dashboard| | ACH | |  Search   | |Graph| |Timeline|  <-- SHARDS (26)
    +---------+ +-----+ +-----------+ +-----+ +--------+
 ```
 
@@ -268,7 +273,7 @@ The Frame provides 17 core services available to all shards:
 |-------|-------------|--------------|
 | **Search** | Document search | Semantic, keyword, hybrid search, facets, suggestions |
 
-### Analysis (8 shards)
+### Analysis (9 shards)
 
 | Shard | Description | Key Features |
 |-------|-------------|--------------|
@@ -280,6 +285,7 @@ The Frame provides 17 core services available to all shards:
 | **Patterns** | Pattern recognition | Recurring, behavioral, temporal, correlation patterns |
 | **Provenance** | Evidence chains | Data lineage, audit trails, artifact verification |
 | **Summary** | Auto-summarization | Multiple summary types, batch processing, auto-summarize on ingest |
+| **Media Forensics** | Image authenticity analysis | EXIF extraction, ELA analysis, perceptual hashing, C2PA verification, reverse image search |
 
 ### Visualization (2 shards)
 
@@ -332,6 +338,7 @@ The Frame provides 17 core services available to all shards:
 | **NER** | spaCy (en_core_web_sm/lg/trf) |
 | **OCR** | PaddleOCR, Vision LLM (Qwen-VL local, or cloud GPT-4o/Claude) |
 | **Embeddings** | sentence-transformers, OpenAI |
+| **Reverse Image Search** | TinEye, Google Vision, SerpAPI (optional APIs for Media Forensics) |
 
 ---
 
@@ -782,7 +789,7 @@ Each shard has its own README with API documentation, events, and usage examples
 | Metric | Value |
 |--------|-------|
 | **Lines of Code** | ~217,000 |
-| **Total Packages** | 26 (25 shards + shell) |
+| **Total Packages** | 27 (26 shards + shell) |
 | **Frame Services** | 17 |
 | **API Endpoints** | 400+ |
 | **Graph Visualization Modes** | 10+ |

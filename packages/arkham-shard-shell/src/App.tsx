@@ -77,6 +77,9 @@ import { CredibilityPage } from './pages/credibility';
 import { PatternsPage } from './pages/patterns';
 import { ProvenancePage } from './pages/provenance';
 
+// Wave 6 shard imports
+import { MediaForensicsPage } from './pages/media-forensics';
+
 // Wave 4 shard imports
 import { ExportPage } from './pages/export';
 import { ReportsPage } from './pages/reports';
@@ -209,6 +212,10 @@ export function App() {
 
                   {/* Summary shard */}
                   <Route path="/summary" element={<SummaryPage />} />
+
+                  {/* Wave 6 shards */}
+                  {/* Media Forensics shard */}
+                  <Route path="/media-forensics" element={<MediaForensicsPage />} />
 
                   {/* Catch-all: try to render shard with generic UI */}
                   <Route path="*" element={<GenericShardPage />} />
