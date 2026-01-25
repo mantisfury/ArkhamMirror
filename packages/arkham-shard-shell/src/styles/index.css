@@ -88,6 +88,36 @@ a:hover {
   text-decoration: underline;
 }
 
+/* Global select/dropdown styling for dark mode */
+select {
+  background-color: var(--arkham-bg-tertiary);
+  color: var(--arkham-text-primary);
+  border: 1px solid var(--arkham-border);
+  border-radius: var(--arkham-radius-sm);
+  padding: var(--arkham-space-sm) var(--arkham-space-md);
+  font-family: inherit;
+  font-size: inherit;
+  cursor: pointer;
+}
+
+select:focus {
+  outline: none;
+  border-color: var(--arkham-accent-primary);
+}
+
+select option {
+  background-color: var(--arkham-bg-secondary);
+  color: var(--arkham-text-primary);
+  padding: var(--arkham-space-sm);
+}
+
+select option:hover,
+select option:focus,
+select option:checked {
+  background-color: var(--arkham-accent-primary);
+  color: white;
+}
+
 /* ============================================
    Shell Layout
    ============================================ */
@@ -3719,7 +3749,11 @@ a:hover {
 .search-page {
   display: flex;
   flex-direction: column;
-  gap: var(--arkham-space-lg);
+  gap: var(--arkham-space-md);
+}
+
+.search-page .page-header {
+  margin-bottom: var(--arkham-space-xs);
 }
 
 /* Search Input Section */
@@ -3733,8 +3767,18 @@ a:hover {
   padding: var(--arkham-space-lg);
 }
 
+.search-input-row {
+  display: flex;
+  align-items: center;
+  gap: var(--arkham-space-md);
+}
+
+.search-input-icon-external {
+  color: var(--arkham-text-muted);
+  flex-shrink: 0;
+}
+
 .search-input-wrapper {
-  position: relative;
   display: flex;
   align-items: center;
   gap: var(--arkham-space-sm);
@@ -3749,13 +3793,8 @@ a:hover {
   border-color: var(--arkham-accent-primary);
 }
 
-.search-input-icon {
-  color: var(--arkham-text-muted);
-  flex-shrink: 0;
-}
-
 .search-input {
-  flex: 1;
+  width: 320px;
   background: transparent;
   border: none;
   outline: none;
@@ -4013,6 +4052,11 @@ a:hover {
   display: flex;
   flex-direction: column;
   gap: var(--arkham-space-lg);
+}
+
+/* Regex Search Section - tighter spacing */
+.regex-search-section {
+  margin-top: calc(-1 * var(--arkham-space-sm));
 }
 
 .results-loading,

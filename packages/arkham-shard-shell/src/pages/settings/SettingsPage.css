@@ -691,6 +691,93 @@ button.capability-tag.more:hover {
   background: #ebe5d9;
 }
 
+/* Ocean theme preview */
+.theme-preview-ocean {
+  background: #0a1628;
+}
+
+.theme-preview-ocean .preview-sidebar {
+  background: #0f2137;
+}
+
+.theme-preview-ocean .preview-header {
+  background: #1a3a5c;
+}
+
+.theme-preview-ocean .preview-body {
+  background: #0f2137;
+}
+
+/* Forest theme preview */
+.theme-preview-forest {
+  background: #1a2416;
+}
+
+.theme-preview-forest .preview-sidebar {
+  background: #243320;
+}
+
+.theme-preview-forest .preview-header {
+  background: #2d4228;
+}
+
+.theme-preview-forest .preview-body {
+  background: #243320;
+}
+
+/* Frost theme preview */
+.theme-preview-frost {
+  background: #f0f4f8;
+}
+
+.theme-preview-frost .preview-sidebar {
+  background: #e2e8f0;
+}
+
+.theme-preview-frost .preview-header {
+  background: #cbd5e1;
+}
+
+.theme-preview-frost .preview-body {
+  background: #e2e8f0;
+}
+
+/* Midnight theme preview */
+.theme-preview-midnight {
+  background: #000000;
+}
+
+.theme-preview-midnight .preview-sidebar {
+  background: #0a0a0a;
+}
+
+.theme-preview-midnight .preview-header {
+  background: #141414;
+}
+
+.theme-preview-midnight .preview-body {
+  background: #0a0a0a;
+}
+
+/* Terminal theme preview */
+.theme-preview-terminal {
+  background: #0c0c0c;
+}
+
+.theme-preview-terminal .preview-sidebar {
+  background: #1a1a1a;
+  border-right: 1px solid #33ff3340;
+}
+
+.theme-preview-terminal .preview-header {
+  background: #2a2a2a;
+}
+
+.theme-preview-terminal .preview-body {
+  background: #1a1a1a;
+  border: 1px solid #33ff3320;
+}
+
 /* System theme preview */
 .theme-preview-system {
   position: relative;

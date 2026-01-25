@@ -835,9 +835,109 @@ export function SettingsPage() {
                     </div>
                     <div className="theme-info">
                       <span className="theme-name">Newsroom</span>
-                      <span className="theme-desc">Light parchment theme</span>
+                      <span className="theme-desc">Light parchment</span>
                     </div>
                     {themePreset === 'newsroom' && (
+                      <Icon name="Check" size={16} className="theme-check" />
+                    )}
+                  </button>
+
+                  <button
+                    className={`theme-card ${themePreset === 'ocean' ? 'selected' : ''}`}
+                    onClick={() => setThemePreset('ocean')}
+                  >
+                    <div className="theme-preview theme-preview-ocean">
+                      <div className="preview-sidebar" />
+                      <div className="preview-content">
+                        <div className="preview-header" />
+                        <div className="preview-body" />
+                      </div>
+                    </div>
+                    <div className="theme-info">
+                      <span className="theme-name">Ocean</span>
+                      <span className="theme-desc">Deep blue dark</span>
+                    </div>
+                    {themePreset === 'ocean' && (
+                      <Icon name="Check" size={16} className="theme-check" />
+                    )}
+                  </button>
+
+                  <button
+                    className={`theme-card ${themePreset === 'forest' ? 'selected' : ''}`}
+                    onClick={() => setThemePreset('forest')}
+                  >
+                    <div className="theme-preview theme-preview-forest">
+                      <div className="preview-sidebar" />
+                      <div className="preview-content">
+                        <div className="preview-header" />
+                        <div className="preview-body" />
+                      </div>
+                    </div>
+                    <div className="theme-info">
+                      <span className="theme-name">Forest</span>
+                      <span className="theme-desc">Nature dark</span>
+                    </div>
+                    {themePreset === 'forest' && (
+                      <Icon name="Check" size={16} className="theme-check" />
+                    )}
+                  </button>
+
+                  <button
+                    className={`theme-card ${themePreset === 'frost' ? 'selected' : ''}`}
+                    onClick={() => setThemePreset('frost')}
+                  >
+                    <div className="theme-preview theme-preview-frost">
+                      <div className="preview-sidebar" />
+                      <div className="preview-content">
+                        <div className="preview-header" />
+                        <div className="preview-body" />
+                      </div>
+                    </div>
+                    <div className="theme-info">
+                      <span className="theme-name">Frost</span>
+                      <span className="theme-desc">Cool light</span>
+                    </div>
+                    {themePreset === 'frost' && (
+                      <Icon name="Check" size={16} className="theme-check" />
+                    )}
+                  </button>
+
+                  <button
+                    className={`theme-card ${themePreset === 'midnight' ? 'selected' : ''}`}
+                    onClick={() => setThemePreset('midnight')}
+                  >
+                    <div className="theme-preview theme-preview-midnight">
+                      <div className="preview-sidebar" />
+                      <div className="preview-content">
+                        <div className="preview-header" />
+                        <div className="preview-body" />
+                      </div>
+                    </div>
+                    <div className="theme-info">
+                      <span className="theme-name">Midnight</span>
+                      <span className="theme-desc">Pure OLED dark</span>
+                    </div>
+                    {themePreset === 'midnight' && (
+                      <Icon name="Check" size={16} className="theme-check" />
+                    )}
+                  </button>
+
+                  <button
+                    className={`theme-card ${themePreset === 'terminal' ? 'selected' : ''}`}
+                    onClick={() => setThemePreset('terminal')}
+                  >
+                    <div className="theme-preview theme-preview-terminal">
+                      <div className="preview-sidebar" />
+                      <div className="preview-content">
+                        <div className="preview-header" />
+                        <div className="preview-body" />
+                      </div>
+                    </div>
+                    <div className="theme-info">
+                      <span className="theme-name">Terminal</span>
+                      <span className="theme-desc">Hacker green</span>
+                    </div>
+                    {themePreset === 'terminal' && (
                       <Icon name="Check" size={16} className="theme-check" />
                     )}
                   </button>
