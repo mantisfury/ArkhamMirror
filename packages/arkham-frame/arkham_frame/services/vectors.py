@@ -412,8 +412,19 @@ class VectorService:
         for collection_name, dimension, lists in standard:
             try:
                 if await self.collection_exists(collection_name):
-                    # Check if existing collection has matching dimension
+                    # Collection exists - check if dimension matches and index exists
                     info = await self.get_collection(collection_name)
+                    
+                    # Check if index exists
+                    safe_name = collection_name.replace("-", "_").replace(".", "_")
+                    async with self._pool.acquire() as conn:
+                        index_exists = await conn.fetchval("""
+                            SELECT 1 FROM pg_indexes 
+                            WHERE schemaname = 'arkham_vectors' 
+                            AND indexname = $1
+                        """, f"idx_ivfflat_{safe_name}")
+                    
+                    # If dimension mismatch and collection is empty, recreate
                     if info.vector_size != dimension:
                         if info.points_count == 0:
                             logger.warning(
@@ -431,9 +442,18 @@ class VectorService:
                         else:
                             logger.warning(
                                 f"Collection {collection_name} has wrong dimension "
-                                f"({info.vector_size} vs {dimension}) but contains {info.points_count} vectors."
+                                f"({info.vector_size} vs {dimension}) but contains {info.points_count} vectors. "
+                                f"Using existing dimension {info.vector_size}."
                             )
+                            # Update dimension to match existing collection
+                            dimension = info.vector_size
+                    
+                    # Ensure index exists (may have failed during migration)
+                    if not index_exists:
+                        logger.info(f"Creating missing index for collection {collection_name}")
+                        await self._create_collection_index(collection_name, dimension, lists)
                 else:
+                    # Collection doesn't exist - create it
                     await self.create_collection(
                         name=collection_name,
                         vector_size=dimension,
@@ -443,6 +463,51 @@ class VectorService:
                     logger.info(f"Created standard collection: {collection_name} (dim={dimension})")
             except Exception as e:
                 logger.warning(f"Failed to ensure collection {collection_name}: {e}")
+    
+    async def _create_collection_index(self, collection_name: str, vector_size: int, lists: int) -> None:
+        """Create IVFFlat index for a collection (helper for fixing missing indexes)."""
+        safe_name = collection_name.replace("-", "_").replace(".", "_")
+        escaped_name = collection_name.replace("'", "''")
+        
+        async with self._pool.acquire() as conn:
+            # Check if we have any vectors - index can only be created if vectors exist
+            # (pgvector needs dimensions which come from actual vectors with untyped vector column)
+            sample_vector = await conn.fetchval("""
+                SELECT embedding FROM arkham_vectors.embeddings 
+                WHERE collection = $1 
+                LIMIT 1
+            """, collection_name)
+            
+            if sample_vector:
+                # Verify dimension matches expected (for validation)
+                actual_dimension = len(sample_vector) if hasattr(sample_vector, '__len__') else None
+                if actual_dimension and actual_dimension != vector_size:
+                    logger.warning(
+                        f"Collection {collection_name} has dimension mismatch: "
+                        f"expected {vector_size}, actual {actual_dimension}. Using actual dimension."
+                    )
+                
+                # We have vectors, can create index
+                try:
+                    await conn.execute(f"""
+                        CREATE INDEX IF NOT EXISTS idx_ivfflat_{safe_name}
+                        ON arkham_vectors.embeddings
+                        USING ivfflat (embedding vector_cosine_ops)
+                        WITH (lists = {lists})
+                        WHERE collection = '{escaped_name}'
+                    """)
+                    logger.info(
+                        f"Created index for collection {collection_name} "
+                        f"(dim={actual_dimension or vector_size}, lists={lists})"
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to create index for {collection_name}: {e}")
+            else:
+                # No vectors yet - index will be created when first vector is inserted
+                logger.debug(
+                    f"Collection {collection_name} is empty (expected dim={vector_size}), "
+                    "index will be created on first insert"
+                )
 
     async def shutdown(self) -> None:
         """Close PostgreSQL connection pool."""
@@ -719,12 +784,20 @@ class VectorService:
         try:
             async with self._pool.acquire() as conn:
                 # Verify collection exists
-                exists = await conn.fetchval(
-                    "SELECT 1 FROM arkham_vectors.collections WHERE name = $1",
+                coll_info = await conn.fetchrow(
+                    "SELECT vector_size, lists, distance_metric FROM arkham_vectors.collections WHERE name = $1",
                     collection
                 )
-                if not exists:
+                if not coll_info:
                     raise CollectionNotFoundError(collection)
+
+                # Check if index exists - create if missing (first insert)
+                safe_name = collection.replace("-", "_").replace(".", "_")
+                index_exists = await conn.fetchval("""
+                    SELECT 1 FROM pg_indexes 
+                    WHERE schemaname = 'arkham_vectors' 
+                    AND indexname = $1
+                """, f"idx_ivfflat_{safe_name}")
 
                 # Batch upsert
                 # Note: payload may be dict or already a JSON string - handle both
@@ -744,6 +817,30 @@ class VectorService:
                     (p.id, collection, str(p.vector), serialize_payload(p.payload))
                     for p in points
                 ])
+
+                # Create index if missing (now that we have vectors, dimensions are known)
+                if not index_exists:
+                    try:
+                        lists = coll_info['lists'] or 100
+                        distance_metric = coll_info['distance_metric'] or 'cosine'
+                        ops_map = {
+                            'cosine': 'vector_cosine_ops',
+                            'euclidean': 'vector_l2_ops',
+                            'dot': 'vector_ip_ops',
+                        }
+                        ops = ops_map.get(distance_metric, 'vector_cosine_ops')
+                        escaped_name = collection.replace("'", "''")
+                        
+                        await conn.execute(f"""
+                            CREATE INDEX IF NOT EXISTS idx_ivfflat_{safe_name}
+                            ON arkham_vectors.embeddings
+                            USING ivfflat (embedding {ops})
+                            WITH (lists = {lists})
+                            WHERE collection = '{escaped_name}'
+                        """)
+                        logger.info(f"Created IVFFlat index for collection {collection}")
+                    except Exception as idx_error:
+                        logger.warning(f"Failed to create index for {collection}: {idx_error}")
 
             logger.debug(f"Upserted {len(points)} vectors to {collection}")
             return len(points)
