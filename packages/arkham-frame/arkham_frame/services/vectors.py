@@ -57,6 +57,8 @@ class CollectionInfo:
     lists: int = 100
     probes: int = 10
     last_reindex: Optional[datetime] = None
+    # Binary quantization for high dimensions (>2000)
+    uses_binary_quantization: bool = False
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -71,6 +73,7 @@ class CollectionInfo:
             "lists": self.lists,
             "probes": self.probes,
             "last_reindex": self.last_reindex.isoformat() if self.last_reindex else None,
+            "uses_binary_quantization": self.uses_binary_quantization,
         }
 
 
@@ -141,8 +144,11 @@ class UnsupportedDimensionError(VectorServiceError):
         self.dimensions = dimensions
 
 
-# Maximum dimensions for pgvector with HNSW/IVFFlat indexes
-MAX_PGVECTOR_DIMENSIONS = 2000
+# Maximum dimensions for pgvector vector type (supports up to 16,000)
+MAX_VECTOR_DIMENSIONS = 16000
+# Threshold for using binary quantization (bit type supports up to 64,000 dims)
+# For dimensions > 2000, we use binary quantization with bit type for indexing
+BINARY_QUANTIZATION_THRESHOLD = 2000
 
 # Default embedding dimensions for common models
 # Local models (via SentenceTransformer)
@@ -166,7 +172,7 @@ LOCAL_EMBEDDING_MODELS = {
 # Only available when cloud LLM is configured (OPENAI_API_KEY or LLM_API_KEY set)
 CLOUD_EMBEDDING_MODELS = {
     "text-embedding-3-small": 1536,  # Best cost/quality ratio
-    # Note: text-embedding-3-large (3072D) exceeds pgvector's 2000D limit
+    "text-embedding-3-large": 3072,  # Uses binary quantization (bit type) for indexing
 }
 
 # Combined lookup for backwards compatibility
@@ -318,8 +324,13 @@ class VectorService:
 
         # Validate dimension limit for local models
         dims = LOCAL_EMBEDDING_MODELS.get(model_name, 0)
-        if dims > MAX_PGVECTOR_DIMENSIONS:
-            raise UnsupportedDimensionError(model_name, dims, MAX_PGVECTOR_DIMENSIONS)
+        if dims > MAX_VECTOR_DIMENSIONS:
+            raise UnsupportedDimensionError(model_name, dims, MAX_VECTOR_DIMENSIONS)
+        elif dims > BINARY_QUANTIZATION_THRESHOLD:
+            logger.warning(
+                f"Model '{model_name}' produces {dims}-dimensional embeddings. "
+                f"Using binary quantization (bit type) for indexing (supports up to 64,000 dimensions)."
+            )
 
         # Load local model via SentenceTransformer
         # Run in thread pool to avoid blocking the event loop during model download/load
@@ -335,8 +346,13 @@ class VectorService:
             self._default_dimension = self._embedding_model.get_sentence_embedding_dimension()
 
             # Final dimension check
-            if self._default_dimension > MAX_PGVECTOR_DIMENSIONS:
-                raise UnsupportedDimensionError(model_name, self._default_dimension, MAX_PGVECTOR_DIMENSIONS)
+            if self._default_dimension > MAX_VECTOR_DIMENSIONS:
+                raise UnsupportedDimensionError(model_name, self._default_dimension, MAX_VECTOR_DIMENSIONS)
+            elif self._default_dimension > BINARY_QUANTIZATION_THRESHOLD:
+                logger.warning(
+                    f"Model '{model_name}' produces {self._default_dimension}-dimensional embeddings. "
+                    f"Using binary quantization (bit type) for indexing (supports up to 64,000 dimensions)."
+                )
 
             self._embedding_available = True
             self._use_cloud_embeddings = False
@@ -365,8 +381,13 @@ class VectorService:
 
         # Validate dimension limit
         dims = CLOUD_EMBEDDING_MODELS[model_name]
-        if dims > MAX_PGVECTOR_DIMENSIONS:
-            raise UnsupportedDimensionError(model_name, dims, MAX_PGVECTOR_DIMENSIONS)
+        if dims > MAX_VECTOR_DIMENSIONS:
+            raise UnsupportedDimensionError(model_name, dims, MAX_VECTOR_DIMENSIONS)
+        elif dims > BINARY_QUANTIZATION_THRESHOLD:
+            logger.warning(
+                f"Model '{model_name}' produces {dims}-dimensional embeddings. "
+                f"Using binary quantization (bit type) for indexing (supports up to 64,000 dimensions)."
+            )
 
         # Configure cloud embedding
         self._cloud_api_key = api_key
@@ -440,6 +461,22 @@ class VectorService:
                             )
                             logger.info(f"Recreated collection: {collection_name} (dim={dimension})")
                         else:
+                            # Warn if using high dimensions (will use binary quantization)
+                            if info.vector_size > BINARY_QUANTIZATION_THRESHOLD:
+                                if info.vector_size > MAX_VECTOR_DIMENSIONS:
+                                    logger.error(
+                                        f"Collection {collection_name} has dimension {info.vector_size} "
+                                        f"which exceeds pgvector vector type maximum of {MAX_VECTOR_DIMENSIONS}. "
+                                        f"Contains {info.points_count} vectors. "
+                                        "Please fix the data or use a different embedding model."
+                                    )
+                                    continue
+                                else:
+                                    logger.info(
+                                        f"Collection {collection_name} has {info.vector_size} dimensions. "
+                                        f"Using binary quantization (bit type) for indexing."
+                                    )
+                            
                             logger.warning(
                                 f"Collection {collection_name} has wrong dimension "
                                 f"({info.vector_size} vs {dimension}) but contains {info.points_count} vectors. "
@@ -481,24 +518,51 @@ class VectorService:
             if sample_vector:
                 # Verify dimension matches expected (for validation)
                 actual_dimension = len(sample_vector) if hasattr(sample_vector, '__len__') else None
-                if actual_dimension and actual_dimension != vector_size:
-                    logger.warning(
-                        f"Collection {collection_name} has dimension mismatch: "
-                        f"expected {vector_size}, actual {actual_dimension}. Using actual dimension."
-                    )
+                if actual_dimension:
+                    if actual_dimension != vector_size:
+                        logger.warning(
+                            f"Collection {collection_name} has dimension mismatch: "
+                            f"expected {vector_size}, actual {actual_dimension}. Using actual dimension."
+                        )
+                    
+                    # Check if dimension exceeds vector type limit
+                    if actual_dimension > MAX_VECTOR_DIMENSIONS:
+                        logger.error(
+                            f"Collection {collection_name} has vectors with {actual_dimension} dimensions, "
+                            f"which exceeds pgvector vector type maximum of {MAX_VECTOR_DIMENSIONS}. "
+                            "Index creation skipped. Please fix the data or use a different embedding model."
+                        )
+                        return
+                    elif actual_dimension > BINARY_QUANTIZATION_THRESHOLD:
+                        logger.info(
+                            f"Collection {collection_name} has {actual_dimension} dimensions. "
+                            f"Using binary quantization (bit type) for indexing."
+                        )
                 
                 # We have vectors, can create index
                 try:
-                    await conn.execute(f"""
-                        CREATE INDEX IF NOT EXISTS idx_ivfflat_{safe_name}
-                        ON arkham_vectors.embeddings
-                        USING ivfflat (embedding vector_cosine_ops)
-                        WITH (lists = {lists})
-                        WHERE collection = '{escaped_name}'
-                    """)
+                    use_binary_quant = self._should_use_binary_quantization(actual_dimension or vector_size)
+                    if use_binary_quant:
+                        # Use binary quantization with bit type for high dimensions
+                        await conn.execute(f"""
+                            CREATE INDEX IF NOT EXISTS idx_ivfflat_{safe_name}
+                            ON arkham_vectors.embeddings
+                            USING ivfflat ((binary_quantize(embedding)::bit({actual_dimension or vector_size})) bit_hamming_ops)
+                            WITH (lists = {lists})
+                            WHERE collection = '{escaped_name}'
+                        """)
+                    else:
+                        # Standard vector index for dimensions <= 2000
+                        await conn.execute(f"""
+                            CREATE INDEX IF NOT EXISTS idx_ivfflat_{safe_name}
+                            ON arkham_vectors.embeddings
+                            USING ivfflat (embedding vector_cosine_ops)
+                            WITH (lists = {lists})
+                            WHERE collection = '{escaped_name}'
+                        """)
                     logger.info(
                         f"Created index for collection {collection_name} "
-                        f"(dim={actual_dimension or vector_size}, lists={lists})"
+                        f"(dim={actual_dimension or vector_size}, lists={lists}, binary_quant={use_binary_quant})"
                     )
                 except Exception as e:
                     logger.warning(f"Failed to create index for {collection_name}: {e}")
@@ -552,6 +616,10 @@ class VectorService:
         else:
             return max(5, lists // 10)
 
+    def _should_use_binary_quantization(self, vector_size: int) -> bool:
+        """Check if binary quantization should be used for this vector size."""
+        return vector_size > BINARY_QUANTIZATION_THRESHOLD
+
     # =========================================================================
     # Collection Management
     # =========================================================================
@@ -596,6 +664,14 @@ class VectorService:
                 if existing:
                     raise CollectionExistsError(collection_name)
 
+                # Check if binary quantization should be used
+                use_binary_quant = self._should_use_binary_quantization(vector_size)
+                if use_binary_quant:
+                    logger.warning(
+                        f"Collection {collection_name} has {vector_size} dimensions (> {BINARY_QUANTIZATION_THRESHOLD}). "
+                        f"Using binary quantization (bit type) for indexing (supports up to 64,000 dimensions)."
+                    )
+
                 async with conn.transaction():
                     # Insert collection metadata
                     await conn.execute("""
@@ -604,18 +680,38 @@ class VectorService:
                         VALUES ($1, $2, $3, 'ivfflat', $4, $5)
                     """, collection_name, vector_size, distance.value, lists, probes)
 
-                    # Create IVFFlat partial index
-                    # DDL statements don't support parameters, use escaped literal
+                    # Create IVFFlat partial index only if vectors exist
+                    # With untyped vector column, pgvector needs actual vectors to infer dimensions
                     escaped_name = collection_name.replace("'", "''")
-                    await conn.execute(f"""
-                        CREATE INDEX IF NOT EXISTS idx_ivfflat_{safe_name}
-                        ON arkham_vectors.embeddings
-                        USING ivfflat (embedding {ops})
-                        WITH (lists = {lists})
-                        WHERE collection = '{escaped_name}'
-                    """)
+                    has_vectors = await conn.fetchval("""
+                        SELECT 1 FROM arkham_vectors.embeddings 
+                        WHERE collection = $1 
+                        LIMIT 1
+                    """, collection_name)
+                    
+                    if has_vectors:
+                        # Vectors exist - can create index now
+                        if use_binary_quant:
+                            # Use binary quantization with bit type for high dimensions
+                            await conn.execute(f"""
+                                CREATE INDEX IF NOT EXISTS idx_ivfflat_{safe_name}
+                                ON arkham_vectors.embeddings
+                                USING ivfflat ((binary_quantize(embedding)::bit({vector_size})) bit_hamming_ops)
+                                WITH (lists = {lists})
+                                WHERE collection = '{escaped_name}'
+                            """)
+                        else:
+                            # Standard vector index for dimensions <= 2000
+                            await conn.execute(f"""
+                                CREATE INDEX IF NOT EXISTS idx_ivfflat_{safe_name}
+                                ON arkham_vectors.embeddings
+                                USING ivfflat (embedding {ops})
+                                WITH (lists = {lists})
+                                WHERE collection = '{escaped_name}'
+                            """)
+                    # If no vectors, index will be created automatically on first insert
 
-            logger.info(f"Created collection: {collection_name} (size={vector_size}, lists={lists})")
+            logger.info(f"Created collection: {collection_name} (size={vector_size}, lists={lists}, binary_quant={use_binary_quant})")
 
             return CollectionInfo(
                 name=collection_name,
@@ -625,6 +721,7 @@ class VectorService:
                 index_type="ivfflat",
                 lists=lists,
                 probes=probes,
+                uses_binary_quantization=use_binary_quant,
             )
 
         except CollectionExistsError:
@@ -705,9 +802,13 @@ class VectorService:
                 distance_str = row['distance_metric']
                 distance = DistanceMetric(distance_str) if distance_str else DistanceMetric.COSINE
 
+                # Check if binary quantization should be used
+                vector_size = row['vector_size']
+                uses_binary_quant = self._should_use_binary_quantization(vector_size)
+
                 return CollectionInfo(
                     name=name,
-                    vector_size=row['vector_size'],
+                    vector_size=vector_size,
                     distance=distance,
                     points_count=count or 0,
                     indexed_vectors_count=row['vector_count'] or 0,
@@ -717,6 +818,7 @@ class VectorService:
                     lists=row['lists'] or 100,
                     probes=row['probes'] or 10,
                     last_reindex=row['last_reindex'],
+                    uses_binary_quantization=uses_binary_quant,
                 )
 
         except CollectionNotFoundError:
@@ -745,9 +847,13 @@ class VectorService:
                     distance_str = row['distance_metric']
                     distance = DistanceMetric(distance_str) if distance_str else DistanceMetric.COSINE
 
+                    # Check if binary quantization should be used
+                    vector_size = row['vector_size']
+                    uses_binary_quant = self._should_use_binary_quantization(vector_size)
+
                     result.append(CollectionInfo(
                         name=row['name'],
-                        vector_size=row['vector_size'],
+                        vector_size=vector_size,
                         distance=distance,
                         points_count=count or 0,
                         indexed_vectors_count=row['vector_count'] or 0,
@@ -757,6 +863,7 @@ class VectorService:
                         lists=row['lists'] or 100,
                         probes=row['probes'] or 10,
                         last_reindex=row['last_reindex'],
+                        uses_binary_quantization=uses_binary_quant,
                     ))
 
                 return result
@@ -823,22 +930,37 @@ class VectorService:
                     try:
                         lists = coll_info['lists'] or 100
                         distance_metric = coll_info['distance_metric'] or 'cosine'
-                        ops_map = {
-                            'cosine': 'vector_cosine_ops',
-                            'euclidean': 'vector_l2_ops',
-                            'dot': 'vector_ip_ops',
-                        }
-                        ops = ops_map.get(distance_metric, 'vector_cosine_ops')
+                        vector_size = coll_info['vector_size']
                         escaped_name = collection.replace("'", "''")
                         
-                        await conn.execute(f"""
-                            CREATE INDEX IF NOT EXISTS idx_ivfflat_{safe_name}
-                            ON arkham_vectors.embeddings
-                            USING ivfflat (embedding {ops})
-                            WITH (lists = {lists})
-                            WHERE collection = '{escaped_name}'
-                        """)
-                        logger.info(f"Created IVFFlat index for collection {collection}")
+                        # Check if binary quantization should be used
+                        use_binary_quant = self._should_use_binary_quantization(vector_size)
+                        
+                        if use_binary_quant:
+                            # Use binary quantization with bit type for high dimensions
+                            await conn.execute(f"""
+                                CREATE INDEX IF NOT EXISTS idx_ivfflat_{safe_name}
+                                ON arkham_vectors.embeddings
+                                USING ivfflat ((binary_quantize(embedding)::bit({vector_size})) bit_hamming_ops)
+                                WITH (lists = {lists})
+                                WHERE collection = '{escaped_name}'
+                            """)
+                        else:
+                            # Standard vector index for dimensions <= 2000
+                            ops_map = {
+                                'cosine': 'vector_cosine_ops',
+                                'euclidean': 'vector_l2_ops',
+                                'dot': 'vector_ip_ops',
+                            }
+                            ops = ops_map.get(distance_metric, 'vector_cosine_ops')
+                            await conn.execute(f"""
+                                CREATE INDEX IF NOT EXISTS idx_ivfflat_{safe_name}
+                                ON arkham_vectors.embeddings
+                                USING ivfflat (embedding {ops})
+                                WITH (lists = {lists})
+                                WHERE collection = '{escaped_name}'
+                            """)
+                        logger.info(f"Created IVFFlat index for collection {collection} (binary_quant={use_binary_quant})")
                     except Exception as idx_error:
                         logger.warning(f"Failed to create index for {collection}: {idx_error}")
 
@@ -966,13 +1088,16 @@ class VectorService:
 
         try:
             async with self._pool.acquire() as conn:
-                # Get collection info for probes setting
+                # Get collection info for probes setting and vector size
                 coll = await conn.fetchrow(
-                    "SELECT lists, probes, distance_metric FROM arkham_vectors.collections WHERE name = $1",
+                    "SELECT lists, probes, distance_metric, vector_size FROM arkham_vectors.collections WHERE name = $1",
                     collection
                 )
                 if not coll:
                     raise CollectionNotFoundError(collection)
+
+                # Check if binary quantization is used
+                use_binary_quant = self._should_use_binary_quantization(coll['vector_size'])
 
                 # Calculate probes for this search
                 if recall_target:
@@ -983,52 +1108,89 @@ class VectorService:
                 # Set probes for this query
                 await conn.execute(f"SET LOCAL ivfflat.probes = {probes}")
 
-                # Determine distance operator
-                distance_metric = coll['distance_metric'] or 'cosine'
-                distance_ops = {
-                    'cosine': '<=>',
-                    'euclidean': '<->',
-                    'dot': '<#>',
-                }
-                op = distance_ops.get(distance_metric, '<=>')
+                if use_binary_quant:
+                    # Use binary quantization with Hamming distance for high dimensions
+                    vector_size = coll['vector_size']
+                    # Build score expression using Hamming distance (lower = better, so negate for score)
+                    score_expr = f"-((binary_quantize(embedding)::bit({vector_size}) <~> binary_quantize($1::vector)::bit({vector_size})))"
+                    
+                    # Build select columns
+                    select_cols = f"id, payload, {score_expr} AS score"
+                    if with_vectors:
+                        select_cols += ", embedding"
 
-                # Build score expression (higher = better)
-                if distance_metric == 'cosine':
-                    score_expr = f"1 - (embedding {op} $1::vector)"
-                elif distance_metric == 'dot':
-                    score_expr = f"-(embedding {op} $1::vector)"
+                    # Build query with binary quantization
+                    sql = f"""
+                        SELECT {select_cols}
+                        FROM arkham_vectors.embeddings
+                        WHERE collection = $2
+                    """
+                    params = [str(query_vector), collection]
+                    param_idx = 3
+
+                    # Add filter
+                    if filter:
+                        sql += f" AND payload @> ${param_idx}::jsonb"
+                        params.append(json.dumps(filter))
+                        param_idx += 1
+
+                    # Add score threshold (for Hamming, lower distance is better)
+                    if score_threshold:
+                        sql += f" AND {score_expr} >= ${param_idx}"
+                        params.append(score_threshold)
+                        param_idx += 1
+
+                    # Order by Hamming distance (lower is better)
+                    sql += f" ORDER BY binary_quantize(embedding)::bit({vector_size}) <~> binary_quantize($1::vector)::bit({vector_size}) LIMIT ${param_idx}"
+                    params.append(limit)
                 else:
-                    score_expr = f"embedding {op} $1::vector"
+                    # Standard vector search for dimensions <= 2000
+                    # Determine distance operator
+                    distance_metric = coll['distance_metric'] or 'cosine'
+                    distance_ops = {
+                        'cosine': '<=>',
+                        'euclidean': '<->',
+                        'dot': '<#>',
+                    }
+                    op = distance_ops.get(distance_metric, '<=>')
 
-                # Build select columns
-                select_cols = f"id, payload, {score_expr} AS score"
-                if with_vectors:
-                    select_cols += ", embedding"
+                    # Build score expression (higher = better)
+                    if distance_metric == 'cosine':
+                        score_expr = f"1 - (embedding {op} $1::vector)"
+                    elif distance_metric == 'dot':
+                        score_expr = f"-(embedding {op} $1::vector)"
+                    else:
+                        score_expr = f"embedding {op} $1::vector"
 
-                # Build query
-                sql = f"""
-                    SELECT {select_cols}
-                    FROM arkham_vectors.embeddings
-                    WHERE collection = $2
-                """
-                params = [str(query_vector), collection]
-                param_idx = 3
+                    # Build select columns
+                    select_cols = f"id, payload, {score_expr} AS score"
+                    if with_vectors:
+                        select_cols += ", embedding"
 
-                # Add filter
-                if filter:
-                    sql += f" AND payload @> ${param_idx}::jsonb"
-                    params.append(json.dumps(filter))
-                    param_idx += 1
+                    # Build query
+                    sql = f"""
+                        SELECT {select_cols}
+                        FROM arkham_vectors.embeddings
+                        WHERE collection = $2
+                    """
+                    params = [str(query_vector), collection]
+                    param_idx = 3
 
-                # Add score threshold
-                if score_threshold and distance_metric == 'cosine':
-                    sql += f" AND {score_expr} >= ${param_idx}"
-                    params.append(score_threshold)
-                    param_idx += 1
+                    # Add filter
+                    if filter:
+                        sql += f" AND payload @> ${param_idx}::jsonb"
+                        params.append(json.dumps(filter))
+                        param_idx += 1
 
-                # Order and limit
-                sql += f" ORDER BY embedding {op} $1::vector LIMIT ${param_idx}"
-                params.append(limit)
+                    # Add score threshold
+                    if score_threshold and distance_metric == 'cosine':
+                        sql += f" AND {score_expr} >= ${param_idx}"
+                        params.append(score_threshold)
+                        param_idx += 1
+
+                    # Order and limit
+                    sql += f" ORDER BY embedding {op} $1::vector LIMIT ${param_idx}"
+                    params.append(limit)
 
                 rows = await conn.fetch(sql, *params)
 
@@ -1358,30 +1520,61 @@ class VectorService:
                     name
                 )
 
+                # Check dimension if vectors exist
+                vector_size = coll['vector_size']
+                if count > 0:
+                    sample_vector = await conn.fetchval("""
+                        SELECT embedding FROM arkham_vectors.embeddings 
+                        WHERE collection = $1 
+                        LIMIT 1
+                    """, name)
+                    if sample_vector:
+                        actual_dimension = len(sample_vector) if hasattr(sample_vector, '__len__') else None
+                        if actual_dimension and actual_dimension > MAX_VECTOR_DIMENSIONS:
+                            raise UnsupportedDimensionError(
+                                f"Collection '{name}'",
+                                actual_dimension,
+                                MAX_VECTOR_DIMENSIONS
+                            )
+                        elif actual_dimension:
+                            vector_size = actual_dimension
+
                 # Calculate new optimal parameters
                 new_lists = self._optimal_lists(count)
                 new_probes = self._optimal_probes(new_lists, self._target_recall)
 
                 safe_name = name.replace("-", "_").replace(".", "_")
 
-                # Determine operator class
-                ops_map = {
-                    'cosine': 'vector_cosine_ops',
-                    'euclidean': 'vector_l2_ops',
-                    'dot': 'vector_ip_ops',
-                }
-                ops = ops_map.get(coll['distance_metric'], 'vector_cosine_ops')
+                # Check if binary quantization should be used
+                use_binary_quant = self._should_use_binary_quantization(vector_size)
 
                 # Drop and recreate index
                 await conn.execute(f"DROP INDEX IF EXISTS arkham_vectors.idx_ivfflat_{safe_name}")
 
-                await conn.execute(f"""
-                    CREATE INDEX idx_ivfflat_{safe_name}
-                    ON arkham_vectors.embeddings
-                    USING ivfflat (embedding {ops})
-                    WITH (lists = {new_lists})
-                    WHERE collection = $1
-                """, name)
+                if use_binary_quant:
+                    # Use binary quantization with bit type for high dimensions
+                    await conn.execute(f"""
+                        CREATE INDEX idx_ivfflat_{safe_name}
+                        ON arkham_vectors.embeddings
+                        USING ivfflat ((binary_quantize(embedding)::bit({vector_size})) bit_hamming_ops)
+                        WITH (lists = {new_lists})
+                        WHERE collection = $1
+                    """, name)
+                else:
+                    # Standard vector index for dimensions <= 2000
+                    ops_map = {
+                        'cosine': 'vector_cosine_ops',
+                        'euclidean': 'vector_l2_ops',
+                        'dot': 'vector_ip_ops',
+                    }
+                    ops = ops_map.get(coll['distance_metric'], 'vector_cosine_ops')
+                    await conn.execute(f"""
+                        CREATE INDEX idx_ivfflat_{safe_name}
+                        ON arkham_vectors.embeddings
+                        USING ivfflat (embedding {ops})
+                        WITH (lists = {new_lists})
+                        WHERE collection = $1
+                    """, name)
 
                 # Update metadata
                 await conn.execute("""
