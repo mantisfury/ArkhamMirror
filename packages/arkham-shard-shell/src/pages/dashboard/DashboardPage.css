@@ -60,7 +60,7 @@
   display: flex;
   align-items: center;
   gap: var(--spacing-md);
-  padding: var(--spacing-md);
+  padding: var(--spacing-md) var(--spacing-lg);
   border: none;
   background: transparent;
   border-radius: var(--radius-md);
@@ -82,12 +82,14 @@
 .dashboard-nav .nav-content {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: var(--spacing-xs);
+  padding: var(--spacing-xs) 0;
 }
 
 .dashboard-nav .nav-label {
   font-weight: 500;
   font-size: 0.9rem;
+  padding: var(--spacing-xs) 0;
 }
 
 .dashboard-nav .nav-description {
@@ -268,7 +270,7 @@
 
 .table-container th,
 .table-container td {
-  padding: var(--spacing-sm) var(--spacing-md);
+  padding: var(--spacing-md) var(--spacing-lg);
   text-align: left;
   border-bottom: 1px solid var(--border-color);
 }

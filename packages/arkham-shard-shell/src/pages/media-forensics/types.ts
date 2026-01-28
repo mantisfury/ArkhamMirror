@@ -428,10 +428,10 @@ export const VERIFICATION_LABELS: Record<VerificationStatus, string> = {
 };
 
 export const VERIFICATION_COLORS: Record<VerificationStatus, string> = {
-  verified: 'var(--arkham-success, #22c55e)',
-  flagged: 'var(--arkham-warning, #eab308)',
-  unknown: 'var(--arkham-text-muted, #6b7280)',
-  tampered: 'var(--arkham-error, #ef4444)',
+  verified: 'var(--success, #22c55e)',
+  flagged: 'var(--warning, #eab308)',
+  unknown: 'var(--text-muted, #6b7280)',
+  tampered: 'var(--error, #ef4444)',
 };
 
 export const SEVERITY_LABELS: Record<FindingSeverity, string> = {
@@ -443,11 +443,11 @@ export const SEVERITY_LABELS: Record<FindingSeverity, string> = {
 };
 
 export const SEVERITY_COLORS: Record<FindingSeverity, string> = {
-  critical: 'var(--arkham-error, #ef4444)',
-  high: 'var(--arkham-warning, #f97316)',
-  medium: 'var(--arkham-warning, #eab308)',
-  low: 'var(--arkham-info, #3b82f6)',
-  info: 'var(--arkham-text-muted, #6b7280)',
+  critical: 'var(--error, #ef4444)',
+  high: 'var(--warning, #f97316)',
+  medium: 'var(--warning, #eab308)',
+  low: 'var(--info, #3b82f6)',
+  info: 'var(--text-muted, #6b7280)',
 };
 
 export const C2PA_VALIDATION_LABELS: Record<C2PAValidationStatus, string> = {
@@ -459,11 +459,11 @@ export const C2PA_VALIDATION_LABELS: Record<C2PAValidationStatus, string> = {
 };
 
 export const C2PA_VALIDATION_COLORS: Record<C2PAValidationStatus, string> = {
-  valid: 'var(--arkham-success, #22c55e)',
-  invalid: 'var(--arkham-error, #ef4444)',
-  expired: 'var(--arkham-warning, #f97316)',
-  revoked: 'var(--arkham-error, #dc2626)',
-  unknown: 'var(--arkham-text-muted, #6b7280)',
+  valid: 'var(--success, #22c55e)',
+  invalid: 'var(--error, #ef4444)',
+  expired: 'var(--warning, #f97316)',
+  revoked: 'var(--error, #dc2626)',
+  unknown: 'var(--text-muted, #6b7280)',
 };
 
 // Filter options

@@ -235,21 +235,21 @@ function ContradictionListView() {
             </div>
           </div>
           <div className="stat-card">
-            <Icon name="Clock" size={24} className="stat-icon" style={{ color: 'var(--arkham-info)' }} />
+            <Icon name="Clock" size={24} className="stat-icon" style={{ color: 'var(--info)' }} />
             <div className="stat-content">
               <div className="stat-value">{(stats.by_status.detected || 0) + (stats.by_status.investigating || 0)}</div>
               <div className="stat-label">Pending Review</div>
             </div>
           </div>
           <div className="stat-card">
-            <Icon name="CheckCircle" size={24} className="stat-icon" style={{ color: 'var(--arkham-error)' }} />
+            <Icon name="CheckCircle" size={24} className="stat-icon" style={{ color: 'var(--error)' }} />
             <div className="stat-content">
               <div className="stat-value">{stats.by_status.confirmed || 0}</div>
               <div className="stat-label">Confirmed</div>
             </div>
           </div>
           <div className="stat-card">
-            <Icon name="GitBranch" size={24} className="stat-icon" style={{ color: 'var(--arkham-warning)' }} />
+            <Icon name="GitBranch" size={24} className="stat-icon" style={{ color: 'var(--warning)' }} />
             <div className="stat-content">
               <div className="stat-value">{stats.chains_detected || 0}</div>
               <div className="stat-label">Chains</div>

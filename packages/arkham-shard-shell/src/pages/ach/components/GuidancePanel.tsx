@@ -284,24 +284,24 @@ export function GuidancePanel({ currentStep, defaultExpanded = true }: GuidanceP
   if (!guidance) return null;
 
   const colorVars: Record<string, string> = {
-    blue: '--arkham-accent-primary',
-    green: '--arkham-success',
-    purple: '--arkham-accent-secondary',
-    amber: '--arkham-warning',
-    cyan: '--arkham-accent-primary',
-    red: '--arkham-error',
-    orange: '--arkham-warning',
-    violet: '--arkham-accent-secondary',
+    blue: '--accent-primary',
+    green: '--success',
+    purple: '--accent-secondary',
+    amber: '--warning',
+    cyan: '--accent-primary',
+    red: '--error',
+    orange: '--warning',
+    violet: '--accent-secondary',
   };
 
-  const bgColor = `var(${colorVars[guidance.color] || '--arkham-accent-primary'})`;
+  const bgColor = `var(${colorVars[guidance.color] || '--accent-primary'})`;
 
   return (
     <div
       className="guidance-panel"
       style={{
         borderLeft: `4px solid ${bgColor}`,
-        backgroundColor: `color-mix(in srgb, ${bgColor} 10%, var(--arkham-bg-secondary))`,
+        backgroundColor: `color-mix(in srgb, ${bgColor} 10%, var(--bg-secondary))`,
       }}
     >
       <div className="guidance-header" onClick={() => setExpanded(!expanded)}>

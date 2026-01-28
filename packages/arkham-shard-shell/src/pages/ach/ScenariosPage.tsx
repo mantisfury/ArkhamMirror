@@ -506,15 +506,15 @@ export function ScenariosPage() {
           height: 100%;
           display: flex;
           flex-direction: column;
-          background: var(--arkham-bg);
+          background: var(--bg);
         }
         .page-header {
           display: flex;
           justify-content: space-between;
           align-items: center;
           padding: 1rem 1.5rem;
-          border-bottom: 1px solid var(--arkham-border);
-          background: var(--arkham-bg-secondary);
+          border-bottom: 1px solid var(--border);
+          background: var(--bg-secondary);
         }
         .header-left {
           display: flex;
@@ -533,7 +533,7 @@ export function ScenariosPage() {
         }
         .header-title .subtitle {
           font-size: 0.875rem;
-          color: var(--arkham-text-muted);
+          color: var(--text-muted);
         }
         .scenarios-content {
           flex: 1;
@@ -542,17 +542,17 @@ export function ScenariosPage() {
         }
         .trees-sidebar {
           width: 280px;
-          border-right: 1px solid var(--arkham-border);
+          border-right: 1px solid var(--border);
           padding: 1rem;
           overflow-y: auto;
-          background: var(--arkham-bg-secondary);
+          background: var(--bg-secondary);
         }
         .trees-sidebar h3 {
           font-size: 0.8125rem;
           font-weight: 600;
           text-transform: uppercase;
           letter-spacing: 0.05em;
-          color: var(--arkham-text-muted);
+          color: var(--text-muted);
           margin: 0 0 1rem;
         }
         .trees-list {
@@ -565,17 +565,17 @@ export function ScenariosPage() {
           justify-content: space-between;
           align-items: center;
           padding: 0.75rem;
-          background: var(--arkham-bg);
-          border: 1px solid var(--arkham-border);
+          background: var(--bg);
+          border: 1px solid var(--border);
           border-radius: 0.5rem;
           cursor: pointer;
           transition: all 0.15s;
         }
         .tree-item:hover {
-          border-color: var(--arkham-primary);
+          border-color: var(--primary);
         }
         .tree-item.selected {
-          border-color: var(--arkham-primary);
+          border-color: var(--primary);
           background: rgba(99, 102, 241, 0.1);
         }
         .tree-item-content {
@@ -584,14 +584,14 @@ export function ScenariosPage() {
         .tree-title {
           display: block;
           font-weight: 500;
-          color: var(--arkham-text);
+          color: var(--text);
           white-space: nowrap;
           overflow: hidden;
           text-overflow: ellipsis;
         }
         .tree-meta {
           font-size: 0.75rem;
-          color: var(--arkham-text-muted);
+          color: var(--text-muted);
         }
         .tree-visualization {
           flex: 1;
@@ -609,7 +609,7 @@ export function ScenariosPage() {
           margin: 0 0 0.5rem;
         }
         .tree-description {
-          color: var(--arkham-text-muted);
+          color: var(--text-muted);
           margin: 0 0 1rem;
         }
         .situation-summary {
@@ -618,13 +618,13 @@ export function ScenariosPage() {
           border-radius: 0.5rem;
           padding: 1rem;
           font-size: 0.9375rem;
-          color: var(--arkham-text-secondary);
+          color: var(--text-secondary);
         }
         .scenario-node-container {
           position: relative;
           margin-left: 1.5rem;
           padding-left: 1.5rem;
-          border-left: 2px solid var(--arkham-border);
+          border-left: 2px solid var(--border);
         }
         .scenario-node-container:first-child {
           margin-left: 0;
@@ -632,8 +632,8 @@ export function ScenariosPage() {
           border-left: none;
         }
         .scenario-node {
-          background: var(--arkham-bg-secondary);
-          border: 1px solid var(--arkham-border);
+          background: var(--bg-secondary);
+          border: 1px solid var(--border);
           border-left: 4px solid;
           border-radius: 0.5rem;
           padding: 1rem;
@@ -641,7 +641,7 @@ export function ScenariosPage() {
         }
         .scenario-node.depth-0 {
           background: rgba(99, 102, 241, 0.1);
-          border-color: var(--arkham-primary);
+          border-color: var(--primary);
         }
         .node-header {
           display: flex;
@@ -652,7 +652,7 @@ export function ScenariosPage() {
         .node-title {
           font-weight: 600;
           font-size: 1rem;
-          color: var(--arkham-text);
+          color: var(--text);
         }
         .node-probability {
           font-size: 0.75rem;
@@ -662,7 +662,7 @@ export function ScenariosPage() {
           color: white;
         }
         .node-description {
-          color: var(--arkham-text-secondary);
+          color: var(--text-secondary);
           font-size: 0.875rem;
           margin: 0 0 0.75rem;
           line-height: 1.5;
@@ -672,7 +672,7 @@ export function ScenariosPage() {
           align-items: center;
           gap: 0.25rem;
           font-size: 0.75rem;
-          color: var(--arkham-text-muted);
+          color: var(--text-muted);
           margin-bottom: 0.5rem;
         }
         .node-drivers {
@@ -687,11 +687,11 @@ export function ScenariosPage() {
           background: rgba(99, 102, 241, 0.1);
           border: 1px solid rgba(99, 102, 241, 0.3);
           border-radius: 0.25rem;
-          color: var(--arkham-primary);
+          color: var(--primary);
         }
         .node-indicators {
           font-size: 0.75rem;
-          color: var(--arkham-text-muted);
+          color: var(--text-muted);
           margin-bottom: 0.75rem;
         }
         .indicators-label {
@@ -714,7 +714,7 @@ export function ScenariosPage() {
           gap: 0.5rem;
           margin-top: 0.75rem;
           padding-top: 0.75rem;
-          border-top: 1px solid var(--arkham-border);
+          border-top: 1px solid var(--border);
         }
         .status-select {
           font-size: 0.6875rem;
@@ -742,21 +742,21 @@ export function ScenariosPage() {
           align-items: center;
           justify-content: center;
           height: 100%;
-          color: var(--arkham-text-muted);
+          color: var(--text-muted);
         }
         .empty-state {
           text-align: center;
           padding: 2rem;
-          color: var(--arkham-text-muted);
+          color: var(--text-muted);
         }
         .empty-state p {
           margin: 0.5rem 0 1rem;
         }
         .icon-muted {
-          color: var(--arkham-text-muted);
+          color: var(--text-muted);
         }
         .icon-primary {
-          color: var(--arkham-primary);
+          color: var(--primary);
         }
 
         /* Modal Styles */
@@ -770,8 +770,8 @@ export function ScenariosPage() {
           z-index: 100;
         }
         .modal-content {
-          background: var(--arkham-bg-secondary);
-          border: 1px solid var(--arkham-border);
+          background: var(--bg-secondary);
+          border: 1px solid var(--border);
           border-radius: 0.75rem;
           width: 100%;
           max-width: 500px;
@@ -783,7 +783,7 @@ export function ScenariosPage() {
           justify-content: space-between;
           align-items: center;
           padding: 1rem 1.5rem;
-          border-bottom: 1px solid var(--arkham-border);
+          border-bottom: 1px solid var(--border);
         }
         .modal-header h3 {
           display: flex;
@@ -800,7 +800,7 @@ export function ScenariosPage() {
           justify-content: flex-end;
           gap: 0.75rem;
           padding: 1rem 1.5rem;
-          border-top: 1px solid var(--arkham-border);
+          border-top: 1px solid var(--border);
         }
         .form-group {
           margin-bottom: 1rem;
@@ -810,15 +810,15 @@ export function ScenariosPage() {
           font-size: 0.875rem;
           font-weight: 500;
           margin-bottom: 0.375rem;
-          color: var(--arkham-text-secondary);
+          color: var(--text-secondary);
         }
         .input, .textarea {
           width: 100%;
-          background: var(--arkham-bg);
-          border: 1px solid var(--arkham-border);
+          background: var(--bg);
+          border: 1px solid var(--border);
           border-radius: 0.375rem;
           padding: 0.625rem 0.75rem;
-          color: var(--arkham-text);
+          color: var(--text);
           font-size: 0.9375rem;
         }
         .textarea {
@@ -827,7 +827,7 @@ export function ScenariosPage() {
         }
         .input:focus, .textarea:focus {
           outline: none;
-          border-color: var(--arkham-primary);
+          border-color: var(--primary);
         }
         .btn-xs {
           padding: 0.25rem 0.5rem;

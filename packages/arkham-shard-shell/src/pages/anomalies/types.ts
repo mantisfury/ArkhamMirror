@@ -176,10 +176,10 @@ export const SEVERITY_LABELS: Record<SeverityLevel, string> = {
 };
 
 export const SEVERITY_COLORS: Record<SeverityLevel, string> = {
-  critical: 'var(--arkham-error)',
-  high: 'var(--arkham-warning)',
-  medium: 'var(--arkham-info)',
-  low: 'var(--arkham-text-muted)',
+  critical: 'var(--error)',
+  high: 'var(--warning)',
+  medium: 'var(--info)',
+  low: 'var(--text-muted)',
 };
 
 // Filter options

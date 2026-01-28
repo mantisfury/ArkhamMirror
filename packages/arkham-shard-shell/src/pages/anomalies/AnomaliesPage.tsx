@@ -756,8 +756,8 @@ function DetectionDialog({ onSubmit, onCancel }: DetectionDialogProps) {
 // ============================================
 
 function getSeverityColor(score: number): string {
-  if (score >= 8) return 'var(--arkham-error)';
-  if (score >= 5) return 'var(--arkham-warning)';
-  if (score >= 3) return 'var(--arkham-info)';
-  return 'var(--arkham-text-muted)';
+  if (score >= 8) return 'var(--error)';
+  if (score >= 5) return 'var(--warning)';
+  if (score >= 3) return 'var(--info)';
+  return 'var(--text-muted)';
 }

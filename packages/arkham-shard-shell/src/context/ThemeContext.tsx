@@ -143,13 +143,13 @@ function applyTheme(themeName: Exclude<ThemePreset, 'system'>, accentColor: stri
   const root = document.documentElement;
 
   // Apply theme colors
-  root.style.setProperty('--arkham-bg-primary', theme.bgPrimary);
-  root.style.setProperty('--arkham-bg-secondary', theme.bgSecondary);
-  root.style.setProperty('--arkham-bg-tertiary', theme.bgTertiary);
-  root.style.setProperty('--arkham-text-primary', theme.textPrimary);
-  root.style.setProperty('--arkham-text-secondary', theme.textSecondary);
-  root.style.setProperty('--arkham-text-muted', theme.textMuted);
-  root.style.setProperty('--arkham-border', theme.border);
+  root.style.setProperty('--bg-primary', theme.bgPrimary);
+  root.style.setProperty('--bg-secondary', theme.bgSecondary);
+  root.style.setProperty('--bg-tertiary', theme.bgTertiary);
+  root.style.setProperty('--text-primary', theme.textPrimary);
+  root.style.setProperty('--text-secondary', theme.textSecondary);
+  root.style.setProperty('--text-muted', theme.textMuted);
+  root.style.setProperty('--border', theme.border);
 
   // Convenience aliases used in some components
   root.style.setProperty('--bg-primary', theme.bgPrimary);
@@ -162,12 +162,12 @@ function applyTheme(themeName: Exclude<ThemePreset, 'system'>, accentColor: stri
   root.style.setProperty('--border-color', theme.border);
 
   // Update shadows for theme
-  root.style.setProperty('--arkham-shadow-sm', `0 1px 2px ${theme.shadow}`);
-  root.style.setProperty('--arkham-shadow-md', `0 4px 6px ${theme.shadow}`);
-  root.style.setProperty('--arkham-shadow-lg', `0 10px 15px ${theme.shadow}`);
+  root.style.setProperty('--shadow-sm', `0 1px 2px ${theme.shadow}`);
+  root.style.setProperty('--shadow-md', `0 4px 6px ${theme.shadow}`);
+  root.style.setProperty('--shadow-lg', `0 10px 15px ${theme.shadow}`);
 
   // Apply accent color
-  root.style.setProperty('--arkham-accent-primary', accentColor);
+  root.style.setProperty('--accent-primary', accentColor);
   root.style.setProperty('--accent-color', accentColor);
 
   // Generate accent color variants
