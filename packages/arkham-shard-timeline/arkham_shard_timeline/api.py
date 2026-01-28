@@ -300,43 +300,6 @@ async def extract_timeline(request: ExtractionRequest):
     )
 
 
-@router.post("/extract/{document_id}", response_model=ExtractionResponse)
-async def extract_document_timeline(request: Request, document_id: str):
-    """
-    Extract timeline events from an existing document.
-
-    This triggers timeline extraction for a specific document ID.
-    """
-    shard = get_shard(request)
-    start_time = time.time()
-
-    try:
-        events = await shard.extract_timeline(document_id)
-    except Exception as e:
-        logger.error(f"Extraction failed: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Extraction failed: {str(e)}")
-
-    duration_ms = (time.time() - start_time) * 1000
-
-    # Emit event
-    if _event_bus:
-        await _event_bus.emit(
-            "timeline.timeline.extracted",
-            {
-                "document_id": document_id,
-                "event_count": len(events),
-                "duration_ms": duration_ms,
-            },
-            source="timeline-shard",
-        )
-
-    return ExtractionResponse(
-        events=[_event_to_dict(e) for e in events],
-        count=len(events),
-        duration_ms=duration_ms,
-    )
-
-
 class ExtractAllResponse(BaseModel):
     """Response for extracting from all documents."""
     total_documents: int
@@ -364,7 +327,7 @@ async def extract_all_documents(request: Request):
         # Get all document IDs
         doc_rows = await shard.database_service.fetch_all(
             """
-            SELECT DISTINCT id FROM arkham_frame.documents
+            SELECT DISTINCT id, created_at FROM arkham_frame.documents
             ORDER BY created_at DESC
             """
         )
@@ -436,6 +399,43 @@ async def extract_all_documents(request: Request):
     except Exception as e:
         logger.error(f"Extract all failed: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Extract all failed: {str(e)}")
+
+
+@router.post("/extract/{document_id}", response_model=ExtractionResponse)
+async def extract_document_timeline(request: Request, document_id: str):
+    """
+    Extract timeline events from an existing document.
+
+    This triggers timeline extraction for a specific document ID.
+    """
+    shard = get_shard(request)
+    start_time = time.time()
+
+    try:
+        events = await shard.extract_timeline(document_id)
+    except Exception as e:
+        logger.error(f"Extraction failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Extraction failed: {str(e)}")
+
+    duration_ms = (time.time() - start_time) * 1000
+
+    # Emit event
+    if _event_bus:
+        await _event_bus.emit(
+            "timeline.timeline.extracted",
+            {
+                "document_id": document_id,
+                "event_count": len(events),
+                "duration_ms": duration_ms,
+            },
+            source="timeline-shard",
+        )
+
+    return ExtractionResponse(
+        events=[_event_to_dict(e) for e in events],
+        count=len(events),
+        duration_ms=duration_ms,
+    )
 
 
 @router.get("/documents")
