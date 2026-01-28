@@ -9,15 +9,15 @@
  * - Document embedding queue
  */
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { Icon } from '../../components/common/Icon';
 import { useToast } from '../../context/ToastContext';
 import { SimilarityCalculator } from './SimilarityCalculator';
 import {
   useModels,
   useCacheStats,
-  useNearest,
   useClearCache,
+  useNearest,
   useAvailableModels,
   useVectorCollections,
   useCheckModelSwitch,
@@ -26,6 +26,116 @@ import {
   useBatchEmbedDocuments,
 } from './api';
 import type { AvailableModel, ModelSwitchCheckResult, DocumentForEmbedding } from './types';
+
+function formatStatNumber(num: number): string {
+  return num.toLocaleString();
+}
+
+/**
+ * Owns cache stats data and polling so only this subtree re-renders when
+ * GET /api/embed/cache/stats runs. Parent never re-renders from cache/stats.
+ */
+function EmbeddingStatisticsSection(props: { refreshTrigger?: number }) {
+  const { refreshTrigger = 0 } = props;
+  const { toast } = useToast();
+  const { data: cacheStats, loading, refetch } = useCacheStats();
+  const { clear: clearCacheAPI, loading: clearingCache } = useClearCache();
+
+  useEffect(() => {
+    const t = setInterval(refetch, 10000);
+    return () => clearInterval(t);
+  }, [refetch]);
+
+  useEffect(() => {
+    if (refreshTrigger > 0) refetch();
+  }, [refreshTrigger, refetch]);
+
+  const handleClearCache = useCallback(async () => {
+    try {
+      await clearCacheAPI();
+      toast.success('Cache cleared successfully');
+      refetch();
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Clear cache failed');
+    }
+  }, [clearCacheAPI, refetch, toast]);
+
+  return (
+    <section className="cache-stats-section">
+      <div className="section-header">
+        <h2>
+          <Icon name="Database" size={20} />
+          Embedding Statistics
+        </h2>
+        <button
+          className="button-secondary"
+          onClick={handleClearCache}
+          disabled={clearingCache}
+        >
+          {clearingCache ? (
+            <>
+              <Icon name="Loader" size={14} className="spinner" />
+              Clearing...
+            </>
+          ) : (
+            <>
+              <Icon name="Trash2" size={14} />
+              Clear Cache
+            </>
+          )}
+        </button>
+      </div>
+
+      {loading ? (
+        <div className="loading-state">
+          <Icon name="Loader" size={24} className="spinner" />
+          Loading stats...
+        </div>
+      ) : cacheStats ? (
+        <div className="stats-grid">
+          <div className="stat-card">
+            <Icon name="Box" size={24} className="stat-icon" style={{ color: '#22c55e' }} />
+            <div className="stat-content">
+              <div className="stat-value">{formatStatNumber(cacheStats.hits)}</div>
+              <div className="stat-label">Embeddings</div>
+            </div>
+          </div>
+
+          <div className="stat-card">
+            <Icon name="Clock" size={24} className="stat-icon" style={{ color: '#ef4444' }} />
+            <div className="stat-content">
+              <div className="stat-value">{formatStatNumber(cacheStats.misses)}</div>
+              <div className="stat-label">Pending</div>
+            </div>
+          </div>
+
+          <div className="stat-card">
+            <Icon name="Percent" size={24} className="stat-icon" style={{ color: '#3b82f6' }} />
+            <div className="stat-content">
+              <div className="stat-value">{(cacheStats.hit_rate * 100).toFixed(1)}%</div>
+              <div className="stat-label">Coverage</div>
+            </div>
+          </div>
+
+          <div className="stat-card">
+            <Icon name="FileText" size={24} className="stat-icon" style={{ color: '#f59e0b' }} />
+            <div className="stat-content">
+              <div className="stat-value">
+                {cacheStats.size}/{cacheStats.max_size}
+              </div>
+              <div className="stat-label">Docs / Chunks</div>
+            </div>
+          </div>
+        </div>
+      ) : (
+        <div className="empty-state">
+          <Icon name="AlertCircle" size={48} />
+          <p>No statistics available</p>
+        </div>
+      )}
+    </section>
+  );
+}
 
 export function EmbedPage() {
   const { toast } = useToast();
@@ -44,24 +154,14 @@ export function EmbedPage() {
   const { data: models, loading: loadingModels } = useModels();
   const { data: availableModels, loading: loadingAvailable, refetch: refetchAvailable } = useAvailableModels();
   const { data: collections, refetch: refetchCollections } = useVectorCollections();
-  const { data: cacheStats, loading: loadingCache, refetch: refetchCache } = useCacheStats();
+  const [cacheInvalidated, setCacheInvalidated] = useState(0);
   const { search, data: searchResults, loading: searching } = useNearest();
-  const { clear: clearCacheAPI, loading: clearingCache } = useClearCache();
   const { check: checkSwitch, loading: checkingSwitch } = useCheckModelSwitch();
   const { switchTo: switchModelAPI, loading: switchingModel } = useSwitchModel();
 
   // Document embedding hooks
   const { fetch: fetchDocs, data: docsData, loading: loadingDocs, refetch: refetchDocs } = useDocumentsForEmbedding(onlyUnembedded);
   const { embed: batchEmbed, loading: batchEmbedding } = useBatchEmbedDocuments();
-
-  // Auto-refresh cache stats
-  useEffect(() => {
-    const interval = setInterval(() => {
-      refetchCache();
-    }, 10000); // Refresh every 10 seconds
-
-    return () => clearInterval(interval);
-  }, [refetchCache]);
 
   // Fetch documents on mount and when filter changes
   useEffect(() => {
@@ -144,16 +244,6 @@ export function EmbedPage() {
     return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
   };
 
-  const handleClearCache = async () => {
-    try {
-      await clearCacheAPI();
-      toast.success('Cache cleared successfully');
-      refetchCache();
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : 'Clear cache failed');
-    }
-  };
-
   const handleModelSelect = async (model: AvailableModel) => {
     if (model.is_current) {
       toast.info('This model is already active');
@@ -184,10 +274,9 @@ export function EmbedPage() {
 
       if (result.success) {
         toast.success(result.message);
-        // Refresh all model-related data
         refetchAvailable();
         refetchCollections();
-        refetchCache();
+        setCacheInvalidated((v) => v + 1);
       } else if (result.requires_wipe) {
         // Need confirmation
         setSwitchCheckResult({
@@ -691,80 +780,7 @@ export function EmbedPage() {
         )}
       </section>
 
-      {/* Embedding Statistics */}
-      <section className="cache-stats-section">
-        <div className="section-header">
-          <h2>
-            <Icon name="Database" size={20} />
-            Embedding Statistics
-          </h2>
-          <button
-            className="button-secondary"
-            onClick={handleClearCache}
-            disabled={clearingCache}
-          >
-            {clearingCache ? (
-              <>
-                <Icon name="Loader" size={14} className="spinner" />
-                Clearing...
-              </>
-            ) : (
-              <>
-                <Icon name="Trash2" size={14} />
-                Clear Cache
-              </>
-            )}
-          </button>
-        </div>
-
-        {loadingCache ? (
-          <div className="loading-state">
-            <Icon name="Loader" size={24} className="spinner" />
-            Loading stats...
-          </div>
-        ) : cacheStats ? (
-          <div className="stats-grid">
-            <div className="stat-card">
-              <Icon name="Box" size={24} className="stat-icon" style={{ color: '#22c55e' }} />
-              <div className="stat-content">
-                <div className="stat-value">{formatNumber(cacheStats.hits)}</div>
-                <div className="stat-label">Embeddings</div>
-              </div>
-            </div>
-
-            <div className="stat-card">
-              <Icon name="Clock" size={24} className="stat-icon" style={{ color: '#ef4444' }} />
-              <div className="stat-content">
-                <div className="stat-value">{formatNumber(cacheStats.misses)}</div>
-                <div className="stat-label">Pending</div>
-              </div>
-            </div>
-
-            <div className="stat-card">
-              <Icon name="Percent" size={24} className="stat-icon" style={{ color: '#3b82f6' }} />
-              <div className="stat-content">
-                <div className="stat-value">{(cacheStats.hit_rate * 100).toFixed(1)}%</div>
-                <div className="stat-label">Coverage</div>
-              </div>
-            </div>
-
-            <div className="stat-card">
-              <Icon name="FileText" size={24} className="stat-icon" style={{ color: '#f59e0b' }} />
-              <div className="stat-content">
-                <div className="stat-value">
-                  {cacheStats.size}/{cacheStats.max_size}
-                </div>
-                <div className="stat-label">Docs / Chunks</div>
-              </div>
-            </div>
-          </div>
-        ) : (
-          <div className="empty-state">
-            <Icon name="AlertCircle" size={48} />
-            <p>No statistics available</p>
-          </div>
-        )}
-      </section>
+      <EmbeddingStatisticsSection refreshTrigger={cacheInvalidated} />
 
       <style>{`
         .embed-page {

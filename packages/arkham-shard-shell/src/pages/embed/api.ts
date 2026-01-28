@@ -261,11 +261,27 @@ export function useModels() {
   return useFetch<ModelInfo[]>(`${API_PREFIX}/models`);
 }
 
+/** Compare cache stats by meaningful fields so backend extras / float noise do not force re-renders. */
+function cacheStatsEqual(a: CacheStats, b: CacheStats): boolean {
+  return (
+    a.hits === b.hits &&
+    a.misses === b.misses &&
+    a.size === b.size &&
+    a.max_size === b.max_size &&
+    Math.abs((a.hit_rate ?? 0) - (b.hit_rate ?? 0)) < 1e-9
+  );
+}
+
 /**
- * Hook for fetching cache statistics
+ * Hook for fetching cache statistics.
+ * Uses backgroundRefetch so polling does not flash loading state,
+ * and isDataEqual so unchanged stats do not trigger re-renders.
  */
 export function useCacheStats() {
-  return useFetch<CacheStats>(`${API_PREFIX}/cache/stats`);
+  return useFetch<CacheStats>(`${API_PREFIX}/cache/stats`, {
+    backgroundRefetch: true,
+    isDataEqual: cacheStatsEqual,
+  });
 }
 
 /**

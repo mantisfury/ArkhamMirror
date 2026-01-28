@@ -101,8 +101,8 @@ export function ExportPage() {
   // Fetch data
   const { data: formats, loading: _formatsLoading } = useFetch<FormatInfo[]>('/api/export/formats');
   const { data: targets, loading: _targetsLoading } = useFetch<TargetInfo[]>('/api/export/targets');
-  const { data: jobs, loading: jobsLoading, refetch: refetchJobs } = useFetch<{ jobs: ExportJob[]; total: number }>('/api/export/jobs');
-  const { data: stats, loading: statsLoading, refetch: refetchStats } = useFetch<ExportStatistics>('/api/export/stats');
+  const { data: jobs, loading: jobsLoading, refetch: refetchJobs } = useFetch<{ jobs: ExportJob[]; total: number }>('/api/export/jobs', { backgroundRefetch: true });
+  const { data: stats, loading: statsLoading, refetch: refetchStats } = useFetch<ExportStatistics>('/api/export/stats', { backgroundRefetch: true });
 
   // Auto-refresh jobs every 5 seconds when there are active jobs
   useEffect(() => {

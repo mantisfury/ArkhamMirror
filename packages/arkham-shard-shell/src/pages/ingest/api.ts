@@ -251,17 +251,19 @@ export function useUploadBatch() {
 }
 
 /**
- * Hook for fetching queue statistics
+ * Hook for fetching queue statistics.
+ * Uses backgroundRefetch so polling does not flash loading state.
  */
 export function useQueue() {
-  return useFetch<QueueStatsResponse>(`${API_PREFIX}/queue`);
+  return useFetch<QueueStatsResponse>(`${API_PREFIX}/queue`, { backgroundRefetch: true });
 }
 
 /**
- * Hook for fetching pending jobs
+ * Hook for fetching pending jobs.
+ * Uses backgroundRefetch so polling does not flash loading state.
  */
 export function usePending(limit: number = 50) {
-  return useFetch<PendingJobsResponse>(`${API_PREFIX}/pending?limit=${limit}`);
+  return useFetch<PendingJobsResponse>(`${API_PREFIX}/pending?limit=${limit}`, { backgroundRefetch: true });
 }
 
 /**
