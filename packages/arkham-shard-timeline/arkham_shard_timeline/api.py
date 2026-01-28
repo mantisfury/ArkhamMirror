@@ -337,6 +337,107 @@ async def extract_document_timeline(request: Request, document_id: str):
     )
 
 
+class ExtractAllResponse(BaseModel):
+    """Response for extracting from all documents."""
+    total_documents: int
+    successful: int
+    failed: int
+    total_events: int
+    duration_ms: float
+    results: list[dict]  # Per-document results
+
+
+@router.post("/extract/all", response_model=ExtractAllResponse)
+async def extract_all_documents(request: Request):
+    """
+    Extract timeline events from all documents.
+
+    Processes all available documents and returns summary statistics.
+    """
+    shard = get_shard(request)
+    start_time = time.time()
+
+    if not shard.database_service:
+        raise HTTPException(status_code=503, detail="Database service not available")
+
+    try:
+        # Get all document IDs
+        doc_rows = await shard.database_service.fetch_all(
+            """
+            SELECT DISTINCT id FROM arkham_frame.documents
+            ORDER BY created_at DESC
+            """
+        )
+        document_ids = [row["id"] for row in doc_rows]
+        total_documents = len(document_ids)
+
+        if total_documents == 0:
+            return ExtractAllResponse(
+                total_documents=0,
+                successful=0,
+                failed=0,
+                total_events=0,
+                duration_ms=0.0,
+                results=[],
+            )
+
+        # Extract from each document
+        successful = 0
+        failed = 0
+        total_events = 0
+        results = []
+
+        for doc_id in document_ids:
+            try:
+                events = await shard.extract_timeline(doc_id)
+                event_count = len(events)
+                total_events += event_count
+                successful += 1
+                results.append({
+                    "document_id": doc_id,
+                    "success": True,
+                    "event_count": event_count,
+                })
+            except Exception as e:
+                logger.error(f"Failed to extract from document {doc_id}: {e}", exc_info=True)
+                failed += 1
+                results.append({
+                    "document_id": doc_id,
+                    "success": False,
+                    "error": str(e),
+                    "event_count": 0,
+                })
+
+        duration_ms = (time.time() - start_time) * 1000
+
+        # Emit event
+        if _event_bus:
+            await _event_bus.emit(
+                "timeline.all.extracted",
+                {
+                    "total_documents": total_documents,
+                    "successful": successful,
+                    "failed": failed,
+                    "total_events": total_events,
+                    "duration_ms": duration_ms,
+                },
+                source="timeline-shard",
+            )
+
+        return ExtractAllResponse(
+            total_documents=total_documents,
+            successful=successful,
+            failed=failed,
+            total_events=total_events,
+            duration_ms=duration_ms,
+            results=results,
+        )
+
+    except Exception as e:
+        logger.error(f"Extract all failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Extract all failed: {str(e)}")
+
+
 @router.get("/documents")
 async def list_documents(
     request: Request,
