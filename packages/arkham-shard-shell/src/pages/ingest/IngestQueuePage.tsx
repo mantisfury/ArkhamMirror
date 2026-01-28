@@ -9,7 +9,7 @@
  */
 
 import { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Icon } from '../../components/common/Icon';
 import { useToast } from '../../context/ToastContext';
 import { useConfirm } from '../../context/ConfirmContext';
@@ -18,12 +18,39 @@ import type { PendingJob } from './api';
 
 type StatusFilter = 'all' | 'pending' | 'processing' | 'completed' | 'failed';
 
+const VALID_STATUS_FILTERS: StatusFilter[] = ['all', 'pending', 'processing', 'completed', 'failed'];
+
 export function IngestQueuePage() {
   const { toast } = useToast();
   const confirm = useConfirm();
   const navigate = useNavigate();
-  const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
+  const [searchParams, setSearchParams] = useSearchParams();
+  const statusFromUrl = searchParams.get('status');
+  const initialFilter: StatusFilter =
+    statusFromUrl && VALID_STATUS_FILTERS.includes(statusFromUrl as StatusFilter)
+      ? (statusFromUrl as StatusFilter)
+      : 'all';
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>(initialFilter);
   const [limit, setLimit] = useState(50);
+
+  // Sync filter from URL when navigating with ?status= (e.g. from Ingest stat cards)
+  useEffect(() => {
+    const s = searchParams.get('status');
+    if (s && VALID_STATUS_FILTERS.includes(s as StatusFilter)) {
+      setStatusFilter(s as StatusFilter);
+    }
+  }, [searchParams]);
+
+  const handleStatusFilterChange = (next: StatusFilter) => {
+    setStatusFilter(next);
+    const nextParams = new URLSearchParams(searchParams);
+    if (next === 'all') {
+      nextParams.delete('status');
+    } else {
+      nextParams.set('status', next);
+    }
+    setSearchParams(nextParams, { replace: true });
+  };
 
   const { data: pendingData, loading, error, refetch } = usePending(limit);
   const { retry: retryJobMutation, loading: retrying } = useRetryJob();
@@ -121,31 +148,31 @@ export function IngestQueuePage() {
           <div className="filter-buttons">
             <button
               className={`filter-button ${statusFilter === 'all' ? 'active' : ''}`}
-              onClick={() => setStatusFilter('all')}
+              onClick={() => handleStatusFilterChange('all')}
             >
               All
             </button>
             <button
               className={`filter-button ${statusFilter === 'pending' ? 'active' : ''}`}
-              onClick={() => setStatusFilter('pending')}
+              onClick={() => handleStatusFilterChange('pending')}
             >
               Pending
             </button>
             <button
               className={`filter-button ${statusFilter === 'processing' ? 'active' : ''}`}
-              onClick={() => setStatusFilter('processing')}
+              onClick={() => handleStatusFilterChange('processing')}
             >
               Processing
             </button>
             <button
               className={`filter-button ${statusFilter === 'completed' ? 'active' : ''}`}
-              onClick={() => setStatusFilter('completed')}
+              onClick={() => handleStatusFilterChange('completed')}
             >
               Completed
             </button>
             <button
               className={`filter-button ${statusFilter === 'failed' ? 'active' : ''}`}
-              onClick={() => setStatusFilter('failed')}
+              onClick={() => handleStatusFilterChange('failed')}
             >
               Failed
             </button>

@@ -172,36 +172,56 @@ export function IngestPage() {
         </div>
       </header>
 
-      {/* Queue Statistics */}
+      {/* Queue Statistics – click a card to open View Queue with that filter */}
       <section className="stats-grid">
-        <div className="stat-card">
+        <button
+          type="button"
+          className="stat-card stat-card-clickable"
+          onClick={() => navigate('/ingest/queue?status=pending')}
+          title="View queue filtered by Pending"
+        >
           <Icon name="Clock" size={24} className="stat-icon" style={{ color: '#6b7280' }} />
           <div className="stat-content">
             <div className="stat-value">{loadingQueue ? '...' : queueStats?.pending ?? 0}</div>
             <div className="stat-label">Pending</div>
           </div>
-        </div>
-        <div className="stat-card">
+        </button>
+        <button
+          type="button"
+          className="stat-card stat-card-clickable"
+          onClick={() => navigate('/ingest/queue?status=processing')}
+          title="View queue filtered by Processing"
+        >
           <Icon name="Loader" size={24} className="stat-icon" style={{ color: '#3b82f6' }} />
           <div className="stat-content">
             <div className="stat-value">{loadingQueue ? '...' : queueStats?.processing ?? 0}</div>
             <div className="stat-label">Processing</div>
           </div>
-        </div>
-        <div className="stat-card">
+        </button>
+        <button
+          type="button"
+          className="stat-card stat-card-clickable"
+          onClick={() => navigate('/ingest/queue?status=completed')}
+          title="View queue filtered by Completed"
+        >
           <Icon name="CheckCircle" size={24} className="stat-icon" style={{ color: '#22c55e' }} />
           <div className="stat-content">
             <div className="stat-value">{loadingQueue ? '...' : queueStats?.completed ?? 0}</div>
             <div className="stat-label">Completed</div>
           </div>
-        </div>
-        <div className="stat-card">
+        </button>
+        <button
+          type="button"
+          className="stat-card stat-card-clickable"
+          onClick={() => navigate('/ingest/queue?status=failed')}
+          title="View queue filtered by Failed"
+        >
           <Icon name="XCircle" size={24} className="stat-icon" style={{ color: '#ef4444' }} />
           <div className="stat-content">
             <div className="stat-value">{loadingQueue ? '...' : queueStats?.failed ?? 0}</div>
             <div className="stat-label">Failed</div>
           </div>
-        </div>
+        </button>
       </section>
 
       {/* Pipeline Settings Panel */}
@@ -614,6 +634,18 @@ export function IngestPage() {
           display: flex;
           gap: 1rem;
           align-items: center;
+        }
+
+        .stat-card-clickable {
+          cursor: pointer;
+          text-align: center;
+          font: inherit;
+          color: inherit;
+        }
+
+        .stat-card-clickable:hover {
+          border-color: #6366f1;
+          background: #252d3a;
         }
 
         .stat-icon {
