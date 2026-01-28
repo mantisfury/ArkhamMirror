@@ -22,6 +22,7 @@ import type { FlowData } from './components';
 import { EgoMetricsPanel } from './components/EgoMetricsPanel';
 import { fetchScores, type EntityScore } from './api';
 import { getRelationshipStyle, extractRelationshipTypes } from './constants/relationshipStyles';
+import { apiPost } from '../../utils/api';
 import './GraphPage.css';
 
 // Types
@@ -436,37 +437,26 @@ export function GraphPage() {
       // Determine if any documents are selected
       const hasDocuments = (dataSources.selectedDocumentIds === null || (dataSources.selectedDocumentIds && dataSources.selectedDocumentIds.length > 0)) || dataSources.documentEntities;
 
-      const response = await fetch('/api/graph/build', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          project_id: projectId,
-          min_co_occurrence: 1,
-          // Primary data sources
-          include_document_entities: hasDocuments,
-          include_cooccurrences: dataSources.entityCooccurrences,
-          // Specific documents to include (empty = all)
-          document_ids: dataSources.selectedDocumentIds,  // null = all, [] = none, [...] = specific
-          // Cross-shard node sources
-          include_temporal: dataSources.timelineEvents,
-          include_claims: dataSources.claims,
-          include_ach_evidence: dataSources.achEvidence,
-          include_ach_hypotheses: dataSources.achHypotheses,
-          include_provenance_artifacts: dataSources.provenanceArtifacts,
-          // Cross-shard edge sources
-          include_contradictions: dataSources.contradictions,
-          include_patterns: dataSources.patterns,
-          // Weight modifiers
-          apply_credibility_weights: dataSources.credibilityRatings,
-        }),
+      const result = await apiPost<any>('/api/graph/build', {
+        project_id: projectId,
+        min_co_occurrence: 1,
+        // Primary data sources
+        include_document_entities: hasDocuments,
+        include_cooccurrences: dataSources.entityCooccurrences,
+        // Specific documents to include (empty = all)
+        document_ids: dataSources.selectedDocumentIds, // null = all, [] = none, [...] = specific
+        // Cross-shard node sources
+        include_temporal: dataSources.timelineEvents,
+        include_claims: dataSources.claims,
+        include_ach_evidence: dataSources.achEvidence,
+        include_ach_hypotheses: dataSources.achHypotheses,
+        include_provenance_artifacts: dataSources.provenanceArtifacts,
+        // Cross-shard edge sources
+        include_contradictions: dataSources.contradictions,
+        include_patterns: dataSources.patterns,
+        // Weight modifiers
+        apply_credibility_weights: dataSources.credibilityRatings,
       });
-
-      if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.detail || 'Failed to build graph');
-      }
-
-      const result = await response.json();
 
       // Build detailed success message
       let message = `Graph built: ${result.node_count} nodes, ${result.edge_count} edges`;
@@ -494,32 +484,21 @@ export function GraphPage() {
 
     setLayoutCalculating(true);
     try {
-      const response = await fetch('/api/graph/layout', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          project_id: projectId,
-          layout_type: layout.layoutType,
-          root_node_id: layout.rootNodeId,
-          direction: layout.direction,
-          layer_spacing: layout.layerSpacing,
-          node_spacing: layout.nodeSpacing,
-          radius: layout.radius,
-          radius_step: layout.radiusStep,
-          left_types: layout.leftTypes,
-          right_types: layout.rightTypes,
-          columns: layout.gridColumns,
-          cell_width: layout.cellWidth,
-          cell_height: layout.cellHeight,
-        }),
+      const result = await apiPost<any>('/api/graph/layout', {
+        project_id: projectId,
+        layout_type: layout.layoutType,
+        root_node_id: layout.rootNodeId,
+        direction: layout.direction,
+        layer_spacing: layout.layerSpacing,
+        node_spacing: layout.nodeSpacing,
+        radius: layout.radius,
+        radius_step: layout.radiusStep,
+        left_types: layout.leftTypes,
+        right_types: layout.rightTypes,
+        columns: layout.gridColumns,
+        cell_width: layout.cellWidth,
+        cell_height: layout.cellHeight,
       });
-
-      if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.detail || 'Failed to calculate layout');
-      }
-
-      const result = await response.json();
 
       // Convert positions to Map
       const positions = new Map<string, { x: number; y: number }>();
@@ -586,23 +565,12 @@ export function GraphPage() {
   // Find path between two nodes
   const findPath = async (sourceId: string, targetId: string) => {
     try {
-      const response = await fetch('/api/graph/path', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          project_id: projectId,
-          source_entity_id: sourceId,
-          target_entity_id: targetId,
-          max_depth: 6,
-        }),
+      const result = await apiPost<PathResult>('/api/graph/path', {
+        project_id: projectId,
+        source_entity_id: sourceId,
+        target_entity_id: targetId,
+        max_depth: 6,
       });
-
-      if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.detail || 'Failed to find path');
-      }
-
-      const result: PathResult = await response.json();
       if (result.path_found) {
         toast.success(`Path found: ${result.path_length} hops`);
         // Highlight the path
@@ -619,22 +587,11 @@ export function GraphPage() {
   // Export graph
   const exportGraph = async (format: string) => {
     try {
-      const response = await fetch('/api/graph/export', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          project_id: projectId,
-          format: format,
-          include_metadata: true,
-        }),
+      const result = await apiPost<any>('/api/graph/export', {
+        project_id: projectId,
+        format: format,
+        include_metadata: true,
       });
-
-      if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.detail || 'Failed to export graph');
-      }
-
-      const result = await response.json();
 
       // Create download
       const blob = new Blob([result.data], { type: 'application/json' });
@@ -937,27 +894,16 @@ export function GraphPage() {
   const loadSankeyFlows = useCallback(async () => {
     setSankeyLoading(true);
     try {
-      const response = await fetch('/api/graph/flows', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          project_id: projectId,
-          flow_type: sankeyFlowType,
-          source_types: sankeySourceTypes,
-          target_types: sankeyTargetTypes,
-          intermediate_types: sankeyIntermediateTypes,
-          min_weight: sankeyMinWeight,
-          aggregate_by_type: sankeyAggregateByType,
-          max_links: sankeyMaxLinks,
-        }),
+      const flowData = await apiPost<any>('/api/graph/flows', {
+        project_id: projectId,
+        flow_type: sankeyFlowType,
+        source_types: sankeySourceTypes,
+        target_types: sankeyTargetTypes,
+        intermediate_types: sankeyIntermediateTypes,
+        min_weight: sankeyMinWeight,
+        aggregate_by_type: sankeyAggregateByType,
+        max_links: sankeyMaxLinks,
       });
-
-      if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.detail || 'Failed to load flow data');
-      }
-
-      const flowData = await response.json();
       setSankeyFlowData(flowData);
       toast.success(`Loaded ${flowData.node_count} nodes, ${flowData.link_count} flows`);
     } catch (err) {

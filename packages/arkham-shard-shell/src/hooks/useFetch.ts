@@ -13,6 +13,7 @@
  */
 
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { apiFetch } from '../utils/api';
 
 interface UseFetchOptions<T = unknown> {
   /** Timeout in milliseconds (default: 30000) */
@@ -68,7 +69,7 @@ export function useFetch<T>(url: string | null, options?: UseFetchOptions<T>): U
     }, timeout);
 
     try {
-      const response = await fetch(url, {
+      const response = await apiFetch(url, {
         signal: abortRef.current.signal,
       });
 
@@ -96,9 +97,9 @@ export function useFetch<T>(url: string | null, options?: UseFetchOptions<T>): U
         }
         return;
       }
-      if (!silent) {
-        setError(err instanceof Error ? err : new Error('Unknown error'));
-      }
+      // Always update errors, even during background refetches, so connection status updates correctly
+      // This is important for polling scenarios where we need to detect disconnections
+      setError(err instanceof Error ? err : new Error('Unknown error'));
       // Keep existing data on error (stale-while-revalidate pattern)
     } finally {
       if (timeoutRef.current) {

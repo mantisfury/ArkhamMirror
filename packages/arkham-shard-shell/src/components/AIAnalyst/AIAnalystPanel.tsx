@@ -12,6 +12,7 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import ReactMarkdown from 'react-markdown';
 import { Icon } from '../common/Icon';
 import type { AIAnalystPanelProps, AIAnalystState, Message, StreamEvent } from './types';
+import { apiFetch, apiPost } from '../../utils/api';
 import './AIAnalystPanel.css';
 
 const SHARD_TITLES: Record<string, string> = {
@@ -95,7 +96,7 @@ export function AIAnalystPanel({
     }
 
     try {
-      const response = await fetch(`/api/${shard}/ai/junior-analyst`, {
+      const response = await apiFetch(`/api/${shard}/ai/junior-analyst`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -223,14 +224,10 @@ export function AIAnalystPanel({
   // Submit feedback
   const submitFeedback = async (messageId: string, rating: 'up' | 'down') => {
     try {
-      await fetch(`/api/${shard}/ai/feedback`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          session_id: state.sessionId || 'unknown',
-          message_id: messageId,
-          rating,
-        }),
+      await apiPost(`/api/${shard}/ai/feedback`, {
+        session_id: state.sessionId || 'unknown',
+        message_id: messageId,
+        rating,
       });
 
       // Update message with feedback

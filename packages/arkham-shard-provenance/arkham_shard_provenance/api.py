@@ -3,12 +3,18 @@
 import logging
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 if TYPE_CHECKING:
     from .shard import ProvenanceShard
+
+try:
+    from arkham_frame.auth import current_optional_user
+except ImportError:
+    async def current_optional_user():
+        return None
 
 logger = logging.getLogger(__name__)
 

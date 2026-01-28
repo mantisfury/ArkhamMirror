@@ -52,7 +52,7 @@ export function IngestQueuePage() {
     setSearchParams(nextParams, { replace: true });
   };
 
-  const { data: pendingData, loading, error, refetch } = usePending(limit);
+  const { data: pendingData, loading, error, refetch } = usePending(limit, statusFilter);
   const { retry: retryJobMutation, loading: retrying } = useRetryJob();
 
   // Auto-refresh queue
@@ -115,6 +115,7 @@ export function IngestQueuePage() {
     }
   };
 
+  // Jobs are already filtered by the API based on statusFilter
   const filteredJobs = pendingData?.jobs ?? [];
   const jobCount = pendingData?.count ?? 0;
 
@@ -227,10 +228,10 @@ export function IngestQueuePage() {
                   <div className="col-status">
                     <span
                       className="status-badge"
-                      style={{ backgroundColor: getStatusColor('pending') }}
+                      style={{ backgroundColor: getStatusColor(job.status) }}
                     >
-                      <Icon name={getStatusIcon('pending')} size={14} />
-                      Pending
+                      <Icon name={getStatusIcon(job.status)} size={14} />
+                      {job.status.charAt(0).toUpperCase() + job.status.slice(1)}
                     </span>
                   </div>
                   <div className="col-filename">

@@ -10,6 +10,7 @@ import { Icon } from '../../components/common/Icon';
 import { AIAnalystButton } from '../../components/AIAnalyst';
 import { useToast } from '../../context/ToastContext';
 import { useFetch } from '../../hooks/useFetch';
+import { apiDelete, apiPost } from '../../utils/api';
 import { ForensicsTab } from './ForensicsTab';
 import './ProvenancePage.css';
 
@@ -141,19 +142,10 @@ export function ProvenancePage() {
 
     setCreating(true);
     try {
-      const response = await fetch('/api/provenance/chains', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          title: newChainTitle,
-          description: newChainDescription,
-        }),
+      await apiPost('/api/provenance/chains', {
+        title: newChainTitle,
+        description: newChainDescription,
       });
-
-      if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.detail || 'Failed to create chain');
-      }
 
       toast.success('Chain created successfully');
       setShowCreateChain(false);
@@ -171,14 +163,7 @@ export function ProvenancePage() {
     if (!confirm('Are you sure you want to delete this chain?')) return;
 
     try {
-      const response = await fetch(`/api/provenance/chains/${chainId}`, {
-        method: 'DELETE',
-      });
-
-      if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.detail || 'Failed to delete chain');
-      }
+      await apiDelete(`/api/provenance/chains/${chainId}`);
 
       toast.success('Chain deleted');
       setSelectedChain(null);
@@ -190,16 +175,7 @@ export function ProvenancePage() {
 
   const handleVerifyChain = async (chainId: string) => {
     try {
-      const response = await fetch(`/api/provenance/chains/${chainId}/verify`, {
-        method: 'POST',
-      });
-
-      if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.detail || 'Failed to verify chain');
-      }
-
-      const result = await response.json();
+      const result = await apiPost<{ verified?: boolean; issues?: unknown[] }>(`/api/provenance/chains/${chainId}/verify`);
       if (result.verified) {
         toast.success('Chain verified successfully');
       } else {

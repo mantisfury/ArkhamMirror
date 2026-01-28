@@ -11,6 +11,7 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import ReactMarkdown from 'react-markdown';
 import { useNavigate } from 'react-router-dom';
 import { Icon } from '../../components/common/Icon';
+import { apiFetch, apiGet, apiPost } from '../../utils/api';
 import './RAGChatPanel.css';
 
 interface Citation {
@@ -62,11 +63,9 @@ export function RAGChatPanel({ isOpen, onClose, initialQuestion, projectId }: RA
   useEffect(() => {
     const fetchProjects = async () => {
       try {
-        const response = await fetch('/api/projects');
-        if (response.ok) {
-          const data = await response.json();
-          setProjects(data.items || []);
-        }
+        const data = await apiGet<any>('/api/projects/');
+        const list = (data?.projects ?? data?.items) as unknown;
+        setProjects(Array.isArray(list) ? list : []);
       } catch (err) {
         console.warn('Failed to fetch projects:', err);
       }
@@ -123,7 +122,7 @@ export function RAGChatPanel({ isOpen, onClose, initialQuestion, projectId }: RA
     ]);
 
     try {
-      const response = await fetch('/api/search/chat', {
+      const response = await apiFetch('/api/search/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -237,14 +236,10 @@ export function RAGChatPanel({ isOpen, onClose, initialQuestion, projectId }: RA
   // Submit feedback
   const submitFeedback = async (messageId: string, rating: 'up' | 'down') => {
     try {
-      await fetch('/api/search/ai/feedback', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          session_id: conversationId || 'unknown',
-          message_id: messageId,
-          rating,
-        }),
+      await apiPost('/api/search/ai/feedback', {
+        session_id: conversationId || 'unknown',
+        message_id: messageId,
+        rating,
       });
 
       // Update message with feedback

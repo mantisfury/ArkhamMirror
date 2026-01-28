@@ -6,6 +6,7 @@
 
 import { useState, useCallback } from 'react';
 import { useFetch } from '../../hooks/useFetch';
+import { apiFetch } from '../../utils/api';
 import type {
   EmbedResult,
   BatchEmbedResult,
@@ -34,7 +35,7 @@ const API_PREFIX = '/api/embed';
 // --- Generic fetch wrapper ---
 
 async function fetchAPI<T>(endpoint: string, options?: RequestInit): Promise<T> {
-  const response = await fetch(`${API_PREFIX}${endpoint}`, {
+  const response = await apiFetch(`${API_PREFIX}${endpoint}`, {
     headers: {
       'Content-Type': 'application/json',
       ...options?.headers,
@@ -419,13 +420,17 @@ export function useSwitchModel() {
 export async function getDocumentsForEmbedding(
   limit: number = 100,
   offset: number = 0,
-  onlyUnembedded: boolean = false
+  onlyUnembedded: boolean = false,
+  projectId: string | null = null
 ): Promise<DocumentsForEmbeddingResponse> {
   const params = new URLSearchParams({
     limit: String(limit),
     offset: String(offset),
     only_unembedded: String(onlyUnembedded),
   });
+  if (projectId) {
+    params.set('project_id', projectId);
+  }
   return fetchAPI<DocumentsForEmbeddingResponse>(`/documents/available?${params}`);
 }
 
@@ -439,9 +444,12 @@ export async function embedDocumentsBatch(docIds: string[]): Promise<BatchEmbedD
 // --- Document Embedding Hooks ---
 
 /**
- * Hook for fetching documents available for embedding
+ * Hook for fetching documents available for embedding (optionally scoped by project)
  */
-export function useDocumentsForEmbedding(onlyUnembedded: boolean = false) {
+export function useDocumentsForEmbedding(
+  onlyUnembedded: boolean = false,
+  projectId: string | null = null
+) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<Error | null>(null);
   const [data, setData] = useState<DocumentsForEmbeddingResponse | null>(null);
@@ -450,7 +458,7 @@ export function useDocumentsForEmbedding(onlyUnembedded: boolean = false) {
     setLoading(true);
     setError(null);
     try {
-      const result = await getDocumentsForEmbedding(limit, offset, onlyUnembedded);
+      const result = await getDocumentsForEmbedding(limit, offset, onlyUnembedded, projectId);
       setData(result);
       return result;
     } catch (err) {
@@ -460,7 +468,7 @@ export function useDocumentsForEmbedding(onlyUnembedded: boolean = false) {
     } finally {
       setLoading(false);
     }
-  }, [onlyUnembedded]);
+  }, [onlyUnembedded, projectId]);
 
   const refetch = useCallback(() => {
     return fetch();

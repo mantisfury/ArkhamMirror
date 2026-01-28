@@ -158,6 +158,7 @@ class EntitiesShard(ArkhamShard):
                 metadata JSONB DEFAULT '{}',
                 mention_count INTEGER DEFAULT 0,
                 document_ids JSONB DEFAULT '[]',
+                project_id TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
@@ -173,6 +174,7 @@ class EntitiesShard(ArkhamShard):
                 confidence FLOAT DEFAULT 1.0,
                 start_offset INTEGER DEFAULT 0,
                 end_offset INTEGER DEFAULT 0,
+                project_id TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
@@ -233,7 +235,7 @@ class EntitiesShard(ArkhamShard):
         """)
 
         # ===========================================
-        # Multi-tenancy Migration
+        # Multi-tenancy & Project Scoping Migration
         # ===========================================
         await self._db.execute("""
             DO $$
@@ -246,6 +248,7 @@ class EntitiesShard(ArkhamShard):
                 tbl TEXT;
             BEGIN
                 FOREACH tbl IN ARRAY tables_to_update LOOP
+                    -- Add tenant_id if not exists
                     IF NOT EXISTS (
                         SELECT 1 FROM information_schema.columns
                         WHERE table_schema = 'public'
@@ -254,10 +257,34 @@ class EntitiesShard(ArkhamShard):
                     ) THEN
                         EXECUTE format('ALTER TABLE %I ADD COLUMN tenant_id UUID', tbl);
                     END IF;
+                    
+                    -- Add project_id if not exists (for entities and mentions only)
+                    IF tbl IN ('arkham_entities', 'arkham_entity_mentions') THEN
+                        IF NOT EXISTS (
+                            SELECT 1 FROM information_schema.columns
+                            WHERE table_schema = 'public'
+                            AND table_name = tbl
+                            AND column_name = 'project_id'
+                        ) THEN
+                            EXECUTE format('ALTER TABLE %I ADD COLUMN project_id TEXT', tbl);
+                        END IF;
+                    END IF;
                 END LOOP;
             END $$;
         """)
 
+        # Create project_id indexes (after migration ensures columns exist)
+        await self._db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_entities_project
+            ON arkham_entities(project_id)
+        """)
+
+        await self._db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_mentions_project
+            ON arkham_entity_mentions(project_id)
+        """)
+
+        # Create tenant_id indexes
         await self._db.execute("""
             CREATE INDEX IF NOT EXISTS idx_arkham_entities_tenant
             ON arkham_entities(tenant_id)
@@ -472,6 +499,30 @@ class EntitiesShard(ArkhamShard):
 
         logger.info(f"Processing {len(filtered_entities)} entities for document {document_id}")
 
+        # Get project_id and tenant_id for scoping.
+        # Prefer values provided by the parse shard event (more reliable in async contexts),
+        # then fall back to querying the document row.
+        project_id = payload.get("project_id") or None
+        tenant_id = self.get_tenant_id_or_none()
+        
+        if not project_id:
+            # Try to get project_id from document
+            try:
+                doc_row = await self._db.fetch_one(
+                    "SELECT project_id, tenant_id FROM arkham_frame.documents WHERE id = :id",
+                    {"id": document_id}
+                )
+                if doc_row:
+                    project_id = doc_row.get("project_id")
+                    # Use document's tenant_id if available, otherwise use context tenant_id
+                    if doc_row.get("tenant_id"):
+                        tenant_id = doc_row.get("tenant_id")
+                    logger.info(f"Document {document_id}: project_id={project_id}, tenant_id={tenant_id}")
+                else:
+                    logger.warning(f"Document {document_id} not found in arkham_frame.documents table")
+            except Exception as e:
+                logger.error(f"Could not get project_id from document {document_id}: {e}", exc_info=True)
+
         for entity_data in filtered_entities:
             try:
                 entity_text = entity_data.get("text", "").strip()
@@ -480,14 +531,28 @@ class EntitiesShard(ArkhamShard):
                 if not entity_text:
                     continue
 
-                # Check if entity already exists (case-insensitive match)
-                existing = await self._db.fetch_one(
-                    """
+                # Check if entity already exists (case-insensitive match, same project)
+                existing_query = """
                     SELECT id, name, document_ids FROM arkham_entities
                     WHERE LOWER(name) = LOWER(:name) AND entity_type = :entity_type
-                    """,
-                    {"name": entity_text, "entity_type": entity_type}
-                )
+                """
+                existing_params = {"name": entity_text, "entity_type": entity_type}
+                
+                # Filter by project_id if available
+                if project_id:
+                    existing_query += " AND project_id = :project_id"
+                    existing_params["project_id"] = str(project_id)
+                else:
+                    existing_query += " AND project_id IS NULL"
+                
+                # Filter by tenant_id if available
+                if tenant_id:
+                    existing_query += " AND tenant_id = :tenant_id"
+                    existing_params["tenant_id"] = str(tenant_id)
+                else:
+                    existing_query += " AND tenant_id IS NULL"
+                
+                existing = await self._db.fetch_one(existing_query, existing_params)
 
                 if existing:
                     entity_id = existing["id"]
@@ -506,41 +571,74 @@ class EntitiesShard(ArkhamShard):
                 else:
                     # Create new entity
                     entity_id = str(uuid.uuid4())
+                    insert_params = {
+                        "id": entity_id,
+                        "name": entity_text,
+                        "entity_type": entity_type,
+                        "doc_ids": json.dumps([document_id]),
+                    }
+                    if project_id:
+                        insert_params["project_id"] = str(project_id)
+                    if tenant_id:
+                        insert_params["tenant_id"] = str(tenant_id)
+                    
+                    columns = ["id", "name", "entity_type", "document_ids", "mention_count", "created_at", "updated_at"]
+                    values = [":id", ":name", ":entity_type", ":doc_ids", "1", "CURRENT_TIMESTAMP", "CURRENT_TIMESTAMP"]
+                    
+                    if project_id:
+                        columns.append("project_id")
+                        values.append(":project_id")
+                    if tenant_id:
+                        columns.append("tenant_id")
+                        values.append(":tenant_id")
+                    
                     await self._db.execute(
-                        """
-                        INSERT INTO arkham_entities (id, name, entity_type, document_ids, mention_count, created_at, updated_at)
-                        VALUES (:id, :name, :entity_type, :doc_ids, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                        f"""
+                        INSERT INTO arkham_entities ({", ".join(columns)})
+                        VALUES ({", ".join(values)})
                         """,
-                        {
-                            "id": entity_id,
-                            "name": entity_text,
-                            "entity_type": entity_type,
-                            "doc_ids": json.dumps([document_id]),
-                        }
+                        insert_params
                     )
+                    logger.debug(f"Created new entity '{entity_text}' (type={entity_type}) with project_id={project_id}, tenant_id={tenant_id}")
 
                 # Create mention record
                 mention_id = str(uuid.uuid4())
+                mention_params = {
+                    "id": mention_id,
+                    "entity_id": entity_id,
+                    "doc_id": document_id,
+                    "text": entity_text,
+                    "conf": entity_data.get("confidence", 0.85),
+                    "start": entity_data.get("start_offset", 0),
+                    "end": entity_data.get("end_offset", 0),
+                }
+                if project_id:
+                    mention_params["project_id"] = str(project_id)
+                if tenant_id:
+                    mention_params["tenant_id"] = str(tenant_id)
+                
+                mention_columns = ["id", "entity_id", "document_id", "mention_text", "confidence", "start_offset", "end_offset", "created_at"]
+                mention_values = [":id", ":entity_id", ":doc_id", ":text", ":conf", ":start", ":end", "CURRENT_TIMESTAMP"]
+                
+                if project_id:
+                    mention_columns.append("project_id")
+                    mention_values.append(":project_id")
+                if tenant_id:
+                    mention_columns.append("tenant_id")
+                    mention_values.append(":tenant_id")
+                
                 await self._db.execute(
-                    """
-                    INSERT INTO arkham_entity_mentions (id, entity_id, document_id, mention_text, confidence, start_offset, end_offset, created_at)
-                    VALUES (:id, :entity_id, :doc_id, :text, :conf, :start, :end, CURRENT_TIMESTAMP)
+                    f"""
+                    INSERT INTO arkham_entity_mentions ({", ".join(mention_columns)})
+                    VALUES ({", ".join(mention_values)})
                     """,
-                    {
-                        "id": mention_id,
-                        "entity_id": entity_id,
-                        "doc_id": document_id,
-                        "text": entity_text,
-                        "conf": entity_data.get("confidence", 0.85),
-                        "start": entity_data.get("start_offset", 0),
-                        "end": entity_data.get("end_offset", 0),
-                    }
+                    mention_params
                 )
 
             except Exception as e:
                 logger.error(f"Failed to store entity '{entity_data.get('text', 'unknown')}': {e}")
 
-        logger.info(f"Stored {len(entities)} entities and mentions for document {document_id}")
+        logger.info(f"Stored {len(filtered_entities)} entities and mentions for document {document_id} (project_id={project_id}, tenant_id={tenant_id})")
 
     async def _on_relationships_extracted(self, event: dict):
         """
@@ -567,6 +665,23 @@ class EntitiesShard(ArkhamShard):
 
         logger.info(f"Processing {len(relationships)} relationships for document {document_id}")
 
+        # Get project_id and tenant_id for scoping (prefer event payload).
+        project_id = payload.get("project_id") or None
+        tenant_id = self.get_tenant_id_or_none()
+        
+        if not project_id:
+            try:
+                doc_row = await self._db.fetch_one(
+                    "SELECT project_id, tenant_id FROM arkham_frame.documents WHERE id = :id",
+                    {"id": document_id}
+                )
+                if doc_row:
+                    project_id = doc_row.get("project_id")
+                    if doc_row.get("tenant_id"):
+                        tenant_id = doc_row.get("tenant_id")
+            except Exception as e:
+                logger.debug(f"Could not get project_id from document {document_id}: {e}")
+
         for rel_data in relationships:
             try:
                 source_text = rel_data.get("source_entity", "").strip()
@@ -576,16 +691,37 @@ class EntitiesShard(ArkhamShard):
                 if not source_text or not target_text:
                     continue
 
-                # Find source entity ID by name
-                source_row = await self._db.fetch_one(
-                    "SELECT id FROM arkham_entities WHERE LOWER(name) = LOWER(:name)",
-                    {"name": source_text}
-                )
-                # Find target entity ID by name
-                target_row = await self._db.fetch_one(
-                    "SELECT id FROM arkham_entities WHERE LOWER(name) = LOWER(:name)",
-                    {"name": target_text}
-                )
+                # Find source entity ID by name (filtered by project and tenant)
+                source_query = "SELECT id FROM arkham_entities WHERE LOWER(name) = LOWER(:name)"
+                source_params = {"name": source_text}
+                if project_id:
+                    source_query += " AND project_id = :project_id"
+                    source_params["project_id"] = str(project_id)
+                else:
+                    source_query += " AND project_id IS NULL"
+                if tenant_id:
+                    source_query += " AND tenant_id = :tenant_id"
+                    source_params["tenant_id"] = str(tenant_id)
+                else:
+                    source_query += " AND tenant_id IS NULL"
+                
+                source_row = await self._db.fetch_one(source_query, source_params)
+                
+                # Find target entity ID by name (filtered by project and tenant)
+                target_query = "SELECT id FROM arkham_entities WHERE LOWER(name) = LOWER(:name)"
+                target_params = {"name": target_text}
+                if project_id:
+                    target_query += " AND project_id = :project_id"
+                    target_params["project_id"] = str(project_id)
+                else:
+                    target_query += " AND project_id IS NULL"
+                if tenant_id:
+                    target_query += " AND tenant_id = :tenant_id"
+                    target_params["tenant_id"] = str(tenant_id)
+                else:
+                    target_query += " AND tenant_id IS NULL"
+                
+                target_row = await self._db.fetch_one(target_query, target_params)
 
                 if not source_row or not target_row:
                     logger.debug(f"Could not find entities for relationship: {source_text} -> {target_text}")
@@ -606,20 +742,35 @@ class EntitiesShard(ArkhamShard):
                 if not existing:
                     rel_id = str(uuid.uuid4())
                     metadata = {"document_id": document_id, "evidence": rel_data.get("evidence_text")}
+                    
+                    rel_params = {
+                        "id": rel_id,
+                        "src": source_id,
+                        "tgt": target_id,
+                        "rel_type": rel_type,
+                        "conf": rel_data.get("confidence", 0.5),
+                        "meta": json.dumps(metadata),
+                    }
+                    
+                    rel_columns = ["id", "source_id", "target_id", "relationship_type", "confidence", "metadata", "created_at", "updated_at"]
+                    rel_values = [":id", ":src", ":tgt", ":rel_type", ":conf", ":meta", "CURRENT_TIMESTAMP", "CURRENT_TIMESTAMP"]
+                    
+                    if project_id:
+                        rel_columns.append("project_id")
+                        rel_values.append(":project_id")
+                        rel_params["project_id"] = str(project_id)
+                    if tenant_id:
+                        rel_columns.append("tenant_id")
+                        rel_values.append(":tenant_id")
+                        rel_params["tenant_id"] = str(tenant_id)
+                    
                     await self._db.execute(
-                        """
+                        f"""
                         INSERT INTO arkham_entity_relationships
-                        (id, source_id, target_id, relationship_type, confidence, metadata, created_at, updated_at)
-                        VALUES (:id, :src, :tgt, :rel_type, :conf, :meta, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                        ({", ".join(rel_columns)})
+                        VALUES ({", ".join(rel_values)})
                         """,
-                        {
-                            "id": rel_id,
-                            "src": source_id,
-                            "tgt": target_id,
-                            "rel_type": rel_type,
-                            "conf": rel_data.get("confidence", 0.5),
-                            "meta": json.dumps(metadata),
-                        }
+                        rel_params
                     )
 
             except Exception as e:
@@ -635,7 +786,8 @@ class EntitiesShard(ArkhamShard):
         entity_type: Optional[str] = None,
         limit: int = 20,
         offset: int = 0,
-        show_merged: bool = False
+        show_merged: bool = False,
+        project_id: Optional[str] = None
     ) -> List[Entity]:
         """
         List entities with optional filtering.
@@ -649,6 +801,7 @@ class EntitiesShard(ArkhamShard):
             limit: Maximum number of results
             offset: Number of results to skip
             show_merged: Include merged entities
+            project_id: Filter by project (defaults to active project from frame)
 
         Returns:
             List of Entity objects
@@ -659,6 +812,14 @@ class EntitiesShard(ArkhamShard):
         # Query from shard's arkham_entities table (has aggregated data with mention_count)
         query = "SELECT * FROM arkham_entities WHERE 1=1"
         params: Dict[str, Any] = {}
+
+        # Add project filtering - required for data isolation
+        if project_id is None and self._frame:
+            project_id = self._frame.active_project_id
+        
+        if project_id:
+            query += " AND project_id = :project_id"
+            params["project_id"] = str(project_id)
 
         # Add tenant filtering if tenant context is available
         tenant_id = self.get_tenant_id_or_none()
@@ -700,7 +861,8 @@ class EntitiesShard(ArkhamShard):
         self,
         search: Optional[str] = None,
         entity_type: Optional[str] = None,
-        show_merged: bool = False
+        show_merged: bool = False,
+        project_id: Optional[str] = None
     ) -> int:
         """
         Count entities with optional filtering.
@@ -709,6 +871,7 @@ class EntitiesShard(ArkhamShard):
             search: Search query for entity name
             entity_type: Filter by entity type
             show_merged: Include merged entities
+            project_id: Filter by project (defaults to active project from frame)
 
         Returns:
             Total count of matching entities
@@ -718,6 +881,14 @@ class EntitiesShard(ArkhamShard):
 
         query = "SELECT COUNT(*) as count FROM arkham_entities WHERE 1=1"
         params: Dict[str, Any] = {}
+
+        # Add project filtering - required for data isolation
+        if project_id is None and self._frame:
+            project_id = self._frame.active_project_id
+        
+        if project_id:
+            query += " AND project_id = :project_id"
+            params["project_id"] = str(project_id)
 
         # Add tenant filtering if tenant context is available
         tenant_id = self.get_tenant_id_or_none()
@@ -740,7 +911,9 @@ class EntitiesShard(ArkhamShard):
             params["search"] = f"%{search}%"
 
         row = await self._db.fetch_one(query, params)
-        return row["count"] if row else 0
+        count = row["count"] if row else 0
+        logger.debug(f"count_entities: Found {count} entities matching filters")
+        return count
 
     async def get_entity(self, entity_id: str) -> Optional[Entity]:
         """
@@ -779,9 +952,18 @@ class EntitiesShard(ArkhamShard):
         if not self._db:
             raise RuntimeError("Entities Shard not initialized")
 
-        # Build query with tenant filtering
+        # Build query with tenant and project filtering
         query = "SELECT * FROM arkham_entities WHERE id = :id"
         params: Dict[str, Any] = {"id": entity_id}
+
+        # Add project filtering if active project is set
+        project_id = None
+        if self._frame:
+            project_id = self._frame.active_project_id
+        
+        if project_id:
+            query += " AND project_id = :project_id"
+            params["project_id"] = str(project_id)
 
         # Add tenant filtering if tenant context is available
         tenant_id = self.get_tenant_id_or_none()
@@ -811,18 +993,29 @@ class EntitiesShard(ArkhamShard):
         if not self._db:
             raise RuntimeError("Entities Shard not initialized")
 
-        # Build query with tenant filtering
+        # Build query with tenant and project filtering
         query = """
             SELECT * FROM arkham_entity_mentions
             WHERE entity_id = :entity_id
         """
         params: Dict[str, Any] = {"entity_id": entity_id}
 
+        # Add project filtering if active project is set
+        project_id = None
+        if self._frame:
+            project_id = self._frame.active_project_id
+        
+        if project_id:
+            query += " AND project_id = :project_id"
+            params["project_id"] = str(project_id)
+        # If no active project, don't filter by project_id (get all mentions)
+
         # Add tenant filtering if tenant context is available
         tenant_id = self.get_tenant_id_or_none()
         if tenant_id:
             query += " AND tenant_id = :tenant_id"
             params["tenant_id"] = str(tenant_id)
+        # If no tenant context, don't filter by tenant_id (get all mentions)
 
         query += " ORDER BY created_at DESC"
 
@@ -856,6 +1049,21 @@ class EntitiesShard(ArkhamShard):
         if not self._db:
             raise RuntimeError("Entities Shard not initialized")
 
+        # Get project_id from document
+        project_id = None
+        tenant_id = self.get_tenant_id_or_none()
+        try:
+            doc_row = await self._db.fetch_one(
+                "SELECT project_id, tenant_id FROM arkham_frame.documents WHERE id = :id",
+                {"id": document_id}
+            )
+            if doc_row:
+                project_id = doc_row.get("project_id")
+                if doc_row.get("tenant_id"):
+                    tenant_id = doc_row.get("tenant_id")
+        except Exception as e:
+            logger.debug(f"Could not get project_id from document {document_id}: {e}")
+
         # Query entities that have mentions in this document
         query = """
             SELECT DISTINCT e.id, e.name, e.entity_type, e.canonical_id, e.aliases,
@@ -867,8 +1075,14 @@ class EntitiesShard(ArkhamShard):
         """
         params: Dict[str, Any] = {"document_id": document_id}
 
+        # Add project filtering
+        if project_id:
+            query += " AND e.project_id = :project_id"
+            params["project_id"] = str(project_id)
+        else:
+            query += " AND e.project_id IS NULL"
+
         # Add tenant filtering if tenant context is available
-        tenant_id = self.get_tenant_id_or_none()
         if tenant_id:
             query += " AND e.tenant_id = :tenant_id"
             params["tenant_id"] = str(tenant_id)
@@ -1019,9 +1233,12 @@ class EntitiesShard(ArkhamShard):
             "mention_count": mention_count,
         } if target else {}
 
-    async def get_entity_stats(self) -> Dict[str, Any]:
+    async def get_entity_stats(self, project_id: Optional[str] = None) -> Dict[str, Any]:
         """
         Get entity statistics by type.
+
+        Args:
+            project_id: Optional project ID to filter by
 
         Returns:
             Dict with counts by entity type
@@ -1038,13 +1255,25 @@ class EntitiesShard(ArkhamShard):
         if not self._db:
             raise RuntimeError("Entities Shard not initialized")
 
-        # Build query with tenant filtering
+        # Build query with tenant and project filtering
         query = """
             SELECT entity_type, COUNT(*) as count
             FROM arkham_entities
             WHERE canonical_id IS NULL
         """
         params: Dict[str, Any] = {}
+
+        # Add project filtering
+        if project_id is None and self._frame:
+            project_id = self._frame.active_project_id
+        
+        if project_id:
+            query += " AND project_id = :project_id"
+            params["project_id"] = str(project_id)
+            logger.debug(f"count_entities: Filtering by project_id={project_id}")
+        else:
+            query += " AND project_id IS NULL"
+            logger.debug(f"count_entities: Filtering by project_id IS NULL")
 
         # Add tenant filtering if tenant context is available
         tenant_id = self.get_tenant_id_or_none()
@@ -1094,20 +1323,50 @@ class EntitiesShard(ArkhamShard):
         import uuid
         relationship_id = str(uuid.uuid4())
 
+        # Get project_id and tenant_id from source entity
+        project_id = None
+        tenant_id = self.get_tenant_id_or_none()
+        
+        try:
+            source_entity = await self._db.fetch_one(
+                "SELECT project_id, tenant_id FROM arkham_entities WHERE id = :id",
+                {"id": source_id}
+            )
+            if source_entity:
+                project_id = source_entity.get("project_id")
+                if source_entity.get("tenant_id"):
+                    tenant_id = source_entity.get("tenant_id")
+        except Exception as e:
+            logger.debug(f"Could not get project_id from source entity {source_id}: {e}")
+
+        rel_params = {
+            "id": relationship_id,
+            "source_id": source_id,
+            "target_id": target_id,
+            "relationship_type": relationship_type,
+            "confidence": confidence,
+            "metadata": json.dumps(metadata or {}),
+        }
+        
+        rel_columns = ["id", "source_id", "target_id", "relationship_type", "confidence", "metadata"]
+        rel_values = [":id", ":source_id", ":target_id", ":relationship_type", ":confidence", ":metadata"]
+        
+        if project_id:
+            rel_columns.append("project_id")
+            rel_values.append(":project_id")
+            rel_params["project_id"] = str(project_id)
+        if tenant_id:
+            rel_columns.append("tenant_id")
+            rel_values.append(":tenant_id")
+            rel_params["tenant_id"] = str(tenant_id)
+
         await self._db.execute(
-            """
+            f"""
             INSERT INTO arkham_entity_relationships
-            (id, source_id, target_id, relationship_type, confidence, metadata)
-            VALUES (:id, :source_id, :target_id, :relationship_type, :confidence, :metadata)
+            ({", ".join(rel_columns)})
+            VALUES ({", ".join(rel_values)})
             """,
-            {
-                "id": relationship_id,
-                "source_id": source_id,
-                "target_id": target_id,
-                "relationship_type": relationship_type,
-                "confidence": confidence,
-                "metadata": json.dumps(metadata or {}),
-            }
+            rel_params
         )
 
         # Publish event
@@ -1158,6 +1417,17 @@ class EntitiesShard(ArkhamShard):
             WHERE 1=1
         """
         params: Dict[str, Any] = {}
+
+        # Add project filtering if active project is set
+        project_id = None
+        if self._frame:
+            project_id = self._frame.active_project_id
+        
+        if project_id:
+            query += " AND r.project_id = :project_id"
+            params["project_id"] = str(project_id)
+        else:
+            query += " AND r.project_id IS NULL"
 
         # Add tenant filtering if tenant context is available
         tenant_id = self.get_tenant_id_or_none()
@@ -1231,6 +1501,23 @@ class EntitiesShard(ArkhamShard):
             WHERE {where_clause}
         """
         params: Dict[str, Any] = {"entity_id": entity_id}
+
+        # Add project filtering if active project is set
+        project_id = None
+        if self._frame:
+            project_id = self._frame.active_project_id
+        
+        if project_id:
+            query += " AND r.project_id = :project_id"
+            params["project_id"] = str(project_id)
+        else:
+            query += " AND r.project_id IS NULL"
+
+        # Add tenant filtering if tenant context is available
+        tenant_id = self.get_tenant_id_or_none()
+        if tenant_id:
+            query += " AND r.tenant_id = :tenant_id"
+            params["tenant_id"] = str(tenant_id)
 
         # Add tenant filtering if tenant context is available
         tenant_id = self.get_tenant_id_or_none()

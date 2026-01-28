@@ -17,6 +17,7 @@ import { useToast } from '../../context/ToastContext';
 import { useConfirm } from '../../context/ConfirmContext';
 import { Icon } from '../common/Icon';
 import { LoadingSkeleton } from '../common/LoadingSkeleton';
+import { apiFetch } from '../../utils/api';
 import type {
   UIConfig,
   ColumnConfig,
@@ -202,9 +203,8 @@ export function GenericList({ apiPrefix, ui }: GenericListProps) {
 
     setBulkLoading(true);
     try {
-      const response = await fetch(`${apiPrefix}${action.endpoint}`, {
+      const response = await apiFetch(`${apiPrefix}${action.endpoint}`, {
         method: action.method,
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ids: Array.from(selectedIds) }),
       });
 
@@ -247,9 +247,8 @@ export function GenericList({ apiPrefix, ui }: GenericListProps) {
 
       try {
         const endpoint = action.endpoint.replace('{id}', itemId);
-        const response = await fetch(`${apiPrefix}${endpoint}`, {
+        const response = await apiFetch(`${apiPrefix}${endpoint}`, {
           method: action.method || 'POST',
-          headers: { 'Content-Type': 'application/json' },
         });
 
         const result = await response.json();

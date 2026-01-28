@@ -14,6 +14,7 @@ from enum import Enum
 import logging
 import uuid
 import json
+import hashlib
 
 logger = logging.getLogger(__name__)
 
@@ -437,7 +438,7 @@ class VectorService:
                     info = await self.get_collection(collection_name)
                     
                     # Check if index exists
-                    safe_name = collection_name.replace("-", "_").replace(".", "_")
+                    safe_name = self._safe_index_name(collection_name)
                     async with self._pool.acquire() as conn:
                         index_exists = await conn.fetchval("""
                             SELECT 1 FROM pg_indexes 
@@ -503,7 +504,7 @@ class VectorService:
     
     async def _create_collection_index(self, collection_name: str, vector_size: int, lists: int) -> None:
         """Create IVFFlat index for a collection (helper for fixing missing indexes)."""
-        safe_name = collection_name.replace("-", "_").replace(".", "_")
+        safe_name = self._safe_index_name(collection_name)
         escaped_name = collection_name.replace("'", "''")
         
         async with self._pool.acquire() as conn:
@@ -620,6 +621,30 @@ class VectorService:
         """Check if binary quantization should be used for this vector size."""
         return vector_size > BINARY_QUANTIZATION_THRESHOLD
 
+    def _safe_index_name(self, collection_name: str) -> str:
+        """
+        Generate a safe PostgreSQL index name from collection name.
+        
+        PostgreSQL identifiers are limited to 63 characters. Index name format is
+        'idx_ivfflat_{safe_name}', so safe_name can be at most 50 characters.
+        If the collection name is too long, truncate and append a hash suffix.
+        """
+        # Replace unsafe characters
+        safe_name = collection_name.replace("-", "_").replace(".", "_")
+        
+        # PostgreSQL index name limit: 63 chars total, "idx_ivfflat_" = 13 chars
+        # So safe_name can be at most 50 characters
+        max_safe_length = 50
+        
+        if len(safe_name) <= max_safe_length:
+            return safe_name
+        
+        # Truncate and append hash for uniqueness
+        # Use first 40 chars + 10 char hash = 50 chars total
+        hash_suffix = hashlib.md5(collection_name.encode()).hexdigest()[:10]
+        truncated = safe_name[:40]
+        return f"{truncated}_{hash_suffix}"
+
     # =========================================================================
     # Collection Management
     # =========================================================================
@@ -639,7 +664,7 @@ class VectorService:
 
         # Apply project prefix if provided
         collection_name = f"project_{project_id}_{name}" if project_id else name
-        safe_name = collection_name.replace("-", "_").replace(".", "_")
+        safe_name = self._safe_index_name(collection_name)
 
         # Calculate optimal IVFFlat parameters
         if lists is None:
@@ -734,7 +759,7 @@ class VectorService:
         if not self._available:
             raise VectorStoreUnavailableError("pgvector not available")
 
-        safe_name = name.replace("-", "_").replace(".", "_")
+        safe_name = self._safe_index_name(name)
 
         try:
             async with self._pool.acquire() as conn:
@@ -899,7 +924,7 @@ class VectorService:
                     raise CollectionNotFoundError(collection)
 
                 # Check if index exists - create if missing (first insert)
-                safe_name = collection.replace("-", "_").replace(".", "_")
+                safe_name = self._safe_index_name(collection)
                 index_exists = await conn.fetchval("""
                     SELECT 1 FROM pg_indexes 
                     WHERE schemaname = 'arkham_vectors' 
@@ -1543,7 +1568,7 @@ class VectorService:
                 new_lists = self._optimal_lists(count)
                 new_probes = self._optimal_probes(new_lists, self._target_recall)
 
-                safe_name = name.replace("-", "_").replace(".", "_")
+                safe_name = self._safe_index_name(name)
 
                 # Check if binary quantization should be used
                 use_binary_quant = self._should_use_binary_quantization(vector_size)

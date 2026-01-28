@@ -3,9 +3,9 @@
 import logging
 import uuid
 import time
-from typing import Annotated
+from typing import Annotated, Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
 from .models import (
@@ -20,6 +20,12 @@ from .models import (
     DocumentEmbedRequest,
     ModelInfo,
 )
+
+try:
+    from arkham_frame.auth import current_optional_user
+except ImportError:
+    async def current_optional_user():
+        return None
 
 logger = logging.getLogger(__name__)
 
@@ -45,10 +51,15 @@ def init_api(embedding_manager, vector_store, worker_service, event_bus, db_serv
     _frame = frame
 
 
-def get_collection_name(base_name: str) -> str:
-    """Get collection name with project scope if active."""
+async def get_collection_name(base_name: str, user=None) -> str:
+    """Get collection name with active-project scope when available."""
     if _frame:
-        return _frame.get_collection_name(base_name)
+        user_id = None
+        if user is not None:
+            user_id = getattr(user, "id", None)
+            if user_id is None and isinstance(user, dict):
+                user_id = user.get("id")
+        return await _frame.get_collection_name(base_name, user_id=user_id)
     # Fallback to global collection
     return f"arkham_{base_name}"
 
@@ -105,13 +116,20 @@ class ConfigUpdateRequest(BaseModel):
 
 
 @router.post("/text", response_model=EmbedResult)
-async def embed_text(request: TextEmbedRequest):
+async def embed_text(
+    request: TextEmbedRequest,
+    user = Depends(current_optional_user),
+):
     """
     Embed a single text and return the vector.
 
     This is a synchronous operation that returns the embedding immediately.
     For large batches, use the batch endpoint or async document embedding.
+    Authentication required for embedding operations.
     """
+    if not user:
+        raise HTTPException(status_code=401, detail="Authentication required for embedding operations")
+    
     if not _embedding_manager:
         raise HTTPException(status_code=503, detail="Embedding service not initialized")
 
@@ -159,13 +177,20 @@ async def embed_text(request: TextEmbedRequest):
 
 
 @router.post("/batch", response_model=BatchEmbedResult)
-async def embed_batch(request: BatchTextsRequest):
+async def embed_batch(
+    request: BatchTextsRequest,
+    user = Depends(current_optional_user),
+):
     """
     Embed multiple texts in a single batch operation.
 
     More efficient than calling /text multiple times. Uses the embedding
     model's batch processing capabilities.
+    Authentication required for embedding operations.
     """
+    if not user:
+        raise HTTPException(status_code=401, detail="Authentication required for embedding operations")
+    
     if not _embedding_manager:
         raise HTTPException(status_code=503, detail="Embedding service not initialized")
 
@@ -302,7 +327,7 @@ async def get_document_embeddings(doc_id: str):
 
     try:
         # Get collection name with project scope
-        collection_name = get_collection_name("documents")
+        collection_name = await get_collection_name("documents")
 
         # Search for embeddings with this doc_id in metadata
         # This assumes embeddings are stored with doc_id in the payload
@@ -333,11 +358,13 @@ async def get_documents_for_embedding(
     limit: int = Query(default=100, le=500),
     offset: int = Query(default=0, ge=0),
     only_unembedded: bool = Query(default=False, description="Only show documents without embeddings"),
+    project_id: Optional[str] = Query(default=None, description="Filter by project"),
 ):
     """
     Get list of documents available for embedding.
 
     Returns documents with their embedding status (whether they have vectors or not).
+    When project_id is set, only documents in that project are returned.
     """
     if not _frame:
         raise HTTPException(status_code=503, detail="Frame not initialized")
@@ -346,14 +373,15 @@ async def get_documents_for_embedding(
         raise HTTPException(status_code=503, detail="Document service unavailable")
 
     try:
-        # Get documents from documents service
+        # Get documents from documents service (optionally scoped by project)
         docs, total = await _frame.documents.list_documents(
             limit=limit,
             offset=offset,
+            project_id=project_id,
         )
 
         # Get collection name for embeddings
-        collection_name = get_collection_name("documents")
+        collection_name = await get_collection_name("documents")
 
         # Build a dict of doc_id -> embedding count using SQL
         embedding_counts = {}
@@ -571,7 +599,10 @@ async def calculate_similarity(request: SimilarityRequestBody):
 
 
 @router.post("/nearest", response_model=NearestResult)
-async def find_nearest(request: NearestRequestBody):
+async def find_nearest(
+    request: NearestRequestBody,
+    user = Depends(current_optional_user),
+):
     """
     Find nearest neighbors in vector space.
 
@@ -580,7 +611,11 @@ async def find_nearest(request: NearestRequestBody):
 
     The collection name is resolved based on active project context.
     For example, "documents" becomes "project_{id}_documents" if a project is active.
+    Authentication required for vector search operations.
     """
+    if not user:
+        raise HTTPException(status_code=401, detail="Authentication required for vector search")
+    
     if not _embedding_manager or not _vector_store:
         raise HTTPException(status_code=503, detail="Embedding service not initialized")
 
@@ -592,7 +627,7 @@ async def find_nearest(request: NearestRequestBody):
             query_vector = request.query
 
         # Get collection name with project scope
-        collection_name = get_collection_name(request.collection)
+        collection_name = await get_collection_name(request.collection, user=user)
 
         # Search for nearest neighbors
         results = await _vector_store.search(

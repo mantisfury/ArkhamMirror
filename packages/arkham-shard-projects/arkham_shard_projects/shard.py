@@ -13,7 +13,7 @@ Supports:
 import logging
 from datetime import datetime
 from typing import Any, Dict, List, Optional
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from arkham_frame import ArkhamShard
 
@@ -150,7 +150,7 @@ class ProjectsShard(ArkhamShard):
                 name TEXT NOT NULL,
                 description TEXT DEFAULT '',
                 status TEXT DEFAULT 'active',
-                owner_id TEXT NOT NULL,
+                tenant_id TEXT,
                 created_at TEXT,
                 updated_at TEXT,
                 settings TEXT DEFAULT '{}',
@@ -159,6 +159,40 @@ class ProjectsShard(ArkhamShard):
                 document_count INTEGER DEFAULT 0
             )
         """)
+
+        # Migration: Remove owner_id column if it exists (from older schema)
+        # This handles the transition from owner-based to member-based access control
+        try:
+            # Check if owner_id column exists by attempting to query it
+            result = await self._db.fetch_one("""
+                SELECT column_name 
+                FROM information_schema.columns 
+                WHERE table_name = 'arkham_projects' AND column_name = 'owner_id'
+            """)
+            if result:
+                logger.info("Migrating arkham_projects: removing owner_id column")
+                # Drop the index first if it exists
+                await self._db.execute("DROP INDEX IF EXISTS idx_projects_owner")
+                # Drop the column
+                await self._db.execute("ALTER TABLE arkham_projects DROP COLUMN IF EXISTS owner_id")
+                logger.info("Migration complete: owner_id removed from arkham_projects")
+        except Exception as e:
+            # If information_schema query fails (e.g., SQLite), try direct DROP
+            # This is safe because DROP COLUMN IF EXISTS won't error if column doesn't exist
+            try:
+                await self._db.execute("DROP INDEX IF EXISTS idx_projects_owner")
+                await self._db.execute("ALTER TABLE arkham_projects DROP COLUMN IF EXISTS owner_id")
+            except Exception as drop_error:
+                # Some databases (like SQLite) don't support DROP COLUMN
+                # In that case, we'll just log and continue - the column will be ignored
+                logger.debug(f"Could not drop owner_id column (may not be supported): {drop_error}")
+
+        # Ensure tenant_id column exists (for multi-tenancy support)
+        try:
+            await self._db.execute("ALTER TABLE arkham_projects ADD COLUMN IF NOT EXISTS tenant_id TEXT")
+        except Exception as e:
+            # Column might already exist, or ADD COLUMN IF NOT EXISTS not supported
+            logger.debug(f"tenant_id column check: {e}")
 
         await self._db.execute("""
             CREATE TABLE IF NOT EXISTS arkham_project_members (
@@ -204,7 +238,7 @@ class ProjectsShard(ArkhamShard):
             CREATE INDEX IF NOT EXISTS idx_projects_status ON arkham_projects(status)
         """)
         await self._db.execute("""
-            CREATE INDEX IF NOT EXISTS idx_projects_owner ON arkham_projects(owner_id)
+            CREATE INDEX IF NOT EXISTS idx_projects_tenant ON arkham_projects(tenant_id)
         """)
         await self._db.execute("""
             CREATE INDEX IF NOT EXISTS idx_members_project ON arkham_project_members(project_id)
@@ -493,28 +527,36 @@ class ProjectsShard(ArkhamShard):
         self,
         name: str,
         description: str = "",
-        owner_id: str = "system",
+        creator_id: Optional[str] = None,
         status: ProjectStatus = ProjectStatus.ACTIVE,
         settings: Optional[Dict[str, Any]] = None,
         metadata: Optional[Dict[str, Any]] = None,
         embedding_model: Optional[str] = None,
         create_collections: bool = True,
+        tenant_id: Optional[UUID] = None,
     ) -> Project:
         """
         Create a new project.
 
+        Projects have no owner - all access is managed via member roles (VIEWER, EDITOR, ADMIN).
+        The creator and all tenant admins are automatically added as ADMIN members.
+
         Args:
             name: Project name
             description: Project description
-            owner_id: Owner user ID
+            creator_id: User ID of project creator (will be added as ADMIN member)
             status: Initial status
             settings: Custom settings dict
             metadata: Custom metadata dict
             embedding_model: Embedding model for this project (default: all-MiniLM-L6-v2)
             create_collections: Whether to create vector collections for this project
+            tenant_id: Tenant ID for adding admins (from authenticated user; fallback to context)
 
         Returns:
             Created Project object
+
+        Raises:
+            ValueError: If project would be created without any members
         """
         project_id = str(uuid4())
         now = datetime.utcnow()
@@ -530,7 +572,7 @@ class ProjectsShard(ArkhamShard):
             name=name,
             description=description,
             status=status,
-            owner_id=owner_id,
+            tenant_id=str(tenant_id) if tenant_id else None,
             created_at=now,
             updated_at=now,
             settings=project_settings,
@@ -548,7 +590,7 @@ class ProjectsShard(ArkhamShard):
         await self._log_activity(
             project_id=project_id,
             action="created",
-            actor_id=owner_id,
+            actor_id=creator_id or "system",
             target_type="project",
             target_id=project_id,
             details={"embedding_model": model},
@@ -561,30 +603,96 @@ class ProjectsShard(ArkhamShard):
                 {
                     "project_id": project_id,
                     "name": name,
-                    "owner_id": owner_id,
+                    "creator_id": creator_id,
                     "embedding_model": model,
                 },
                 source=self.name,
             )
 
+        # Add creator and all tenant admins as ADMIN members
+        added_ids = set()
+        creator_str = str(creator_id) if creator_id else None
+        
+        # Add creator as ADMIN
+        if creator_str and creator_str != "system":
+            try:
+                await self.add_member(
+                    project_id, creator_str, role=ProjectRole.ADMIN, added_by=creator_str
+                )
+                added_ids.add(creator_str)
+                logger.debug("Added creator %s as ADMIN for project %s", creator_str, project_id)
+            except Exception as e:
+                logger.warning("Could not add creator as project member: %s", e, exc_info=True)
+
+        # Add all tenant admins as ADMIN members
+        effective_tenant_id = tenant_id or self.get_tenant_id_or_none()
+        if effective_tenant_id is not None and not isinstance(effective_tenant_id, UUID):
+            try:
+                effective_tenant_id = UUID(str(effective_tenant_id))
+            except (ValueError, TypeError):
+                effective_tenant_id = None
+        
+        if effective_tenant_id:
+            try:
+                from arkham_frame.auth.tenant_users import get_tenant_admin_user_ids
+                admin_ids = await get_tenant_admin_user_ids(effective_tenant_id)
+                for uid in admin_ids:
+                    uid_str = str(uid)
+                    if uid_str not in added_ids:
+                        try:
+                            await self.add_member(
+                                project_id, uid_str, role=ProjectRole.ADMIN, added_by=creator_str or "system"
+                            )
+                            added_ids.add(uid_str)
+                            logger.debug("Added tenant admin %s as ADMIN for project %s", uid_str, project_id)
+                        except Exception as e:
+                            logger.warning("Could not add admin %s as member: %s", uid_str, e)
+            except Exception as e:
+                logger.warning("Could not fetch/add tenant admins as project members: %s", e, exc_info=True)
+
+        # Validate that project has at least one member
+        if len(added_ids) == 0:
+            # Clean up: delete the project we just created
+            await self._db.execute("DELETE FROM arkham_projects WHERE id = ?", [project_id])
+            raise ValueError("Project must have at least one member")
+
+        logger.info(f"Created project {project_id} with {len(added_ids)} members")
         return project
 
-    async def get_project(self, project_id: str) -> Optional[Project]:
-        """Get a project by ID."""
+    async def get_project(
+        self, project_id: str, tenant_id_override: Optional[UUID] = None
+    ) -> Optional[Project]:
+        """Get a project by ID.
+
+        When tenant context (or tenant_id_override) is set, returns the project only
+        if it belongs to that tenant or has tenant_id NULL (legacy). When no tenant
+        context, returns by id only. Use tenant_id_override when the caller has
+        the tenant from the request (e.g. member endpoints) to avoid relying on
+        context var ordering.
+        """
         if not self._db:
             return None
 
-        # Build query with tenant filtering
-        query = "SELECT * FROM arkham_projects WHERE id = ?"
-        params = [project_id]
+        tenant_id = tenant_id_override if tenant_id_override is not None else self.get_tenant_id_or_none()
+        table = "public.arkham_projects"
 
-        # Add tenant filtering if tenant context is available
-        tenant_id = self.get_tenant_id_or_none()
         if tenant_id:
-            query += " AND tenant_id = ?"
-            params.append(str(tenant_id))
+            # Try with tenant filter: (tenant_id::text = ? OR tenant_id IS NULL)
+            query = f"SELECT * FROM {table} WHERE id = ? AND (tenant_id::text = ? OR tenant_id IS NULL)"
+            params = [project_id, str(tenant_id)]
+            row = await self._db.fetch_one(query, params)
+            if row:
+                return self._row_to_project(row)
+            # Fallback: fetch by id only, then enforce tenant (handles type/coercion)
+            row = await self._db.fetch_one(f"SELECT * FROM {table} WHERE id = ?", [project_id])
+            if row and tenant_id:
+                row_tenant = row.get("tenant_id")
+                if row_tenant is None or str(row_tenant) == str(tenant_id):
+                    return self._row_to_project(row)
+                return None
+            return self._row_to_project(row) if row else None
 
-        row = await self._db.fetch_one(query, params)
+        row = await self._db.fetch_one(f"SELECT * FROM {table} WHERE id = ?", [project_id])
         return self._row_to_project(row) if row else None
 
     async def list_projects(
@@ -600,19 +708,16 @@ class ProjectsShard(ArkhamShard):
         query = "SELECT * FROM arkham_projects WHERE 1=1"
         params = []
 
-        # Add tenant filtering if tenant context is available
+        # Add tenant filtering if tenant context is available (include legacy: tenant_id NULL)
         tenant_id = self.get_tenant_id_or_none()
         if tenant_id:
-            query += " AND tenant_id = ?"
+            query += " AND (tenant_id = ? OR tenant_id IS NULL)"
             params.append(str(tenant_id))
 
         if filter:
             if filter.status:
                 query += " AND status = ?"
                 params.append(filter.status.value)
-            if filter.owner_id:
-                query += " AND owner_id = ?"
-                params.append(filter.owner_id)
             if filter.search_text:
                 query += " AND (name LIKE ? OR description LIKE ?)"
                 search_term = f"%{filter.search_text}%"
@@ -672,7 +777,10 @@ class ProjectsShard(ArkhamShard):
 
     async def delete_project(self, project_id: str, delete_collections: bool = True) -> bool:
         """
-        Delete a project and optionally its vector collections.
+        Delete a project and all associated data (documents, vectors, analyses, etc.).
+
+        Calls delete_data_for_project on other shards, then deletes vector collections,
+        project activity, documents, members, and the project record.
 
         Args:
             project_id: Project ID to delete
@@ -684,12 +792,24 @@ class ProjectsShard(ArkhamShard):
         if not self._db:
             return False
 
-        # Delete vector collections first
+        # Ask other shards to delete their project-scoped data first
+        shards = getattr(self.frame, "shards", None) or {}
+        for name, shard in shards.items():
+            if name == self.name:
+                continue
+            if hasattr(shard, "delete_data_for_project"):
+                try:
+                    await shard.delete_data_for_project(project_id)
+                    logger.info(f"Shard '{name}' deleted data for project {project_id}")
+                except Exception as e:
+                    logger.warning("Shard '%s' failed to delete data for project %s: %s", name, project_id, e)
+
+        # Delete vector collections
         if delete_collections and self._vectors:
             collection_results = await self.delete_project_collections(project_id)
             logger.info(f"Deleted collections for project {project_id}: {collection_results}")
 
-        # Delete related data
+        # Delete project-scoped tables (activity, project_documents, members, project)
         await self._db.execute("DELETE FROM arkham_project_activity WHERE project_id = ?", [project_id])
         await self._db.execute("DELETE FROM arkham_project_documents WHERE project_id = ?", [project_id])
         await self._db.execute("DELETE FROM arkham_project_members WHERE project_id = ?", [project_id])
@@ -819,9 +939,13 @@ class ProjectsShard(ArkhamShard):
         project_id: str,
         user_id: str,
     ) -> bool:
-        """Remove a member from a project."""
+        """Remove a member from a project. Fails if it would leave the project with zero members."""
         if not self._db:
             return False
+
+        members = await self.list_members(project_id)
+        if len(members) <= 1:
+            return False  # Cannot remove last member
 
         await self._db.execute(
             "DELETE FROM arkham_project_members WHERE project_id = ? AND user_id = ?",
@@ -839,6 +963,26 @@ class ProjectsShard(ArkhamShard):
             )
 
         return True
+
+    async def list_documents(self, project_id: str) -> List[ProjectDocument]:
+        """List documents associated with a project."""
+        if not self._db:
+            return []
+        rows = await self._db.fetch_all(
+            "SELECT * FROM arkham_project_documents WHERE project_id = ? ORDER BY added_at DESC",
+            [project_id],
+        )
+        return [self._row_to_project_document(row) for row in rows]
+
+    async def list_members(self, project_id: str) -> List[ProjectMember]:
+        """List members of a project."""
+        if not self._db:
+            return []
+        rows = await self._db.fetch_all(
+            "SELECT * FROM arkham_project_members WHERE project_id = ? ORDER BY added_at ASC",
+            [project_id],
+        )
+        return [self._row_to_project_member(row) for row in rows]
 
     async def get_activity(
         self,
@@ -869,14 +1013,13 @@ class ProjectsShard(ArkhamShard):
         if not self._db:
             return 0
 
-        # Build query with tenant filtering
+        # Build query with tenant filtering (include legacy: tenant_id NULL)
         query = "SELECT COUNT(*) as count FROM arkham_projects WHERE 1=1"
         params = []
 
-        # Add tenant filtering if tenant context is available
         tenant_id = self.get_tenant_id_or_none()
         if tenant_id:
-            query += " AND tenant_id = ?"
+            query += " AND (tenant_id = ? OR tenant_id IS NULL)"
             params.append(str(tenant_id))
 
         if status:
@@ -899,7 +1042,7 @@ class ProjectsShard(ArkhamShard):
             project.name,
             project.description,
             project.status.value,
-            project.owner_id,
+            project.tenant_id,
             project.created_at.isoformat(),
             project.updated_at.isoformat(),
             json.dumps(project.settings),
@@ -911,7 +1054,7 @@ class ProjectsShard(ArkhamShard):
         if update:
             await self._db.execute("""
                 UPDATE arkham_projects SET
-                    name=?, description=?, status=?, owner_id=?,
+                    name=?, description=?, status=?, tenant_id=?,
                     created_at=?, updated_at=?, settings=?, metadata=?,
                     member_count=?, document_count=?
                 WHERE id=?
@@ -919,7 +1062,7 @@ class ProjectsShard(ArkhamShard):
         else:
             await self._db.execute("""
                 INSERT INTO arkham_projects (
-                    id, name, description, status, owner_id,
+                    id, name, description, status, tenant_id,
                     created_at, updated_at, settings, metadata,
                     member_count, document_count
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -1027,13 +1170,13 @@ class ProjectsShard(ArkhamShard):
             name=row["name"],
             description=row["description"],
             status=ProjectStatus(row["status"]),
-            owner_id=row["owner_id"],
+            tenant_id=str(row["tenant_id"]) if row.get("tenant_id") else None,
             created_at=datetime.fromisoformat(row["created_at"]) if row["created_at"] else datetime.utcnow(),
             updated_at=datetime.fromisoformat(row["updated_at"]) if row["updated_at"] else datetime.utcnow(),
             settings=json.loads(row["settings"] or "{}"),
             metadata=json.loads(row["metadata"] or "{}"),
-            member_count=row["member_count"],
-            document_count=row["document_count"],
+            member_count=row.get("member_count", 0),
+            document_count=row.get("document_count", 0),
         )
 
     def _row_to_activity(self, row: Dict[str, Any]) -> ProjectActivity:
@@ -1048,4 +1191,25 @@ class ProjectsShard(ArkhamShard):
             target_id=row["target_id"],
             timestamp=datetime.fromisoformat(row["timestamp"]) if row["timestamp"] else datetime.utcnow(),
             details=json.loads(row["details"] or "{}"),
+        )
+
+    def _row_to_project_document(self, row: Dict[str, Any]) -> ProjectDocument:
+        """Convert database row to ProjectDocument object."""
+        return ProjectDocument(
+            id=row["id"],
+            project_id=row["project_id"],
+            document_id=row["document_id"],
+            added_at=datetime.fromisoformat(row["added_at"]) if row["added_at"] else datetime.utcnow(),
+            added_by=row["added_by"] or "system",
+        )
+
+    def _row_to_project_member(self, row: Dict[str, Any]) -> ProjectMember:
+        """Convert database row to ProjectMember object."""
+        return ProjectMember(
+            id=row["id"],
+            project_id=row["project_id"],
+            user_id=row["user_id"],
+            role=ProjectRole(row["role"]) if row["role"] else ProjectRole.VIEWER,
+            added_at=datetime.fromisoformat(row["added_at"]) if row["added_at"] else datetime.utcnow(),
+            added_by=row["added_by"] or "system",
         )

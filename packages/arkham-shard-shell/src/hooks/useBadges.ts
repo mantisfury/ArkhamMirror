@@ -11,6 +11,7 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import type { BadgeInfo, BadgeState } from '../types';
+import { apiFetch } from '../utils/api';
 
 interface UseBadgesResult {
   badges: BadgeState;
@@ -31,7 +32,7 @@ export function useBadges(): UseBadgesResult {
   useEffect(() => {
     async function fetchBadges() {
       try {
-        const response = await fetch('/api/frame/badges');
+        const response = await apiFetch('/api/frame/badges');
         if (response.ok) {
           const data = await response.json();
           // SUCCESS: update badges and clear error state

@@ -40,16 +40,45 @@ CREATE TABLE IF NOT EXISTS arkham_vectors.collections (
 );
 
 -- Main embeddings table
--- Using untyped vector allows variable dimensions per collection/model
--- Each collection tracks its own vector_size in arkham_vectors.collections
+--
+-- NOTE:
+-- pgvector requires a fixed dimension for vector columns in many installs.
+-- SHATTERED defaults to the lightweight embedding model `all-MiniLM-L6-v2` (384 dims),
+-- so we fix the embeddings column to vector(384).
+--
+-- If you change embedding models to a different dimension later, you'll need to
+-- rebuild vector storage (new table/column or migration).
 CREATE TABLE IF NOT EXISTS arkham_vectors.embeddings (
     id VARCHAR(36) PRIMARY KEY,
     collection VARCHAR(100) NOT NULL,
-    embedding vector,  -- Untyped: supports 384 (MiniLM), 768 (mpnet), 1024 (bge-m3), etc.
+    embedding vector(384),
     payload JSONB DEFAULT '{}',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
+-- If the table already existed from an earlier run with an untyped vector column
+-- (typmod = -1), upgrade it to a fixed dimension so pgvector indexes can be built.
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1
+        FROM pg_attribute a
+        JOIN pg_class c ON c.oid = a.attrelid
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        JOIN pg_type t ON t.oid = a.atttypid
+        WHERE n.nspname = 'arkham_vectors'
+          AND c.relname = 'embeddings'
+          AND a.attname = 'embedding'
+          AND t.typname = 'vector'
+          AND a.atttypmod = -1
+    ) THEN
+        ALTER TABLE arkham_vectors.embeddings
+            ALTER COLUMN embedding TYPE vector(384)
+            USING embedding::vector(384);
+    END IF;
+END;
+$$;
 
 -- Basic indexes for embeddings
 CREATE INDEX IF NOT EXISTS idx_embeddings_collection
@@ -109,9 +138,9 @@ $$ LANGUAGE plpgsql;
 INSERT INTO arkham_vectors.collections
     (name, vector_size, distance_metric, index_type, lists, probes)
 VALUES
-    ('arkham_chunks', 1024, 'cosine', 'ivfflat', 1000, 32),
-    ('arkham_documents', 1024, 'cosine', 'ivfflat', 316, 18),
-    ('arkham_entities', 1024, 'cosine', 'ivfflat', 707, 27)
+    ('arkham_chunks', 384, 'cosine', 'ivfflat', 1000, 32),
+    ('arkham_documents', 384, 'cosine', 'ivfflat', 316, 18),
+    ('arkham_entities', 384, 'cosine', 'ivfflat', 707, 27)
 ON CONFLICT (name) DO NOTHING;
 
 -- Default IVFFlat indexes for standard collections

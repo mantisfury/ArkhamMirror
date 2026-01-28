@@ -10,6 +10,7 @@
  */
 
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { apiFetch, apiGet, apiPost } from '../../utils/api';
 
 // Types
 export interface ServiceHealth {
@@ -135,7 +136,7 @@ export function useHealth(refreshInterval = 5000) {
     abortRef.current = new AbortController();
 
     try {
-      const res = await fetch('/api/dashboard/health', {
+      const res = await apiFetch('/api/dashboard/health', {
         signal: abortRef.current.signal,
       });
       if (!res.ok) throw new Error('Failed to fetch health');
@@ -170,9 +171,7 @@ export function useLLMConfig() {
 
   const refresh = useCallback(async () => {
     try {
-      const res = await fetch('/api/dashboard/llm');
-      if (!res.ok) throw new Error('Failed to fetch LLM config');
-      const data = await res.json();
+      const data = await apiGet<LLMConfig>('/api/dashboard/llm');
       setConfig(data);
       setError(null);
     } catch (e) {
@@ -183,31 +182,17 @@ export function useLLMConfig() {
   }, []);
 
   const updateConfig = async (endpoint?: string, model?: string) => {
-    const res = await fetch('/api/dashboard/llm', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ endpoint, model }),
-    });
-    if (!res.ok) {
-      const err = await res.json();
-      throw new Error(err.detail || 'Failed to update LLM config');
-    }
+    const data = await apiPost<any>('/api/dashboard/llm', { endpoint, model });
     await refresh();
-    return res.json();
+    return data;
   };
 
   const testConnection = async (): Promise<{ success: boolean; response?: { text: string; model?: string } | string; error?: string }> => {
-    const res = await fetch('/api/dashboard/llm/test', { method: 'POST' });
-    return res.json();
+    return apiPost('/api/dashboard/llm/test');
   };
 
   const resetConfig = async (): Promise<LLMConfig> => {
-    const res = await fetch('/api/dashboard/llm/reset', { method: 'POST' });
-    if (!res.ok) {
-      const err = await res.json();
-      throw new Error(err.detail || 'Failed to reset LLM config');
-    }
-    const data = await res.json();
+    const data = await apiPost<LLMConfig>('/api/dashboard/llm/reset');
     setConfig(data);
     return data;
   };
@@ -217,12 +202,7 @@ export function useLLMConfig() {
   }, [refresh]);
 
   const setFallbackModels = async (models: string[], enabled: boolean = true): Promise<{ success: boolean; error?: string }> => {
-    const res = await fetch('/api/dashboard/llm/fallback', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ models, enabled }),
-    });
-    const data = await res.json();
+    const data = await apiPost<{ success: boolean; error?: string }>('/api/dashboard/llm/fallback', { models, enabled });
     if (data.success) {
       await refresh();
     }
@@ -242,14 +222,12 @@ export function useDatabase() {
   const refresh = useCallback(async () => {
     try {
       const [infoRes, statsRes] = await Promise.all([
-        fetch('/api/dashboard/database'),
-        fetch('/api/dashboard/database/stats'),
+        apiFetch('/api/dashboard/database'),
+        apiFetch('/api/dashboard/database/stats'),
       ]);
       if (!infoRes.ok) throw new Error('Failed to fetch database info');
       setInfo(await infoRes.json());
-      if (statsRes.ok) {
-        setStats(await statsRes.json());
-      }
+      if (statsRes.ok) setStats(await statsRes.json());
       setError(null);
     } catch (e) {
       setError((e as Error).message);
@@ -259,29 +237,26 @@ export function useDatabase() {
   }, []);
 
   const runMigrations = async (): Promise<{ success: boolean; message: string }> => {
-    const res = await fetch('/api/dashboard/database/migrate', { method: 'POST' });
-    return res.json();
+    return apiPost('/api/dashboard/database/migrate');
   };
 
   const resetDatabase = async (confirm: boolean): Promise<{ success: boolean; message: string }> => {
-    const res = await fetch('/api/dashboard/database/reset', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ confirm }),
-    });
-    return res.json();
+    return apiPost('/api/dashboard/database/reset', { confirm });
   };
 
   const vacuumDatabase = async (): Promise<{ success: boolean; message: string }> => {
-    const res = await fetch('/api/dashboard/database/vacuum', { method: 'POST' });
-    return res.json();
+    return apiPost('/api/dashboard/database/vacuum');
   };
 
   const getTableInfo = async (schema: string): Promise<TableInfo[]> => {
-    const res = await fetch(`/api/dashboard/database/tables/${encodeURIComponent(schema)}`);
-    if (!res.ok) return [];
-    const data = await res.json();
-    return data.tables || [];
+    try {
+      const res = await apiFetch(`/api/dashboard/database/tables/${encodeURIComponent(schema)}`);
+      if (!res.ok) return [];
+      const data = await res.json();
+      return data.tables || [];
+    } catch {
+      return [];
+    }
   };
 
   useEffect(() => {
@@ -303,7 +278,7 @@ export function useQueues(refreshInterval = 3000) {
     abortRef.current = new AbortController();
 
     try {
-      const res = await fetch('/api/dashboard/queues', {
+      const res = await apiFetch('/api/dashboard/queues', {
         signal: abortRef.current.signal,
       });
       if (!res.ok) throw new Error('Failed to fetch queues');
@@ -349,7 +324,7 @@ export function useEvents(filters: EventFilters = {}, refreshInterval = 5000) {
       if (filters.source) params.set('source', filters.source);
       if (filters.event_type) params.set('event_type', filters.event_type);
 
-      const res = await fetch(`/api/dashboard/events?${params}`, {
+      const res = await apiFetch(`/api/dashboard/events?${params}`, {
         signal: abortRef.current.signal,
       });
       if (!res.ok) throw new Error('Failed to fetch events');
@@ -384,7 +359,7 @@ export function useEventTypes() {
 
   const refresh = useCallback(async () => {
     try {
-      const res = await fetch('/api/dashboard/events/types');
+      const res = await apiFetch('/api/dashboard/events/types');
       if (!res.ok) throw new Error('Failed to fetch event types');
       const data = await res.json();
       setTypes(data.types || []);
@@ -409,7 +384,7 @@ export function useEventSources() {
 
   const refresh = useCallback(async () => {
     try {
-      const res = await fetch('/api/dashboard/events/sources');
+      const res = await apiFetch('/api/dashboard/events/sources');
       if (!res.ok) throw new Error('Failed to fetch event sources');
       const data = await res.json();
       setSources(data.sources || []);
@@ -430,8 +405,7 @@ export function useEventSources() {
 // Event actions
 export const eventActions = {
   clear: async (): Promise<{ success: boolean; cleared?: number; error?: string }> => {
-    const res = await fetch('/api/dashboard/events/clear', { method: 'POST' });
-    return res.json();
+    return apiPost('/api/dashboard/events/clear');
   },
 };
 
@@ -447,7 +421,7 @@ export function useWorkers(refreshInterval = 3000) {
     abortRef.current = new AbortController();
 
     try {
-      const res = await fetch('/api/dashboard/workers', {
+      const res = await apiFetch('/api/dashboard/workers', {
         signal: abortRef.current.signal,
       });
       if (!res.ok) throw new Error('Failed to fetch workers');
@@ -482,9 +456,7 @@ export function usePools() {
 
   const refresh = useCallback(async () => {
     try {
-      const res = await fetch('/api/dashboard/pools');
-      if (!res.ok) throw new Error('Failed to fetch pools');
-      const data = await res.json();
+      const data = await apiGet<{ pools?: PoolInfo[] }>('/api/dashboard/pools');
       setPools(data.pools || []);
       setError(null);
     } catch (e) {
@@ -504,69 +476,34 @@ export function usePools() {
 // Worker management actions
 export const workerActions = {
   scale: async (queue: string, count: number): Promise<{ success: boolean; error?: string }> => {
-    const res = await fetch('/api/dashboard/workers/scale', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ queue, count }),
-    });
-    return res.json();
+    return apiPost('/api/dashboard/workers/scale', { queue, count });
   },
 
   start: async (queue: string): Promise<{ success: boolean; worker_id?: string; error?: string }> => {
-    const res = await fetch('/api/dashboard/workers/start', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ queue }),
-    });
-    return res.json();
+    return apiPost('/api/dashboard/workers/start', { queue });
   },
 
   stop: async (worker_id: string): Promise<{ success: boolean; error?: string }> => {
-    const res = await fetch('/api/dashboard/workers/stop', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ worker_id }),
-    });
-    return res.json();
+    return apiPost('/api/dashboard/workers/stop', { worker_id });
   },
 
   stopAll: async (pool?: string): Promise<{ success: boolean; count?: number; error?: string }> => {
-    const res = await fetch('/api/dashboard/workers/stop-all', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ pool }),
-    });
-    return res.json();
+    return apiPost('/api/dashboard/workers/stop-all', { pool });
   },
 };
 
 // Queue management actions
 export const queueActions = {
   clear: async (pool: string, status?: string): Promise<{ success: boolean; cleared?: number; error?: string }> => {
-    const res = await fetch('/api/dashboard/queues/clear', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ pool, status }),
-    });
-    return res.json();
+    return apiPost('/api/dashboard/queues/clear', { pool, status });
   },
 
   retryFailed: async (pool: string, job_ids?: string[]): Promise<{ success: boolean; count?: number; error?: string }> => {
-    const res = await fetch('/api/dashboard/jobs/retry', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ pool, job_ids }),
-    });
-    return res.json();
+    return apiPost('/api/dashboard/jobs/retry', { pool, job_ids });
   },
 
   cancelJob: async (job_id: string): Promise<{ success: boolean; error?: string }> => {
-    const res = await fetch('/api/dashboard/jobs/cancel', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ job_id }),
-    });
-    return res.json();
+    return apiPost('/api/dashboard/jobs/cancel', { job_id });
   },
 };
 
@@ -586,7 +523,7 @@ export function useJobs(pool?: string, status?: string, refreshInterval = 5000) 
       if (pool) params.set('pool', pool);
       if (status) params.set('status', status);
 
-      const res = await fetch(`/api/dashboard/jobs?${params}`, {
+      const res = await apiFetch(`/api/dashboard/jobs?${params}`, {
         signal: abortRef.current.signal,
       });
       if (!res.ok) throw new Error('Failed to fetch jobs');

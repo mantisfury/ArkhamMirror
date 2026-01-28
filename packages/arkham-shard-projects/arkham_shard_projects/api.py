@@ -4,12 +4,35 @@ Projects Shard - FastAPI Routes
 REST API endpoints for project workspace management.
 """
 
+import logging
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 from .models import ProjectRole, ProjectStatus
+
+logger = logging.getLogger(__name__)
+
+try:
+    from arkham_frame.auth import (
+        current_optional_user,
+        current_active_user,
+        require_system_admin,
+        require_project_member,
+        require_project_admin,
+    )
+except ImportError:
+    async def current_optional_user():
+        return None
+    async def current_active_user():
+        return None
+    async def require_system_admin():
+        return None
+    async def require_project_member():
+        return None
+    async def require_project_admin():
+        return None
 
 router = APIRouter(prefix="/api/projects", tags=["projects"])
 
@@ -20,7 +43,6 @@ class ProjectCreate(BaseModel):
     """Request model for creating a project."""
     name: str = Field(..., description="Project name")
     description: str = Field(default="", description="Project description")
-    owner_id: str = Field(default="system", description="Project owner")
     status: ProjectStatus = Field(default=ProjectStatus.ACTIVE)
     settings: Optional[Dict[str, Any]] = None
     metadata: Optional[Dict[str, Any]] = None
@@ -49,7 +71,6 @@ class ProjectResponse(BaseModel):
     name: str
     description: str
     status: str
-    owner_id: str
     created_at: str
     updated_at: str
     settings: Dict[str, Any]
@@ -138,7 +159,6 @@ def _project_to_response(project) -> ProjectResponse:
         name=project.name,
         description=project.description,
         status=project.status.value,
-        owner_id=project.owner_id,
         created_at=project.created_at.isoformat(),
         updated_at=project.updated_at.isoformat(),
         settings=project.settings,
@@ -199,35 +219,76 @@ async def health_check(request: Request):
 async def get_projects_count(
     request: Request,
     status: Optional[str] = Query(None, description="Filter by status"),
+    user: Optional[Any] = Depends(current_optional_user),
 ):
-    """Get count of projects (used for badge)."""
+    """Get count of projects user is a member of (used for badge)."""
+    from arkham_frame.auth.project_auth import get_user_projects
+    from .models import ProjectFilter, ProjectStatus
+    
     shard = _get_shard(request)
-    count = await shard.get_count(status=status)
+    
+    if user:
+        # Only count projects user is a member of
+        user_project_ids = await get_user_projects(user, request)
+        if status:
+            # Filter by status too
+            all_projects = await shard.list_projects(
+                filter=ProjectFilter(status=ProjectStatus(status)),
+                limit=10000,
+                offset=0
+            )
+            filtered = [p for p in all_projects if p.id in user_project_ids]
+            count = len(filtered)
+        else:
+            count = len(user_project_ids)
+    else:
+        count = await shard.get_count(status=status)
+    
     return CountResponse(count=count)
 
 
 @router.get("/", response_model=ProjectListResponse)
 async def list_projects(
     request: Request,
+    user: Optional[Any] = Depends(current_optional_user),
     status: Optional[ProjectStatus] = Query(None),
-    owner_id: Optional[str] = Query(None),
     search: Optional[str] = Query(None, description="Search in name/description"),
-    limit: int = Query(50, ge=1, le=500),
-    offset: int = Query(0, ge=0),
+    limit: Optional[int] = Query(None, ge=1, le=500),
+    offset: Optional[int] = Query(None, ge=0),
+    page: Optional[int] = Query(None, ge=1),
+    page_size: Optional[int] = Query(None, ge=1, le=500),
 ):
-    """List projects with optional filtering."""
+    """List projects with optional filtering. When authenticated, filters by tenant and membership.
+    Only returns projects the user is a member of.
+    Accepts either limit/offset or page/page_size (page_size wins over limit when both sent).
+    """
     from .models import ProjectFilter
+    from arkham_frame.auth.project_auth import get_user_projects
 
+    _set_request_user_and_tenant(request, user)
     shard = _get_shard(request)
+
+    if page is not None and page_size is not None:
+        limit = page_size
+        offset = (page - 1) * page_size
+    else:
+        limit = limit if limit is not None else 50
+        offset = offset if offset is not None else 0
 
     filter = ProjectFilter(
         status=status,
-        owner_id=owner_id,
         search_text=search,
     )
 
     projects = await shard.list_projects(filter=filter, limit=limit, offset=offset)
-    total = await shard.get_count(status=status.value if status else None)
+    
+    # Filter to only projects user is a member of
+    if user:
+        user_project_ids = await get_user_projects(user, request)
+        projects = [p for p in projects if p.id in user_project_ids]
+    
+    # Recalculate total based on filtered projects
+    total = len(projects) if user else await shard.get_count(status=status.value if status else None)
 
     return ProjectListResponse(
         projects=[_project_to_response(p) for p in projects],
@@ -267,29 +328,74 @@ def list_embedding_models():
 
 
 @router.post("/", response_model=ProjectResponse, status_code=201)
-async def create_project(req: Request, request: ProjectCreate):
-    """Create a new project with optional embedding model and vector collections."""
+async def create_project(
+    req: Request,
+    request: ProjectCreate,
+    user: Optional[Any] = Depends(current_active_user),
+):
+    """Create a new project with optional embedding model and vector collections.
+
+    Requires system admin role. Projects have no owner - all access is via member roles (VIEWER, EDITOR, ADMIN).
+    When the request includes a valid JWT, the creating user is added as an ADMIN member,
+    and all tenant admins are added as ADMIN members.
+    
+    Raises:
+        400: If project would be created without any members
+        403: If user is not a system admin
+    """
+    # Require system admin for project creation
+    await require_system_admin(user)
+    # Set request.state.user and tenant context so shard/context see the current user
+    if user is not None:
+        req.state.user = user
+        try:
+            from arkham_frame.middleware.tenant import set_current_tenant_id
+            set_current_tenant_id(getattr(user, "tenant_id", None))
+        except Exception:
+            pass
+
     shard = _get_shard(req)
 
-    project = await shard.create_project(
-        name=request.name,
-        description=request.description,
-        owner_id=request.owner_id,
-        status=request.status,
-        settings=request.settings,
-        metadata=request.metadata,
-        embedding_model=request.embedding_model,
-        create_collections=request.create_collections,
-    )
+    # Resolve creator_id and tenant_id from authenticated user when available
+    creator_id = None
+    tenant_id = None
+    if user is not None:
+        creator_id = str(user.id)
+        tenant_id = getattr(user, "tenant_id", None)
+
+    try:
+        project = await shard.create_project(
+            name=request.name,
+            description=request.description,
+            creator_id=creator_id,
+            status=request.status,
+            settings=request.settings,
+            metadata=request.metadata,
+            embedding_model=request.embedding_model,
+            create_collections=request.create_collections,
+            tenant_id=tenant_id,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
     return _project_to_response(project)
 
 
 @router.get("/{project_id}", response_model=ProjectResponse)
-async def get_project(request: Request, project_id: str):
-    """Get a specific project by ID."""
+async def get_project(
+    request: Request,
+    project_id: str,
+    user: Optional[Any] = Depends(current_optional_user),
+):
+    """Get a specific project by ID. Requires project membership."""
+    if user:
+        # Verify user is a member of the project
+        await require_project_member(project_id, user, request)
+    
+    _set_request_user_and_tenant(request, user)
     shard = _get_shard(request)
-    project = await shard.get_project(project_id)
+    tenant_hint = _tenant_id_from_user(user)
+    project = await shard.get_project(project_id, tenant_id_override=tenant_hint)
 
     if not project:
         raise HTTPException(status_code=404, detail=f"Project {project_id} not found")
@@ -298,8 +404,15 @@ async def get_project(request: Request, project_id: str):
 
 
 @router.put("/{project_id}", response_model=ProjectResponse)
-async def update_project(req: Request, project_id: str, request: ProjectUpdate):
-    """Update a project."""
+async def update_project(
+    req: Request,
+    project_id: str,
+    request: ProjectUpdate,
+    user: Optional[Any] = Depends(current_active_user),
+):
+    """Update a project. Requires system admin role."""
+    await require_system_admin(user)
+    
     shard = _get_shard(req)
 
     project = await shard.update_project(
@@ -318,8 +431,14 @@ async def update_project(req: Request, project_id: str, request: ProjectUpdate):
 
 
 @router.delete("/{project_id}", status_code=204)
-async def delete_project(request: Request, project_id: str):
-    """Delete a project."""
+async def delete_project(
+    request: Request,
+    project_id: str,
+    user: Optional[Any] = Depends(current_active_user),
+):
+    """Delete a project. Requires system admin role."""
+    await require_system_admin(user)
+    
     shard = _get_shard(request)
 
     success = await shard.delete_project(project_id)
@@ -329,8 +448,14 @@ async def delete_project(request: Request, project_id: str):
 
 
 @router.post("/{project_id}/archive", response_model=ProjectResponse)
-async def archive_project(request: Request, project_id: str):
-    """Archive a project."""
+async def archive_project(
+    request: Request,
+    project_id: str,
+    user: Optional[Any] = Depends(current_active_user),
+):
+    """Archive a project. Requires system admin role."""
+    await require_system_admin(user)
+    
     shard = _get_shard(request)
 
     project = await shard.update_project(
@@ -345,8 +470,14 @@ async def archive_project(request: Request, project_id: str):
 
 
 @router.post("/{project_id}/restore", response_model=ProjectResponse)
-async def restore_project(request: Request, project_id: str):
-    """Restore an archived project."""
+async def restore_project(
+    request: Request,
+    project_id: str,
+    user: Optional[Any] = Depends(current_active_user),
+):
+    """Restore an archived project. Requires system admin role."""
+    await require_system_admin(user)
+    
     shard = _get_shard(request)
 
     project = await shard.update_project(
@@ -364,26 +495,42 @@ async def restore_project(request: Request, project_id: str):
 
 
 @router.get("/{project_id}/documents", response_model=List[DocumentResponse])
-async def get_project_documents(request: Request, project_id: str):
-    """Get all documents in a project."""
+async def get_project_documents(
+    request: Request,
+    project_id: str,
+    user: Optional[Any] = Depends(current_optional_user),
+):
+    """Get all documents in a project. Requires project membership."""
+    if user:
+        await require_project_member(project_id, user, request)
+    
+    _set_request_user_and_tenant(request, user)
     shard = _get_shard(request)
+    tenant_hint = _tenant_id_from_user(user)
 
-    # Verify project exists
-    project = await shard.get_project(project_id)
+    logger.debug(f"GET documents for project {project_id}, tenant_hint={tenant_hint}, user={user is not None}")
+    project = await shard.get_project(project_id, tenant_id_override=tenant_hint)
     if not project:
+        logger.warning(f"Project {project_id} not found (tenant_hint={tenant_hint})")
         raise HTTPException(status_code=404, detail=f"Project {project_id} not found")
 
-    # Stub: return empty list
-    return []
+    docs = await shard.list_documents(project_id)
+    return [_document_to_response(d) for d in docs]
 
 
 @router.post("/{project_id}/documents", response_model=DocumentResponse, status_code=201)
-async def add_project_document(req: Request, project_id: str, request: DocumentAdd):
+async def add_project_document(
+    req: Request,
+    project_id: str,
+    request: DocumentAdd,
+    user: Optional[Any] = Depends(current_optional_user),
+):
     """Add a document to a project."""
+    _set_request_user_and_tenant(req, user)
     shard = _get_shard(req)
+    tenant_hint = _tenant_id_from_user(user)
 
-    # Verify project exists
-    project = await shard.get_project(project_id)
+    project = await shard.get_project(project_id, tenant_id_override=tenant_hint)
     if not project:
         raise HTTPException(status_code=404, detail=f"Project {project_id} not found")
 
@@ -410,27 +557,78 @@ async def remove_project_document(request: Request, project_id: str, document_id
 # === Member Endpoints ===
 
 
-@router.get("/{project_id}/members", response_model=List[MemberResponse])
-async def get_project_members(request: Request, project_id: str):
-    """Get all members of a project."""
-    shard = _get_shard(request)
+def _set_request_user_and_tenant(req: Request, user: Optional[Any]) -> None:
+    """Set request.state.user and tenant context when user is present (so get_project finds by tenant)."""
+    if user is not None:
+        req.state.user = user
+        try:
+            from arkham_frame.middleware.tenant import set_current_tenant_id
+            set_current_tenant_id(getattr(user, "tenant_id", None))
+        except Exception:
+            pass
 
-    # Verify project exists
-    project = await shard.get_project(project_id)
+
+def _tenant_id_from_user(user: Optional[Any]) -> Optional[Any]:
+    """Return tenant_id from user for use in get_project(tenant_id_override)."""
+    if user is None:
+        return None
+    return getattr(user, "tenant_id", None)
+
+
+@router.get("/{project_id}/members", response_model=List[MemberResponse])
+async def get_project_members(
+    request: Request,
+    project_id: str,
+    user: Optional[Any] = Depends(current_optional_user),
+):
+    """Get all members of a project. Requires project membership."""
+    if user:
+        await require_project_member(project_id, user, request)
+    
+    _set_request_user_and_tenant(request, user)
+    shard = _get_shard(request)
+    tenant_hint = _tenant_id_from_user(user)
+
+    # Verify project exists (pass tenant so resolution works when context is set from this request)
+    logger.debug(f"GET members for project {project_id}, tenant_hint={tenant_hint}, user={user is not None}")
+    project = await shard.get_project(project_id, tenant_id_override=tenant_hint)
     if not project:
+        logger.warning(f"Project {project_id} not found (tenant_hint={tenant_hint})")
         raise HTTPException(status_code=404, detail=f"Project {project_id} not found")
 
-    # Stub: return empty list
-    return []
+    members = await shard.list_members(project_id)
+    return [_member_to_response(m) for m in members]
 
 
 @router.post("/{project_id}/members", response_model=MemberResponse, status_code=201)
-async def add_project_member(req: Request, project_id: str, request: MemberAdd):
-    """Add a member to a project."""
+async def add_project_member(
+    req: Request,
+    project_id: str,
+    request: MemberAdd,
+    user: Optional[Any] = Depends(current_active_user),
+):
+    """Add a member to a project. Requires system admin or project admin role."""
+    if user:
+        # System admins can add members to any project
+        # Project admins can add members to their projects
+        try:
+            from arkham_frame.auth.models import UserRole
+            if user.role == UserRole.ADMIN:
+                # System admin, allow
+                pass
+            else:
+                # Check if user is project admin
+                await require_project_admin(project_id, user, req)
+        except HTTPException:
+            # If not project admin, check if system admin
+            await require_system_admin(user)
+    
+    _set_request_user_and_tenant(req, user)
     shard = _get_shard(req)
+    tenant_hint = _tenant_id_from_user(user)
 
-    # Verify project exists
-    project = await shard.get_project(project_id)
+    # Verify project exists (explicit tenant_id_override so lookup sees same tenant as this request)
+    project = await shard.get_project(project_id, tenant_id_override=tenant_hint)
     if not project:
         raise HTTPException(status_code=404, detail=f"Project {project_id} not found")
 
@@ -444,9 +642,43 @@ async def add_project_member(req: Request, project_id: str, request: MemberAdd):
 
 
 @router.delete("/{project_id}/members/{user_id}", status_code=204)
-async def remove_project_member(request: Request, project_id: str, user_id: str):
-    """Remove a member from a project."""
+async def remove_project_member(
+    request: Request,
+    project_id: str,
+    user_id: str,
+    user: Optional[Any] = Depends(current_active_user),
+):
+    """Remove a member from a project. Requires system admin or project admin role. Cannot remove last member."""
+    if user:
+        # System admins can remove members from any project
+        # Project admins can remove members from their projects
+        try:
+            from arkham_frame.auth.models import UserRole
+            if user.role == UserRole.ADMIN:
+                # System admin, allow
+                pass
+            else:
+                # Check if user is project admin
+                await require_project_admin(project_id, user, request)
+        except HTTPException:
+            # If not project admin, check if system admin
+            await require_system_admin(user)
+    
+    _set_request_user_and_tenant(request, user)
     shard = _get_shard(request)
+    tenant_hint = _tenant_id_from_user(user)
+
+    # Verify project exists for tenant
+    project = await shard.get_project(project_id, tenant_id_override=tenant_hint)
+    if not project:
+        raise HTTPException(status_code=404, detail=f"Project {project_id} not found")
+
+    members = await shard.list_members(project_id)
+    if len(members) <= 1 and any(m.user_id == user_id for m in members):
+        raise HTTPException(
+            status_code=400,
+            detail="Project must have at least one member. Add another member before removing this one.",
+        )
 
     success = await shard.remove_member(project_id, user_id)
 
@@ -461,14 +693,19 @@ async def remove_project_member(request: Request, project_id: str, user_id: str)
 async def get_project_activity(
     request: Request,
     project_id: str,
+    user: Optional[Any] = Depends(current_optional_user),
     limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
 ):
-    """Get activity log for a project."""
+    """Get activity log for a project. Requires project membership."""
+    if user:
+        await require_project_member(project_id, user, request)
+    
+    _set_request_user_and_tenant(request, user)
     shard = _get_shard(request)
+    tenant_hint = _tenant_id_from_user(user)
 
-    # Verify project exists
-    project = await shard.get_project(project_id)
+    project = await shard.get_project(project_id, tenant_id_override=tenant_hint)
     if not project:
         raise HTTPException(status_code=404, detail=f"Project {project_id} not found")
 
@@ -507,11 +744,20 @@ class CollectionStatsResponse(BaseModel):
 
 
 @router.get("/{project_id}/embedding-model")
-async def get_project_embedding_model(request: Request, project_id: str):
-    """Get the embedding model configuration for a project."""
+async def get_project_embedding_model(
+    request: Request,
+    project_id: str,
+    user: Optional[Any] = Depends(current_optional_user),
+):
+    """Get the embedding model configuration for a project. Requires project membership."""
+    if user:
+        await require_project_member(project_id, user, request)
+    
+    _set_request_user_and_tenant(request, user)
     shard = _get_shard(request)
+    tenant_hint = _tenant_id_from_user(user)
 
-    project = await shard.get_project(project_id)
+    project = await shard.get_project(project_id, tenant_id_override=tenant_hint)
     if not project:
         raise HTTPException(status_code=404, detail=f"Project {project_id} not found")
 
@@ -536,16 +782,31 @@ async def update_project_embedding_model(
     req: Request,
     project_id: str,
     request: EmbeddingModelUpdate,
+    user: Optional[Any] = Depends(current_active_user),
 ):
     """
-    Update the embedding model for a project.
+    Update the embedding model for a project. Requires system admin or project admin role.
 
     If the new model has different dimensions, you must set wipe_collections=True
     to confirm deletion of existing vectors.
     """
+    if user:
+        # System admins or project admins can update embedding model
+        try:
+            from arkham_frame.auth.models import UserRole
+            if user.role == UserRole.ADMIN:
+                # System admin, allow
+                pass
+            else:
+                await require_project_admin(project_id, user, req)
+        except HTTPException:
+            await require_system_admin(user)
+    
+    _set_request_user_and_tenant(req, user)
     shard = _get_shard(req)
+    tenant_hint = _tenant_id_from_user(user)
 
-    project = await shard.get_project(project_id)
+    project = await shard.get_project(project_id, tenant_id_override=tenant_hint)
     if not project:
         raise HTTPException(status_code=404, detail=f"Project {project_id} not found")
 
@@ -583,11 +844,20 @@ async def update_project_embedding_model(
 
 
 @router.get("/{project_id}/collections", response_model=CollectionStatsResponse)
-async def get_project_collections(request: Request, project_id: str):
-    """Get vector collection statistics for a project."""
+async def get_project_collections(
+    request: Request,
+    project_id: str,
+    user: Optional[Any] = Depends(current_optional_user),
+):
+    """Get vector collection statistics for a project. Requires project membership."""
+    if user:
+        await require_project_member(project_id, user, request)
+    
+    _set_request_user_and_tenant(request, user)
     shard = _get_shard(request)
+    tenant_hint = _tenant_id_from_user(user)
 
-    project = await shard.get_project(project_id)
+    project = await shard.get_project(project_id, tenant_id_override=tenant_hint)
     if not project:
         raise HTTPException(status_code=404, detail=f"Project {project_id} not found")
 
@@ -600,11 +870,28 @@ async def get_project_collections(request: Request, project_id: str):
 
 
 @router.post("/{project_id}/collections/create")
-async def create_project_collections(request: Request, project_id: str):
-    """Create vector collections for a project (if not already created)."""
+async def create_project_collections(
+    request: Request,
+    project_id: str,
+    user: Optional[Any] = Depends(current_active_user),
+):
+    """Create vector collections for a project (if not already created). Requires system admin or project admin role."""
+    if user:
+        try:
+            from arkham_frame.auth.models import UserRole
+            if user.role == UserRole.ADMIN:
+                # System admin, allow
+                pass
+            else:
+                await require_project_admin(project_id, user, request)
+        except HTTPException:
+            await require_system_admin(user)
+    
+    _set_request_user_and_tenant(request, user)
     shard = _get_shard(request)
+    tenant_hint = _tenant_id_from_user(user)
 
-    project = await shard.get_project(project_id)
+    project = await shard.get_project(project_id, tenant_id_override=tenant_hint)
     if not project:
         raise HTTPException(status_code=404, detail=f"Project {project_id} not found")
 
@@ -621,11 +908,28 @@ async def create_project_collections(request: Request, project_id: str):
 
 
 @router.delete("/{project_id}/collections")
-async def delete_project_collections(request: Request, project_id: str):
-    """Delete all vector collections for a project."""
+async def delete_project_collections(
+    request: Request,
+    project_id: str,
+    user: Optional[Any] = Depends(current_active_user),
+):
+    """Delete all vector collections for a project. Requires system admin or project admin role."""
+    if user:
+        try:
+            from arkham_frame.auth.models import UserRole
+            if user.role == UserRole.ADMIN:
+                # System admin, allow
+                pass
+            else:
+                await require_project_admin(project_id, user, request)
+        except HTTPException:
+            await require_system_admin(user)
+    
+    _set_request_user_and_tenant(request, user)
     shard = _get_shard(request)
+    tenant_hint = _tenant_id_from_user(user)
 
-    project = await shard.get_project(project_id)
+    project = await shard.get_project(project_id, tenant_id_override=tenant_hint)
     if not project:
         raise HTTPException(status_code=404, detail=f"Project {project_id} not found")
 

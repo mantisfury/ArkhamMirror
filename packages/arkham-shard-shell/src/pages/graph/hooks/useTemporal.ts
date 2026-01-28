@@ -6,6 +6,7 @@
 
 import { useState, useCallback, useEffect } from 'react';
 import type { TemporalSnapshot, EvolutionMetrics, TemporalRange } from '../components/TimeSlider';
+import { apiGet, apiPost } from '../../../utils/api';
 
 export interface UseTemporalOptions {
   projectId: string;
@@ -58,16 +59,9 @@ export function useTemporal(options: UseTemporalOptions): UseTemporalReturn {
     if (!projectId) return;
 
     try {
-      const response = await fetch(
+      const data = await apiGet<TemporalRange>(
         `${API_BASE}/temporal/range?project_id=${encodeURIComponent(projectId)}`
       );
-
-      if (!response.ok) {
-        const text = await response.text();
-        throw new Error(text || `HTTP ${response.status}`);
-      }
-
-      const data = await response.json();
       setTemporalRange(data);
     } catch (err) {
       console.error('Failed to load temporal range:', err);
@@ -83,23 +77,12 @@ export function useTemporal(options: UseTemporalOptions): UseTemporalReturn {
     setError(null);
 
     try {
-      const response = await fetch(`${API_BASE}/temporal/snapshots`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          project_id: projectId,
-          interval_days: intervalDays,
-          cumulative,
-          max_snapshots: maxSnapshots,
-        }),
+      const data = await apiPost<any>(`${API_BASE}/temporal/snapshots`, {
+        project_id: projectId,
+        interval_days: intervalDays,
+        cumulative,
+        max_snapshots: maxSnapshots,
       });
-
-      if (!response.ok) {
-        const text = await response.text();
-        throw new Error(text || `HTTP ${response.status}`);
-      }
-
-      const data = await response.json();
 
       setSnapshots(data.snapshots || []);
       setEvolutionMetrics(data.evolution_metrics || null);

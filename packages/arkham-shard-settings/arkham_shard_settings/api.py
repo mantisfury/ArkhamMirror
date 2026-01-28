@@ -4,12 +4,21 @@ Settings Shard - API Endpoints
 FastAPI router for settings management.
 """
 
+import logging
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from .shard import SettingsShard
+
+try:
+    from arkham_frame.auth import current_optional_user
+except ImportError:
+    async def current_optional_user():
+        return None
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
 
@@ -265,10 +274,11 @@ async def get_storage_stats(request: Request):
     total_bytes = 0
     if storage:
         try:
-            stats = await storage.get_stats()
-            storage_categories = stats.get("by_category", {})
-            total_bytes = stats.get("used_bytes", 0)
-        except Exception:
+            stats = await storage.get_storage_stats()
+            storage_categories = stats.by_category
+            total_bytes = stats.used_bytes
+        except Exception as e:
+            logger.error(f"Failed to get storage stats: {e}")
             pass
 
     return StorageStatsResponse(
@@ -307,9 +317,49 @@ async def clear_vector_store(request: Request):
         raise HTTPException(status_code=500, detail=f"Failed to clear vectors: {str(e)}")
 
 
+# Schemas and tables to preserve on "Clear Database" / "Reset All"
+# - arkham_auth: tenants, users, audit_events (organization/auth data)
+# - arkham_settings*: user preferences and shard settings
+PRESERVED_SCHEMAS = frozenset({"arkham_auth"})
+PRESERVED_TABLES = frozenset({
+    "arkham_settings",
+    "arkham_settings_profiles",
+    "arkham_settings_changes",
+})
+
+
+async def _clear_database_tables(db) -> tuple[int, list[str]]:
+    """Clear all clearable database tables. Returns (tables_cleared, schemas_processed).
+    Preserves arkham_auth (org/tenant/users) and settings tables.
+    Includes public so entity and other arkham_* tables there are cleared.
+    """
+    schemas = list(await db.list_schemas())
+    if "public" not in schemas:
+        schemas.append("public")
+    tables_cleared = 0
+    for schema in schemas:
+        if schema in PRESERVED_SCHEMAS:
+            continue
+        tables = await db.fetch_all(
+            "SELECT table_name FROM information_schema.tables "
+            "WHERE table_schema = :schema AND table_type = 'BASE TABLE'",
+            {"schema": schema},
+        )
+        for table in tables:
+            table_name = table["table_name"]
+            if table_name in PRESERVED_TABLES:
+                continue
+            await db.execute(f'TRUNCATE TABLE "{schema}"."{table_name}" CASCADE')
+            tables_cleared += 1
+    return tables_cleared, schemas
+
+
 @router.post("/data/clear-database", response_model=DataActionResponse)
 async def clear_database(request: Request):
-    """Clear all database tables (truncate arkham schemas)."""
+    """Clear all database tables (truncate arkham schemas).
+    Preserves: arkham_auth (tenants, users, audit) and settings tables.
+    Includes public so entity tables (arkham_entities, etc.) are cleared.
+    """
     shard = get_shard(request)
     frame = shard._frame
     db = frame.get_service("database")
@@ -318,26 +368,7 @@ async def clear_database(request: Request):
         raise HTTPException(status_code=503, detail="Database service not available")
 
     try:
-        # Get all arkham schemas
-        schemas = await db.list_schemas()
-        tables_cleared = 0
-
-        for schema in schemas:
-            # Get tables in this schema
-            tables = await db.fetch_all(
-                "SELECT table_name FROM information_schema.tables "
-                "WHERE table_schema = :schema AND table_type = 'BASE TABLE'",
-                {"schema": schema}
-            )
-
-            for table in tables:
-                table_name = table["table_name"]
-                # Skip settings tables to preserve user preferences
-                if table_name in ("settings", "settings_profiles"):
-                    continue
-                await db.execute(f'TRUNCATE TABLE "{schema}"."{table_name}" CASCADE')
-                tables_cleared += 1
-
+        tables_cleared, schemas = await _clear_database_tables(db)
         return DataActionResponse(
             success=True,
             message=f"Cleared {tables_cleared} database table(s)",
@@ -556,24 +587,11 @@ async def reset_all_data(request: Request):
         "temp_storage": {"success": False, "message": "Not attempted"},
     }
 
-    # Clear database
+    # Clear database (same logic as clear-database: preserve auth + settings, include public for entities)
     db = frame.get_service("database")
     if db:
         try:
-            schemas = await db.list_schemas()
-            tables_cleared = 0
-            for schema in schemas:
-                tables = await db.fetch_all(
-                    "SELECT table_name FROM information_schema.tables "
-                    "WHERE table_schema = :schema AND table_type = 'BASE TABLE'",
-                    {"schema": schema}
-                )
-                for table in tables:
-                    table_name = table["table_name"]
-                    if table_name in ("settings", "settings_profiles"):
-                        continue
-                    await db.execute(f'TRUNCATE TABLE "{schema}"."{table_name}" CASCADE')
-                    tables_cleared += 1
+            tables_cleared, _ = await _clear_database_tables(db)
             results["database"] = {"success": True, "message": f"Cleared {tables_cleared} tables"}
         except Exception as e:
             results["database"] = {"success": False, "message": str(e)}

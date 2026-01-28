@@ -13,6 +13,7 @@ import { useState, useCallback, FormEvent } from 'react';
 import { useToast } from '../../context/ToastContext';
 import { Icon } from '../common/Icon';
 import type { ActionConfig, FormFieldConfig, SelectOption } from '../../types';
+import { apiFetch } from '../../utils/api';
 
 interface GenericFormProps {
   apiPrefix: string;
@@ -143,9 +144,8 @@ export function GenericForm({
     setSubmitting(true);
 
     try {
-      const response = await fetch(`${apiPrefix}${action.endpoint}`, {
+      const response = await apiFetch(`${apiPrefix}${action.endpoint}`, {
         method: action.method,
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(formData),
       });
 

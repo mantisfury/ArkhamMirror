@@ -11,6 +11,7 @@
 
 import { useState, useCallback, useEffect } from 'react';
 import { Icon } from '../../../components/common/Icon';
+import { apiDelete, apiGet, apiPost, apiPut } from '../../../utils/api';
 
 export type AnnotationType = 'note' | 'label' | 'highlight' | 'group';
 
@@ -130,39 +131,21 @@ export function AnnotationPanel({
     setSaving(true);
     try {
       if (modal.mode === 'add') {
-        // Create new annotation
-        const response = await fetch('/api/graph/annotations', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            project_id: projectId,
-            graph_id: graphId,
-            annotation_type: modal.type,
-            content: content.trim(),
-            node_id: modal.nodeId,
-            edge_source: modal.edgeKey?.source,
-            edge_target: modal.edgeKey?.target,
-            color: modal.type === 'highlight' ? color : null,
-          }),
+        await apiPost('/api/graph/annotations', {
+          project_id: projectId,
+          graph_id: graphId,
+          annotation_type: modal.type,
+          content: content.trim(),
+          node_id: modal.nodeId,
+          edge_source: modal.edgeKey?.source,
+          edge_target: modal.edgeKey?.target,
+          color: modal.type === 'highlight' ? color : null,
         });
-
-        if (!response.ok) {
-          throw new Error('Failed to create annotation');
-        }
       } else if (modal.annotation) {
-        // Update existing annotation
-        const response = await fetch(`/api/graph/annotations/${modal.annotation.id}`, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            content: content.trim(),
-            color: modal.type === 'highlight' ? color : modal.annotation.color,
-          }),
+        await apiPut(`/api/graph/annotations/${modal.annotation.id}`, {
+          content: content.trim(),
+          color: modal.type === 'highlight' ? color : modal.annotation.color,
         });
-
-        if (!response.ok) {
-          throw new Error('Failed to update annotation');
-        }
       }
 
       await onRefresh();
@@ -179,13 +162,7 @@ export function AnnotationPanel({
     if (!window.confirm('Delete this annotation?')) return;
 
     try {
-      const response = await fetch(`/api/graph/annotations/${annotationId}`, {
-        method: 'DELETE',
-      });
-
-      if (!response.ok) {
-        throw new Error('Failed to delete annotation');
-      }
+      await apiDelete(`/api/graph/annotations/${annotationId}`);
 
       await onRefresh();
     } catch (error) {
@@ -454,13 +431,8 @@ export function useAnnotations(projectId: string, graphId: string | null) {
 
     setLoading(true);
     try {
-      const response = await fetch(`/api/graph/annotations/${projectId}?graph_id=${graphId}`);
-      if (!response.ok) {
-        throw new Error('Failed to load annotations');
-      }
-
-      const data = await response.json();
-      setAnnotations(data.annotations || []);
+      const data = await apiGet<{ annotations?: Annotation[] }>(`/api/graph/annotations/${projectId}?graph_id=${graphId}`);
+      setAnnotations(Array.isArray(data.annotations) ? data.annotations : []);
     } catch (error) {
       console.error('Error loading annotations:', error);
       setAnnotations([]);

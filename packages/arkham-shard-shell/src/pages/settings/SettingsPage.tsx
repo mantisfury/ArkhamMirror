@@ -12,6 +12,7 @@ import { Icon } from '../../components/common/Icon';
 import { useToast } from '../../context/ToastContext';
 import { useTheme } from '../../context/ThemeContext';
 import { useFetch, clearSettingsCache } from '../../hooks';
+import { apiDelete, apiPatch, apiPost, apiPut } from '../../utils/api';
 import './SettingsPage.css';
 
 // Types
@@ -298,16 +299,7 @@ export function SettingsPage() {
     try {
       // Save each changed setting
       for (const [key, value] of Object.entries(pendingChanges)) {
-        const response = await fetch(`/api/settings/${key}`, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ value }),
-        });
-
-        if (!response.ok) {
-          const error = await response.json();
-          throw new Error(error.detail || `Failed to save ${key}`);
-        }
+        await apiPut(`/api/settings/${key}`, { value });
       }
 
       toast.success('Settings saved successfully');
@@ -323,14 +315,7 @@ export function SettingsPage() {
 
   const resetSetting = async (key: string) => {
     try {
-      const response = await fetch(`/api/settings/${key}`, {
-        method: 'DELETE',
-      });
-
-      if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.detail || 'Failed to reset setting');
-      }
+      await apiDelete(`/api/settings/${key}`);
 
       toast.success('Setting reset to default');
       // Remove from pending changes if present
@@ -361,18 +346,7 @@ export function SettingsPage() {
     setTogglingShards(prev => new Set(prev).add(shardName));
 
     try {
-      const response = await fetch(`/api/shards/${shardName}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ enabled: enable }),
-      });
-
-      if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.detail || `Failed to ${enable ? 'enable' : 'disable'} shard`);
-      }
-
-      const result = await response.json();
+      const result = await apiPatch<{ message?: string }>(`/api/shards/${shardName}`, { enabled: enable });
       toast.success(result.message || `Shard ${enable ? 'enabled' : 'disabled'} successfully`);
       refetchShards();
     } catch (err) {
@@ -395,25 +369,16 @@ export function SettingsPage() {
 
     setSavingChannel(true);
     try {
-      const response = await fetch('/api/notifications/channels/email', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          name: emailForm.name,
-          smtp_host: emailForm.smtp_host,
-          smtp_port: emailForm.smtp_port,
-          username: emailForm.username || null,
-          password: emailForm.password || null,
-          from_address: emailForm.from_address,
-          from_name: emailForm.from_name,
-          use_tls: emailForm.use_tls,
-        }),
+      await apiPost('/api/notifications/channels/email', {
+        name: emailForm.name,
+        smtp_host: emailForm.smtp_host,
+        smtp_port: emailForm.smtp_port,
+        username: emailForm.username || null,
+        password: emailForm.password || null,
+        from_address: emailForm.from_address,
+        from_name: emailForm.from_name,
+        use_tls: emailForm.use_tls,
       });
-
-      if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.detail || 'Failed to configure email channel');
-      }
 
       toast.success(`Email channel "${emailForm.name}" configured`);
       setShowEmailForm(false);
@@ -452,23 +417,14 @@ export function SettingsPage() {
 
     setSavingChannel(true);
     try {
-      const response = await fetch('/api/notifications/channels/webhook', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          name: webhookForm.name,
-          url: webhookForm.url,
-          method: webhookForm.method,
-          headers: Object.keys(headers).length > 0 ? headers : null,
-          auth_token: webhookForm.auth_token || null,
-          verify_ssl: webhookForm.verify_ssl,
-        }),
+      await apiPost('/api/notifications/channels/webhook', {
+        name: webhookForm.name,
+        url: webhookForm.url,
+        method: webhookForm.method,
+        headers: Object.keys(headers).length > 0 ? headers : null,
+        auth_token: webhookForm.auth_token || null,
+        verify_ssl: webhookForm.verify_ssl,
       });
-
-      if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.detail || 'Failed to configure webhook channel');
-      }
 
       toast.success(`Webhook channel "${webhookForm.name}" configured`);
       setShowWebhookForm(false);
@@ -490,14 +446,7 @@ export function SettingsPage() {
 
     setDeletingChannel(channelName);
     try {
-      const response = await fetch(`/api/notifications/channels/${channelName}`, {
-        method: 'DELETE',
-      });
-
-      if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.detail || 'Failed to remove channel');
-      }
+      await apiDelete(`/api/notifications/channels/${channelName}`);
 
       toast.success(`Channel "${channelName}" removed`);
       refetchChannels();
@@ -514,17 +463,7 @@ export function SettingsPage() {
     setShowConfirmDialog(null);
 
     try {
-      const response = await fetch(`/api/settings/data/${action}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-      });
-
-      if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.detail || `Failed to execute ${action}`);
-      }
-
-      const result = await response.json();
+      const result = await apiPost<{ message: string }>(`/api/settings/data/${action}`);
       toast.success(result.message);
       refetchStorageStats();
     } catch (err) {
@@ -547,17 +486,7 @@ export function SettingsPage() {
   const downloadModel = async (modelId: string) => {
     setDownloadingModel(modelId);
     try {
-      const response = await fetch(`/api/settings/models/${modelId}/download`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-      });
-
-      if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.detail || 'Download failed');
-      }
-
-      const result = await response.json();
+      const result = await apiPost<{ message?: string }>(`/api/settings/models/${modelId}/download`);
       toast.success(result.message || `Model ${modelId} downloaded successfully`);
       refetchModels();
     } catch (err) {
@@ -575,17 +504,7 @@ export function SettingsPage() {
 
     setReindexingCollection(collectionName || 'all');
     try {
-      const response = await fetch(endpoint, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-      });
-
-      if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.detail || 'Reindex failed');
-      }
-
-      const result = await response.json();
+      const result = await apiPost<{ message?: string }>(endpoint);
       toast.success(result.message || 'Reindex completed successfully');
       refetchVectorHealth();
     } catch (err) {

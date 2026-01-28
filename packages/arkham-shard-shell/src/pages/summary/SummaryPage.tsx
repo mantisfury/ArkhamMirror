@@ -12,6 +12,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { Icon } from '../../components/common/Icon';
 import { useToast } from '../../context/ToastContext';
 import { useFetch } from '../../hooks/useFetch';
+import { apiDelete, apiGet, apiPost } from '../../utils/api';
 import './SummaryPage.css';
 
 // Types
@@ -150,12 +151,9 @@ export function SummaryPage() {
       if (filterStatus) params.set('status', filterStatus);
       if (searchQuery) params.set('q', searchQuery);
 
-      const response = await fetch('/api/summary/?' + params.toString());
-      if (!response.ok) throw new Error('Failed to load summaries');
-
-      const data = await response.json();
-      setSummaries(data.items || []);
-      setTotalSummaries(data.total || 0);
+      const data = await apiGet<{ items?: Summary[]; total?: number }>('/api/summary/?' + params.toString());
+      setSummaries(Array.isArray(data.items) ? data.items : []);
+      setTotalSummaries(typeof data.total === 'number' ? data.total : 0);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load summaries');
     } finally {
@@ -205,18 +203,7 @@ export function SummaryPage() {
         tags: formData.tags.split(',').map(s => s.trim()).filter(s => s.length > 0),
       };
 
-      const response = await fetch('/api/summary/', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(requestBody),
-      });
-
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.detail || 'Failed to generate summary');
-      }
-
-      const result = await response.json();
+      const result = await apiPost<any>('/api/summary/', requestBody);
 
       if (result.status === 'completed') {
         toast.success('Summary generated successfully');
@@ -248,11 +235,7 @@ export function SummaryPage() {
     if (!confirm('Are you sure you want to delete this summary?')) return;
 
     try {
-      const response = await fetch('/api/summary/' + summaryId, { method: 'DELETE' });
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.detail || 'Failed to delete summary');
-      }
+      await apiDelete('/api/summary/' + summaryId);
       toast.success('Summary deleted');
       setSelectedSummary(null);
       loadSummaries();
@@ -267,31 +250,20 @@ export function SummaryPage() {
 
     setGenerating(true);
     try {
-      const response = await fetch('/api/summary/', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          source_type: summary.source_type,
-          source_ids: summary.source_ids,
-          summary_type: summary.summary_type,
-          target_length: summary.target_length,
-          include_key_points: summary.key_points.length > 0,
-          include_title: !!summary.title,
-          tags: [...summary.tags, 'regenerated'],
-        }),
+      const result = await apiPost<any>('/api/summary/', {
+        source_type: summary.source_type,
+        source_ids: summary.source_ids,
+        summary_type: summary.summary_type,
+        target_length: summary.target_length,
+        include_key_points: summary.key_points.length > 0,
+        include_title: !!summary.title,
+        tags: [...summary.tags, 'regenerated'],
       });
-
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.detail || 'Failed to regenerate summary');
-      }
-
-      const result = await response.json();
       if (result.status === 'completed') {
         toast.success('Summary regenerated successfully');
         loadSummaries();
         refetchStats();
-        const newSummary = await fetch('/api/summary/' + result.summary_id).then(r => r.json());
+        const newSummary = await apiGet<Summary>('/api/summary/' + result.summary_id);
         setSelectedSummary(newSummary);
       } else {
         toast.error(result.error_message || 'Regeneration failed');
@@ -826,12 +798,9 @@ function SourcePickerModal({
         params.set('page_size', '20');
         if (searchQuery) params.set('q', searchQuery);
 
-        const response = await fetch(getEndpoint() + '?' + params.toString());
-        if (!response.ok) throw new Error('Failed to load sources');
-
-        const data: SourceListResponse = await response.json();
-        setSources(data.items || []);
-        setTotal(data.total || 0);
+        const data = await apiGet<SourceListResponse>(getEndpoint() + '?' + params.toString());
+        setSources(Array.isArray(data.items) ? data.items : []);
+        setTotal(typeof data.total === 'number' ? data.total : 0);
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Failed to load sources');
       } finally {

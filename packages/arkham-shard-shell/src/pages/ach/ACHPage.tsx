@@ -19,6 +19,7 @@ import { useConfirm } from '../../context/ConfirmContext';
 import { Icon } from '../../components/common/Icon';
 import { LoadingSkeleton } from '../../components/common/LoadingSkeleton';
 import { AIAnalystButton } from '../../components/AIAnalyst';
+import { apiFetch } from '../../utils/api';
 
 import * as api from './api';
 import type {
@@ -1010,7 +1011,7 @@ function MatrixDetailView({ matrixId }: { matrixId: string }) {
   const handleExportPDF = async () => {
     try {
       // Fetch PDF as blob directly from API
-      const response = await fetch(`/api/ach/export/${matrixId}?format=pdf`);
+      const response = await apiFetch(`/api/ach/export/${matrixId}?format=pdf`);
       if (!response.ok) {
         throw new Error(`Export failed: ${response.statusText}`);
       }

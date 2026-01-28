@@ -6,6 +6,7 @@
 
 import { useState, useCallback } from 'react';
 import { useFetch } from '../../hooks/useFetch';
+import { apiFetch, apiUpload } from '../../utils/api';
 
 const API_PREFIX = '/api/ingest';
 
@@ -78,6 +79,7 @@ export interface PendingJob {
   filename: string;
   category: string;
   priority: string;
+  status: string;
   route: string[];
   created_at: string;
 }
@@ -110,9 +112,7 @@ export type IngestSettingsUpdate = Partial<IngestSettings>;
 // --- API Functions ---
 
 async function fetchAPI<T>(endpoint: string, options?: RequestInit): Promise<T> {
-  const response = await fetch(`${API_PREFIX}${endpoint}`, {
-    ...options,
-  });
+  const response = await apiFetch(`${API_PREFIX}${endpoint}`, options);
 
   if (!response.ok) {
     const error = await response.json().catch(() => ({ detail: response.statusText }));
@@ -127,33 +127,35 @@ export type OcrMode = 'auto' | 'paddle_only' | 'qwen_only';
 export async function uploadFile(
   file: File,
   priority: 'user' | 'batch' = 'user',
-  ocrMode: OcrMode = 'auto'
+  ocrMode: OcrMode = 'auto',
+  projectId?: string
 ): Promise<UploadResponse> {
   const formData = new FormData();
   formData.append('file', file);
   formData.append('priority', priority);
   formData.append('ocr_mode', ocrMode);
+  if (projectId) {
+    formData.append('project_id', projectId);
+  }
 
-  return fetchAPI<UploadResponse>('/upload', {
-    method: 'POST',
-    body: formData,
-  });
+  return apiUpload<UploadResponse>(`${API_PREFIX}/upload`, formData);
 }
 
 export async function uploadBatch(
   files: File[],
   priority: 'user' | 'batch' = 'batch',
-  ocrMode: OcrMode = 'auto'
+  ocrMode: OcrMode = 'auto',
+  projectId?: string
 ): Promise<BatchUploadResponse> {
   const formData = new FormData();
   files.forEach(file => formData.append('files', file));
   formData.append('priority', priority);
   formData.append('ocr_mode', ocrMode);
+  if (projectId) {
+    formData.append('project_id', projectId);
+  }
 
-  return fetchAPI<BatchUploadResponse>('/upload/batch', {
-    method: 'POST',
-    body: formData,
-  });
+  return apiUpload<BatchUploadResponse>(`${API_PREFIX}/upload/batch`, formData);
 }
 
 export async function getJobStatus(jobId: string): Promise<JobStatusResponse> {
@@ -174,8 +176,12 @@ export async function getQueueStats(): Promise<QueueStatsResponse> {
   return fetchAPI<QueueStatsResponse>('/queue');
 }
 
-export async function getPendingJobs(limit: number = 50): Promise<PendingJobsResponse> {
-  return fetchAPI<PendingJobsResponse>(`/pending?limit=${limit}`);
+export async function getPendingJobs(limit: number = 50, status?: string): Promise<PendingJobsResponse> {
+  const params = new URLSearchParams({ limit: limit.toString() });
+  if (status && status !== 'all') {
+    params.append('status', status);
+  }
+  return fetchAPI<PendingJobsResponse>(`/pending?${params.toString()}`);
 }
 
 export async function getIngestSettings(): Promise<IngestSettings> {
@@ -230,11 +236,11 @@ export function useUploadBatch() {
   const [error, setError] = useState<Error | null>(null);
 
   const uploadBatchFiles = useCallback(
-    async (files: File[], priority: 'user' | 'batch' = 'batch', ocrMode: OcrMode = 'auto') => {
+    async (files: File[], priority: 'user' | 'batch' = 'batch', ocrMode: OcrMode = 'auto', projectId?: string) => {
       setLoading(true);
       setError(null);
       try {
-        const result = await uploadBatch(files, priority, ocrMode);
+        const result = await uploadBatch(files, priority, ocrMode, projectId);
         return result;
       } catch (err) {
         const error = err instanceof Error ? err : new Error('Batch upload failed');
@@ -262,8 +268,12 @@ export function useQueue() {
  * Hook for fetching pending jobs.
  * Uses backgroundRefetch so polling does not flash loading state.
  */
-export function usePending(limit: number = 50) {
-  return useFetch<PendingJobsResponse>(`${API_PREFIX}/pending?limit=${limit}`, { backgroundRefetch: true });
+export function usePending(limit: number = 50, status?: string) {
+  const params = new URLSearchParams({ limit: limit.toString() });
+  if (status && status !== 'all') {
+    params.append('status', status);
+  }
+  return useFetch<PendingJobsResponse>(`${API_PREFIX}/pending?${params.toString()}`, { backgroundRefetch: true });
 }
 
 /**

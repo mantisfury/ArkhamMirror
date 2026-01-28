@@ -8,6 +8,7 @@ import { useState, useEffect } from 'react';
 import { Icon } from '../../components/common/Icon';
 import { useToast } from '../../context/ToastContext';
 import { useFetch } from '../../hooks/useFetch';
+import { apiDelete, apiGet, apiPost } from '../../utils/api';
 import './Relationships.css';
 
 interface RelationshipType {
@@ -75,11 +76,8 @@ export function Relationships({ onRelationshipCreated }: RelationshipsProps) {
       if (entityCache[id]) return;
 
       try {
-        const response = await fetch(`/api/entities/items/${id}`);
-        if (response.ok) {
-          const entity = await response.json();
-          setEntityCache(prev => ({ ...prev, [id]: entity }));
-        }
+        const entity = await apiGet<Entity>(`/api/entities/items/${id}`);
+        setEntityCache(prev => ({ ...prev, [id]: entity }));
       } catch {
         // Entity not found - use ID as fallback
       }
@@ -90,13 +88,7 @@ export function Relationships({ onRelationshipCreated }: RelationshipsProps) {
     setDeleting(relationshipId);
 
     try {
-      const response = await fetch(`/api/entities/relationships/${relationshipId}`, {
-        method: 'DELETE',
-      });
-
-      if (!response.ok) {
-        throw new Error('Delete failed');
-      }
+      await apiDelete(`/api/entities/relationships/${relationshipId}`);
 
       toast.success('Relationship deleted');
       refetch();
@@ -450,21 +442,13 @@ function CreateRelationshipModal({ relationshipTypes, onClose, onSuccess }: Crea
     setCreating(true);
 
     try {
-      const response = await fetch('/api/entities/relationships', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          source_id: sourceEntity.id,
-          target_id: targetEntity.id,
-          relationship_type: relationshipType,
-          confidence: confidence,
-          metadata: {},
-        }),
+      await apiPost('/api/entities/relationships', {
+        source_id: sourceEntity.id,
+        target_id: targetEntity.id,
+        relationship_type: relationshipType,
+        confidence: confidence,
+        metadata: {},
       });
-
-      if (!response.ok) {
-        throw new Error('Failed to create relationship');
-      }
 
       toast.success('Relationship created');
       onSuccess();

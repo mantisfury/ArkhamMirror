@@ -4,7 +4,7 @@ import logging
 from datetime import datetime
 from typing import Any, TYPE_CHECKING
 
-from fastapi import APIRouter, HTTPException, Query, Request, Body
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Body
 from pydantic import BaseModel
 
 from .models import (
@@ -33,6 +33,12 @@ from .flows import FlowAnalyzer
 
 if TYPE_CHECKING:
     from .shard import GraphShard
+
+try:
+    from arkham_frame.auth import current_optional_user
+except ImportError:
+    async def current_optional_user():
+        return None
 
 logger = logging.getLogger(__name__)
 

@@ -3,12 +3,26 @@
 import logging
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 if TYPE_CHECKING:
     from .shard import DocumentsShard
+
+try:
+    from arkham_frame.auth import (
+        current_active_user,
+        current_optional_user,
+        require_project_member,
+    )
+except ImportError:
+    async def current_active_user():
+        return None
+    async def current_optional_user():
+        return None
+    async def require_project_member():
+        return None
 
 logger = logging.getLogger(__name__)
 
@@ -164,14 +178,31 @@ async def list_documents(
     status: Optional[str] = Query(None, description="Filter by status"),
     file_type: Optional[str] = Query(None, description="Filter by file type"),
     project_id: Optional[str] = Query(None, description="Filter by project"),
+    user = Depends(current_active_user),
 ):
     """
     List documents with pagination and filtering.
 
     Supports filtering by status, file type, and project.
+    Authentication required for data access.
     """
+    logger.debug(f"list_documents called by user {user.id if user else 'None'}")
+    
     try:
         shard = get_shard(request)
+        
+        # Use active project if no project_id specified
+        if not project_id and shard.frame:
+            project_id = await shard.frame.get_active_project_id(str(user.id))
+        
+        if not project_id:
+            raise HTTPException(
+                status_code=400,
+                detail="No active project selected. Please select a project to view documents."
+            )
+        
+        # Verify user is a member of the project
+        await require_project_member(project_id, user, request)
 
         offset = (page - 1) * page_size
 
@@ -204,17 +235,27 @@ async def list_documents(
 
 
 @router.get("/items/{document_id}", response_model=DocumentMetadata)
-async def get_document(document_id: str, request: Request):
+async def get_document(
+    document_id: str,
+    request: Request,
+    user = Depends(current_active_user),
+):
     """
     Get a single document by ID.
 
     Returns full document metadata including counts.
+    Authentication required for data access.
     """
+    
     shard = get_shard(request)
     document = await shard.get_document(document_id)
 
     if not document:
         raise HTTPException(status_code=404, detail=f"Document not found: {document_id}")
+    
+    # Verify user is a member of the document's project
+    if document.project_id:
+        await require_project_member(document.project_id, user, request)
 
     return document_to_response(document)
 
@@ -224,13 +265,16 @@ async def update_document_metadata(
     document_id: str,
     body: UpdateMetadataRequest,
     request: Request,
+    user = Depends(current_active_user),
 ):
     """
     Update document metadata.
+    Authentication required for data modification.
 
     Allows updating title, tags, and custom metadata fields.
     Publishes documents.metadata.updated event.
     """
+    
     shard = get_shard(request)
 
     try:
@@ -250,12 +294,18 @@ async def update_document_metadata(
 
 
 @router.delete("/items/{document_id}")
-async def delete_document(document_id: str, request: Request):
+async def delete_document(
+    document_id: str,
+    request: Request,
+    user = Depends(current_active_user),
+):
     """
     Delete a document.
 
     Removes document and all associated data.
+    Authentication required for deletion.
     """
+    
     shard = get_shard(request)
 
     success = await shard.delete_document(document_id)
@@ -274,13 +324,16 @@ async def get_document_content(
     document_id: str,
     request: Request,
     page: Optional[int] = Query(None, description="Page number for multi-page docs"),
+    user = Depends(current_active_user),
 ):
     """
     Get document content.
 
     For multi-page documents, specify page number.
     Publishes documents.view.opened event.
+    Authentication required for content access.
     """
+    
     shard = get_shard(request)
 
     # Check document exists
@@ -447,24 +500,32 @@ async def get_full_metadata(document_id: str, request: Request):
 async def get_document_count(
     request: Request,
     status: Optional[str] = Query(None, description="Filter by status"),
+    user = Depends(current_active_user),
 ):
     """
     Get total document count (for badge).
 
     Optionally filter by status.
+    Authentication required for data access.
     """
+    
     shard = get_shard(request)
     count = await shard.get_document_count(status=status)
     return {"count": count}
 
 
 @router.get("/stats", response_model=DocumentStats)
-async def get_document_stats(request: Request):
+async def get_document_stats(
+    request: Request,
+    user = Depends(current_active_user),
+):
     """
     Get document statistics.
 
     Returns counts, totals, and aggregate data.
+    Authentication required for data access.
     """
+    
     try:
         shard = get_shard(request)
         stats = await shard.get_document_stats()

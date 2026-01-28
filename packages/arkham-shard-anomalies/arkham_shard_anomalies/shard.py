@@ -343,6 +343,32 @@ class AnomaliesShard(ArkhamShard):
         """Return FastAPI router for this shard."""
         return router
 
+    async def delete_data_for_project(self, project_id: str) -> None:
+        """
+        Delete all anomaly data for a project. Called when a project is deleted.
+
+        Removes anomalies, notes, and patterns for the project.
+        """
+        if not self._db_service:
+            return
+        try:
+            # Delete notes and patterns that reference project anomalies, then anomalies
+            await self._db_service.execute(
+                "DELETE FROM arkham_anomaly_notes WHERE anomaly_id IN (SELECT id FROM arkham_anomalies WHERE project_id = :project_id)",
+                {"project_id": project_id},
+            )
+            await self._db_service.execute(
+                "DELETE FROM arkham_anomaly_patterns WHERE anomaly_id IN (SELECT id FROM arkham_anomalies WHERE project_id = :project_id)",
+                {"project_id": project_id},
+            )
+            await self._db_service.execute(
+                "DELETE FROM arkham_anomalies WHERE project_id = :project_id",
+                {"project_id": project_id},
+            )
+            logger.info(f"Deleted anomaly data for project {project_id}")
+        except Exception as e:
+            logger.warning("Failed to delete anomaly data for project %s: %s", project_id, e)
+
     # --- Event Handlers ---
 
     async def _on_embedding_created(self, event: dict) -> None:

@@ -12,12 +12,14 @@ import { useState, useRef, useCallback, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Icon } from '../../components/common/Icon';
 import { useToast } from '../../context/ToastContext';
+import { useProject } from '../../context/ProjectContext';
 import { useUploadBatch, useQueue, usePending, useIngestSettings, useUpdateIngestSettings } from './api';
 import type { PendingJob, OcrMode, IngestSettings, IngestSettingsUpdate } from './api';
 
 export function IngestPage() {
   const { toast } = useToast();
   const navigate = useNavigate();
+  const { activeProjectId, activeProject } = useProject();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [isDragging, setIsDragging] = useState(false);
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
@@ -81,17 +83,22 @@ export function IngestPage() {
   }, []);
 
   const handleUpload = useCallback(async () => {
+    if (!activeProjectId) {
+      toast.error('Please select a project before ingesting documents');
+      return;
+    }
+
     if (selectedFiles.length === 0) {
       toast.error('Please select files to upload');
       return;
     }
 
     try {
-      const result = await uploadBatch(selectedFiles, 'user', ocrMode);
+      const result = await uploadBatch(selectedFiles, 'user', ocrMode, activeProjectId);
       if (result.failed > 0) {
         toast.warning(`Uploaded ${result.total_files} file(s), ${result.failed} failed`);
       } else {
-        toast.success(`Uploaded ${result.total_files} file(s)`);
+        toast.success(`Uploaded ${result.total_files} file(s) to ${activeProject?.name || 'project'}`);
       }
       setSelectedFiles([]);
       refetchQueue();
@@ -99,7 +106,7 @@ export function IngestPage() {
     } catch (error) {
       toast.error(error instanceof Error ? error.message : 'Upload failed');
     }
-  }, [selectedFiles, uploadBatch, toast, refetchQueue, refetchPending, ocrMode]);
+  }, [selectedFiles, uploadBatch, toast, refetchQueue, refetchPending, ocrMode, activeProjectId, activeProject]);
 
   const formatFileSize = (bytes: number): string => {
     if (bytes < 1024) return `${bytes} B`;
@@ -424,23 +431,32 @@ export function IngestPage() {
 
       {/* File Upload Dropzone */}
       <section className="upload-section">
+        {!activeProjectId && (
+          <div className="warning-banner" style={{ marginBottom: '16px', padding: '12px 16px', background: '#fef3c7', border: '1px solid #fbbf24', borderRadius: '6px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <Icon name="AlertTriangle" size={20} style={{ color: '#f59e0b' }} />
+            <span style={{ color: '#92400e' }}>Please select a project before ingesting documents. All documents must be associated with a project.</span>
+          </div>
+        )}
         <div
-          className={`dropzone ${isDragging ? 'dragging' : ''}`}
+          className={`dropzone ${isDragging ? 'dragging' : ''} ${!activeProjectId ? 'disabled' : ''}`}
           onDragEnter={handleDragEnter}
           onDragLeave={handleDragLeave}
           onDragOver={handleDragOver}
           onDrop={handleDrop}
-          onClick={() => fileInputRef.current?.click()}
+          onClick={() => activeProjectId && fileInputRef.current?.click()}
+          style={{ opacity: !activeProjectId ? 0.5 : 1, cursor: !activeProjectId ? 'not-allowed' : 'pointer' }}
         >
           <Icon name="Upload" size={48} />
           <h3>Drop files here or click to browse</h3>
           <p>Supports PDF, images, text documents, and archives</p>
+          {activeProject && <p style={{ fontSize: '0.875rem', color: '#6b7280', marginTop: '8px' }}>Uploading to: <strong>{activeProject.name}</strong></p>}
           <input
             ref={fileInputRef}
             type="file"
             multiple
             onChange={handleFileSelect}
             style={{ display: 'none' }}
+            disabled={!activeProjectId}
           />
         </div>
 

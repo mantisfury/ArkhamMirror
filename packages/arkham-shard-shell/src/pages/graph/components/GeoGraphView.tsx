@@ -11,6 +11,7 @@
 
 import { useState, useEffect, useCallback, lazy, Suspense } from 'react';
 import { Icon } from '../../../components/common/Icon';
+import { apiGet } from '../../../utils/api';
 
 // Types
 export interface GeoNode {
@@ -108,9 +109,7 @@ export function GeoGraphView({
         ? `/api/graph/geo/${projectId}?cluster_radius_km=${clusterRadius}`
         : `/api/graph/geo/${projectId}`;
 
-      const response = await fetch(url);
-      if (!response.ok) throw new Error('Failed to fetch geo data');
-      const result = await response.json();
+      const result = await apiGet<any>(url);
 
       if (result.success) {
         setData(result);

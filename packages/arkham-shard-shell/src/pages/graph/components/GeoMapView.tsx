@@ -50,10 +50,11 @@ const MAP_STYLE = {
 
 // ============================================================================
 // SVG Fallback for Air-Gapped Mode
+//
+// NOTE: We intentionally avoid fetching any third-party map assets here to
+// prevent leaking auth tokens to external origins and to keep air-gapped mode
+// truly offline.
 // ============================================================================
-
-const WORLD_MAP_URL =
-  'https://raw.githubusercontent.com/datasets/geo-countries/master/data/countries.geojson';
 
 const MAP_BOUNDS = {
   minLat: -60,
@@ -112,31 +113,11 @@ function SvgFallbackMap({
     y: number;
     node: GeoNode;
   } | null>(null);
-  const [worldMapPaths, setWorldMapPaths] = useState<string[]>([]);
-  const [mapLoading, setMapLoading] = useState(true);
 
   const width = 960;
   const height = 500;
 
-  useEffect(() => {
-    const fetchMap = async () => {
-      try {
-        const response = await fetch(WORLD_MAP_URL);
-        if (response.ok) {
-          const geojson = await response.json();
-          const paths = geojson.features
-            .map((feature: any) => geoJsonToPath(feature.geometry, width, height))
-            .filter((p: string) => p.length > 0);
-          setWorldMapPaths(paths);
-        }
-      } catch (err) {
-        console.warn('Failed to load world map:', err);
-      } finally {
-        setMapLoading(false);
-      }
-    };
-    fetchMap();
-  }, []);
+  void geoJsonToPath; // kept for potential future offline world map rendering
 
   const nodeCoords = useMemo(() => {
     const coords: Record<string, { x: number; y: number; lat: number; lng: number }> = {};
@@ -218,31 +199,7 @@ function SvgFallbackMap({
         </defs>
         <rect width={width} height={height} fill="url(#grid)" />
 
-        {worldMapPaths.length > 0 && (
-          <g className="world-map-countries">
-            {worldMapPaths.map((path, idx) => (
-              <path
-                key={`country-${idx}`}
-                d={path}
-                fill="rgba(55, 65, 81, 0.6)"
-                stroke="rgba(107, 114, 128, 0.5)"
-                strokeWidth="0.5"
-              />
-            ))}
-          </g>
-        )}
-
-        {mapLoading && (
-          <text
-            x={width / 2}
-            y={height / 2}
-            textAnchor="middle"
-            fill="rgba(255,255,255,0.5)"
-            fontSize="14"
-          >
-            Loading map...
-          </text>
-        )}
+        {/* World map background intentionally omitted in offline mode */}
 
         <line
           x1={0}

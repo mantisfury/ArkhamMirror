@@ -465,19 +465,34 @@ async def get_parse_stats():
             ))
             total_documents_parsed = result.scalar() or 0
 
-            # Get total entities from entities shard table
+            # Get total entities from entities shard table (filtered by active project)
             total_entities = 0
             entity_types = {}
             try:
-                result = conn.execute(text(
-                    "SELECT COUNT(*) FROM arkham_entities WHERE canonical_id IS NULL"
-                ))
+                # Get active project_id for filtering
+                project_id = None
+                if _parse_shard._frame:
+                    project_id = _parse_shard._frame.active_project_id
+                
+                entity_query = "SELECT COUNT(*) FROM arkham_entities WHERE canonical_id IS NULL"
+                entity_params = {}
+                
+                if project_id:
+                    entity_query += " AND project_id = :project_id"
+                    entity_params["project_id"] = str(project_id)
+                # If no active project, don't filter by project_id (count all entities)
+                
+                result = conn.execute(text(entity_query), entity_params)
                 total_entities = result.scalar() or 0
 
                 # Get entity counts by type
-                result = conn.execute(text(
-                    "SELECT entity_type, COUNT(*) as count FROM arkham_entities WHERE canonical_id IS NULL GROUP BY entity_type"
-                ))
+                type_query = "SELECT entity_type, COUNT(*) as count FROM arkham_entities WHERE canonical_id IS NULL"
+                if project_id:
+                    type_query += " AND project_id = :project_id"
+                # If no active project, don't filter by project_id (count all entities)
+                type_query += " GROUP BY entity_type"
+                
+                result = conn.execute(text(type_query), entity_params)
                 for row in result:
                     entity_types[row[0]] = row[1]
             except Exception:

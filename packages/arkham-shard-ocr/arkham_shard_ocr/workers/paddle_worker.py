@@ -195,7 +195,8 @@ class PaddleWorker(BaseWorker):
         from PIL import Image
 
         # Load image
-        image_path = payload.get("image_path") or payload.get("path")
+        # Check image_path first, then path, then file_path (used by JobDispatcher)
+        image_path = payload.get("image_path") or payload.get("path") or payload.get("file_path")
         image_base64 = payload.get("image_base64") or payload.get("base64")
 
         if image_path:

@@ -4,7 +4,7 @@ import logging
 import time
 from typing import Annotated, Any, Dict, List, Optional, TYPE_CHECKING
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
@@ -30,6 +30,12 @@ from .models import (
     HiddenContentScanType,
     HiddenContentStats,
 )
+
+try:
+    from arkham_frame.auth import current_optional_user
+except ImportError:
+    async def current_optional_user():
+        return None
 
 logger = logging.getLogger(__name__)
 

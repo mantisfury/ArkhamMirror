@@ -2,6 +2,8 @@
  * Graph API - Backend API calls for graph functionality
  */
 
+import { apiGet, apiPost } from '../../utils/api';
+
 // Types
 export interface ScoreConfig {
   project_id: string;
@@ -48,18 +50,7 @@ export interface ScoreResponse {
  * Fetch composite scores for all entities in a graph.
  */
 export async function fetchScores(config: ScoreConfig): Promise<ScoreResponse> {
-  const response = await fetch('/api/graph/scores', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(config),
-  });
-
-  if (!response.ok) {
-    const error = await response.json().catch(() => ({ detail: 'Failed to calculate scores' }));
-    throw new Error(error.detail || 'Failed to calculate scores');
-  }
-
-  return response.json();
+  return apiPost<ScoreResponse>('/api/graph/scores', config);
 }
 
 /**
@@ -70,14 +61,9 @@ export async function fetchScoresSimple(
   centralityType: string = 'pagerank',
   limit: number = 100
 ): Promise<ScoreResponse> {
-  const response = await fetch(
-    `/api/graph/scores/${projectId}?centrality_type=${centralityType}&limit=${limit}`
-  );
-
-  if (!response.ok) {
-    const error = await response.json().catch(() => ({ detail: 'Failed to fetch scores' }));
-    throw new Error(error.detail || 'Failed to fetch scores');
-  }
-
-  return response.json();
+  const params = new URLSearchParams({
+    centrality_type: centralityType,
+    limit: String(limit),
+  });
+  return apiGet<ScoreResponse>(`/api/graph/scores/${projectId}?${params.toString()}`);
 }

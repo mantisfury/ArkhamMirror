@@ -3,12 +3,18 @@
 import logging
 from typing import Annotated, Any, TYPE_CHECKING
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 if TYPE_CHECKING:
     from .shard import ACHShard
+
+try:
+    from arkham_frame.auth import current_optional_user
+except ImportError:
+    async def current_optional_user():
+        return None
 
 logger = logging.getLogger(__name__)
 
@@ -484,8 +490,30 @@ async def unlink_document(matrix_id: str, document_id: str):
 async def list_matrices(
     project_id: str | None = None,
     status: str | None = None,
+    request: Request = None,  # type: ignore[assignment]
+    user = Depends(current_optional_user),
 ):
-    """List ACH matrices with optional filtering."""
+    """
+    List ACH matrices with optional filtering.
+    Authentication required for data access.
+    """
+    if not user:
+        raise HTTPException(status_code=401, detail="Authentication required for ACH access")
+    
+    # Use active project if not specified
+    if not project_id:
+        # Prefer the active project from the frame context (set by Project middleware)
+        shard = get_shard(request)
+        frame = getattr(shard, "_frame", None)
+        if frame:
+            project_id = frame.active_project_id
+    
+    if not project_id:
+        raise HTTPException(
+            status_code=400,
+            detail="No active project selected. Please select a project to view ACH matrices."
+        )
+    
     if not _matrix_manager:
         raise HTTPException(status_code=503, detail="ACH service not initialized")
 
@@ -523,8 +551,14 @@ async def list_matrices(
 
 
 @router.get("/matrices/count")
-async def get_matrices_count():
-    """Get count of active matrices for badge display."""
+async def get_matrices_count(user = Depends(current_optional_user)):
+    """
+    Get count of active matrices for badge display.
+    Authentication required for data access.
+    """
+    if not user:
+        return {"count": 0}
+    
     if not _matrix_manager:
         return {"count": 0}
 
@@ -1246,8 +1280,12 @@ async def get_analysis_insights(request: AnalysisInsightsRequest):
         }
 
     except Exception as e:
-        logger.error(f"Analysis insights failed: {e}")
-        raise HTTPException(status_code=500, detail=f"AI generation failed: {str(e)}")
+        logger.error(f"Analysis insights failed for matrix {request.matrix_id}: {e}", exc_info=True)
+        error_msg = str(e)
+        # Provide more helpful error messages
+        if "not available" in error_msg.lower() or "not initialized" in error_msg.lower():
+            raise HTTPException(status_code=503, detail=f"AI service not available: {error_msg}")
+        raise HTTPException(status_code=500, detail=f"AI generation failed: {error_msg}")
 
 
 @router.post("/ai/milestones")

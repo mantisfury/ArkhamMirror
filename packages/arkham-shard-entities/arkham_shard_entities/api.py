@@ -1,14 +1,28 @@
 """Entities Shard API endpoints."""
 
 import logging
-from typing import Annotated, Any, TYPE_CHECKING
+from typing import Annotated, Any, Optional, TYPE_CHECKING
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 if TYPE_CHECKING:
     from .shard import EntitiesShard
+
+try:
+    from arkham_frame.auth import (
+        current_active_user,
+        current_optional_user,
+        require_project_member,
+    )
+except ImportError:
+    async def current_active_user():
+        return None
+    async def current_optional_user():
+        return None
+    async def require_project_member():
+        return None
 
 logger = logging.getLogger(__name__)
 
@@ -174,9 +188,13 @@ async def list_entities(
     q: Annotated[str | None, Query(description="Search query")] = None,
     filter: Annotated[str | None, Query(description="Entity type filter")] = None,
     show_merged: Annotated[bool, Query(description="Include merged entities")] = False,
+    project_id: Optional[str] = Query(None, description="Filter by project"),
+    user = Depends(current_active_user),
 ):
     """
     List all entities with pagination and filtering.
+
+    All entities are scoped to the active project for data isolation.
 
     Args:
         page: Page number (1-indexed)
@@ -186,28 +204,53 @@ async def list_entities(
         q: Search query for entity name
         filter: Filter by entity type (PERSON, ORGANIZATION, etc.)
         show_merged: Include entities that have been merged
+        project_id: Project ID to filter by (defaults to active project)
     """
+    logger.debug(f"list_entities called by user {user.id if user else 'None'}, project_id param={project_id}")
+    
     shard = get_shard(request)
+    
+    # Use project_id from query param if provided, otherwise use active project
+    if not project_id and shard.frame:
+        project_id = await shard.frame.get_active_project_id(str(user.id))
+        logger.debug(f"Using active project from frame: {project_id}")
+    
+    # If no project_id, return empty results (entities are project-scoped)
+    if not project_id:
+        logger.debug(f"No project_id available. Returning empty results. Query param was: {request.query_params.get('project_id')}")
+        return EntityListResponse(
+            items=[],
+            total=0,
+            page=page,
+            page_size=page_size,
+        )
+    
+    # Verify user is a member of the project
+    await require_project_member(project_id, user, request)
+    
+    logger.debug(f"Using project_id: {project_id}")
 
     # Validation
     page = max(1, page)
     page_size = min(max(1, page_size), 100)
     offset = (page - 1) * page_size
 
-    # Get entities from shard
+    # Get entities from shard (scoped to project)
     entities = await shard.list_entities(
         search=q,
         entity_type=filter,
         limit=page_size,
         offset=offset,
-        show_merged=show_merged
+        show_merged=show_merged,
+        project_id=project_id
     )
 
-    # Get total count for accurate pagination
+    # Get total count for accurate pagination (scoped to project)
     total = await shard.count_entities(
         search=q,
         entity_type=filter,
-        show_merged=show_merged
+        show_merged=show_merged,
+        project_id=project_id
     )
 
     return EntityListResponse(
@@ -219,7 +262,11 @@ async def list_entities(
 
 
 @router.get("/items/{entity_id}", response_model=EntityResponse)
-async def get_entity(entity_id: str, request: Request):
+async def get_entity(
+    entity_id: str,
+    request: Request,
+    user = Depends(current_active_user),
+):
     """
     Get a single entity by ID.
 
@@ -234,6 +281,10 @@ async def get_entity(entity_id: str, request: Request):
 
     if not entity:
         raise HTTPException(status_code=404, detail=f"Entity not found: {entity_id}")
+    
+    # Verify user is a member of the entity's project
+    if entity.project_id:
+        await require_project_member(entity.project_id, user, request)
 
     return entity_to_response(entity)
 
@@ -331,18 +382,25 @@ async def delete_entity(entity_id: str):
 async def get_count(
     request: Request,
     filter: Annotated[str | None, Query(description="Entity type filter")] = None,
+    project_id: Optional[str] = Query(None, description="Filter by project"),
 ):
     """
     Get total entity count (for badge).
 
     Args:
         filter: Optional entity type filter
+        project_id: Project ID to filter by (defaults to active project)
 
     Returns:
         Count object
     """
     shard = get_shard(request)
-    stats = await shard.get_entity_stats()
+    
+    # Use project_id from query param if provided, otherwise use active project
+    if not project_id and shard.frame:
+        project_id = shard.frame.active_project_id
+    
+    stats = await shard.get_entity_stats(project_id=project_id)
 
     if filter and filter in stats:
         return {"count": stats[filter]}
@@ -359,6 +417,7 @@ async def get_duplicates(
     entity_type: Annotated[str | None, Query(description="Entity type filter")] = None,
     threshold: Annotated[float, Query(description="Similarity threshold")] = 0.8,
     limit: Annotated[int, Query(description="Max candidates to return")] = 50,
+    project_id: Optional[str] = Query(None, description="Filter by project"),
 ):
     """
     Get potential duplicate entities for merging.
@@ -369,18 +428,24 @@ async def get_duplicates(
         entity_type: Filter by entity type
         threshold: Similarity threshold (0.0-1.0)
         limit: Maximum candidates to return
+        project_id: Project ID to filter by (defaults to active project)
 
     Returns:
         List of merge candidate pairs
     """
     shard = get_shard(request)
 
+    # Use project_id from query param if provided, otherwise use active project
+    if not project_id and shard.frame:
+        project_id = shard.frame.active_project_id
+
     try:
-        # Get all entities (we'll compare them)
+        # Get all entities (we'll compare them) - scoped to project
         entities = await shard.list_entities(
             entity_type=entity_type,
             limit=500,  # Reasonable limit for comparison
             show_merged=False,
+            project_id=project_id,
         )
 
         if len(entities) < 2:
@@ -539,11 +604,17 @@ async def get_merge_suggestions(
             if not target_entity:
                 raise HTTPException(status_code=404, detail=f"Entity not found: {entity_id}")
 
-            # Get entities of same type
+            # Get project_id for filtering
+            project_id = None
+            if shard.frame:
+                project_id = shard.frame.active_project_id
+            
+            # Get entities of same type (scoped to project)
             entities = await shard.list_entities(
                 entity_type=target_entity.entity_type.value if hasattr(target_entity.entity_type, 'value') else str(target_entity.entity_type),
                 limit=200,
                 show_merged=False,
+                project_id=project_id,
             )
 
             # Find similar entities
@@ -586,7 +657,11 @@ async def get_merge_suggestions(
 
         # No specific entity - return general duplicate suggestions
         # Fall back to duplicates endpoint logic with lower threshold
-        entities = await shard.list_entities(limit=300, show_merged=False)
+        project_id = None
+        if shard.frame:
+            project_id = shard.frame.active_project_id
+        
+        entities = await shard.list_entities(limit=300, show_merged=False, project_id=project_id)
 
         if len(entities) < 2:
             return []

@@ -9,8 +9,10 @@
  * - Events: System event log
  */
 
+import { useEffect } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { Icon } from '../../components/common/Icon';
+import { apiFetch } from '../../utils/api';
 import { OverviewTab, LLMConfigTab, DatabaseTab, WorkersTab, EventsTab } from './tabs';
 import './DashboardPage.css';
 
@@ -46,6 +48,19 @@ export function DashboardPage() {
   const location = useLocation();
   const navigate = useNavigate();
   const activeTab = getTabFromPath(location.pathname);
+
+  // Call health endpoint on page load/refresh and when navigating between dashboard tabs
+  useEffect(() => {
+    const fetchHealth = async () => {
+      try {
+        await apiFetch('/api/dashboard/health');
+      } catch (error) {
+        // Silently fail - individual tabs will handle their own error states
+        console.debug('Health check failed on dashboard load:', error);
+      }
+    };
+    fetchHealth();
+  }, [location.pathname]);
 
   const renderTab = () => {
     switch (activeTab) {

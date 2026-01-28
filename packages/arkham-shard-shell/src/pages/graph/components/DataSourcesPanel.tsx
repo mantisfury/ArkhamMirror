@@ -7,6 +7,7 @@
 import { useState, useEffect } from 'react';
 import { Icon } from '../../../components/common/Icon';
 import type { DataSourceSettings } from '../hooks/useGraphSettings';
+import { apiGet } from '../../../utils/api';
 
 interface DataSourcesPanelProps {
   settings: DataSourceSettings;
@@ -123,17 +124,14 @@ export function DataSourcesPanel({
     const fetchDocuments = async () => {
       setLoadingDocs(true);
       try {
-        const response = await fetch('/api/documents/items?limit=500');
-        if (response.ok) {
-          const data = await response.json();
-          const docs: DocumentInfo[] = (data.documents || data.items || []).map((d: any) => ({
-            id: d.id,
-            filename: d.filename || d.name || d.id,
-            entity_count: d.entity_count || 0,
-            created_at: d.created_at,
-          }));
-          setDocuments(docs);
-        }
+        const data = await apiGet<any>('/api/documents/items?limit=500');
+        const docs: DocumentInfo[] = (data.documents || data.items || []).map((d: any) => ({
+          id: d.id,
+          filename: d.filename || d.name || d.id,
+          entity_count: d.entity_count || 0,
+          created_at: d.created_at,
+        }));
+        setDocuments(docs);
       } catch (err) {
         console.error('Failed to fetch documents:', err);
       } finally {
@@ -151,38 +149,26 @@ export function DataSourcesPanel({
       const newStatuses: Record<string, SourceStatus> = {};
 
       try {
-        const response = await fetch('/api/graph/sources/status');
-        if (response.ok) {
-          const data = await response.json();
-          const sources = data.sources || {};
+        const data = await apiGet<any>('/api/graph/sources/status');
+        const sources = data.sources || {};
 
-          SOURCE_CONFIGS.forEach((config) => {
-            const source = sources[config.key];
-            if (source) {
-              newStatuses[config.key] = {
-                available: source.available,
-                count: source.count || 0,
-                loading: false,
-              };
-            } else {
-              newStatuses[config.key] = {
-                available: false,
-                count: 0,
-                loading: false,
-                error: 'Not configured',
-              };
-            }
-          });
-        } else {
-          SOURCE_CONFIGS.forEach((config) => {
+        SOURCE_CONFIGS.forEach((config) => {
+          const source = sources[config.key];
+          if (source) {
+            newStatuses[config.key] = {
+              available: source.available,
+              count: source.count || 0,
+              loading: false,
+            };
+          } else {
             newStatuses[config.key] = {
               available: false,
               count: 0,
               loading: false,
-              error: 'Status check failed',
+              error: 'Not configured',
             };
-          });
-        }
+          }
+        });
       } catch {
         SOURCE_CONFIGS.forEach((config) => {
           newStatuses[config.key] = {

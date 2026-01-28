@@ -4,7 +4,7 @@ import logging
 import time
 from typing import Annotated, Any, TYPE_CHECKING
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
@@ -23,6 +23,17 @@ from .models import (
     SimilarityRequest,
 )
 from .filters import FilterBuilder
+
+try:
+    from arkham_frame.auth import (
+        current_optional_user,
+        require_project_member,
+    )
+except ImportError:
+    async def current_optional_user():
+        return None
+    async def require_project_member():
+        return None
 
 logger = logging.getLogger(__name__)
 
@@ -142,7 +153,11 @@ async def get_search_config():
 
 
 @router.post("/", response_model=SearchResponse)
-async def search(request: SearchRequest):
+async def search(
+    req: Request,
+    request: SearchRequest,
+    user = Depends(current_optional_user),
+):
     """
     Main search endpoint - supports hybrid, semantic, and keyword search.
 
@@ -150,9 +165,27 @@ async def search(request: SearchRequest):
     - hybrid: Combines semantic and keyword search with configurable weights
     - semantic: Vector similarity search only
     - keyword: Full-text search only
+    
+    All searches are scoped to the active project for data isolation.
     """
+    if not user:
+        raise HTTPException(status_code=401, detail="Authentication required for search")
+    
     if not _hybrid_engine:
         raise HTTPException(status_code=503, detail="Search service not initialized")
+
+    # Get active project from frame
+    shard = get_shard(req)
+    active_project_id = await shard.frame.get_active_project_id(str(user.id)) if shard.frame else None
+    
+    if not active_project_id:
+        raise HTTPException(
+            status_code=400, 
+            detail="No active project selected. Please select a project to search."
+        )
+    
+    # Verify user is a member of the project
+    await require_project_member(active_project_id, user, req)
 
     start_time = time.time()
 
@@ -162,13 +195,21 @@ async def search(request: SearchRequest):
     except ValueError:
         raise HTTPException(status_code=400, detail=f"Invalid search mode: {request.mode}")
 
-    # Parse filters
+    # Parse filters and force project_id
     filters = None
     if request.filters:
         filters = FilterBuilder.from_dict(request.filters)
         is_valid, error = FilterBuilder.validate(filters)
         if not is_valid:
             raise HTTPException(status_code=400, detail=error)
+    else:
+        filters = SearchFilters()
+    
+    # Force project_id to active project for data isolation
+    if not filters.project_ids:
+        filters.project_ids = []
+    if active_project_id not in filters.project_ids:
+        filters.project_ids = [active_project_id]
 
     # Parse sort options
     try:
@@ -249,17 +290,25 @@ async def search(request: SearchRequest):
 
 
 @router.post("/semantic", response_model=SearchResponse)
-async def search_semantic(request: SearchRequest):
+async def search_semantic(
+    req: Request,
+    request: SearchRequest,
+    user = Depends(current_optional_user),
+):
     """Vector-only semantic search."""
     request.mode = "semantic"
-    return await search(request)
+    return await search(req, request, user)
 
 
 @router.post("/keyword", response_model=SearchResponse)
-async def search_keyword(request: SearchRequest):
+async def search_keyword(
+    req: Request,
+    request: SearchRequest,
+    user = Depends(current_optional_user),
+):
     """Text-only keyword search."""
     request.mode = "keyword"
-    return await search(request)
+    return await search(req, request, user)
 
 
 @router.get("/suggest", response_model=SuggestResponse)

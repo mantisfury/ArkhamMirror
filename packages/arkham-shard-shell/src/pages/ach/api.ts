@@ -4,6 +4,7 @@
  * API client for the ACH shard backend.
  */
 
+import { apiFetch } from '../../utils/api';
 import type {
   ACHMatrix,
   MatricesListResponse,
@@ -18,7 +19,7 @@ const API_PREFIX = '/api/ach';
 
 // Generic fetch wrapper with error handling
 async function fetchAPI<T>(endpoint: string, options?: RequestInit): Promise<T> {
-  const response = await fetch(`${API_PREFIX}${endpoint}`, {
+  const response = await apiFetch(`${API_PREFIX}${endpoint}`, {
     headers: {
       'Content-Type': 'application/json',
       ...options?.headers,

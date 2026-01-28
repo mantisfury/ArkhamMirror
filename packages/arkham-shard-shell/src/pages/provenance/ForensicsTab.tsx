@@ -13,6 +13,7 @@ import { useState, useCallback } from 'react';
 import { Icon } from '../../components/common/Icon';
 import { useToast } from '../../context/ToastContext';
 import { useFetch } from '../../hooks/useFetch';
+import { apiPost } from '../../utils/api';
 
 // Types
 interface ExifData {
@@ -142,18 +143,7 @@ export function ForensicsTab({ onScanComplete }: ForensicsTabProps) {
 
     setScanning(true);
     try {
-      const response = await fetch('/api/provenance/forensics/scan', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ doc_id: selectedDocId }),
-      });
-
-      if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.detail || 'Scan failed');
-      }
-
-      const result = await response.json();
+      const result = await apiPost<{ scan: ForensicScan }>('/api/provenance/forensics/scan', { doc_id: selectedDocId });
       setSelectedScan(result.scan);
       setRecentScans(prev => [result.scan, ...prev.slice(0, 9)]);
       refetchStats();
@@ -180,21 +170,10 @@ export function ForensicsTab({ onScanComplete }: ForensicsTabProps) {
 
     setComparing(true);
     try {
-      const response = await fetch('/api/provenance/forensics/compare', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          source_doc_id: compareSourceId,
-          target_doc_id: compareTargetId,
-        }),
+      const result = await apiPost<{ comparison: any }>('/api/provenance/forensics/compare', {
+        source_doc_id: compareSourceId,
+        target_doc_id: compareTargetId,
       });
-
-      if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.detail || 'Comparison failed');
-      }
-
-      const result = await response.json();
       setComparisonResult(result.comparison);
       toast.success('Document comparison complete');
     } catch (err) {

@@ -409,7 +409,12 @@ class DocumentsShard(ArkhamShard):
             processed_at=row.get("processed_at"),
         )
 
-    async def _get_entity_counts_for_documents(self, doc_ids: List[str]) -> Dict[str, int]:
+    async def _get_entity_counts_for_documents(
+        self,
+        doc_ids: List[str],
+        *,
+        project_id: Optional[str] = None,
+    ) -> Dict[str, int]:
         """
         Get entity counts for a list of documents.
 
@@ -433,9 +438,22 @@ class DocumentsShard(ArkhamShard):
                     COUNT(DISTINCT entity_id) as entity_count
                 FROM arkham_entity_mentions
                 WHERE document_id = ANY(:doc_ids)
-                GROUP BY document_id
             """
-            rows = await self._db.fetch_all(query, {"doc_ids": doc_ids})
+            params: Dict[str, Any] = {"doc_ids": doc_ids}
+
+            # Keep counts consistent with the UI: project- and tenant-scoped.
+            if project_id:
+                query += " AND project_id = :project_id"
+                params["project_id"] = str(project_id)
+
+            tenant_id = self.get_tenant_id_or_none()
+            if tenant_id:
+                query += " AND tenant_id = :tenant_id"
+                params["tenant_id"] = str(tenant_id)
+
+            query += " GROUP BY document_id"
+
+            rows = await self._db.fetch_all(query, params)
 
             # Build result dict, defaulting to 0 for documents with no entities
             result = {doc_id: 0 for doc_id in doc_ids}
@@ -524,7 +542,7 @@ class DocumentsShard(ArkhamShard):
 
             # Get entity counts for all documents in one query
             doc_ids = [row["id"] for row in rows]
-            entity_counts = await self._get_entity_counts_for_documents(doc_ids)
+            entity_counts = await self._get_entity_counts_for_documents(doc_ids, project_id=project_id)
 
             return [
                 self._frame_row_to_document(row, entity_counts.get(row["id"], 0))
@@ -562,7 +580,10 @@ class DocumentsShard(ArkhamShard):
 
         if row:
             # Get entity count for this document
-            entity_counts = await self._get_entity_counts_for_documents([document_id])
+            entity_counts = await self._get_entity_counts_for_documents(
+                [document_id],
+                project_id=row.get("project_id"),
+            )
             entity_count = entity_counts.get(document_id, 0)
             return self._frame_row_to_document(row, entity_count)
 
@@ -667,6 +688,23 @@ class DocumentsShard(ArkhamShard):
             }, source="documents-shard")
 
         return True
+
+    async def delete_data_for_project(self, project_id: str) -> None:
+        """
+        Delete all documents for a project. Called when a project is deleted.
+
+        Removes all rows from arkham_frame.documents for the given project_id.
+        """
+        if not self._db:
+            return
+        try:
+            await self._db.execute(
+                "DELETE FROM arkham_frame.documents WHERE project_id = :project_id",
+                {"project_id": project_id},
+            )
+            logger.info(f"Deleted documents for project {project_id}")
+        except Exception as e:
+            logger.warning("Failed to delete documents for project %s: %s", project_id, e)
 
     async def get_document_stats(self) -> Dict[str, Any]:
         """

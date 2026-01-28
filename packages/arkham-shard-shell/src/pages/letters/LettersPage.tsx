@@ -10,6 +10,7 @@ import { Icon } from '../../components/common/Icon';
 import { useToast } from '../../context/ToastContext';
 import { useFetch } from '../../hooks/useFetch';
 import { usePaginatedFetch } from '../../hooks';
+import { apiDelete, apiPost, apiPut } from '../../utils/api';
 import './LettersPage.css';
 
 // Types
@@ -136,18 +137,7 @@ export function LettersPage() {
     subject?: string;
   }) => {
     try {
-      const response = await fetch('/api/letters/', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(data),
-      });
-
-      if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.detail || 'Failed to create letter');
-      }
-
-      const letter = await response.json();
+      const letter = await apiPost<Letter>('/api/letters/', data);
       toast.success('Letter created successfully');
       setViewMode('list');
       refetchLetters();
@@ -160,16 +150,7 @@ export function LettersPage() {
 
   const handleUpdateLetter = async (letterId: string, updates: Partial<Letter>) => {
     try {
-      const response = await fetch(`/api/letters/${letterId}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(updates),
-      });
-
-      if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.detail || 'Failed to update letter');
-      }
+      await apiPut(`/api/letters/${letterId}`, updates);
 
       toast.success('Letter updated successfully');
       refetchLetters();
@@ -185,14 +166,7 @@ export function LettersPage() {
     }
 
     try {
-      const response = await fetch(`/api/letters/${letterId}`, {
-        method: 'DELETE',
-      });
-
-      if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.detail || 'Failed to delete letter');
-      }
+      await apiDelete(`/api/letters/${letterId}`);
 
       toast.success('Letter deleted');
       refetchLetters();
@@ -203,18 +177,7 @@ export function LettersPage() {
 
   const handleExportLetter = async (letterId: string, format: string) => {
     try {
-      const response = await fetch(`/api/letters/${letterId}/export`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ export_format: format }),
-      });
-
-      if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.detail || 'Failed to export letter');
-      }
-
-      const result = await response.json();
+      const result = await apiPost<any>(`/api/letters/${letterId}/export`, { export_format: format });
       toast.success(`Letter exported to ${format.toUpperCase()}`);
       refetchLetters();
       return result;
@@ -496,21 +459,11 @@ function TemplateSelector({ templates, sharedTemplates, loading, onSelect, onSel
 
   const handleUseSharedTemplate = async (template: SharedTemplate) => {
     try {
-      // Create letter from shared template
-      const response = await fetch('/api/letters/from-shared-template', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          template_id: template.id,
-          title: `Letter from ${template.name}`,
-          placeholder_values: {},
-        }),
+      await apiPost('/api/letters/from-shared-template', {
+        template_id: template.id,
+        title: `Letter from ${template.name}`,
+        placeholder_values: {},
       });
-
-      if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.detail || 'Failed to create letter from template');
-      }
 
       toast.success('Letter created from template');
       onSelectShared(template);

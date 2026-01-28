@@ -12,6 +12,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Icon } from '../../components/common/Icon';
 import { useToast } from '../../context/ToastContext';
+import { useProject } from '../../context/ProjectContext';
 import { SimilarityCalculator } from './SimilarityCalculator';
 import {
   useModels,
@@ -139,6 +140,7 @@ function EmbeddingStatisticsSection(props: { refreshTrigger?: number }) {
 
 export function EmbedPage() {
   const { toast } = useToast();
+  const { activeProjectId } = useProject();
   const [searchQuery, setSearchQuery] = useState('');
   const [searchLimit, setSearchLimit] = useState(10);
 
@@ -159,11 +161,14 @@ export function EmbedPage() {
   const { check: checkSwitch, loading: checkingSwitch } = useCheckModelSwitch();
   const { switchTo: switchModelAPI, loading: switchingModel } = useSwitchModel();
 
-  // Document embedding hooks
-  const { fetch: fetchDocs, data: docsData, loading: loadingDocs, refetch: refetchDocs } = useDocumentsForEmbedding(onlyUnembedded);
+  // Document embedding hooks (scoped to active project when set)
+  const { fetch: fetchDocs, data: docsData, loading: loadingDocs, refetch: refetchDocs } = useDocumentsForEmbedding(
+    onlyUnembedded,
+    activeProjectId ?? null
+  );
   const { embed: batchEmbed, loading: batchEmbedding } = useBatchEmbedDocuments();
 
-  // Fetch documents on mount and when filter changes
+  // Fetch documents on mount and when filter or project changes
   useEffect(() => {
     fetchDocs();
   }, [fetchDocs, onlyUnembedded]);

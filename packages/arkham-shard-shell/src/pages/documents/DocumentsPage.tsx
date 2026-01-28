@@ -9,8 +9,10 @@ import { useSearchParams } from 'react-router-dom';
 import { Icon } from '../../components/common/Icon';
 import { AIAnalystButton } from '../../components/AIAnalyst';
 import { useToast } from '../../context/ToastContext';
+import { useProject } from '../../context/ProjectContext';
 import { useFetch } from '../../hooks/useFetch';
 import { usePaginatedFetch } from '../../hooks';
+import { apiDelete } from '../../utils/api';
 import { DocumentViewer } from './DocumentViewer';
 import './DocumentsPage.css';
 
@@ -75,6 +77,7 @@ function formatDate(dateString: string): string {
 export function DocumentsPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const { toast } = useToast();
+  const { activeProjectId } = useProject();
   const [selectedDoc, setSelectedDoc] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<string>('');
@@ -90,13 +93,14 @@ export function DocumentsPage() {
     }
   }, [searchParams, selectedDoc, setSearchParams]);
 
-  // Fetch documents with pagination
+  // Fetch documents with pagination (scoped to active project when set)
   const { items: documents, total, loading, error, refetch } = usePaginatedFetch<Document>(
     '/api/documents/items',
     {
       params: {
         ...(searchQuery && { q: searchQuery }),
         ...(statusFilter && { status: statusFilter }),
+        ...(activeProjectId && { project_id: activeProjectId }),
       },
       syncToUrl: false, // This page doesn't use URL-based pagination
     }
@@ -115,14 +119,7 @@ export function DocumentsPage() {
     if (!confirm(`Delete document "${title}"?`)) return;
 
     try {
-      const response = await fetch(`/api/documents/items/${docId}`, {
-        method: 'DELETE',
-      });
-
-      if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.detail || 'Failed to delete document');
-      }
+      await apiDelete(`/api/documents/items/${docId}`);
 
       toast.success('Document deleted successfully');
       refetch();

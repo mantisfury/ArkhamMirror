@@ -143,7 +143,7 @@ class ImageWorker(BaseWorker):
         Load image from path or base64.
 
         Args:
-            payload: Job payload
+            payload: Job payload (may contain image_path, image_base64, or file_path)
 
         Returns:
             PIL Image
@@ -151,7 +151,12 @@ class ImageWorker(BaseWorker):
         def _load():
             from PIL import Image
 
+            # Check for image_path first (explicit image path)
             image_path = payload.get("image_path")
+            # Fallback to file_path (used by JobDispatcher)
+            if not image_path:
+                image_path = payload.get("file_path")
+            
             image_base64 = payload.get("image_base64")
 
             if image_path:
@@ -166,7 +171,7 @@ class ImageWorker(BaseWorker):
                 return Image.open(io.BytesIO(img_data))
 
             else:
-                raise ValueError("Must provide 'image_path' or 'image_base64'")
+                raise ValueError("Must provide 'image_path', 'file_path', or 'image_base64'")
 
         # Run in executor since PIL I/O is blocking
         return await asyncio.to_thread(_load)

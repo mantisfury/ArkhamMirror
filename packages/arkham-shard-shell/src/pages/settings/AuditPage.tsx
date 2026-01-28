@@ -8,7 +8,7 @@
 import { useState, useCallback, useEffect } from 'react';
 import { Icon } from '../../components/common/Icon';
 import { useToast } from '../../context/ToastContext';
-import { apiGet } from '../../utils/api';
+import { apiFetch, apiGet } from '../../utils/api';
 import './AuditPage.css';
 
 // Types
@@ -160,11 +160,7 @@ export function AuditPage() {
       }
 
       // Trigger download
-      const response = await fetch(url, {
-        headers: {
-          Authorization: `Bearer ${localStorage.getItem('token')}`,
-        },
-      });
+      const response = await apiFetch(url);
 
       if (!response.ok) {
         throw new Error('Export failed');

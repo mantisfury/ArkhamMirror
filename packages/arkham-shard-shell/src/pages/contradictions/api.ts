@@ -4,6 +4,7 @@
  * API client for the Contradictions shard backend.
  */
 
+import { apiFetch } from '../../utils/api';
 import type {
   Contradiction,
   ContradictionListResponse,
@@ -15,7 +16,7 @@ const API_PREFIX = '/api/contradictions';
 
 // Generic fetch wrapper with error handling
 async function fetchAPI<T>(endpoint: string, options?: RequestInit): Promise<T> {
-  const response = await fetch(`${API_PREFIX}${endpoint}`, {
+  const response = await apiFetch(`${API_PREFIX}${endpoint}`, {
     headers: {
       'Content-Type': 'application/json',
       ...options?.headers,
@@ -290,7 +291,7 @@ export async function fetchDocuments(
   page: number;
   page_size: number;
 }> {
-  const response = await fetch(`/api/documents/items?page=${page}&page_size=${pageSize}`);
+  const response = await apiFetch(`/api/documents/items?page=${page}&page_size=${pageSize}`);
   if (!response.ok) {
     throw new Error('Failed to fetch documents');
   }

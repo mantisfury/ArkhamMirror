@@ -8,6 +8,7 @@ import { useState, useEffect } from 'react';
 import { Icon } from '../../components/common/Icon';
 import { useToast } from '../../context/ToastContext';
 import { useFetch } from '../../hooks/useFetch';
+import { apiDelete, apiPost } from '../../utils/api';
 import './ExportPage.css';
 
 // Types
@@ -121,30 +122,19 @@ export function ExportPage() {
 
   const handleCreateExport = async () => {
     try {
-      const response = await fetch('/api/export/jobs', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          format: selectedFormat,
-          target: selectedTarget,
-          options: {
-            include_metadata: includeMetadata,
-            include_relationships: includeRelationships,
-            max_records: maxRecords ? parseInt(maxRecords, 10) : null,
-            // Timeline-specific options
-            include_conflicts: selectedTarget === 'timeline' ? includeConflicts : false,
-            include_gaps: selectedTarget === 'timeline' ? includeGaps : false,
-            group_by: selectedTarget === 'timeline' && groupBy ? groupBy : null,
-          },
-        }),
+      const job = await apiPost<ExportJob>('/api/export/jobs', {
+        format: selectedFormat,
+        target: selectedTarget,
+        options: {
+          include_metadata: includeMetadata,
+          include_relationships: includeRelationships,
+          max_records: maxRecords ? parseInt(maxRecords, 10) : null,
+          // Timeline-specific options
+          include_conflicts: selectedTarget === 'timeline' ? includeConflicts : false,
+          include_gaps: selectedTarget === 'timeline' ? includeGaps : false,
+          group_by: selectedTarget === 'timeline' && groupBy ? groupBy : null,
+        },
       });
-
-      if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.detail || 'Failed to create export job');
-      }
-
-      const job = await response.json();
       toast.success(`Export job created: ${job.id.substring(0, 8)}`);
       setActiveTab('jobs');
       refetchJobs();
@@ -170,13 +160,7 @@ export function ExportPage() {
 
   const handleCancelJob = async (jobId: string) => {
     try {
-      const response = await fetch(`/api/export/jobs/${jobId}`, {
-        method: 'DELETE',
-      });
-
-      if (!response.ok) {
-        throw new Error('Failed to cancel job');
-      }
+      await apiDelete(`/api/export/jobs/${jobId}`);
 
       toast.success('Export job cancelled');
       refetchJobs();

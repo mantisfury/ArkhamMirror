@@ -35,13 +35,16 @@ class Project:
     """
     A project workspace that groups related documents, entities, and analyses.
 
-    Projects provide organizational structure and access control.
+    Projects provide organizational structure and access control via member roles.
+    All access is managed through ProjectMember records with VIEWER, EDITOR, or ADMIN roles.
     """
     id: str
     name: str
     description: str = ""
     status: ProjectStatus = ProjectStatus.ACTIVE
-    owner_id: str = "system"
+
+    # Multi-tenancy
+    tenant_id: Optional[str] = None
 
     # Timestamps
     created_at: datetime = field(default_factory=datetime.utcnow)
@@ -117,7 +120,6 @@ class ProjectStatistics:
     """
     total_projects: int = 0
     by_status: Dict[str, int] = field(default_factory=dict)
-    by_owner: Dict[str, int] = field(default_factory=dict)
 
     total_members: int = 0
     total_documents: int = 0
@@ -135,7 +137,6 @@ class ProjectFilter:
     Filter criteria for project queries.
     """
     status: Optional[ProjectStatus] = None
-    owner_id: Optional[str] = None
     member_id: Optional[str] = None
     has_documents: Optional[bool] = None
     search_text: Optional[str] = None

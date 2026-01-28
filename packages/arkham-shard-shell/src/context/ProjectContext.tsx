@@ -5,8 +5,9 @@
  * All embedding and search operations route to the active project's collections.
  */
 
-import { createContext, useContext, useState, useCallback, ReactNode } from 'react';
+import { createContext, useContext, useState, useCallback, useEffect, ReactNode } from 'react';
 import { useFetch } from '../hooks/useFetch';
+import { apiFetch } from '../utils/api';
 
 export interface Project {
   id: string;
@@ -30,8 +31,11 @@ interface ActiveProjectResponse {
 }
 
 interface ProjectsListResponse {
-  items: Project[];
+  projects: Project[];
+  items?: Project[]; // For backwards compatibility
   total: number;
+  limit?: number;
+  offset?: number;
 }
 
 interface ProjectContextValue {
@@ -61,6 +65,7 @@ const ProjectContext = createContext<ProjectContextValue | null>(null);
 export function ProjectProvider({ children }: { children: ReactNode }) {
   const [settingProject, setSettingProject] = useState(false);
   const [setError, setSetError] = useState<Error | null>(null);
+  const [projectsCacheKey, setProjectsCacheKey] = useState(0);
 
   // Fetch active project state
   const {
@@ -68,15 +73,43 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     loading: activeLoading,
     error: activeError,
     refetch: refreshActiveProject,
-  } = useFetch<ActiveProjectResponse>('/api/projects/active');
+  } = useFetch<ActiveProjectResponse>('/api/frame/active-project');
 
-  // Fetch all projects for the selector
+  // Fetch all projects for the selector (with cache-busting)
   const {
     data: projectsData,
     loading: projectsLoading,
     error: projectsError,
-    refetch: refreshProjects,
-  } = useFetch<ProjectsListResponse>('/api/projects/?page_size=100');
+    refetch: refreshProjectsInternal,
+  } = useFetch<ProjectsListResponse>(`/api/projects/?page_size=100&_t=${projectsCacheKey}`);
+
+  const activeProjectId = activeData?.project_id ?? null;
+
+  // Log errors for debugging
+  useEffect(() => {
+    if (projectsError) {
+      console.error('Failed to fetch projects:', projectsError);
+    }
+    if (projectsData && (projectsData.projects?.length === 0 && projectsData.items?.length === 0)) {
+      console.warn('Projects list is empty. User may not have access to any projects or may not be authenticated.');
+    }
+  }, [projectsError, projectsData]);
+
+  // Watch for activeProjectId changes and emit event
+  useEffect(() => {
+    window.dispatchEvent(
+      new CustomEvent('projectChanged', {
+        detail: { projectId: activeProjectId },
+      })
+    );
+  }, [activeProjectId]);
+
+  // Wrapper to refresh projects with cache-busting
+  const refreshProjects = useCallback(() => {
+    setProjectsCacheKey(prev => prev + 1);
+    // URL change will trigger refetch automatically, but we can also call it explicitly for immediate refresh
+    refreshProjectsInternal();
+  }, [refreshProjectsInternal]);
 
   // Set active project
   const setActiveProject = useCallback(async (projectId: string | null): Promise<boolean> => {
@@ -84,7 +117,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     setSetError(null);
 
     try {
-      const response = await fetch('/api/projects/active', {
+      const response = await apiFetch('/api/frame/active-project', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ project_id: projectId }),
@@ -95,8 +128,21 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
         throw new Error(errorData.detail || `Failed to set active project: ${response.status}`);
       }
 
+      // Store in localStorage as fallback
+      if (projectId) {
+        localStorage.setItem('arkham_last_active_project', projectId);
+      } else {
+        localStorage.removeItem('arkham_last_active_project');
+      }
+
       // Refresh active project state
       refreshActiveProject();
+      
+      // Emit custom event for pages to react to project change
+      window.dispatchEvent(new CustomEvent('projectChanged', {
+        detail: { projectId }
+      }));
+      
       return true;
     } catch (err) {
       const error = err instanceof Error ? err : new Error('Unknown error');
@@ -113,12 +159,12 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
       value={{
         // Active project state
         activeProject: activeData?.project || null,
-        activeProjectId: activeData?.project_id || null,
+        activeProjectId,
         isActive: activeData?.active || false,
         collections: activeData?.collections || null,
 
-        // All projects
-        projects: projectsData?.items || [],
+        // All projects (API returns 'projects', but some endpoints use 'items')
+        projects: projectsData?.projects || projectsData?.items || [],
         projectsLoading,
         projectsError,
 

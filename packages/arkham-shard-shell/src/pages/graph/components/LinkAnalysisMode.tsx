@@ -10,6 +10,7 @@
 
 import { useState, useCallback, useRef } from 'react';
 import { Icon } from '../../../components/common/Icon';
+import { apiDelete, apiGet, apiPost } from '../../../utils/api';
 
 export interface Position {
   x: number;
@@ -326,18 +327,10 @@ export function useLinkAnalysisMode(projectId: string) {
         pinned: pos.pinned,
       }));
 
-      const response = await fetch('/api/graph/positions', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          project_id: projectId,
-          positions: positionsArray,
-        }),
+      await apiPost('/api/graph/positions', {
+        project_id: projectId,
+        positions: positionsArray,
       });
-
-      if (!response.ok) {
-        throw new Error('Failed to save positions');
-      }
 
       setHasUnsavedChanges(false);
       initialPositionsRef.current = JSON.stringify(Array.from(positions.entries()));
@@ -352,12 +345,9 @@ export function useLinkAnalysisMode(projectId: string) {
   // Load positions from backend
   const loadPositions = useCallback(async () => {
     try {
-      const response = await fetch(`/api/graph/positions/${projectId}`);
-      if (!response.ok) {
-        throw new Error('Failed to load positions');
-      }
-
-      const data = await response.json();
+      const data = await apiGet<{ positions: Record<string, { x: number; y: number; pinned: boolean }> }>(
+        `/api/graph/positions/${projectId}`
+      );
       const loadedPositions = new Map<string, Position>();
 
       for (const [nodeId, pos] of Object.entries(data.positions)) {
@@ -377,13 +367,7 @@ export function useLinkAnalysisMode(projectId: string) {
   // Clear all positions
   const clearPositions = useCallback(async () => {
     try {
-      const response = await fetch(`/api/graph/positions/${projectId}`, {
-        method: 'DELETE',
-      });
-
-      if (!response.ok) {
-        throw new Error('Failed to clear positions');
-      }
+      await apiDelete(`/api/graph/positions/${projectId}`);
 
       setPositions(new Map());
       setHasUnsavedChanges(false);

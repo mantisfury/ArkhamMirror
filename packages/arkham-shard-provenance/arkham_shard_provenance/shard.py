@@ -1542,6 +1542,28 @@ class ProvenanceShard(ArkhamShard):
             )
         return self._row_to_chain(row) if row else None
 
+    async def delete_data_for_project(self, project_id: str) -> None:
+        """
+        Delete all provenance data for a project. Called when a project is deleted.
+
+        Removes links and chains for the project.
+        """
+        if not self._db:
+            return
+        try:
+            # Delete links for chains in this project, then chains
+            await self._db.execute(
+                "DELETE FROM arkham_provenance_links WHERE chain_id IN (SELECT id FROM arkham_provenance_chains WHERE project_id = :project_id)",
+                {"project_id": project_id},
+            )
+            await self._db.execute(
+                "DELETE FROM arkham_provenance_chains WHERE project_id = :project_id",
+                {"project_id": project_id},
+            )
+            logger.info(f"Deleted provenance data for project {project_id}")
+        except Exception as e:
+            logger.warning("Failed to delete provenance data for project %s: %s", project_id, e)
+
     async def list_chains(
         self,
         project_id: Optional[str] = None,

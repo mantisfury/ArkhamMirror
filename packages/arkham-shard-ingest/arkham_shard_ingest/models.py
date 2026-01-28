@@ -143,6 +143,9 @@ class IngestJob:
     priority: JobPriority
     status: JobStatus = JobStatus.PENDING
 
+    # Project association
+    project_id: str | None = None
+
     # Routing
     worker_route: list[str] = field(default_factory=list)
     current_worker: str | None = None

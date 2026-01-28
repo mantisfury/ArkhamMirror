@@ -4,6 +4,7 @@
  * API client for the Anomalies shard backend.
  */
 
+import { apiFetch } from '../../utils/api';
 import type {
   DetectRequest,
   DetectResponse,
@@ -20,7 +21,7 @@ const API_PREFIX = '/api/anomalies';
 
 // Generic fetch wrapper with error handling
 async function fetchAPI<T>(endpoint: string, options?: RequestInit): Promise<T> {
-  const response = await fetch(`${API_PREFIX}${endpoint}`, {
+  const response = await apiFetch(`${API_PREFIX}${endpoint}`, {
     headers: {
       'Content-Type': 'application/json',
       ...options?.headers,

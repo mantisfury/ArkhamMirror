@@ -6,6 +6,7 @@
  */
 
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { apiFetch } from '../utils/api';
 
 interface Setting {
   key: string;
@@ -62,7 +63,7 @@ export function useSettings(): UseSettingsResult {
     setError(null);
 
     try {
-      const response = await fetch('/api/settings/', {
+      const response = await apiFetch('/api/settings/', {
         signal: abortRef.current.signal,
       });
 

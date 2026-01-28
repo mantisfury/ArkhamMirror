@@ -10,6 +10,7 @@
 
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useSearchParams } from 'react-router-dom';
+import { apiFetch } from '../utils/api';
 import { usePageSize } from './useSettings';
 
 interface PaginatedResponse<T> {
@@ -26,6 +27,8 @@ interface UsePaginatedFetchOptions {
   syncToUrl?: boolean;
   /** Additional query params to include */
   params?: Record<string, string | number | boolean | undefined>;
+  /** Key in the API response that holds the item array (default: 'items'). Use 'projects' for /api/projects/. */
+  itemsKey?: string;
 }
 
 interface UsePaginatedFetchResult<T> {
@@ -63,7 +66,7 @@ export function usePaginatedFetch<T>(
   baseUrl: string | null,
   options: UsePaginatedFetchOptions = {}
 ): UsePaginatedFetchResult<T> {
-  const { defaultPageSize, syncToUrl = true, params = {} } = options;
+  const { defaultPageSize, syncToUrl = true, params = {}, itemsKey = 'items' } = options;
 
   // Get global page size from settings
   const globalPageSize = usePageSize();
@@ -124,7 +127,7 @@ export function usePaginatedFetch<T>(
     setError(null);
 
     try {
-      const response = await fetch(fullUrl, {
+      const response = await apiFetch(fullUrl, {
         signal: abortRef.current.signal,
       });
 
@@ -196,8 +199,12 @@ export function usePaginatedFetch<T>(
     fetchData();
   }, [fetchData]);
 
+  const items = (data && itemsKey in data && Array.isArray((data as Record<string, unknown>)[itemsKey]))
+    ? ((data as Record<string, unknown>)[itemsKey] as T[])
+    : [];
+
   return {
-    items: data?.items ?? [],
+    items,
     total,
     page,
     pageSize,

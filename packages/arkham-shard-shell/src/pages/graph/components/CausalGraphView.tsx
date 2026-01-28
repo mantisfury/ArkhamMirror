@@ -12,6 +12,7 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import * as d3 from 'd3';
 import { Icon } from '../../../components/common/Icon';
+import { apiGet, apiPost } from '../../../utils/api';
 
 // Types
 export interface CausalNode {
@@ -123,13 +124,7 @@ export function CausalGraphView({
       setLoading(true);
       setError(null);
       try {
-        const response = await fetch(`/api/graph/causal/${projectId}`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({}),
-        });
-        if (!response.ok) throw new Error('Failed to fetch causal graph');
-        const result = await response.json();
+        const result = await apiPost<any>(`/api/graph/causal/${projectId}`, {});
         if (result.success) {
           setData(result.causal_graph);
         } else {
@@ -220,25 +215,19 @@ export function CausalGraphView({
 
     try {
       // Get confounders
-      const confResponse = await fetch(
+      const confResult = await apiGet<any>(
         `/api/graph/causal/${projectId}/confounders?treatment=${selectedTreatment}&outcome=${selectedOutcome}`
       );
-      const confResult = await confResponse.json();
       if (confResult.success) {
         setConfounders(confResult.confounders);
       }
 
       // Run intervention
-      const intResponse = await fetch(`/api/graph/causal/${projectId}/intervention`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          intervention_node: selectedTreatment,
-          intervention_value: 'true',
-          target_node: selectedOutcome,
-        }),
+      const intResult = await apiPost<any>(`/api/graph/causal/${projectId}/intervention`, {
+        intervention_node: selectedTreatment,
+        intervention_value: 'true',
+        target_node: selectedOutcome,
       });
-      const intResult = await intResponse.json();
       if (intResult.success) {
         setInterventionResult(intResult);
         // Highlight causal paths

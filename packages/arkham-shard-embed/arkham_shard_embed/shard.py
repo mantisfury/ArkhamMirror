@@ -254,7 +254,7 @@ class EmbedShard(ArkhamShard):
                     chunk_ids.append(data['chunk_id'])
 
             # Get collection name based on active project
-            collection_name = self.frame.get_collection_name("documents")
+            collection_name = await self.frame.get_collection_name("documents")
             logger.info(f"Using collection: {collection_name}")
 
             # Ensure collection exists before upserting
@@ -387,7 +387,7 @@ class EmbedShard(ArkhamShard):
             # Get collection name based on active project
             base_collection = collection or "documents"
             if use_project_scope and self.frame:
-                collection_name = self.frame.get_collection_name(base_collection)
+                collection_name = await self.frame.get_collection_name(base_collection)
             else:
                 collection_name = base_collection
 
@@ -444,7 +444,7 @@ class EmbedShard(ArkhamShard):
             # Get collection name based on active project
             base_collection = collection or "documents"
             if use_project_scope and self.frame:
-                collection_name = self.frame.get_collection_name(base_collection)
+                collection_name = await self.frame.get_collection_name(base_collection)
             else:
                 collection_name = base_collection
 
@@ -487,7 +487,7 @@ class EmbedShard(ArkhamShard):
             # Get collection name based on active project
             base_collection = collection or "documents"
             if use_project_scope and self.frame:
-                collection_name = self.frame.get_collection_name(base_collection)
+                collection_name = await self.frame.get_collection_name(base_collection)
             else:
                 collection_name = base_collection
 

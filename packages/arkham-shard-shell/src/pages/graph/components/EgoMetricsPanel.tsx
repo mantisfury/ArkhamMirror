@@ -7,6 +7,7 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import { Icon } from '../../../components/common/Icon';
+import { apiGet } from '../../../utils/api';
 
 // API response structure
 export interface EgoNetworkResponse {
@@ -91,16 +92,9 @@ export function EgoMetricsPanel({
     setError(null);
 
     try {
-      const response = await fetch(
+      const data = await apiGet<EgoNetworkResponse>(
         `${API_BASE}/ego/${encodeURIComponent(entityId)}?project_id=${encodeURIComponent(projectId)}&depth=${depth}&include_alter_alter=true`
       );
-
-      if (!response.ok) {
-        const text = await response.text();
-        throw new Error(text || `HTTP ${response.status}`);
-      }
-
-      const data = await response.json();
       setEgoNetwork(data);
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to load ego network';
