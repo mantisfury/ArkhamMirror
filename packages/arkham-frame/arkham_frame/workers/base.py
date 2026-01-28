@@ -292,21 +292,86 @@ class BaseWorker(ABC):
                 WHERE id = $1
             """, self.worker_id)
 
-    async def fail_job(self, job_id: str, error: str, requeue: bool = False):
-        """Mark job as failed."""
+    async def fail_job(
+        self,
+        job_id: str,
+        error: str,
+        requeue: bool = False,
+        worker_failure: bool = False,
+    ):
+        """
+        Mark job as failed.
+
+        When worker_failure=True, the job is requeued due to worker crash/shutdown,
+        not due to the job raising. Uses worker_requeue_count / max_worker_requeues
+        to limit requeues; exceeding marks the job dead with a user warning
+        (possible toxic job). Does not increment the worker's jobs_failed.
+        """
         if not self._db_pool:
             return
 
         async with self._db_pool.acquire() as conn:
             # Get current job state
             row = await conn.fetchrow("""
-                SELECT retry_count, max_retries, pool, job_type, payload, created_at
+                SELECT retry_count, max_retries, pool, job_type, payload, created_at,
+                       COALESCE(worker_requeue_count, 0) AS worker_requeue_count,
+                       COALESCE(max_worker_requeues, 3) AS max_worker_requeues
                 FROM arkham_jobs.jobs WHERE id = $1
             """, job_id)
 
             if not row:
                 return
 
+            if worker_failure and requeue:
+                # Requeue limit for worker-failure: safety cap before user warning
+                wr_count = row['worker_requeue_count']
+                max_wr = row['max_worker_requeues']
+                if wr_count < max_wr:
+                    await conn.execute("""
+                        UPDATE arkham_jobs.jobs
+                        SET status = 'pending',
+                            started_at = NULL,
+                            worker_id = NULL,
+                            worker_requeue_count = COALESCE(worker_requeue_count, 0) + 1,
+                            last_error = $2
+                        WHERE id = $1
+                    """, job_id, error)
+                    logger.info(
+                        f"Requeued job {job_id} after worker failure "
+                        f"(worker_requeue {wr_count + 1}/{max_wr})"
+                    )
+                else:
+                    msg = (
+                        "Job requeued too many times due to worker failure; "
+                        "possible toxic job. Last: " + error
+                    )
+                    await conn.execute("""
+                        INSERT INTO arkham_jobs.dead_letters
+                        (job_id, pool, job_type, payload, error, retry_count, original_created_at)
+                        VALUES ($1, $2, $3, $4, $5, $6, $7)
+                    """, job_id, row['pool'], row['job_type'], row['payload'],
+                        msg, row['retry_count'], row['created_at'])
+                    await conn.execute("""
+                        UPDATE arkham_jobs.jobs
+                        SET status = 'dead',
+                            completed_at = NOW(),
+                            last_error = $2,
+                            worker_id = NULL,
+                            started_at = NULL
+                        WHERE id = $1
+                    """, job_id, msg)
+                    logger.warning(
+                        f"Job {job_id} moved to dead letter queue (worker requeue limit exceeded): {msg}"
+                    )
+                # Clear current_job for this worker; do not increment jobs_failed
+                await conn.execute("""
+                    UPDATE arkham_jobs.workers
+                    SET current_job = NULL
+                    WHERE id = $1
+                """, self.worker_id)
+                return
+
+            # Job-failure path: use retry_count / max_retries
             retry_count = row['retry_count']
             max_retries = row['max_retries']
 
@@ -491,16 +556,17 @@ class BaseWorker(ABC):
 
         logger.info(f"Worker {self.worker_id} shutting down...")
 
-        # If we have a current job, try to requeue it
+        # If we have a current job, requeue it (worker failed, not the job)
         if self._current_job:
             logger.warning(
                 f"Worker {self.worker_id} has incomplete job {self._current_job}, "
-                "requeuing"
+                "requeuing (worker failure)"
             )
             await self.fail_job(
                 self._current_job,
                 "Worker shutdown while processing",
                 requeue=True,
+                worker_failure=True,
             )
 
         # Deregister

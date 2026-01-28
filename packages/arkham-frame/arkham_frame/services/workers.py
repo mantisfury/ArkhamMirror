@@ -60,6 +60,8 @@ class Job:
     retry_count: int = 0
     max_retries: int = 3
     worker_id: Optional[str] = None
+    worker_requeue_count: int = 0  # Requeues due to worker failure (stale/crash)
+    max_worker_requeues: int = 3  # Cap before marking dead with "possible toxic job" warning
 
 
 # Worker pool definitions from WORKER_ARCHITECTURE.md
@@ -600,7 +602,9 @@ class WorkerService:
                     LIMIT 1
                 )
                 RETURNING id, pool, job_type, payload, priority, created_at,
-                          retry_count, max_retries
+                          retry_count, max_retries,
+                          COALESCE(worker_requeue_count, 0) AS worker_requeue_count,
+                          COALESCE(max_worker_requeues, 3) AS max_worker_requeues
             """, pool, worker_id)
 
             if not row:
@@ -617,6 +621,8 @@ class WorkerService:
                 started_at=datetime.utcnow(),
                 retry_count=row['retry_count'],
                 max_retries=row['max_retries'],
+                worker_requeue_count=row['worker_requeue_count'],
+                max_worker_requeues=row['max_worker_requeues'],
                 worker_id=worker_id,
             )
 
@@ -737,7 +743,9 @@ class WorkerService:
             row = await conn.fetchrow("""
                 SELECT id, pool, job_type, payload, priority, status,
                        created_at, scheduled_at, started_at, completed_at,
-                       worker_id, retry_count, max_retries, last_error, result
+                       worker_id, retry_count, max_retries, last_error, result,
+                       COALESCE(worker_requeue_count, 0) AS worker_requeue_count,
+                       COALESCE(max_worker_requeues, 3) AS max_worker_requeues
                 FROM arkham_jobs.jobs WHERE id = $1
             """, job_id)
 
@@ -758,6 +766,8 @@ class WorkerService:
                 worker_id=row['worker_id'],
                 retry_count=row['retry_count'],
                 max_retries=row['max_retries'],
+                worker_requeue_count=row['worker_requeue_count'],
+                max_worker_requeues=row['max_worker_requeues'],
                 error=row['last_error'],
                 result=json.loads(row['result']) if isinstance(row['result'], str) else row['result'],
             )
@@ -1274,7 +1284,9 @@ class WorkerService:
                     SELECT id, pool, job_type, status, priority,
                            payload, result, last_error,
                            created_at, scheduled_at, started_at, completed_at,
-                           worker_id, retry_count, max_retries
+                           worker_id, retry_count, max_retries,
+                           COALESCE(worker_requeue_count, 0) AS worker_requeue_count,
+                           COALESCE(max_worker_requeues, 3) AS max_worker_requeues
                     FROM arkham_jobs.jobs
                     WHERE 1=1
                 """
@@ -1318,6 +1330,8 @@ class WorkerService:
                         "worker_id": row['worker_id'],
                         "retry_count": row['retry_count'],
                         "max_retries": row['max_retries'],
+                        "worker_requeue_count": row['worker_requeue_count'],
+                        "max_worker_requeues": row['max_worker_requeues'],
                     })
 
         return jobs

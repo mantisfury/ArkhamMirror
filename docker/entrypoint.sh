@@ -45,18 +45,32 @@ if [ -n "$DATABASE_URL" ]; then
 
     # Check if cleanup_stale_workers function exists (a reliable indicator that
     # the full 001_consolidation.sql migration has run, not just partial schemas)
-    MIGRATION_COMPLETE=$(psql "$DATABASE_URL" -tAc "SELECT 1 FROM pg_proc WHERE proname = 'cleanup_stale_workers' AND pronamespace = 'arkham_jobs'::regnamespace" 2>/dev/null || echo "0")
+    MIGRATION_001=$(psql "$DATABASE_URL" -tAc "SELECT 1 FROM pg_proc WHERE proname = 'cleanup_stale_workers' AND pronamespace = 'arkham_jobs'::regnamespace" 2>/dev/null || echo "0")
 
-    if [ "$MIGRATION_COMPLETE" != "1" ]; then
-        echo "  Running database migrations..."
+    if [ "$MIGRATION_001" != "1" ]; then
+        echo "  Running migration 001..."
         if [ -f "/app/migrations/001_consolidation.sql" ]; then
             psql "$DATABASE_URL" -f /app/migrations/001_consolidation.sql 2>&1 | grep -E "^(NOTICE|ERROR)" || true
-            echo "  Database migrations complete."
+            echo "  Migration 001 complete."
         else
-            echo "  Warning: Migration file not found, skipping..."
+            echo "  Warning: 001_consolidation.sql not found, skipping..."
         fi
-    else
-        echo "  Database already initialized."
+    fi
+
+    # Run 002 (worker requeue safety) if worker_requeue_count column is missing
+    WORKER_REQUEUE_COL=$(psql "$DATABASE_URL" -tAc "SELECT 1 FROM information_schema.columns WHERE table_schema = 'arkham_jobs' AND table_name = 'jobs' AND column_name = 'worker_requeue_count'" 2>/dev/null || echo "0")
+    if [ "$WORKER_REQUEUE_COL" != "1" ]; then
+        echo "  Running migration 002 (worker requeue safety)..."
+        if [ -f "/app/migrations/002_worker_requeue_safety.sql" ]; then
+            psql "$DATABASE_URL" -f /app/migrations/002_worker_requeue_safety.sql 2>&1 | grep -E "^(NOTICE|ERROR)" || true
+            echo "  Migration 002 complete."
+        else
+            echo "  Warning: 002_worker_requeue_safety.sql not found, skipping..."
+        fi
+    fi
+
+    if [ "$MIGRATION_001" = "1" ] && [ "$WORKER_REQUEUE_COL" = "1" ]; then
+        echo "  Database migrations up to date."
     fi
 fi
 
