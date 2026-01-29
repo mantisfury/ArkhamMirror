@@ -172,7 +172,7 @@ class MediaForensicsShard(ArkhamShard):
 
         # Unsubscribe from events
         if self._event_bus:
-            self._event_bus.unsubscribe("document.ingested")
+            await self._event_bus.unsubscribe("document.ingested", self._handle_document_ingested)
 
         # Clear services
         self.exif_extractor = None
