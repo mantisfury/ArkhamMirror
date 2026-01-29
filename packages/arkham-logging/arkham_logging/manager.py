@@ -167,7 +167,23 @@ class LoggingManager:
     def _setup_root_logger(self) -> None:
         """Setup root logger with handlers."""
         root_logger = logging.getLogger()
-        root_logger.setLevel(get_log_level(self.config.global_level))
+        
+        # Calculate most permissive level from all enabled handlers
+        # In Python logging, lower numeric values = more permissive (DEBUG=10 < INFO=20 < WARNING=30)
+        # We want the root logger to be at least as permissive as the most permissive handler
+        # so that handlers can filter appropriately
+        if self._handlers:
+            # Find the minimum (most permissive) level among all handlers
+            # Start with a high value and find the actual minimum
+            most_permissive_level = logging.CRITICAL  # Start high
+            for handler in self._handlers:
+                handler_level = handler.level
+                if handler_level < most_permissive_level:
+                    most_permissive_level = handler_level
+            root_logger.setLevel(most_permissive_level)
+        else:
+            # No handlers, use configured global level
+            root_logger.setLevel(get_log_level(self.config.global_level))
         
         # Clear existing handlers
         root_logger.handlers.clear()

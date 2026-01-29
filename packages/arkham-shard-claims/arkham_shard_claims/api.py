@@ -4,12 +4,24 @@ Claims Shard - FastAPI Routes
 REST API endpoints for claim management.
 """
 
+import logging
 import time
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
+
+try:
+    from arkham_frame.auth import current_active_user, require_project_member
+except ImportError:
+    # Fallback if auth not available
+    async def current_active_user():
+        return None
+    async def require_project_member(*args, **kwargs):
+        pass
+
+logger = logging.getLogger(__name__)
 
 from .models import (
     ClaimStatus,
@@ -247,6 +259,28 @@ async def get_claims_count(
     return CountResponse(count=count)
 
 
+async def _require_active_project_id(request: Request, shard, user: Any) -> str:
+    """
+    Resolve the user's active project_id and validate membership.
+
+    Returns project_id (string). Raises HTTPException if none.
+    """
+    if not user:
+        raise HTTPException(status_code=401, detail="Authentication required")
+
+    frame = getattr(shard, "frame", None) or getattr(shard, "_frame", None)
+    if not frame or not hasattr(frame, "get_active_project_id"):
+        raise HTTPException(status_code=503, detail="Frame project service not available")
+
+    user_id_str = str(getattr(user, "id", "")).lower().strip()
+    project_id = await frame.get_active_project_id(user_id_str)
+    if not project_id:
+        raise HTTPException(status_code=400, detail="No active project selected")
+
+    await require_project_member(str(project_id), user, request)
+    return str(project_id)
+
+
 @router.get("/", response_model=ClaimListResponse)
 async def list_claims(
     request: Request,
@@ -261,11 +295,31 @@ async def list_claims(
     search: Optional[str] = Query(None, description="Search in claim text"),
     page: int = Query(1, ge=1, description="Page number (1-indexed)"),
     page_size: int = Query(50, ge=1, le=500, description="Items per page"),
+    project_id: Optional[str] = Query(None, description="Filter by project"),
+    user = Depends(current_active_user),
 ):
-    """List claims with optional filtering."""
+    """List claims with optional filtering. All claims are scoped to the active project."""
     from .models import ClaimFilter
 
     shard = _get_shard(request)
+
+    # Use project_id from query param if provided, otherwise use active project
+    if not project_id and shard.frame:
+        project_id = await shard.frame.get_active_project_id(str(user.id))
+        logger.debug(f"Using active project from frame: {project_id}")
+    
+    # If no project_id, return empty results (claims are project-scoped)
+    if not project_id:
+        logger.debug(f"No project_id available. Returning empty results.")
+        return ClaimListResponse(
+            items=[],
+            total=0,
+            page=page,
+            page_size=page_size,
+        )
+    
+    # Verify user is a member of the project
+    await require_project_member(str(project_id), user, request)
 
     # Convert page/page_size to limit/offset
     limit = page_size
@@ -283,8 +337,8 @@ async def list_claims(
         search_text=search,
     )
 
-    claims = await shard.list_claims(filter=filter, limit=limit, offset=offset)
-    total = await shard.get_count(status=status.value if status else None)
+    claims = await shard.list_claims(filter=filter, limit=limit, offset=offset, project_id=project_id)
+    total = await shard.get_count(status=status.value if status else None, project_id=project_id)
 
     return ClaimListResponse(
         items=[_claim_to_response(c) for c in claims],

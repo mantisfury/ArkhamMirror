@@ -36,6 +36,16 @@ except ImportError:
 
 router = APIRouter(prefix="/api/summary", tags=["summary"])
 
+# Auth / project scoping
+try:
+    from arkham_frame.auth import current_active_user, require_project_member
+except ImportError:
+    async def current_active_user():
+        return None
+
+    async def require_project_member(*args, **kwargs):
+        return None
+
 
 def get_shard(request: Request):
     """Get the shard instance from app state."""
@@ -43,6 +53,23 @@ def get_shard(request: Request):
     if not shard:
         raise HTTPException(status_code=503, detail="Summary shard not available")
     return shard
+
+
+async def _require_active_project_id(request: Request, shard, user) -> str:
+    if not user:
+        raise HTTPException(status_code=401, detail="Authentication required")
+
+    frame = getattr(shard, "frame", None) or getattr(shard, "_frame", None)
+    if not frame or not hasattr(frame, "get_active_project_id"):
+        raise HTTPException(status_code=503, detail="Frame project service not available")
+
+    user_id_str = str(getattr(user, "id", "")).lower().strip()
+    project_id = await frame.get_active_project_id(user_id_str)
+    if not project_id:
+        raise HTTPException(status_code=400, detail="No active project selected")
+
+    await require_project_member(str(project_id), user, request)
+    return str(project_id)
 
 
 # === Pydantic API Models ===
@@ -635,6 +662,7 @@ async def browse_documents(
     page_size: int = Query(20, ge=1, le=100, description="Items per page"),
     q: Optional[str] = Query(None, description="Search query"),
     project_id: Optional[str] = Query(None, description="Filter by project"),
+    user=Depends(current_active_user),
 ):
     """
     Browse available documents for summarization.
@@ -666,6 +694,11 @@ async def browse_documents(
             query += " AND filename ILIKE :q"
             count_query += " AND filename ILIKE :q"
             params["q"] = f"%{q}%"
+
+        if not project_id:
+            project_id = await _require_active_project_id(request, shard, user)
+        else:
+            await require_project_member(str(project_id), user, request)
 
         if project_id:
             query += " AND project_id = :project_id"
@@ -739,9 +772,11 @@ async def browse_entities(
     page_size: int = Query(20, ge=1, le=100, description="Items per page"),
     q: Optional[str] = Query(None, description="Search query"),
     entity_type: Optional[str] = Query(None, description="Filter by entity type"),
+    project_id: Optional[str] = Query(None, description="Filter by project"),
+    user = Depends(current_active_user),
 ):
     """
-    Browse available entities for summarization.
+    Browse available entities for summarization. Scoped to active project.
     """
     shard = get_shard(request)
     db = shard._db
@@ -754,6 +789,12 @@ async def browse_entities(
     total = 0
 
     try:
+        # Get active project_id if not provided
+        if not project_id:
+            project_id = await _require_active_project_id(request, shard, user)
+        else:
+            await require_project_member(str(project_id), user, request)
+
         count_query = "SELECT COUNT(*) as count FROM arkham_entities WHERE 1=1"
         query = """
             SELECT id, name, entity_type, mention_count, created_at
@@ -761,6 +802,11 @@ async def browse_entities(
             WHERE 1=1
         """
         params = {}
+
+        if project_id:
+            query += " AND project_id = :project_id"
+            count_query += " AND project_id = :project_id"
+            params["project_id"] = project_id
 
         if q:
             query += " AND name ILIKE :q"
@@ -863,9 +909,11 @@ async def browse_claims(
     page_size: int = Query(20, ge=1, le=100, description="Items per page"),
     q: Optional[str] = Query(None, description="Search query"),
     status: Optional[str] = Query(None, description="Filter by status"),
+    project_id: Optional[str] = Query(None, description="Filter by project"),
+    user = Depends(current_active_user),
 ):
     """
-    Browse available claims for summarization.
+    Browse available claims for summarization. Scoped to active project.
     """
     shard = get_shard(request)
     db = shard._db
@@ -878,6 +926,12 @@ async def browse_claims(
     total = 0
 
     try:
+        # Get active project_id if not provided
+        if not project_id:
+            project_id = await _require_active_project_id(request, shard, user)
+        else:
+            await require_project_member(str(project_id), user, request)
+
         count_query = "SELECT COUNT(*) as count FROM arkham_claims WHERE 1=1"
         query = """
             SELECT id, text, claim_type, status, confidence, created_at
@@ -885,6 +939,11 @@ async def browse_claims(
             WHERE 1=1
         """
         params = {}
+
+        if project_id:
+            query += " AND project_id = :project_id"
+            count_query += " AND project_id = :project_id"
+            params["project_id"] = project_id
 
         if q:
             query += " AND text ILIKE :q"
@@ -930,9 +989,11 @@ async def browse_timeline_events(
     page_size: int = Query(20, ge=1, le=100, description="Items per page"),
     q: Optional[str] = Query(None, description="Search query"),
     event_type: Optional[str] = Query(None, description="Filter by event type"),
+    project_id: Optional[str] = Query(None, description="Filter by project"),
+    user = Depends(current_active_user),
 ):
     """
-    Browse available timeline events for summarization.
+    Browse available timeline events for summarization. Scoped to active project.
     """
     shard = get_shard(request)
     db = shard._db
@@ -945,22 +1006,34 @@ async def browse_timeline_events(
     total = 0
 
     try:
-        count_query = "SELECT COUNT(*) as count FROM arkham_timeline_events WHERE 1=1"
-        query = """
-            SELECT id, text, event_type, date_start, confidence, created_at
-            FROM arkham_timeline_events
-            WHERE 1=1
+        # Get active project_id if not provided
+        if not project_id:
+            project_id = await _require_active_project_id(request, shard, user)
+        else:
+            await require_project_member(str(project_id), user, request)
+
+        # Filter timeline events by project via document join
+        count_query = """
+            SELECT COUNT(*) as count FROM arkham_timeline_events e
+            INNER JOIN arkham_frame.documents d ON e.document_id = d.id
+            WHERE d.project_id = :project_id
         """
-        params = {}
+        query = """
+            SELECT e.id, e.text, e.event_type, e.date_start, e.confidence, e.created_at
+            FROM arkham_timeline_events e
+            INNER JOIN arkham_frame.documents d ON e.document_id = d.id
+            WHERE d.project_id = :project_id
+        """
+        params = {"project_id": project_id}
 
         if q:
-            query += " AND text ILIKE :q"
-            count_query += " AND text ILIKE :q"
+            query += " AND e.text ILIKE :q"
+            count_query += " AND e.text ILIKE :q"
             params["q"] = f"%{q}%"
 
         if event_type:
-            query += " AND event_type = :event_type"
-            count_query += " AND event_type = :event_type"
+            query += " AND e.event_type = :event_type"
+            count_query += " AND e.event_type = :event_type"
             params["event_type"] = event_type
 
         count_row = await db.fetch_one(count_query, params)

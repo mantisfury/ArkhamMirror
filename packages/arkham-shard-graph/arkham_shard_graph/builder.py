@@ -141,28 +141,33 @@ class GraphBuilder:
                 # Use arkham_frame.entities table (core entity storage)
                 query = """
                     SELECT
-                        id,
-                        text as label,
-                        entity_type,
-                        metadata,
+                        e.id,
+                        e.text as label,
+                        e.entity_type,
+                        e.metadata,
                         1 as document_count,
-                        document_id
-                    FROM arkham_frame.entities
-                    WHERE canonical_id IS NULL
+                        e.document_id
+                    FROM arkham_frame.entities e
+                    WHERE e.canonical_id IS NULL
                 """
                 params: dict[str, Any] = {}
 
+                # Filter by project_id (required for data isolation)
+                if project_id:
+                    query += " AND e.project_id = :project_id"
+                    params["project_id"] = project_id
+
                 # Filter by entity types
                 if entity_types:
-                    query += " AND entity_type = ANY(:entity_types)"
+                    query += " AND e.entity_type = ANY(:entity_types)"
                     params["entity_types"] = entity_types
 
                 # Filter by documents (if specified)
                 if document_ids:
-                    query += " AND document_id = ANY(:document_ids)"
+                    query += " AND e.document_id = ANY(:document_ids)"
                     params["document_ids"] = document_ids
 
-                query += " ORDER BY created_at DESC"
+                query += " ORDER BY e.created_at DESC"
                 query += " LIMIT 500"  # Reasonable limit for visualization
 
                 rows = await self.db_service.fetch_all(query, params)

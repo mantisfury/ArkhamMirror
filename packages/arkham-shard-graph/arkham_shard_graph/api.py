@@ -1739,6 +1739,10 @@ async def get_statistics(project_id: str = Query(...)) -> dict[str, Any]:
 
         return stats.to_dict()
 
+    except ValueError as e:
+        # Storage uses ValueError to signal "not found" - return 404, not 500.
+        detail = str(e) or "Graph not found"
+        raise HTTPException(status_code=404, detail=detail)
     except Exception as e:
         logger.error(f"Error calculating statistics: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
@@ -1769,6 +1773,10 @@ async def get_graph(project_id: str) -> GraphResponse:
             metadata=graph.metadata,
         )
 
+    except ValueError as e:
+        # Storage uses ValueError to signal "not found" - return 404, not 500.
+        detail = str(e) or "Graph not found"
+        raise HTTPException(status_code=404, detail=detail)
     except Exception as e:
         logger.error(f"Error getting graph: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))

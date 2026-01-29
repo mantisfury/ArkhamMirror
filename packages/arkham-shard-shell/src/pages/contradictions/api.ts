@@ -284,16 +284,25 @@ export interface DocumentItem {
 
 export async function fetchDocuments(
   page: number = 1,
-  pageSize: number = 100
+  pageSize: number = 100,
+  projectId?: string | null
 ): Promise<{
   items: DocumentItem[];
   total: number;
   page: number;
   page_size: number;
 }> {
-  const response = await apiFetch(`/api/documents/items?page=${page}&page_size=${pageSize}`);
+  const params = new URLSearchParams();
+  params.set('page', page.toString());
+  params.set('page_size', pageSize.toString());
+  if (projectId) {
+    params.set('project_id', projectId);
+  }
+  
+  const response = await apiFetch(`/api/documents/items?${params.toString()}`);
   if (!response.ok) {
-    throw new Error('Failed to fetch documents');
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(errorData.detail || `Failed to fetch documents: ${response.status}`);
   }
   return response.json();
 }

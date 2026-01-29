@@ -69,6 +69,9 @@ class SessionService:
         Returns:
             Active project ID or None if not set
         """
+        # Normalize user_id to lowercase for consistent UUID format
+        user_id = str(user_id).lower().strip()
+        
         if not self._initialized:
             # Fallback to cache
             if user_id in self._cache:
@@ -90,8 +93,8 @@ class SessionService:
 
             # Query database
             row = await self.db.fetch_one(
-                "SELECT active_project_id, expires_at FROM arkham_sessions WHERE user_id = ?",
-                [str(user_id)]
+                "SELECT active_project_id, expires_at FROM arkham_sessions WHERE LOWER(user_id) = LOWER(?)",
+                [user_id]
             )
             
             if not row:
@@ -136,6 +139,9 @@ class SessionService:
             project_id: Project ID to set as active, or None to clear
             ttl_days: Time to live in days (default: 30)
         """
+        # Normalize user_id to lowercase for consistent UUID format
+        user_id = str(user_id).lower().strip()
+        
         if not self._initialized:
             # Fallback to cache only
             if project_id:
@@ -158,7 +164,7 @@ class SessionService:
                         updated_at = ?,
                         expires_at = ?
                 """, [
-                    str(user_id),
+                    user_id,
                     str(project_id),
                     now.isoformat(),
                     expires_at.isoformat() if expires_at else None,

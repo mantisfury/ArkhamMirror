@@ -8,10 +8,12 @@
  * - Chi-square statistical tests
  */
 
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import { Icon } from '../../components/common/Icon';
 import { useToast } from '../../context/ToastContext';
 import { useFetch } from '../../hooks/useFetch';
+import { useProject } from '../../context/ProjectContext';
+import { apiFetch } from '../../utils/api';
 import * as api from './api';
 import type {
   HiddenContentScan,
@@ -27,12 +29,16 @@ interface HiddenContentTabProps {
 
 export function HiddenContentTab({ onScanComplete }: HiddenContentTabProps) {
   const { toast } = useToast();
+  const { activeProjectId, isActive, loading: projectLoading } = useProject();
 
   // State
   const [scanning, setScanning] = useState(false);
   const [selectedDocId, setSelectedDocId] = useState<string>('');
   const [selectedScan, setSelectedScan] = useState<HiddenContentScan | null>(null);
   const [recentScans, setRecentScans] = useState<HiddenContentScan[]>([]);
+  const [documents, setDocuments] = useState<Array<{ id: string; filename: string; file_type: string }>>([]);
+  const [loadingDocs, setLoadingDocs] = useState(true);
+  const [docError, setDocError] = useState<string | null>(null);
 
   // Fetch stats
   const { data: statsData, refetch: refetchStats } = useFetch<{ stats: HiddenContentStats }>(
@@ -40,11 +46,58 @@ export function HiddenContentTab({ onScanComplete }: HiddenContentTabProps) {
   );
   const stats = statsData?.stats;
 
-  // Fetch documents for selection
-  const { data: documentsData } = useFetch<{ items: Array<{ id: string; filename: string; file_type: string }> }>(
-    '/api/documents/items?limit=100'
-  );
-  const documents = documentsData?.items || [];
+  // Fetch documents for selection (scoped to active project)
+  useEffect(() => {
+    // Wait for project context to load before fetching documents
+    if (projectLoading) {
+      return;
+    }
+
+    // Check if there's an active project
+    if (!isActive || !activeProjectId) {
+      setLoadingDocs(false);
+      setDocError('No active project selected. Please select a project first.');
+      setDocuments([]);
+      return;
+    }
+
+    // Fetch available documents from the correct endpoint
+    const loadDocuments = async () => {
+      setLoadingDocs(true);
+      setDocError(null);
+      try {
+        const params = new URLSearchParams();
+        params.set('page', '1');
+        params.set('page_size', '100');
+        params.set('project_id', activeProjectId);
+        
+        const response = await apiFetch(`/api/documents/items?${params.toString()}`);
+        if (!response.ok) {
+          const errorData = await response.json().catch(() => ({}));
+          throw new Error(errorData.detail || `Failed to fetch documents: ${response.status}`);
+        }
+        
+        const data = await response.json();
+        
+        if (!data.items || data.items.length === 0) {
+          setDocError('No documents found in the active project. Please ingest documents first.');
+          setDocuments([]);
+          return;
+        }
+        
+        setDocuments(data.items);
+      } catch (err) {
+        const errorMsg = err instanceof Error ? err.message : 'Failed to fetch documents';
+        console.error('Failed to fetch documents:', err);
+        setDocError(errorMsg);
+        toast.error(`Failed to load documents: ${errorMsg}`);
+        setDocuments([]);
+      } finally {
+        setLoadingDocs(false);
+      }
+    };
+    loadDocuments();
+  }, [activeProjectId, isActive, projectLoading, toast]);
 
   // Scan a document
   const handleScan = useCallback(async () => {
@@ -128,18 +181,32 @@ export function HiddenContentTab({ onScanComplete }: HiddenContentTabProps) {
       <div className="hc-scan-controls">
         <div className="hc-scan-form">
           <label>Select Document</label>
-          <select
-            value={selectedDocId}
-            onChange={(e) => setSelectedDocId(e.target.value)}
-            disabled={scanning}
-          >
-            <option value="">-- Select a document --</option>
-            {documents.map(doc => (
-              <option key={doc.id} value={doc.id}>
-                {doc.filename} ({doc.file_type || 'unknown'})
-              </option>
-            ))}
-          </select>
+          {projectLoading || loadingDocs ? (
+            <div style={{ padding: '0.5rem', color: 'var(--text-secondary)' }}>
+              <Icon name="Loader2" size={16} className="spin" />
+              <span style={{ marginLeft: '0.5rem' }}>
+                {projectLoading ? 'Loading project...' : 'Loading documents...'}
+              </span>
+            </div>
+          ) : docError ? (
+            <div style={{ padding: '0.5rem', color: 'var(--error)' }}>
+              <Icon name="AlertCircle" size={16} />
+              <span style={{ marginLeft: '0.5rem' }}>{docError}</span>
+            </div>
+          ) : (
+            <select
+              value={selectedDocId}
+              onChange={(e) => setSelectedDocId(e.target.value)}
+              disabled={scanning}
+            >
+              <option value="">-- Select a document --</option>
+              {documents.map(doc => (
+                <option key={doc.id} value={doc.id}>
+                  {doc.filename} ({doc.file_type || 'unknown'})
+                </option>
+              ))}
+            </select>
+          )}
         </div>
 
         <div className="hc-scan-actions">

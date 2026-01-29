@@ -10,6 +10,7 @@ import { Icon } from '../../components/common/Icon';
 import { LoadingSkeleton } from '../../components/common/LoadingSkeleton';
 import { AIAnalystButton } from '../../components/AIAnalyst';
 import { useToast } from '../../context/ToastContext';
+import { useProject } from '../../context/ProjectContext';
 
 import * as api from './api';
 import type {
@@ -500,37 +501,68 @@ interface AnalyzeDialogProps {
 
 function AnalyzeDialog({ onClose, onComplete }: AnalyzeDialogProps) {
   const { toast } = useToast();
+  const { activeProjectId, isActive, loading: projectLoading } = useProject();
   const [selectedDocIds, setSelectedDocIds] = useState<Set<string>>(new Set());
   const [threshold, setThreshold] = useState(0.7);
   const [useLLM, setUseLLM] = useState(true);
   const [analyzing, setAnalyzing] = useState(false);
   const [documents, setDocuments] = useState<Array<{ id: string; filename: string; title: string; status: string }>>([]);
   const [loadingDocs, setLoadingDocs] = useState(true);
+  const [docError, setDocError] = useState<string | null>(null);
   const [progress, setProgress] = useState({ current: 0, total: 0, found: 0 });
   const [searchQuery, setSearchQuery] = useState('');
 
   useEffect(() => {
+    // Wait for project context to load before fetching documents
+    if (projectLoading) {
+      return;
+    }
+
+    // Check if there's an active project
+    if (!isActive || !activeProjectId) {
+      setLoadingDocs(false);
+      setDocError('No active project selected. Please select a project first.');
+      return;
+    }
+
     // Fetch available documents from the correct endpoint
     const loadDocuments = async () => {
+      setLoadingDocs(true);
+      setDocError(null);
       try {
-        console.log('Fetching documents from /api/documents/items...');
-        const data = await api.fetchDocuments(1, 100);
+        console.log('Fetching documents from /api/documents/items for project:', activeProjectId);
+        const data = await api.fetchDocuments(1, 100, activeProjectId || undefined);
         console.log('Received data:', data);
+        console.log('Total documents:', data.total, 'Items:', data.items?.length);
+        
+        if (!data.items || data.items.length === 0) {
+          setDocError('No documents found in the active project. Please ingest documents first.');
+          setDocuments([]);
+          return;
+        }
+
         // Only include processed documents
         const processedDocs = (data.items || []).filter(
           (doc: { status: string }) => doc.status === 'processed' || doc.status === 'indexed'
         );
         console.log('Filtered to', processedDocs.length, 'processed documents');
+        
+        if (processedDocs.length === 0) {
+          setDocError('No processed documents found. Documents must be processed before analysis.');
+        }
+        
         setDocuments(processedDocs);
       } catch (err) {
+        const errorMsg = err instanceof Error ? err.message : 'Failed to fetch documents';
         console.error('Failed to fetch documents:', err);
+        setDocError(errorMsg);
+        toast.error(`Failed to load documents: ${errorMsg}`);
       } finally {
         setLoadingDocs(false);
       }
     };
     loadDocuments();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [activeProjectId, isActive, projectLoading, toast]);
 
   // Filter documents by search query
   const filteredDocuments = documents.filter(doc => {
@@ -642,10 +674,21 @@ function AnalyzeDialog({ onClose, onComplete }: AnalyzeDialogProps) {
               )}
             </div>
 
-            {loadingDocs ? (
+            {projectLoading || loadingDocs ? (
               <div className="document-list-loading">
                 <Icon name="Loader2" size={24} className="spin" />
-                <span>Loading documents...</span>
+                <span>{projectLoading ? 'Loading project...' : 'Loading documents...'}</span>
+              </div>
+            ) : docError ? (
+              <div className="document-list-empty">
+                <Icon name="AlertCircle" size={32} style={{ color: 'var(--error)' }} />
+                <p style={{ color: 'var(--error)' }}>{docError}</p>
+                {!isActive && (
+                  <button className="btn btn-primary" style={{ marginTop: '1rem' }} onClick={() => window.location.href = '/settings'}>
+                    <Icon name="Settings" size={16} />
+                    Go to Settings
+                  </button>
+                )}
               </div>
             ) : documents.length === 0 ? (
               <div className="document-list-empty">

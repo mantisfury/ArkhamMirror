@@ -564,8 +564,9 @@ class EntityService:
         document_id: Optional[str] = None,
         canonical_id: Optional[str] = None,
         search_text: Optional[str] = None,
+        project_id: Optional[str] = None,
     ) -> List[Entity]:
-        """List entities with filters."""
+        """List entities with filters. Optionally filter by project_id for data isolation."""
         entities = []
 
         if self.db and self.db._connected:
@@ -581,6 +582,11 @@ class EntityService:
                     WHERE 1=1
                 """
                 params = {"offset": offset, "limit": limit}
+
+                # Add project filtering - required for data isolation
+                if project_id:
+                    query += " AND project_id = :project_id"
+                    params["project_id"] = project_id
 
                 if entity_type:
                     query += " AND entity_type = :entity_type"

@@ -1036,7 +1036,7 @@ class AnomaliesShard(ArkhamShard):
             }
         )
 
-    async def get_hidden_content_scan(self, scan_id: str) -> Optional[Dict[str, Any]]:
+    async def get_hidden_content_scan(self, scan_id: str, project_id: str | None = None) -> Optional[Dict[str, Any]]:
         """
         Get a hidden content scan by ID.
 
@@ -1050,8 +1050,18 @@ class AnomaliesShard(ArkhamShard):
             return None
 
         tenant_id = self.get_tenant_id_or_none()
-        query = "SELECT * FROM arkham_anomalies.hidden_content_scans WHERE id = :id"
         params: Dict[str, Any] = {"id": scan_id}
+
+        if project_id:
+            query = """
+                SELECT s.*
+                FROM arkham_anomalies.hidden_content_scans s
+                INNER JOIN arkham_frame.documents d ON d.id = s.doc_id
+                WHERE s.id = :id AND d.project_id = :project_id
+            """
+            params["project_id"] = str(project_id)
+        else:
+            query = "SELECT * FROM arkham_anomalies.hidden_content_scans WHERE id = :id"
 
         if tenant_id:
             query += " AND tenant_id = :tenant_id"
@@ -1060,7 +1070,7 @@ class AnomaliesShard(ArkhamShard):
         row = await self._db_service.fetch_one(query, params)
         return dict(row) if row else None
 
-    async def get_document_hidden_scans(self, doc_id: str) -> list[Dict[str, Any]]:
+    async def get_document_hidden_scans(self, doc_id: str, project_id: str | None = None) -> list[Dict[str, Any]]:
         """
         Get all hidden content scans for a document.
 
@@ -1074,11 +1084,21 @@ class AnomaliesShard(ArkhamShard):
             return []
 
         tenant_id = self.get_tenant_id_or_none()
-        query = """
-            SELECT * FROM arkham_anomalies.hidden_content_scans
-            WHERE doc_id = :doc_id
-        """
         params: Dict[str, Any] = {"doc_id": doc_id}
+
+        if project_id:
+            query = """
+                SELECT s.*
+                FROM arkham_anomalies.hidden_content_scans s
+                INNER JOIN arkham_frame.documents d ON d.id = s.doc_id
+                WHERE s.doc_id = :doc_id AND d.project_id = :project_id
+            """
+            params["project_id"] = str(project_id)
+        else:
+            query = """
+                SELECT * FROM arkham_anomalies.hidden_content_scans
+                WHERE doc_id = :doc_id
+            """
 
         if tenant_id:
             query += " AND tenant_id = :tenant_id"
@@ -1088,7 +1108,7 @@ class AnomaliesShard(ArkhamShard):
         rows = await self._db_service.fetch_all(query, params)
         return [dict(row) for row in rows] if rows else []
 
-    async def get_hidden_content_stats(self) -> Dict[str, Any]:
+    async def get_hidden_content_stats(self, project_id: str | None = None) -> Dict[str, Any]:
         """
         Get hidden content detection statistics.
 
@@ -1099,53 +1119,62 @@ class AnomaliesShard(ArkhamShard):
             return {}
 
         tenant_id = self.get_tenant_id_or_none()
-        tenant_filter = ""
         params: Dict[str, Any] = {}
 
+        joins = ""
+        where_clauses = []
+
+        if project_id:
+            joins = " INNER JOIN arkham_frame.documents d ON d.id = s.doc_id"
+            where_clauses.append("d.project_id = :project_id")
+            params["project_id"] = str(project_id)
+
         if tenant_id:
-            tenant_filter = " WHERE tenant_id = :tenant_id"
+            where_clauses.append("s.tenant_id = :tenant_id")
             params["tenant_id"] = str(tenant_id)
+
+        where = (" WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
 
         # Total scans
         total_row = await self._db_service.fetch_one(
-            f"SELECT COUNT(*) as count FROM arkham_anomalies.hidden_content_scans{tenant_filter}",
-            params
+            f"SELECT COUNT(*) as count FROM arkham_anomalies.hidden_content_scans s{joins}{where}",
+            params,
         )
         total_scans = total_row.get("count", 0) if total_row else 0
 
         # Scans by type
         type_rows = await self._db_service.fetch_all(
-            f"""SELECT scan_type, COUNT(*) as count
-                FROM arkham_anomalies.hidden_content_scans{tenant_filter}
-                GROUP BY scan_type""",
-            params
+            f"""SELECT s.scan_type, COUNT(*) as count
+                FROM arkham_anomalies.hidden_content_scans s{joins}{where}
+                GROUP BY s.scan_type""",
+            params,
         )
         scans_by_type = {row["scan_type"]: row["count"] for row in type_rows} if type_rows else {}
 
         # Documents with findings
         findings_row = await self._db_service.fetch_one(
-            f"""SELECT COUNT(DISTINCT doc_id) as count
-                FROM arkham_anomalies.hidden_content_scans
-                WHERE findings != '[]'{' AND tenant_id = :tenant_id' if tenant_id else ''}""",
-            params
+            f"""SELECT COUNT(DISTINCT s.doc_id) as count
+                FROM arkham_anomalies.hidden_content_scans s{joins}
+                WHERE s.findings != '[]'{(' AND ' + ' AND '.join(where_clauses)) if where_clauses else ''}""",
+            params,
         )
         docs_with_findings = findings_row.get("count", 0) if findings_row else 0
 
         # High entropy files
         entropy_row = await self._db_service.fetch_one(
             f"""SELECT COUNT(*) as count
-                FROM arkham_anomalies.hidden_content_scans
-                WHERE entropy_score >= 7.5{' AND tenant_id = :tenant_id' if tenant_id else ''}""",
-            params
+                FROM arkham_anomalies.hidden_content_scans s{joins}
+                WHERE s.entropy_score >= 7.5{(' AND ' + ' AND '.join(where_clauses)) if where_clauses else ''}""",
+            params,
         )
         high_entropy = entropy_row.get("count", 0) if entropy_row else 0
 
         # Stego candidates
         stego_row = await self._db_service.fetch_one(
             f"""SELECT COUNT(*) as count
-                FROM arkham_anomalies.hidden_content_scans
-                WHERE stego_confidence >= 0.5{' AND tenant_id = :tenant_id' if tenant_id else ''}""",
-            params
+                FROM arkham_anomalies.hidden_content_scans s{joins}
+                WHERE s.stego_confidence >= 0.5{(' AND ' + ' AND '.join(where_clauses)) if where_clauses else ''}""",
+            params,
         )
         stego_candidates = stego_row.get("count", 0) if stego_row else 0
 

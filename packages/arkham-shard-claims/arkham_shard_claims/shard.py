@@ -165,7 +165,7 @@ class ClaimsShard(ArkhamShard):
         """)
 
         # ===========================================
-        # Multi-tenancy Migration
+        # Multi-tenancy & Project Scoping Migration
         # ===========================================
         await self._db.execute("""
             DO $$
@@ -174,6 +174,7 @@ class ClaimsShard(ArkhamShard):
                 tbl TEXT;
             BEGIN
                 FOREACH tbl IN ARRAY tables_to_update LOOP
+                    -- Add tenant_id if not exists
                     IF NOT EXISTS (
                         SELECT 1 FROM information_schema.columns
                         WHERE table_schema = 'public'
@@ -182,6 +183,18 @@ class ClaimsShard(ArkhamShard):
                     ) THEN
                         EXECUTE format('ALTER TABLE %I ADD COLUMN tenant_id UUID', tbl);
                     END IF;
+                    
+                    -- Add project_id if not exists (for claims only)
+                    IF tbl = 'arkham_claims' THEN
+                        IF NOT EXISTS (
+                            SELECT 1 FROM information_schema.columns
+                            WHERE table_schema = 'public'
+                            AND table_name = tbl
+                            AND column_name = 'project_id'
+                        ) THEN
+                            EXECUTE format('ALTER TABLE %I ADD COLUMN project_id TEXT', tbl);
+                        END IF;
+                    END IF;
                 END LOOP;
             END $$;
         """)
@@ -189,6 +202,11 @@ class ClaimsShard(ArkhamShard):
         await self._db.execute("""
             CREATE INDEX IF NOT EXISTS idx_arkham_claims_tenant
             ON arkham_claims(tenant_id)
+        """)
+
+        await self._db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_arkham_claims_project
+            ON arkham_claims(project_id)
         """)
 
         await self._db.execute("""
@@ -632,6 +650,7 @@ Return ONLY a valid JSON array, no other text. Example format:
         filter: Optional[ClaimFilter] = None,
         limit: int = 50,
         offset: int = 0,
+        project_id: Optional[str] = None,
     ) -> List[Claim]:
         """List claims with optional filtering."""
         if not self._db:
@@ -639,6 +658,11 @@ Return ONLY a valid JSON array, no other text. Example format:
 
         query = "SELECT * FROM arkham_claims WHERE 1=1"
         params: Dict[str, Any] = {}
+
+        # Add project filtering - required for data isolation
+        if project_id:
+            query += " AND project_id = :project_id"
+            params["project_id"] = str(project_id)
 
         # Add tenant filtering if tenant context is available
         tenant_id = self.get_tenant_id_or_none()
@@ -1068,13 +1092,18 @@ Return ONLY a valid JSON array, no other text. Example format:
             avg_evidence_per_claim=avg_ev["avg"] if avg_ev and avg_ev["avg"] else 0.0,
         )
 
-    async def get_count(self, status: Optional[str] = None) -> int:
-        """Get count of claims, optionally filtered by status."""
+    async def get_count(self, status: Optional[str] = None, project_id: Optional[str] = None) -> int:
+        """Get count of claims, optionally filtered by status and project_id."""
         if not self._db:
             return 0
 
         query = "SELECT COUNT(*) as count FROM arkham_claims WHERE 1=1"
         params: Dict[str, Any] = {}
+
+        # Add project filtering - required for data isolation
+        if project_id:
+            query += " AND project_id = :project_id"
+            params["project_id"] = str(project_id)
 
         # Add tenant filtering if tenant context is available
         tenant_id = self.get_tenant_id_or_none()

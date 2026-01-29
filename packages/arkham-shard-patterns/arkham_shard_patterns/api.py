@@ -7,7 +7,7 @@ FastAPI routes for pattern detection and analysis.
 import time
 from typing import Any, Optional, TYPE_CHECKING
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
@@ -33,6 +33,16 @@ from .models import (
 if TYPE_CHECKING:
     from .shard import PatternsShard
 
+# Auth / project scoping
+try:
+    from arkham_frame.auth import current_active_user, require_project_member
+except ImportError:
+    async def current_active_user():
+        return None
+
+    async def require_project_member(*args, **kwargs):
+        return None
+
 # Import wide event logging utilities (with fallback)
 try:
     from arkham_frame import log_operation
@@ -53,6 +63,23 @@ def get_shard(request: Request) -> "PatternsShard":
     if not shard:
         raise HTTPException(status_code=503, detail="Patterns shard not available")
     return shard
+
+
+async def _require_active_project_id(request: Request, shard: "PatternsShard", user: Any) -> str:
+    if not user:
+        raise HTTPException(status_code=401, detail="Authentication required")
+
+    frame = getattr(shard, "frame", None) or getattr(shard, "_frame", None)
+    if not frame or not hasattr(frame, "get_active_project_id"):
+        raise HTTPException(status_code=503, detail="Frame project service not available")
+
+    user_id_str = str(getattr(user, "id", "")).lower().strip()
+    project_id = await frame.get_active_project_id(user_id_str)
+    if not project_id:
+        raise HTTPException(status_code=400, detail="No active project selected")
+
+    await require_project_member(str(project_id), user, request)
+    return str(project_id)
 
 
 # === Health & Status ===
@@ -301,7 +328,11 @@ async def remove_match(pattern_id: str, match_id: str, request: Request):
 # === Analysis ===
 
 @router.post("/analyze", response_model=PatternAnalysisResult)
-async def analyze_for_patterns(body: PatternAnalysisRequest, request: Request):
+async def analyze_for_patterns(
+    body: PatternAnalysisRequest,
+    request: Request,
+    user=Depends(current_active_user),
+):
     """Analyze documents or text for patterns."""
     with log_operation("patterns.analyze") as event:
         try:
@@ -318,7 +349,8 @@ async def analyze_for_patterns(body: PatternAnalysisRequest, request: Request):
                 )
 
             shard = get_shard(request)
-            result = await shard.analyze_documents(body)
+            active_project_id = await _require_active_project_id(request, shard, user)
+            result = await shard.analyze_documents(body, project_id=active_project_id)
 
             duration_ms = (time.time() - start_time) * 1000
 

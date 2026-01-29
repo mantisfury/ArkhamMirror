@@ -4,9 +4,18 @@ import logging
 import time
 from typing import Annotated, Any, Optional, TYPE_CHECKING
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
+
+try:
+    from arkham_frame.auth import current_active_user, require_project_member
+except ImportError:
+    # Fallback if auth not available
+    async def current_active_user():
+        return None
+    async def require_project_member(*args, **kwargs):
+        pass
 
 from .models import (
     TimelineEvent,
@@ -202,6 +211,28 @@ async def get_event_count(request: Request):
     return {"count": count}
 
 
+async def _require_active_project_id(request: Request, shard, user: Any) -> str:
+    """
+    Resolve the user's active project_id and validate membership.
+
+    Returns project_id (string). Raises HTTPException if none.
+    """
+    if not user:
+        raise HTTPException(status_code=401, detail="Authentication required")
+
+    frame = getattr(shard, "frame", None) or getattr(shard, "_frame", None)
+    if not frame or not hasattr(frame, "get_active_project_id"):
+        raise HTTPException(status_code=503, detail="Frame project service not available")
+
+    user_id_str = str(getattr(user, "id", "")).lower().strip()
+    project_id = await frame.get_active_project_id(user_id_str)
+    if not project_id:
+        raise HTTPException(status_code=400, detail="No active project selected")
+
+    await require_project_member(str(project_id), user, request)
+    return str(project_id)
+
+
 @router.get("/events")
 async def list_all_events(
     request: Request,
@@ -209,26 +240,34 @@ async def list_all_events(
     offset: int = Query(0, ge=0),
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
+    user = Depends(current_active_user),
 ):
-    """List all timeline events with pagination and optional date filtering."""
+    """List all timeline events with pagination and optional date filtering. Scoped to active project."""
     shard = get_shard(request)
 
     if not shard.database_service:
         raise HTTPException(status_code=503, detail="Database service not available")
 
-    # Build query
-    query = "SELECT * FROM arkham_timeline_events WHERE 1=1"
-    params = {}
+    # Get active project_id
+    project_id = await _require_active_project_id(request, shard, user)
+
+    # Build query with project filtering via document join
+    query = """
+        SELECT e.* FROM arkham_timeline_events e
+        INNER JOIN arkham_frame.documents d ON e.document_id = d.id
+        WHERE d.project_id = :project_id
+    """
+    params = {"project_id": project_id}
 
     if start_date:
-        query += " AND date_start >= :start_date"
+        query += " AND e.date_start >= :start_date"
         params["start_date"] = start_date
 
     if end_date:
-        query += " AND date_start <= :end_date"
+        query += " AND e.date_start <= :end_date"
         params["end_date"] = end_date
 
-    query += " ORDER BY date_start DESC LIMIT :limit OFFSET :offset"
+    query += " ORDER BY e.date_start DESC LIMIT :limit OFFSET :offset"
     params["limit"] = limit
     params["offset"] = offset
 

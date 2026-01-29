@@ -521,8 +521,11 @@ class DocumentsShard(ArkhamShard):
             params["file_type"] = f"%{file_type}%"
 
         if project_id:
+            # Normalize project_id to string for consistent matching
+            project_id_str = str(project_id).strip()
             query += " AND project_id = :project_id"
-            params["project_id"] = project_id
+            params["project_id"] = project_id_str
+            logger.debug(f"Filtering documents by project_id: {project_id_str}")
 
         # Add sorting
         valid_sort_fields = ["created_at", "updated_at", "filename", "file_size", "status"]

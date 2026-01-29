@@ -170,7 +170,8 @@ async def get_active_project(
     from ..main import get_frame
 
     frame = get_frame()
-    user_id = str(user.id) if user else None
+    # Normalize UUID to lowercase string for consistent lookup
+    user_id = str(user.id).lower().strip() if user else None
 
     if not user_id:
         return {
@@ -244,7 +245,8 @@ async def set_active_project(
         )
 
     frame = get_frame()
-    user_id = str(user.id)
+    # Normalize UUID to lowercase string for consistent storage
+    user_id = str(user.id).lower().strip()
 
     if request.project_id is None:
         # Clear active project

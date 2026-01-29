@@ -30,7 +30,11 @@ export async function apiFetch(
     headers.set('Content-Type', 'application/json');
   }
 
-  const response = await fetch(url, { ...options, headers });
+  const response = await fetch(url, { 
+    ...options, 
+    headers,
+    credentials: 'include', // Include cookies for session management
+  });
 
   // Handle 401 Unauthorized - token expired or invalid
   if (response.status === 401) {

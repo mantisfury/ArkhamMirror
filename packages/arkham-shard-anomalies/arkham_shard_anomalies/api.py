@@ -32,9 +32,19 @@ from .models import (
 )
 
 try:
-    from arkham_frame.auth import current_optional_user
+    from arkham_frame.auth import (
+        current_active_user,
+        current_optional_user,
+        require_project_member,
+    )
 except ImportError:
+    async def current_active_user():
+        return None
+
     async def current_optional_user():
+        return None
+
+    async def require_project_member(*args, **kwargs):
         return None
 
 # Import wide event logging utilities (with fallback)
@@ -80,6 +90,28 @@ def get_shard(request: Request) -> "AnomaliesShard":
     if not shard:
         raise HTTPException(status_code=503, detail="Anomalies shard not available")
     return shard
+
+
+async def _require_active_project_id(request: Request, shard: "AnomaliesShard", user: Any) -> str:
+    """
+    Resolve the user's active project_id and validate membership.
+
+    Returns project_id (string). Raises HTTPException if none.
+    """
+    if not user:
+        raise HTTPException(status_code=401, detail="Authentication required")
+
+    frame = getattr(shard, "frame", None) or getattr(shard, "_frame", None)
+    if not frame or not hasattr(frame, "get_active_project_id"):
+        raise HTTPException(status_code=503, detail="Frame project service not available")
+
+    user_id_str = str(getattr(user, "id", "")).lower().strip()
+    project_id = await frame.get_active_project_id(user_id_str)
+    if not project_id:
+        raise HTTPException(status_code=400, detail="No active project selected")
+
+    await require_project_member(str(project_id), user, request)
+    return str(project_id)
 
 
 # --- Request/Response Models ---
@@ -182,7 +214,8 @@ async def detect_anomalies(request: DetectRequest):
             if not doc_ids and _db:
                 # If no specific doc_ids, get all documents from arkham_frame.documents
                 rows = await _db.fetch_all(
-                    "SELECT id FROM arkham_frame.documents LIMIT 1000"
+                    "SELECT id FROM arkham_frame.documents WHERE project_id = :project_id LIMIT 1000",
+                    {"project_id": str(request.project_id)},
                 )
                 doc_ids = [row["id"] for row in rows] if rows else []
 
@@ -1207,6 +1240,7 @@ class HiddenContentStatsResponse(BaseModel):
 async def scan_hidden_content(
     request: Request,
     body: HiddenContentScanRequest,
+    user=Depends(current_active_user),
 ):
     """
     Scan a document for hidden content.
@@ -1224,6 +1258,7 @@ async def scan_hidden_content(
         Scan results with findings
     """
     shard = get_shard(request)
+    active_project_id = await _require_active_project_id(request, shard, user)
 
     if not shard.hidden_detector:
         raise HTTPException(
@@ -1237,8 +1272,8 @@ async def scan_hidden_content(
 
     doc_row = await _db.fetch_one(
         """SELECT id, filename, storage_id, mime_type, file_size, metadata
-           FROM arkham_frame.documents WHERE id = :doc_id""",
-        {"doc_id": body.doc_id}
+           FROM arkham_frame.documents WHERE id = :doc_id AND project_id = :project_id""",
+        {"doc_id": body.doc_id, "project_id": active_project_id}
     )
 
     if not doc_row:
@@ -1393,6 +1428,7 @@ async def scan_hidden_content(
 async def quick_scan_hidden_content(
     request: Request,
     body: HiddenContentQuickScanRequest,
+    user=Depends(current_active_user),
 ):
     """
     Perform quick entropy-only scan on multiple documents.
@@ -1407,6 +1443,7 @@ async def quick_scan_hidden_content(
         List of quick scan results with recommendations
     """
     shard = get_shard(request)
+    active_project_id = await _require_active_project_id(request, shard, user)
 
     if not shard.hidden_detector:
         raise HTTPException(
@@ -1423,8 +1460,9 @@ async def quick_scan_hidden_content(
         try:
             # Get document file path
             doc_row = await _db.fetch_one(
-                """SELECT storage_id, metadata FROM arkham_frame.documents WHERE id = :doc_id""",
-                {"doc_id": doc_id}
+                """SELECT storage_id, metadata FROM arkham_frame.documents
+                   WHERE id = :doc_id AND project_id = :project_id""",
+                {"doc_id": doc_id, "project_id": active_project_id}
             )
 
             if not doc_row:
@@ -1490,7 +1528,7 @@ async def quick_scan_hidden_content(
 
 
 @router.get("/hidden-content/stats", response_model=HiddenContentStatsResponse)
-async def get_hidden_content_stats(request: Request):
+async def get_hidden_content_stats(request: Request, user=Depends(current_active_user)):
     """
     Get hidden content detection statistics.
 
@@ -1502,8 +1540,9 @@ async def get_hidden_content_stats(request: Request):
     - Steganography candidates
     """
     shard = get_shard(request)
+    active_project_id = await _require_active_project_id(request, shard, user)
 
-    stats = await shard.get_hidden_content_stats()
+    stats = await shard.get_hidden_content_stats(project_id=active_project_id)
     return HiddenContentStatsResponse(stats=stats)
 
 
@@ -1511,6 +1550,7 @@ async def get_hidden_content_stats(request: Request):
 async def get_document_hidden_scans(
     request: Request,
     doc_id: str,
+    user=Depends(current_active_user),
 ):
     """
     Get all hidden content scans for a document.
@@ -1522,8 +1562,9 @@ async def get_document_hidden_scans(
         List of scans for the document
     """
     shard = get_shard(request)
+    active_project_id = await _require_active_project_id(request, shard, user)
 
-    scans = await shard.get_document_hidden_scans(doc_id)
+    scans = await shard.get_document_hidden_scans(doc_id, project_id=active_project_id)
     return {"scans": scans, "total": len(scans)}
 
 
@@ -1531,6 +1572,7 @@ async def get_document_hidden_scans(
 async def get_hidden_content_scan(
     request: Request,
     scan_id: str,
+    user=Depends(current_active_user),
 ):
     """
     Get a specific hidden content scan by ID.
@@ -1542,8 +1584,9 @@ async def get_hidden_content_scan(
         Scan details
     """
     shard = get_shard(request)
+    active_project_id = await _require_active_project_id(request, shard, user)
 
-    scan = await shard.get_hidden_content_scan(scan_id)
+    scan = await shard.get_hidden_content_scan(scan_id, project_id=active_project_id)
     if not scan:
         raise HTTPException(status_code=404, detail=f"Scan {scan_id} not found")
 

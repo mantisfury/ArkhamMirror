@@ -2,10 +2,19 @@
 
 import logging
 import uuid
-from typing import Annotated
+from typing import Annotated, Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
+
+try:
+    from arkham_frame.auth import current_active_user, require_project_member
+except ImportError:
+    # Fallback if auth not available
+    async def current_active_user():
+        return None
+    async def require_project_member(*args, **kwargs):
+        pass
 
 # Import wide event logging utilities (with fallback)
 try:
@@ -566,31 +575,50 @@ async def get_parse_stats():
 
 @router.get("/chunks")
 async def list_all_chunks(
+    request: Request,
     limit: int = 50,
     offset: int = 0,
     document_id: str | None = None,
+    project_id: Optional[str] = Query(None, description="Filter by project"),
+    user = Depends(current_active_user),
 ):
     """
-    List all text chunks with pagination.
+    List all text chunks with pagination. Scoped to active project.
 
     Args:
         limit: Maximum number of chunks to return (default: 50)
         offset: Number of chunks to skip (default: 0)
         document_id: Optional filter by document ID
+        project_id: Optional filter by project (defaults to active project)
     """
     if not _parse_shard or not _parse_shard._frame:
         raise HTTPException(status_code=503, detail="Parse shard not initialized")
 
     db = _parse_shard._frame.get_service("database")
-    doc_service = _parse_shard._frame.get_service("documents")
     if not db or not db._engine:
         raise HTTPException(status_code=503, detail="Database not available")
+
+    # Get active project_id if not provided
+    if not project_id and _parse_shard._frame:
+        project_id = await _parse_shard._frame.get_active_project_id(str(user.id))
+    
+    # If no project_id, return empty results (chunks are project-scoped)
+    if not project_id:
+        return {
+            "chunks": [],
+            "total": 0,
+            "limit": limit,
+            "offset": offset,
+        }
+    
+    # Verify user is a member of the project
+    await require_project_member(str(project_id), user, request)
 
     try:
         from sqlalchemy import text
 
         with db._engine.connect() as conn:
-            # Build query
+            # Build query with project filtering
             if document_id:
                 query = text("""
                     SELECT c.id, c.document_id, c.chunk_index, c.text, c.page_number,
@@ -598,28 +626,37 @@ async def list_all_chunks(
                            d.filename
                     FROM arkham_frame.chunks c
                     LEFT JOIN arkham_frame.documents d ON c.document_id = d.id
-                    WHERE c.document_id = :doc_id
+                    WHERE c.document_id = :doc_id AND d.project_id = :project_id
                     ORDER BY c.chunk_index
                     LIMIT :limit OFFSET :offset
                 """)
-                result = conn.execute(query, {"doc_id": document_id, "limit": limit, "offset": offset})
+                result = conn.execute(query, {"doc_id": document_id, "project_id": project_id, "limit": limit, "offset": offset})
                 
-                count_query = text("SELECT COUNT(*) FROM arkham_frame.chunks WHERE document_id = :doc_id")
-                total = conn.execute(count_query, {"doc_id": document_id}).scalar() or 0
+                count_query = text("""
+                    SELECT COUNT(*) FROM arkham_frame.chunks c
+                    INNER JOIN arkham_frame.documents d ON c.document_id = d.id
+                    WHERE c.document_id = :doc_id AND d.project_id = :project_id
+                """)
+                total = conn.execute(count_query, {"doc_id": document_id, "project_id": project_id}).scalar() or 0
             else:
                 query = text("""
                     SELECT c.id, c.document_id, c.chunk_index, c.text, c.page_number,
                            c.start_char, c.end_char, c.token_count, c.vector_id,
                            d.filename
                     FROM arkham_frame.chunks c
-                    LEFT JOIN arkham_frame.documents d ON c.document_id = d.id
+                    INNER JOIN arkham_frame.documents d ON c.document_id = d.id
+                    WHERE d.project_id = :project_id
                     ORDER BY c.document_id, c.chunk_index
                     LIMIT :limit OFFSET :offset
                 """)
-                result = conn.execute(query, {"limit": limit, "offset": offset})
+                result = conn.execute(query, {"project_id": project_id, "limit": limit, "offset": offset})
                 
-                count_query = text("SELECT COUNT(*) FROM arkham_frame.chunks")
-                total = conn.execute(count_query).scalar() or 0
+                count_query = text("""
+                    SELECT COUNT(*) FROM arkham_frame.chunks c
+                    INNER JOIN arkham_frame.documents d ON c.document_id = d.id
+                    WHERE d.project_id = :project_id
+                """)
+                total = conn.execute(count_query, {"project_id": project_id}).scalar() or 0
 
             chunks = []
             for row in result:

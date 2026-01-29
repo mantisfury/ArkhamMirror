@@ -2,14 +2,26 @@
 
 import logging
 import time
-from typing import Annotated, Any, TYPE_CHECKING
+from typing import Annotated, Any, TYPE_CHECKING, Optional
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 if TYPE_CHECKING:
     from .shard import ContradictionsShard
+
+# Import auth dependencies
+try:
+    from arkham_frame.auth import current_active_user, current_optional_user
+except ImportError:
+    async def current_active_user():
+        return None
+    async def current_optional_user():
+        return None
+
+# Use current_active_user for endpoints that need project context
+# This ensures we have a user to get project_id from
 
 from .models import (
     AnalyzeRequest,
@@ -73,14 +85,16 @@ def set_db_service(db_service):
     _db = db_service
 
 
-async def _get_document_content(doc_id: str) -> dict | None:
+async def _get_document_content(doc_id: str, project_id: Optional[str] = None) -> dict | None:
     """
     Fetch document content from Frame database.
 
     Gets document metadata and combines chunk text for content.
+    Optionally filters by project_id to ensure document belongs to active project.
 
     Args:
         doc_id: Document ID to fetch
+        project_id: Optional project ID to filter by (for project isolation)
 
     Returns:
         Dict with id, content, title or None if not found
@@ -90,23 +104,35 @@ async def _get_document_content(doc_id: str) -> dict | None:
         return None
 
     try:
-        # Get document metadata
-        doc_result = await _db.fetch_one(
-            "SELECT id, filename FROM arkham_frame.documents WHERE id = :id",
-            {"id": doc_id}
-        )
+        # Get document metadata with project_id filtering if provided
+        query = "SELECT id, filename, project_id FROM arkham_frame.documents WHERE id = :id"
+        params = {"id": doc_id}
+        
+        if project_id:
+            query += " AND project_id = :project_id"
+            params["project_id"] = project_id
+
+        doc_result = await _db.fetch_one(query, params)
 
         if not doc_result:
-            logger.warning(f"Document not found: {doc_id}")
+            logger.warning(f"Document not found: {doc_id}" + (f" in project {project_id}" if project_id else ""))
             return None
 
         # Get all chunks for the document, ordered by chunk_index
-        chunks = await _db.fetch_all(
-            """SELECT text FROM arkham_frame.chunks
+        chunk_query = """SELECT text FROM arkham_frame.chunks
                WHERE document_id = :id
-               ORDER BY chunk_index""",
-            {"id": doc_id}
-        )
+               ORDER BY chunk_index"""
+        chunk_params = {"id": doc_id}
+        
+        # Also filter chunks by project_id if provided (for consistency)
+        if project_id:
+            chunk_query = """SELECT c.text FROM arkham_frame.chunks c
+                   INNER JOIN arkham_frame.documents d ON c.document_id = d.id
+                   WHERE c.document_id = :id AND d.project_id = :project_id
+                   ORDER BY c.chunk_index"""
+            chunk_params["project_id"] = project_id
+
+        chunks = await _db.fetch_all(chunk_query, chunk_params)
 
         # Combine chunk text
         content = "\n\n".join(c["text"] for c in chunks if c.get("text"))
@@ -152,7 +178,11 @@ def _contradiction_to_result(contradiction) -> ContradictionResult:
 
 
 @router.post("/analyze")
-async def analyze_documents(request: AnalyzeRequest):
+async def analyze_documents(
+    request: AnalyzeRequest,
+    http_request: Request,
+    user = Depends(current_active_user)
+):
     """
     Analyze two documents for contradictions.
 
@@ -180,11 +210,33 @@ async def analyze_documents(request: AnalyzeRequest):
 
         logger.info(f"Analyzing documents: {request.doc_a_id} vs {request.doc_b_id}")
 
+        # Get active project_id for filtering
+        project_id = None
+        if http_request and user:
+            shard = get_shard(http_request)
+            if shard and shard._frame:
+                try:
+                    user_id_str = str(user.id).lower().strip() if user.id else None
+                    logger.info(f"Getting active project for user_id: {user_id_str}")
+                    project_id = await shard._frame.get_active_project_id(user_id_str)
+                    logger.info(f"Active project_id result: {project_id}")
+                    if event:
+                        event.context("project_id", project_id)
+                except Exception as e:
+                    logger.warning(f"Could not get active project_id: {e}", exc_info=True)
+        else:
+            logger.warning(f"No http_request or user available - http_request={http_request is not None}, user={user is not None}")
+
+        if not project_id:
+            logger.warning("No project_id available - document lookup may fail or return wrong project's documents")
+
         start_time = time.time()
 
-        # Fetch actual document content from Frame
-        doc_a = await _get_document_content(request.doc_a_id)
-        doc_b = await _get_document_content(request.doc_b_id)
+        # Fetch actual document content from Frame (filtered by project_id)
+        logger.debug(f"Fetching document {request.doc_a_id} with project_id={project_id}")
+        doc_a = await _get_document_content(request.doc_a_id, project_id=project_id)
+        logger.debug(f"Fetching document {request.doc_b_id} with project_id={project_id}")
+        doc_b = await _get_document_content(request.doc_b_id, project_id=project_id)
 
         if not doc_a:
             if event:
@@ -259,7 +311,11 @@ async def analyze_documents(request: AnalyzeRequest):
 
 
 @router.post("/batch")
-async def batch_analyze(request: BatchAnalyzeRequest):
+async def batch_analyze(
+    request: BatchAnalyzeRequest,
+    http_request: Request,
+    user = Depends(current_active_user)
+):
     """
     Analyze multiple document pairs for contradictions.
 
@@ -275,6 +331,24 @@ async def batch_analyze(request: BatchAnalyzeRequest):
 
     logger.info(f"Batch analyzing {len(request.document_pairs)} document pairs (async={request.async_mode})")
 
+    # Get active project_id for filtering
+    project_id = None
+    if http_request and user:
+        shard = get_shard(http_request)
+        if shard and shard._frame:
+            try:
+                user_id_str = str(user.id).lower().strip() if user.id else None
+                logger.info(f"Getting active project for user_id: {user_id_str}")
+                project_id = await shard._frame.get_active_project_id(user_id_str)
+                logger.info(f"Active project_id result: {project_id}")
+            except Exception as e:
+                logger.warning(f"Could not get active project_id: {e}", exc_info=True)
+    else:
+        logger.warning(f"No http_request or user available - http_request={http_request is not None}, user={user is not None}")
+
+    if not project_id:
+        logger.warning("No project_id available - document lookup may fail or return wrong project's documents")
+
     # Async mode: use llm-analysis worker for background processing
     if request.async_mode:
         if not _worker_service:
@@ -287,9 +361,9 @@ async def batch_analyze(request: BatchAnalyzeRequest):
         for doc_a_id, doc_b_id in request.document_pairs:
             job_id = str(uuid.uuid4())
             try:
-                # Fetch document content for the worker
-                doc_a = await _get_document_content(doc_a_id)
-                doc_b = await _get_document_content(doc_b_id)
+                # Fetch document content for the worker (filtered by project_id)
+                doc_a = await _get_document_content(doc_a_id, project_id=project_id)
+                doc_b = await _get_document_content(doc_b_id, project_id=project_id)
 
                 if not doc_a or not doc_b:
                     logger.warning(f"Skipping pair {doc_a_id}/{doc_b_id}: document not found")
@@ -339,7 +413,9 @@ async def batch_analyze(request: BatchAnalyzeRequest):
                     doc_b_id=doc_b_id,
                     threshold=request.threshold,
                     use_llm=request.use_llm,
-                )
+                ),
+                http_request=http_request,
+                user=user
             )
             all_contradictions.extend(result["contradictions"])
         except Exception as e:

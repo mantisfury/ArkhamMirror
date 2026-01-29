@@ -221,18 +221,29 @@ async def list_documents(
             
             # Use active project if no project_id specified
             if not project_id and shard.frame:
-                project_id = await shard.frame.get_active_project_id(str(user.id))
+                # Normalize UUID to lowercase string for consistent lookup
+                user_id_str = str(user.id).lower().strip() if user.id else None
+                logger.info(f"Getting active project for user_id: {user_id_str} (type: {type(user.id).__name__})")
+                
+                if user_id_str:
+                    project_id = await shard.frame.get_active_project_id(user_id_str)
+                    logger.info(f"Active project_id result: {project_id}")
+                else:
+                    logger.warning("No user_id available for project lookup")
             
             if not project_id:
                 if event:
                     event.error("NoActiveProject", "No active project selected")
-                raise HTTPException(
-                    status_code=400,
-                    detail="No active project selected. Please select a project to view documents."
-                )
+                # Return empty list instead of error - allows UI to handle gracefully
+                logger.warning(f"No active project selected for user {user.id if user else 'None'}, returning empty document list")
+                return DocumentListResponse(items=[], total=0, page=page, page_size=page_size)
             
             if event:
                 event.context("project_id", project_id)
+            
+            # Normalize project_id for consistent querying
+            project_id_str = str(project_id).strip() if project_id else None
+            logger.info(f"Listing documents with project_id: {project_id_str} (type: {type(project_id).__name__})")
             
             # Verify user is a member of the project
             await require_project_member(project_id, user, request)
@@ -243,15 +254,19 @@ async def list_documents(
                 search=q,
                 status=status,
                 file_type=file_type,
-                project_id=project_id,
+                project_id=project_id_str,
                 limit=page_size,
                 offset=offset,
                 sort=sort,
                 order=order,
             )
 
+            logger.info(f"Found {len(documents)} documents for project_id: {project_id_str}")
+
             # Get total count for pagination
-            total = await shard.get_document_count(status=status)
+            # Note: get_document_count doesn't support project_id filtering, so we use len(documents) as approximation
+            # If we got a full page, there might be more
+            total = len(documents) if len(documents) < page_size else page_size + 1
 
             response = DocumentListResponse(
                 items=[document_to_response(doc) for doc in documents],
