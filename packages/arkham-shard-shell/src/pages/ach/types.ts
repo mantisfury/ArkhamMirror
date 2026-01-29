@@ -138,12 +138,12 @@ export const RATING_LABELS: Record<ConsistencyRating, string> = {
 };
 
 export const RATING_COLORS: Record<ConsistencyRating, string> = {
-  '++': 'var(--arkham-success)',
+  '++': 'var(--success)',
   '+': 'rgba(74, 222, 128, 0.6)',
-  'N': 'var(--arkham-text-muted)',
+  'N': 'var(--text-muted)',
   '-': 'rgba(248, 113, 113, 0.6)',
-  '--': 'var(--arkham-error)',
-  'N/A': 'var(--arkham-bg-tertiary)',
+  '--': 'var(--error)',
+  'N/A': 'var(--bg-tertiary)',
 };
 
 export const RATING_OPTIONS: { value: ConsistencyRating; label: string }[] = [
@@ -418,9 +418,9 @@ export const FAILURE_MODE_ICONS: Record<FailureModeType, string> = {
 };
 
 export const LIKELIHOOD_COLORS: Record<'low' | 'medium' | 'high', string> = {
-  low: 'var(--arkham-success)',
-  medium: 'var(--arkham-warning)',
-  high: 'var(--arkham-error)',
+  low: 'var(--success)',
+  medium: 'var(--warning)',
+  high: 'var(--error)',
 };
 
 export const SCENARIO_STATUS_LABELS: Record<ScenarioStatus, string> = {
@@ -431,8 +431,8 @@ export const SCENARIO_STATUS_LABELS: Record<ScenarioStatus, string> = {
 };
 
 export const SCENARIO_STATUS_COLORS: Record<ScenarioStatus, string> = {
-  active: 'var(--arkham-primary)',
-  occurred: 'var(--arkham-success)',
-  ruled_out: 'var(--arkham-text-muted)',
-  converted: 'var(--arkham-info)',
+  active: 'var(--primary)',
+  occurred: 'var(--success)',
+  ruled_out: 'var(--text-muted)',
+  converted: 'var(--info)',
 };

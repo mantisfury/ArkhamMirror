@@ -60,6 +60,23 @@ from .pipeline import (
     PipelineCoordinator,
 )
 
+# Logging utilities (re-exported from arkham-logging)
+try:
+    from arkham_logging import (
+        get_logger,
+        create_wide_event,
+        log_operation,
+    )
+    from arkham_logging.tracing import TracingContext
+    LOGGING_AVAILABLE = True
+except ImportError:
+    LOGGING_AVAILABLE = False
+    import logging
+    get_logger = logging.getLogger
+    create_wide_event = None
+    log_operation = None
+    TracingContext = None
+
 __all__ = [
     # Version
     "__version__",
@@ -101,4 +118,10 @@ __all__ = [
     "ParseStage",
     "EmbedStage",
     "PipelineCoordinator",
+    # Logging
+    "get_logger",
+    "create_wide_event",
+    "log_operation",
+    "TracingContext",
+    "LOGGING_AVAILABLE",
 ]

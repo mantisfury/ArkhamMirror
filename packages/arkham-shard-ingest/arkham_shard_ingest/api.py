@@ -4,12 +4,64 @@ import asyncio
 import logging
 import os
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Optional
 
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from pydantic import BaseModel
 
 from .models import JobPriority, JobStatus
+
+try:
+    from arkham_frame.auth import current_optional_user
+except ImportError:
+    async def current_optional_user():
+        return None
+
+# Import wide event logging utilities (with fallback)
+try:
+    from arkham_frame import log_operation
+    WIDE_EVENTS_AVAILABLE = True
+except ImportError:
+    WIDE_EVENTS_AVAILABLE = False
+    from contextlib import contextmanager
+    @contextmanager
+    def log_operation(*args, **kwargs):
+        yield None
+
+
+# --- Project Access Authorization ---
+
+async def verify_project_access(project_id: str, request: Request, user=None) -> None:
+    """
+    Verify that the authenticated user has access to the specified project.
+    
+    Raises:
+        HTTPException: 403 if user doesn't have access, 401 if not authenticated
+    """
+    if not user:
+        raise HTTPException(status_code=401, detail="Authentication required for project access")
+    
+    # Get projects shard from app state
+    projects_shard = getattr(request.app.state, 'projects_shard', None)
+    if not projects_shard:
+        # If no projects shard, allow (fallback for deployments without projects)
+        return
+    
+    # Check if user is a member of the project
+    try:
+        members = await projects_shard.list_members(project_id)
+        user_ids = [m.user_id for m in members]
+        
+        if str(user.id) not in user_ids:
+            raise HTTPException(
+                status_code=403, 
+                detail=f"Access denied: User does not have access to project {project_id}"
+            )
+    except Exception as e:
+        if "403" in str(e) or "forbidden" in str(e).lower():
+            raise
+        # If project doesn't exist or other error, raise 404
+        raise HTTPException(status_code=404, detail=f"Project {project_id} not found")
 
 
 # --- Path Traversal Protection ---
@@ -146,6 +198,7 @@ class IngestPathRequest(BaseModel):
     recursive: bool = True
     priority: str = "batch"
     ocr_mode: str = "auto"
+    project_id: Optional[str] = None
 
 
 class QueueStatsResponse(BaseModel):
@@ -161,9 +214,12 @@ class QueueStatsResponse(BaseModel):
 
 @router.post("/upload", response_model=UploadResponse)
 async def upload_file(
+    request: Request,
     file: UploadFile = File(...),
     priority: str = Form("user"),
     ocr_mode: str = Form("auto"),
+    project_id: str = Form(None),
+    user = Depends(current_optional_user),
 ):
     """
     Upload a single file for ingestion.
@@ -175,68 +231,109 @@ async def upload_file(
         file: File to upload
         priority: Job priority (user, batch, reprocess)
         ocr_mode: OCR routing mode (auto, paddle_only, qwen_only)
+        project_id: Project ID to associate the document with (required for multi-project setups)
     """
-    if not _intake_manager:
-        raise HTTPException(status_code=503, detail="Ingest service not initialized")
+    with log_operation("ingest.upload", project_id=project_id) as event:
+        if event and user:
+            event.user(id=str(user.id))
+        if event:
+            event.context("shard", "ingest")
+            event.context("operation", "upload")
+            event.input(
+                filename=file.filename,
+                content_type=file.content_type,
+                priority=priority,
+                ocr_mode=ocr_mode,
+                project_id=project_id,
+            )
+        
+        if not _intake_manager:
+            if event:
+                event.error("ServiceUnavailable", "Ingest service not initialized")
+            raise HTTPException(status_code=503, detail="Ingest service not initialized")
 
-    try:
-        job_priority = JobPriority[priority.upper()]
-    except KeyError:
-        job_priority = JobPriority.USER
+        if not project_id:
+            if event:
+                event.error("ValidationError", "project_id is required")
+            raise HTTPException(status_code=400, detail="project_id is required")
+        
+        if event:
+            event.context("project_id", project_id)
+        
+        # Verify user has access to the project
+        await verify_project_access(project_id, request, user)
 
-    # Validate ocr_mode
-    valid_ocr_modes = ("auto", "paddle_only", "qwen_only")
-    if ocr_mode not in valid_ocr_modes:
-        ocr_mode = "auto"
+        try:
+            job_priority = JobPriority[priority.upper()]
+        except KeyError:
+            job_priority = JobPriority.USER
 
-    job = await _intake_manager.receive_file(
-        file=file.file,
-        filename=file.filename,
-        priority=job_priority,
-        ocr_mode=ocr_mode,
-    )
+        # Validate ocr_mode
+        valid_ocr_modes = ("auto", "paddle_only", "qwen_only")
+        if ocr_mode not in valid_ocr_modes:
+            ocr_mode = "auto"
 
-    # Dispatch to workers
-    await _job_dispatcher.dispatch(job)
-
-    # Emit event
-    if _event_bus:
-        await _event_bus.emit(
-            "ingest.file.queued",
-            {
-                "job_id": job.id,
-                "filename": file.filename,
-                "category": job.file_info.category.value,
-            },
-            source="ingest-shard",
+        job = await _intake_manager.receive_file(
+            file=file.file,
+            filename=file.filename,
+            priority=job_priority,
+            ocr_mode=ocr_mode,
+            project_id=project_id,
         )
 
-    return UploadResponse(
-        job_id=job.id,
-        filename=job.file_info.original_name,
-        category=job.file_info.category.value,
-        status=job.status.value,
-        route=job.worker_route,
-        quality=(
-            {
-                "classification": job.quality_score.classification.value,
-                "issues": job.quality_score.issues,
-                "dpi": job.quality_score.dpi,
-                "skew": round(job.quality_score.skew_angle, 2),
-                "contrast": round(job.quality_score.contrast_ratio, 2),
-                "layout": job.quality_score.layout_complexity,
-            }
-            if job.quality_score
-            else None
-        ),
-    )
+        # Dispatch to workers
+        await _job_dispatcher.dispatch(job)
+
+        # Emit event
+        if _event_bus:
+            await _event_bus.emit(
+                "ingest.file.queued",
+                {
+                    "job_id": job.id,
+                    "filename": file.filename,
+                    "category": job.file_info.category.value,
+                },
+                source="ingest-shard",
+            )
+
+        if event:
+            event.output(
+                job_id=job.id,
+                category=job.file_info.category.value,
+                status=job.status.value,
+                route=job.worker_route,
+                has_quality_score=job.quality_score is not None,
+            )
+
+        return UploadResponse(
+            job_id=job.id,
+            filename=job.file_info.original_name,
+            category=job.file_info.category.value,
+            status=job.status.value,
+            route=job.worker_route,
+            quality=(
+                {
+                    "classification": job.quality_score.classification.value,
+                    "issues": job.quality_score.issues,
+                    "dpi": job.quality_score.dpi,
+                    "skew": round(job.quality_score.skew_angle, 2),
+                    "contrast": round(job.quality_score.contrast_ratio, 2),
+                    "layout": job.quality_score.layout_complexity,
+                }
+                if job.quality_score
+                else None
+            ),
+        )
 
 
 @router.post("/upload/batch", response_model=BatchUploadResponse)
 async def upload_batch(
+    request: Request,
     files: list[UploadFile] = File(...),
     priority: str = Form("batch"),
     ocr_mode: str = Form("auto"),
+    project_id: str = Form(None),
+    user = Depends(current_optional_user),
 ):
     """
     Upload multiple files as a batch.
@@ -247,9 +344,16 @@ async def upload_batch(
         files: Files to upload
         priority: Job priority (user, batch, reprocess)
         ocr_mode: OCR routing mode (auto, paddle_only, qwen_only)
+        project_id: Project ID to associate the documents with (required for multi-project setups)
     """
     if not _intake_manager:
         raise HTTPException(status_code=503, detail="Ingest service not initialized")
+
+    if not project_id:
+        raise HTTPException(status_code=400, detail="project_id is required")
+    
+    # Verify user has access to the project
+    await verify_project_access(project_id, request, user)
 
     try:
         job_priority = JobPriority[priority.upper()]
@@ -262,7 +366,7 @@ async def upload_batch(
         ocr_mode = "auto"
 
     file_tuples = [(f.file, f.filename) for f in files]
-    batch = await _intake_manager.receive_batch(file_tuples, job_priority, ocr_mode=ocr_mode)
+    batch = await _intake_manager.receive_batch(file_tuples, job_priority, ocr_mode=ocr_mode, project_id=project_id)
 
     # Dispatch all jobs with staggering for large batches
     use_staggering = len(batch.jobs) > BATCH_STAGGER_THRESHOLD
@@ -310,7 +414,11 @@ async def upload_batch(
 
 
 @router.post("/ingest-path", response_model=BatchUploadResponse)
-async def ingest_from_path(request: IngestPathRequest):
+async def ingest_from_path(
+    req: Request,
+    request: IngestPathRequest,
+    user = Depends(current_optional_user),
+):
     """
     Ingest files from a local filesystem path.
 
@@ -318,10 +426,16 @@ async def ingest_from_path(request: IngestPathRequest):
     recurses into subdirectories.
 
     Args:
-        request: Contains path, recursive, priority, and ocr_mode settings
+        request: Contains path, recursive, priority, ocr_mode, and project_id settings
     """
     if not _intake_manager:
         raise HTTPException(status_code=503, detail="Ingest service not initialized")
+
+    if not request.project_id:
+        raise HTTPException(status_code=400, detail="project_id is required")
+    
+    # Verify user has access to the project
+    await verify_project_access(request.project_id, req, user)
 
     # Validate path is within allowed directories (prevents path traversal)
     path = validate_ingest_path(Path(request.path))
@@ -343,6 +457,7 @@ async def ingest_from_path(request: IngestPathRequest):
         priority=job_priority,
         recursive=request.recursive,
         ocr_mode=ocr_mode,
+        project_id=request.project_id,
     )
 
     # Dispatch all jobs with staggering for large batches
@@ -492,12 +607,58 @@ async def get_queue_stats():
 
 
 @router.get("/pending")
-async def get_pending_jobs(limit: int = 50):
-    """Get list of pending jobs."""
+async def get_pending_jobs(
+    limit: int = 50,
+    status: str | None = None,
+    user=Depends(current_optional_user),
+):
+    """Get list of jobs, optionally filtered by status."""
     if not _intake_manager:
         raise HTTPException(status_code=503, detail="Ingest service not initialized")
 
-    jobs = _intake_manager.get_pending_jobs(limit=limit)
+    # Get shard reference for database queries
+    shard = getattr(_intake_manager, "_shard", None)
+    
+    # Get active project_id from frame for filtering
+    project_id = None
+    frame = getattr(shard, "_frame", None) if shard else None
+    if frame:
+        # Prefer per-user active project (new model).
+        if user and hasattr(frame, "get_active_project_id"):
+            try:
+                project_id = await frame.get_active_project_id(str(user.id))
+            except Exception:
+                project_id = None
+
+        # Backwards-compatible fallbacks (legacy global context).
+        if not project_id:
+            project_id = getattr(frame, "active_project_id", None) or getattr(frame, "_active_project_id", None)
+    
+    # If status filter is provided and not 'all', filter by status
+    if status and status.lower() != "all":
+        # Use shard's _list_jobs method which queries the database
+        if shard:
+            jobs = await shard._list_jobs(status=status.lower(), project_id=project_id, limit=limit)
+        else:
+            # Fallback to in-memory if no shard
+            all_jobs = list(_intake_manager._jobs.values())
+            # Filter by project_id if available
+            if project_id:
+                all_jobs = [j for j in all_jobs if j.project_id == project_id]
+            jobs = [j for j in all_jobs if j.status.value == status.lower()][:limit]
+    else:
+        # No status filter or 'all': return all jobs from database
+        if shard:
+            jobs = await shard._list_jobs(status=None, project_id=project_id, limit=limit)
+        else:
+            # Fallback to in-memory if no shard
+            all_jobs = list(_intake_manager._jobs.values())
+            # Filter by project_id if available
+            if project_id:
+                all_jobs = [j for j in all_jobs if j.project_id == project_id]
+            # Sort by created_at descending
+            all_jobs.sort(key=lambda j: j.created_at, reverse=True)
+            jobs = all_jobs[:limit]
 
     return {
         "count": len(jobs),
@@ -507,6 +668,7 @@ async def get_pending_jobs(limit: int = 50):
                 "filename": j.file_info.original_name,
                 "category": j.file_info.category.value,
                 "priority": j.priority.name.lower(),
+                "status": j.status.value,
                 "route": j.worker_route,
                 "created_at": j.created_at.isoformat(),
             }

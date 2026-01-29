@@ -582,6 +582,7 @@ class PatternsShard(ArkhamShard):
     async def analyze_documents(
         self,
         request: PatternAnalysisRequest,
+        project_id: str | None = None,
     ) -> PatternAnalysisResult:
         """Analyze documents for patterns."""
         import time
@@ -607,7 +608,7 @@ class PatternsShard(ArkhamShard):
             if request.document_ids and self._db:
                 for doc_id in request.document_ids:
                     # Fetch document content from chunks (same as anomalies shard)
-                    doc_content = await self._fetch_document_content(doc_id)
+                    doc_content = await self._fetch_document_content(doc_id, project_id=project_id)
                     if doc_content:
                         text += "\n\n" + doc_content
 
@@ -1409,7 +1410,7 @@ class PatternsShard(ArkhamShard):
 
         return content, title
 
-    async def _fetch_document_content(self, doc_id: str) -> Optional[str]:
+    async def _fetch_document_content(self, doc_id: str, project_id: str | None = None) -> Optional[str]:
         """
         Fetch document content from the database.
 
@@ -1419,13 +1420,22 @@ class PatternsShard(ArkhamShard):
             return None
 
         try:
-            # Get content from chunks table (where text is stored)
-            chunk_rows = await self._db.fetch_all(
-                """SELECT text FROM arkham_frame.chunks
-                   WHERE document_id = :doc_id
-                   ORDER BY chunk_index""",
-                {"doc_id": doc_id}
-            )
+            # Get content from chunks table (where text is stored), project-scoped if provided
+            if project_id:
+                chunk_rows = await self._db.fetch_all(
+                    """SELECT c.text FROM arkham_frame.chunks c
+                       INNER JOIN arkham_frame.documents d ON d.id = c.document_id
+                       WHERE c.document_id = :doc_id AND d.project_id = :project_id
+                       ORDER BY c.chunk_index""",
+                    {"doc_id": doc_id, "project_id": str(project_id)},
+                )
+            else:
+                chunk_rows = await self._db.fetch_all(
+                    """SELECT text FROM arkham_frame.chunks
+                       WHERE document_id = :doc_id
+                       ORDER BY chunk_index""",
+                    {"doc_id": doc_id},
+                )
 
             if chunk_rows:
                 # Combine all chunks
@@ -1433,10 +1443,17 @@ class PatternsShard(ArkhamShard):
                 return text
 
             # Fallback: try content column if it exists
-            doc_row = await self._db.fetch_one(
-                """SELECT content FROM arkham_frame.documents WHERE id = :doc_id""",
-                {"doc_id": doc_id}
-            )
+            if project_id:
+                doc_row = await self._db.fetch_one(
+                    """SELECT content FROM arkham_frame.documents
+                       WHERE id = :doc_id AND project_id = :project_id""",
+                    {"doc_id": doc_id, "project_id": str(project_id)},
+                )
+            else:
+                doc_row = await self._db.fetch_one(
+                    """SELECT content FROM arkham_frame.documents WHERE id = :doc_id""",
+                    {"doc_id": doc_id},
+                )
             if doc_row and doc_row.get("content"):
                 return doc_row.get("content")
 

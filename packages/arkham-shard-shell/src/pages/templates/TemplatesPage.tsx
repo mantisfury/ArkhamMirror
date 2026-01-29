@@ -9,6 +9,7 @@ import { useState } from 'react';
 import { Icon } from '../../components/common/Icon';
 import { useToast } from '../../context/ToastContext';
 import { usePaginatedFetch } from '../../hooks';
+import { apiDelete, apiGet, apiPost, apiPut } from '../../utils/api';
 import './TemplatesPage.css';
 
 // Types
@@ -100,17 +101,10 @@ export function TemplatesPage() {
         ? `/api/templates/${selectedTemplate.id}`
         : '/api/templates/';
 
-      const method = selectedTemplate ? 'PUT' : 'POST';
-
-      const response = await fetch(url, {
-        method,
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(templateData),
-      });
-
-      if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.detail || 'Failed to save template');
+      if (selectedTemplate) {
+        await apiPut(url, templateData);
+      } else {
+        await apiPost(url, templateData);
       }
 
       toast.success(selectedTemplate ? 'Template updated' : 'Template created');
@@ -126,14 +120,7 @@ export function TemplatesPage() {
     if (!confirm('Are you sure you want to delete this template?')) return;
 
     try {
-      const response = await fetch(`/api/templates/${id}`, {
-        method: 'DELETE',
-      });
-
-      if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.detail || 'Failed to delete template');
-      }
+      await apiDelete(`/api/templates/${id}`);
 
       toast.success('Template deleted');
       if (selectedTemplate?.id === id) {
@@ -149,14 +136,7 @@ export function TemplatesPage() {
   const handleToggleActive = async (template: Template) => {
     try {
       const action = template.is_active ? 'deactivate' : 'activate';
-      const response = await fetch(`/api/templates/${template.id}/${action}`, {
-        method: 'POST',
-      });
-
-      if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.detail || `Failed to ${action} template`);
-      }
+      await apiPost(`/api/templates/${template.id}/${action}`);
 
       toast.success(`Template ${template.is_active ? 'deactivated' : 'activated'}`);
       refetch();
@@ -178,17 +158,7 @@ export function TemplatesPage() {
 
     // Fetch preview
     try {
-      const response = await fetch(`/api/templates/${template.id}/preview`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(sampleData),
-      });
-
-      if (!response.ok) {
-        throw new Error('Failed to generate preview');
-      }
-
-      const result = await response.json();
+      const result = await apiPost<PreviewResult>(`/api/templates/${template.id}/preview`, sampleData);
       setPreviewResult(result);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Failed to preview template');
@@ -200,13 +170,8 @@ export function TemplatesPage() {
     setShowVersions(true);
 
     try {
-      const response = await fetch(`/api/templates/${template.id}/versions`);
-      if (!response.ok) {
-        throw new Error('Failed to load versions');
-      }
-
-      const data = await response.json();
-      setVersions(data);
+      const data = await apiGet<TemplateVersion[]>(`/api/templates/${template.id}/versions`);
+      setVersions(Array.isArray(data) ? data : []);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Failed to load versions');
     }
@@ -217,14 +182,7 @@ export function TemplatesPage() {
     if (!confirm('Restore this version? This will create a new version with this content.')) return;
 
     try {
-      const response = await fetch(
-        `/api/templates/${selectedTemplate.id}/restore/${versionId}`,
-        { method: 'POST' }
-      );
-
-      if (!response.ok) {
-        throw new Error('Failed to restore version');
-      }
+      await apiPost(`/api/templates/${selectedTemplate.id}/restore/${versionId}`);
 
       toast.success('Version restored');
       setShowVersions(false);

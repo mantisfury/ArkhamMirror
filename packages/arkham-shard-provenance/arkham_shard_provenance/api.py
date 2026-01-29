@@ -1,14 +1,36 @@
 """Provenance Shard API endpoints."""
 
 import logging
+import time
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 if TYPE_CHECKING:
     from .shard import ProvenanceShard
+
+try:
+    from arkham_frame.auth import current_active_user, current_optional_user, require_project_member
+except ImportError:
+    async def current_active_user():
+        return None
+    async def current_optional_user():
+        return None
+    async def require_project_member(*args, **kwargs):
+        return None
+
+# Import wide event logging utilities (with fallback)
+try:
+    from arkham_frame import log_operation
+    WIDE_EVENTS_AVAILABLE = True
+except ImportError:
+    WIDE_EVENTS_AVAILABLE = False
+    from contextlib import contextmanager
+    @contextmanager
+    def log_operation(*args, **kwargs):
+        yield None
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +64,26 @@ def get_shard(request: Request) -> "ProvenanceShard":
     if not shard:
         raise HTTPException(status_code=503, detail="Provenance shard not available")
     return shard
+
+
+async def _require_active_project_id(request: Request, shard: "ProvenanceShard", user: Any) -> str:
+    """
+    Resolve the user's active project_id and validate membership.
+    """
+    if not user:
+        raise HTTPException(status_code=401, detail="Authentication required")
+
+    frame = getattr(shard, "frame", None) or getattr(shard, "_frame", None)
+    if not frame or not hasattr(frame, "get_active_project_id"):
+        raise HTTPException(status_code=503, detail="Frame project service not available")
+
+    user_id_str = str(getattr(user, "id", "")).lower().strip()
+    project_id = await frame.get_active_project_id(user_id_str)
+    if not project_id:
+        raise HTTPException(status_code=400, detail="No active project selected")
+
+    await require_project_member(str(project_id), user, request)
+    return str(project_id)
 
 
 # --- Request/Response Models ---
@@ -317,18 +359,38 @@ async def create_chain(request_body: CreateChainRequest, request: Request):
     Returns:
         Created chain object
     """
-    shard = get_shard(request)
-    try:
-        chain = await shard.create_chain_impl(
-            title=request_body.title,
-            description=request_body.description,
-            project_id=request_body.project_id,
-            created_by=request_body.created_by,
-        )
-        return chain
-    except Exception as e:
-        logger.error(f"Error creating chain: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    with log_operation("provenance.create_chain", project_id=request_body.project_id) as event:
+        try:
+            if event:
+                event.context("shard", "provenance")
+                event.context("operation", "create_chain")
+                event.input(
+                    title=request_body.title,
+                    project_id=request_body.project_id,
+                    created_by=request_body.created_by,
+                    has_description=bool(request_body.description),
+                )
+
+            shard = get_shard(request)
+            chain = await shard.create_chain_impl(
+                title=request_body.title,
+                description=request_body.description,
+                project_id=request_body.project_id,
+                created_by=request_body.created_by,
+            )
+
+            if event:
+                event.output(
+                    chain_id=chain.id,
+                    link_count=chain.link_count,
+                )
+
+            return chain
+        except Exception as e:
+            logger.error(f"Error creating chain: {e}")
+            if event:
+                event.error(str(e), exc_info=True)
+            raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/chains/{chain_id}", response_model=ChainResponse)
@@ -424,22 +486,46 @@ async def add_link(chain_id: str, request_body: AddLinkRequest, request: Request
     Returns:
         Created link object
     """
-    shard = get_shard(request)
-    try:
-        link = await shard.add_link_impl(
-            chain_id=chain_id,
-            source_artifact_id=request_body.source_artifact_id,
-            target_artifact_id=request_body.target_artifact_id,
-            link_type=request_body.link_type,
-            confidence=request_body.confidence,
-            metadata=request_body.metadata,
-        )
-        return link
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        logger.error(f"Error adding link: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    with log_operation("provenance.add_link", chain_id=chain_id) as event:
+        try:
+            if event:
+                event.context("shard", "provenance")
+                event.context("operation", "add_link")
+                event.input(
+                    chain_id=chain_id,
+                    source_artifact_id=request_body.source_artifact_id,
+                    target_artifact_id=request_body.target_artifact_id,
+                    link_type=request_body.link_type,
+                    confidence=request_body.confidence,
+                )
+
+            shard = get_shard(request)
+            link = await shard.add_link_impl(
+                chain_id=chain_id,
+                source_artifact_id=request_body.source_artifact_id,
+                target_artifact_id=request_body.target_artifact_id,
+                link_type=request_body.link_type,
+                confidence=request_body.confidence,
+                metadata=request_body.metadata,
+            )
+
+            if event:
+                event.output(
+                    link_id=link.id,
+                    chain_id=chain_id,
+                    verified=link.verified,
+                )
+
+            return link
+        except ValueError as e:
+            if event:
+                event.error(str(e), exc_info=True)
+            raise HTTPException(status_code=400, detail=str(e))
+        except Exception as e:
+            logger.error(f"Error adding link: {e}")
+            if event:
+                event.error(str(e), exc_info=True)
+            raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/chains/{chain_id}/links", response_model=List[LinkResponse])
@@ -1083,6 +1169,7 @@ class ForensicStatsResponse(BaseModel):
 async def scan_forensics(
     request: Request,
     body: ForensicScanRequest,
+    user=Depends(current_active_user),
 ):
     """
     Perform forensic metadata analysis on a document.
@@ -1104,171 +1191,206 @@ async def scan_forensics(
     Returns:
         Complete forensic analysis results
     """
-    shard = get_shard(request)
-
-    if not shard.forensic_analyzer:
-        raise HTTPException(
-            status_code=503,
-            detail="Forensic analyzer not available"
-        )
-
-    if not shard._db:
-        raise HTTPException(status_code=503, detail="Database not available")
-
-    # Get document metadata and file path
-    doc_row = await shard._db.fetch_one(
-        """SELECT id, filename, storage_id, mime_type, file_size, metadata
-           FROM arkham_frame.documents WHERE id = :doc_id""",
-        {"doc_id": body.doc_id}
-    )
-
-    if not doc_row:
-        raise HTTPException(status_code=404, detail=f"Document {body.doc_id} not found")
-
-    # Get storage path from storage_id or metadata
-    storage_id = doc_row.get("storage_id")
-    metadata = doc_row.get("metadata") or {}
-    if isinstance(metadata, str):
-        import json
+    with log_operation("provenance.forensics_scan", document_id=body.doc_id) as event:
         try:
-            metadata = json.loads(metadata)
-        except json.JSONDecodeError:
-            metadata = {}
+            start_time = time.time()
 
-    storage_path = metadata.get("storage_path")
-    if not storage_id and not storage_path:
-        raise HTTPException(
-            status_code=400,
-            detail="Document has no associated file storage"
-        )
+            if event:
+                event.context("shard", "provenance")
+                event.context("operation", "forensics_scan")
+                event.input(document_id=body.doc_id)
 
-    # Read file content using storage service
-    try:
-        if _storage and storage_id:
-            file_data = (await _storage.retrieve(storage_id))[0]
-        elif storage_path:
-            from pathlib import Path
-            file_data = Path(storage_path).read_bytes()
-        else:
-            raise ValueError("No storage path available")
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to read file: {e}"
-        )
+            shard = get_shard(request)
+            project_id = await _require_active_project_id(request, shard, user)
 
-    mime_type = doc_row.get("mime_type", "")
+            if not shard.forensic_analyzer:
+                raise HTTPException(
+                    status_code=503,
+                    detail="Forensic analyzer not available"
+                )
 
-    # Perform forensic scan (use storage_path for file path reference)
-    file_path = storage_path or storage_id
-    scan_result = shard.forensic_analyzer.full_scan(
-        doc_id=body.doc_id,
-        file_path=file_path,
-        file_data=file_data,
-        mime_type=mime_type,
-    )
+            if not shard._db:
+                raise HTTPException(status_code=503, detail="Database not available")
 
-    # Store the scan result
-    await shard._store_forensic_scan(scan_result)
+            # Get document metadata and file path
+            doc_row = await shard._db.fetch_one(
+                """SELECT id, filename, storage_id, mime_type, file_size, metadata
+                   FROM arkham_frame.documents WHERE id = :doc_id AND project_id = :project_id""",
+                {"doc_id": body.doc_id, "project_id": project_id}
+            )
 
-    # Emit event
-    if _event_bus:
-        await _event_bus.emit(
-            "provenance.forensics.scanned",
-            {
-                "doc_id": body.doc_id,
-                "scan_id": scan_result.id,
+            if not doc_row:
+                raise HTTPException(status_code=404, detail=f"Document {body.doc_id} not found")
+
+            if event:
+                event.context("mime_type", doc_row.get("mime_type", ""))
+                event.context("file_size", doc_row.get("file_size"))
+
+            # Get storage path from storage_id or metadata
+            storage_id = doc_row.get("storage_id")
+            metadata = doc_row.get("metadata") or {}
+            if isinstance(metadata, str):
+                import json
+                try:
+                    metadata = json.loads(metadata)
+                except json.JSONDecodeError:
+                    metadata = {}
+
+            storage_path = metadata.get("storage_path")
+            if not storage_id and not storage_path:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Document has no associated file storage"
+                )
+
+            # Read file content using storage service
+            try:
+                if _storage and storage_id:
+                    file_data = (await _storage.retrieve(storage_id))[0]
+                elif storage_path:
+                    from pathlib import Path
+                    file_data = Path(storage_path).read_bytes()
+                else:
+                    raise ValueError("No storage path available")
+            except Exception as e:
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Failed to read file: {e}"
+                )
+
+            mime_type = doc_row.get("mime_type", "")
+
+            # Perform forensic scan (use storage_path for file path reference)
+            file_path = storage_path or storage_id
+            scan_result = shard.forensic_analyzer.full_scan(
+                doc_id=body.doc_id,
+                file_path=file_path,
+                file_data=file_data,
+                mime_type=mime_type,
+            )
+
+            # Store the scan result
+            await shard._store_forensic_scan(scan_result)
+
+            duration_ms = (time.time() - start_time) * 1000
+
+            if event:
+                event.output(
+                    scan_id=scan_result.id,
+                    integrity_status=scan_result.integrity_status.value if hasattr(scan_result.integrity_status, 'value') else str(scan_result.integrity_status),
+                    findings_count=len(scan_result.findings),
+                    confidence_score=scan_result.confidence_score,
+                    has_exif=scan_result.exif_data is not None,
+                    has_pdf_metadata=scan_result.pdf_metadata is not None,
+                    has_office_metadata=scan_result.office_metadata is not None,
+                    timeline_events_count=len(scan_result.timeline_events),
+                    duration_ms=duration_ms,
+                )
+
+            # Emit event
+            if _event_bus:
+                await _event_bus.emit(
+                    "provenance.forensics.scanned",
+                    {
+                        "doc_id": body.doc_id,
+                        "scan_id": scan_result.id,
+                        "integrity_status": scan_result.integrity_status.value,
+                        "findings_count": len(scan_result.findings),
+                    },
+                    source="provenance-shard",
+                )
+
+            # Convert to response dict
+            scan_dict = {
+                "id": scan_result.id,
+                "doc_id": scan_result.doc_id,
+                "scan_status": scan_result.scan_status.value,
+                "file_hash_md5": scan_result.file_hash_md5,
+                "file_hash_sha256": scan_result.file_hash_sha256,
+                "file_hash_sha512": scan_result.file_hash_sha512,
+                "file_size": scan_result.file_size,
+                "exif_data": {
+                    "make": scan_result.exif_data.make,
+                    "model": scan_result.exif_data.model,
+                    "serial_number": scan_result.exif_data.serial_number,
+                    "datetime_original": scan_result.exif_data.datetime_original.isoformat() if scan_result.exif_data.datetime_original else None,
+                    "datetime_digitized": scan_result.exif_data.datetime_digitized.isoformat() if scan_result.exif_data.datetime_digitized else None,
+                    "datetime_modified": scan_result.exif_data.datetime_modified.isoformat() if scan_result.exif_data.datetime_modified else None,
+                    "gps_latitude": scan_result.exif_data.gps_latitude,
+                    "gps_longitude": scan_result.exif_data.gps_longitude,
+                    "gps_altitude": scan_result.exif_data.gps_altitude,
+                    "software": scan_result.exif_data.software,
+                    "width": scan_result.exif_data.width,
+                    "height": scan_result.exif_data.height,
+                } if scan_result.exif_data else None,
+                "pdf_metadata": {
+                    "title": scan_result.pdf_metadata.title,
+                    "author": scan_result.pdf_metadata.author,
+                    "subject": scan_result.pdf_metadata.subject,
+                    "creator": scan_result.pdf_metadata.creator,
+                    "producer": scan_result.pdf_metadata.producer,
+                    "creation_date": scan_result.pdf_metadata.creation_date.isoformat() if scan_result.pdf_metadata.creation_date else None,
+                    "modification_date": scan_result.pdf_metadata.modification_date.isoformat() if scan_result.pdf_metadata.modification_date else None,
+                    "keywords": scan_result.pdf_metadata.keywords,
+                    "page_count": scan_result.pdf_metadata.page_count,
+                    "pdf_version": scan_result.pdf_metadata.pdf_version,
+                    "is_encrypted": scan_result.pdf_metadata.is_encrypted,
+                } if scan_result.pdf_metadata else None,
+                "office_metadata": {
+                    "title": scan_result.office_metadata.title,
+                    "author": scan_result.office_metadata.author,
+                    "subject": scan_result.office_metadata.subject,
+                    "company": scan_result.office_metadata.company,
+                    "manager": scan_result.office_metadata.manager,
+                    "created": scan_result.office_metadata.created.isoformat() if scan_result.office_metadata.created else None,
+                    "modified": scan_result.office_metadata.modified.isoformat() if scan_result.office_metadata.modified else None,
+                    "last_modified_by": scan_result.office_metadata.last_modified_by,
+                    "revision": scan_result.office_metadata.revision,
+                    "keywords": scan_result.office_metadata.keywords,
+                    "category": scan_result.office_metadata.category,
+                } if scan_result.office_metadata else None,
+                "findings": [
+                    {
+                        "finding_type": f.finding_type,
+                        "severity": f.severity,
+                        "description": f.description,
+                        "evidence": f.evidence,
+                        "confidence": f.confidence,
+                    }
+                    for f in scan_result.findings
+                ],
                 "integrity_status": scan_result.integrity_status.value,
-                "findings_count": len(scan_result.findings),
-            },
-            source="provenance-shard",
-        )
-
-    # Convert to response dict
-    scan_dict = {
-        "id": scan_result.id,
-        "doc_id": scan_result.doc_id,
-        "scan_status": scan_result.scan_status.value,
-        "file_hash_md5": scan_result.file_hash_md5,
-        "file_hash_sha256": scan_result.file_hash_sha256,
-        "file_hash_sha512": scan_result.file_hash_sha512,
-        "file_size": scan_result.file_size,
-        "exif_data": {
-            "make": scan_result.exif_data.make,
-            "model": scan_result.exif_data.model,
-            "serial_number": scan_result.exif_data.serial_number,
-            "datetime_original": scan_result.exif_data.datetime_original.isoformat() if scan_result.exif_data.datetime_original else None,
-            "datetime_digitized": scan_result.exif_data.datetime_digitized.isoformat() if scan_result.exif_data.datetime_digitized else None,
-            "datetime_modified": scan_result.exif_data.datetime_modified.isoformat() if scan_result.exif_data.datetime_modified else None,
-            "gps_latitude": scan_result.exif_data.gps_latitude,
-            "gps_longitude": scan_result.exif_data.gps_longitude,
-            "gps_altitude": scan_result.exif_data.gps_altitude,
-            "software": scan_result.exif_data.software,
-            "width": scan_result.exif_data.width,
-            "height": scan_result.exif_data.height,
-        } if scan_result.exif_data else None,
-        "pdf_metadata": {
-            "title": scan_result.pdf_metadata.title,
-            "author": scan_result.pdf_metadata.author,
-            "subject": scan_result.pdf_metadata.subject,
-            "creator": scan_result.pdf_metadata.creator,
-            "producer": scan_result.pdf_metadata.producer,
-            "creation_date": scan_result.pdf_metadata.creation_date.isoformat() if scan_result.pdf_metadata.creation_date else None,
-            "modification_date": scan_result.pdf_metadata.modification_date.isoformat() if scan_result.pdf_metadata.modification_date else None,
-            "keywords": scan_result.pdf_metadata.keywords,
-            "page_count": scan_result.pdf_metadata.page_count,
-            "pdf_version": scan_result.pdf_metadata.pdf_version,
-            "is_encrypted": scan_result.pdf_metadata.is_encrypted,
-        } if scan_result.pdf_metadata else None,
-        "office_metadata": {
-            "title": scan_result.office_metadata.title,
-            "author": scan_result.office_metadata.author,
-            "subject": scan_result.office_metadata.subject,
-            "company": scan_result.office_metadata.company,
-            "manager": scan_result.office_metadata.manager,
-            "created": scan_result.office_metadata.created.isoformat() if scan_result.office_metadata.created else None,
-            "modified": scan_result.office_metadata.modified.isoformat() if scan_result.office_metadata.modified else None,
-            "last_modified_by": scan_result.office_metadata.last_modified_by,
-            "revision": scan_result.office_metadata.revision,
-            "keywords": scan_result.office_metadata.keywords,
-            "category": scan_result.office_metadata.category,
-        } if scan_result.office_metadata else None,
-        "findings": [
-            {
-                "finding_type": f.finding_type,
-                "severity": f.severity,
-                "description": f.description,
-                "evidence": f.evidence,
-                "confidence": f.confidence,
+                "confidence_score": scan_result.confidence_score,
+                "timeline_events": [
+                    {
+                        "id": e.id,
+                        "doc_id": e.doc_id,
+                        "event_type": e.event_type,
+                        "event_timestamp": e.event_timestamp.isoformat() if e.event_timestamp else None,
+                        "event_source": e.event_source,
+                        "event_actor": e.event_actor,
+                        "event_details": e.event_details,
+                        "confidence": e.confidence,
+                        "is_estimated": e.is_estimated,
+                    }
+                    for e in scan_result.timeline_events
+                ],
+                "scanned_at": scan_result.scanned_at.isoformat() if scan_result.scanned_at else None,
             }
-            for f in scan_result.findings
-        ],
-        "integrity_status": scan_result.integrity_status.value,
-        "confidence_score": scan_result.confidence_score,
-        "timeline_events": [
-            {
-                "id": e.id,
-                "doc_id": e.doc_id,
-                "event_type": e.event_type,
-                "event_timestamp": e.event_timestamp.isoformat() if e.event_timestamp else None,
-                "event_source": e.event_source,
-                "event_actor": e.event_actor,
-                "event_details": e.event_details,
-                "confidence": e.confidence,
-                "is_estimated": e.is_estimated,
-            }
-            for e in scan_result.timeline_events
-        ],
-        "scanned_at": scan_result.scanned_at.isoformat() if scan_result.scanned_at else None,
-    }
 
-    return ForensicScanResponse(scan=scan_dict)
+            return ForensicScanResponse(scan=scan_dict)
+        except Exception as e:
+            logger.error(f"Error scanning forensics: {e}")
+            if event:
+                event.error(str(e), exc_info=True)
+            raise
 
 
 @router.post("/forensics/compare")
 async def compare_forensics(
     request: Request,
     body: ForensicCompareRequest,
+    user=Depends(current_active_user),
 ):
     """
     Compare metadata between two documents.
@@ -1293,6 +1415,7 @@ async def compare_forensics(
         Comparison results with match score and relationship
     """
     shard = get_shard(request)
+    project_id = await _require_active_project_id(request, shard, user)
 
     if not shard.forensic_analyzer:
         raise HTTPException(
@@ -1301,8 +1424,8 @@ async def compare_forensics(
         )
 
     # Get existing scans for both documents
-    source_scans = await shard.get_document_forensic_scans(body.source_doc_id)
-    target_scans = await shard.get_document_forensic_scans(body.target_doc_id)
+    source_scans = await shard.get_document_forensic_scans(body.source_doc_id, project_id=project_id)
+    target_scans = await shard.get_document_forensic_scans(body.target_doc_id, project_id=project_id)
 
     if not source_scans:
         raise HTTPException(
@@ -1425,7 +1548,7 @@ async def compare_forensics(
 
 
 @router.get("/forensics/stats", response_model=ForensicStatsResponse)
-async def get_forensic_stats(request: Request):
+async def get_forensic_stats(request: Request, user=Depends(current_active_user)):
     """
     Get forensic analysis statistics.
 
@@ -1437,8 +1560,8 @@ async def get_forensic_stats(request: Request):
     - Average confidence score
     """
     shard = get_shard(request)
-
-    stats = await shard.get_forensic_stats()
+    project_id = await _require_active_project_id(request, shard, user)
+    stats = await shard.get_forensic_stats(project_id=project_id)
     return ForensicStatsResponse(stats=stats)
 
 
@@ -1446,6 +1569,7 @@ async def get_forensic_stats(request: Request):
 async def get_document_forensic_scans(
     request: Request,
     doc_id: str,
+    user=Depends(current_active_user),
 ):
     """
     Get all forensic scans for a document.
@@ -1457,8 +1581,8 @@ async def get_document_forensic_scans(
         List of scans for the document
     """
     shard = get_shard(request)
-
-    scans = await shard.get_document_forensic_scans(doc_id)
+    project_id = await _require_active_project_id(request, shard, user)
+    scans = await shard.get_document_forensic_scans(doc_id, project_id=project_id)
     return {"scans": scans, "total": len(scans)}
 
 
@@ -1466,6 +1590,7 @@ async def get_document_forensic_scans(
 async def get_forensic_scan(
     request: Request,
     scan_id: str,
+    user=Depends(current_active_user),
 ):
     """
     Get a specific forensic scan by ID.
@@ -1477,8 +1602,8 @@ async def get_forensic_scan(
         Scan details
     """
     shard = get_shard(request)
-
-    scan = await shard.get_forensic_scan(scan_id)
+    project_id = await _require_active_project_id(request, shard, user)
+    scan = await shard.get_forensic_scan(scan_id, project_id=project_id)
     if not scan:
         raise HTTPException(status_code=404, detail=f"Scan {scan_id} not found")
 

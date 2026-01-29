@@ -13,6 +13,20 @@ import uuid
 
 logger = logging.getLogger(__name__)
 
+# Import wide event logging utilities (with fallback)
+try:
+    from arkham_frame import log_operation, create_wide_event
+    WIDE_EVENTS_AVAILABLE = True
+except ImportError:
+    WIDE_EVENTS_AVAILABLE = False
+    # Fallback: create no-op context manager
+    from contextlib import contextmanager
+    @contextmanager
+    def log_operation(*args, **kwargs):
+        yield None
+    def create_wide_event(*args, **kwargs):
+        return None
+
 
 class DocumentNotFoundError(Exception):
     """Document not found."""
@@ -269,11 +283,26 @@ class DocumentService:
         Returns:
             Created Document
         """
-        if not self.db or not self.db._engine:
-            raise DocumentError("Database not available")
-
         doc_id = str(uuid.uuid4())
-        now = datetime.utcnow()
+        
+        # Wide event logging
+        with log_operation("document.create", document_id=doc_id, project_id=project_id) as event:
+            if event:
+                event.input(
+                    filename=filename,
+                    file_size=len(content),
+                    project_id=project_id,
+                    has_metadata=metadata is not None,
+                )
+                if project_id:
+                    event.context("project_id", project_id)
+            
+            if not self.db or not self.db._engine:
+                if event:
+                    event.error("DatabaseUnavailable", "Database not available")
+                raise DocumentError("Database not available")
+
+            now = datetime.utcnow()
 
         # Store file if storage service available
         storage_id = None
@@ -317,7 +346,7 @@ class DocumentService:
                 )
                 conn.commit()
 
-            return Document(
+            doc = Document(
                 id=doc_id,
                 filename=filename,
                 storage_id=storage_id,
@@ -331,9 +360,21 @@ class DocumentService:
                 processed_at=None,
                 metadata=metadata or {},
             )
+            
+            if event:
+                event.output(
+                    document_id=doc.id,
+                    status=doc.status.value,
+                    storage_id=storage_id,
+                    mime_type=mime_type,
+                )
+            
+            return doc
 
         except Exception as e:
             logger.error(f"Failed to create document: {e}")
+            if event:
+                event.error("DocumentCreationFailed", str(e))
             raise DocumentError(f"Document creation failed: {e}")
 
     async def get_document(self, doc_id: str) -> Optional[Document]:
@@ -346,26 +387,45 @@ class DocumentService:
         Returns:
             Document or None if not found
         """
-        if not self.db or not self.db._engine:
-            return None
-
-        from sqlalchemy import text
-
-        try:
-            with self.db._engine.connect() as conn:
-                result = conn.execute(
-                    text(f"SELECT * FROM {self.SCHEMA}.documents WHERE id = :id"),
-                    {"id": doc_id},
-                )
-                row = result.fetchone()
-
-                if row:
-                    return self._row_to_document(row._mapping)
+        with log_operation("document.get", document_id=doc_id) as event:
+            if event:
+                event.input(document_id=doc_id)
+            
+            if not self.db or not self.db._engine:
+                if event:
+                    event.error("DatabaseUnavailable", "Database not available")
                 return None
 
-        except Exception as e:
-            logger.error(f"Failed to get document {doc_id}: {e}")
-            return None
+            from sqlalchemy import text
+
+            try:
+                with self.db._engine.connect() as conn:
+                    result = conn.execute(
+                        text(f"SELECT * FROM {self.SCHEMA}.documents WHERE id = :id"),
+                        {"id": doc_id},
+                    )
+                    row = result.fetchone()
+
+                    if row:
+                        doc = self._row_to_document(row._mapping)
+                        if event:
+                            event.output(
+                                document_id=doc.id,
+                                status=doc.status.value,
+                                project_id=doc.project_id,
+                                found=True,
+                            )
+                        return doc
+                    
+                    if event:
+                        event.output(found=False)
+                    return None
+
+            except Exception as e:
+                logger.error(f"Failed to get document {doc_id}: {e}")
+                if event:
+                    event.error("DocumentGetFailed", str(e))
+                return None
 
     async def list_documents(
         self,
@@ -390,61 +450,85 @@ class DocumentService:
         Returns:
             Tuple of (documents list, total count)
         """
-        if not self.db or not self.db._engine:
-            return [], 0
-
-        from sqlalchemy import text
-
-        # Build where clause
-        conditions = []
-        params = {"offset": offset, "limit": limit}
-
-        if project_id:
-            conditions.append("project_id = :project_id")
-            params["project_id"] = project_id
-
-        if status:
-            conditions.append("status = :status")
-            params["status"] = status
-
-        where = "WHERE " + " AND ".join(conditions) if conditions else ""
-
-        # Validate sort column
-        allowed_sorts = ["created_at", "updated_at", "filename", "file_size", "status"]
-        if sort not in allowed_sorts:
-            sort = "created_at"
-
-        order = "DESC" if order.lower() == "desc" else "ASC"
-
-        try:
-            with self.db._engine.connect() as conn:
-                # Get total count
-                count_result = conn.execute(
-                    text(f"SELECT COUNT(*) FROM {self.SCHEMA}.documents {where}"),
-                    params,
+        with log_operation("document.list", project_id=project_id) as event:
+            if event:
+                event.input(
+                    project_id=project_id,
+                    status=status,
+                    offset=offset,
+                    limit=limit,
+                    sort=sort,
+                    order=order,
                 )
-                total = count_result.scalar()
+                if project_id:
+                    event.context("project_id", project_id)
+            
+            if not self.db or not self.db._engine:
+                if event:
+                    event.error("DatabaseUnavailable", "Database not available")
+                return [], 0
 
-                # Get documents
-                result = conn.execute(
-                    text(f"""
-                        SELECT * FROM {self.SCHEMA}.documents
-                        {where}
-                        ORDER BY {sort} {order}
-                        OFFSET :offset LIMIT :limit
-                    """),
-                    params,
-                )
+            from sqlalchemy import text
 
-                documents = [
-                    self._row_to_document(row._mapping) for row in result.fetchall()
-                ]
+            # Build where clause
+            conditions = []
+            params = {"offset": offset, "limit": limit}
 
-                return documents, total
+            if project_id:
+                conditions.append("project_id = :project_id")
+                params["project_id"] = project_id
 
-        except Exception as e:
-            logger.error(f"Failed to list documents: {e}")
-            return [], 0
+            if status:
+                conditions.append("status = :status")
+                params["status"] = status
+
+            where = "WHERE " + " AND ".join(conditions) if conditions else ""
+
+            # Validate sort column
+            allowed_sorts = ["created_at", "updated_at", "filename", "file_size", "status"]
+            if sort not in allowed_sorts:
+                sort = "created_at"
+
+            order = "DESC" if order.lower() == "desc" else "ASC"
+
+            try:
+                with self.db._engine.connect() as conn:
+                    # Get total count
+                    count_result = conn.execute(
+                        text(f"SELECT COUNT(*) FROM {self.SCHEMA}.documents {where}"),
+                        params,
+                    )
+                    total = count_result.scalar()
+
+                    # Get documents
+                    result = conn.execute(
+                        text(f"""
+                            SELECT * FROM {self.SCHEMA}.documents
+                            {where}
+                            ORDER BY {sort} {order}
+                            OFFSET :offset LIMIT :limit
+                        """),
+                        params,
+                    )
+
+                    documents = [
+                        self._row_to_document(row._mapping) for row in result.fetchall()
+                    ]
+
+                    if event:
+                        event.output(
+                            count=len(documents),
+                            total=total,
+                            returned=len(documents),
+                        )
+                    
+                    return documents, total
+
+            except Exception as e:
+                logger.error(f"Failed to list documents: {e}")
+                if event:
+                    event.error("DocumentListFailed", str(e))
+                return [], 0
 
     async def update_document(
         self,
@@ -463,47 +547,66 @@ class DocumentService:
         Returns:
             Updated Document or None if not found
         """
-        if not self.db or not self.db._engine:
-            return None
-
-        from sqlalchemy import text
-
-        updates = []
-        params = {"id": doc_id, "updated_at": datetime.utcnow()}
-
-        if status:
-            updates.append("status = :status")
-            params["status"] = status
-            if status == DocumentStatus.COMPLETED.value:
-                updates.append("processed_at = :processed_at")
-                params["processed_at"] = datetime.utcnow()
-
-        if metadata:
-            updates.append("metadata = metadata || :metadata")
-            params["metadata"] = metadata
-
-        if not updates:
-            return await self.get_document(doc_id)
-
-        updates.append("updated_at = :updated_at")
-
-        try:
-            with self.db._engine.connect() as conn:
-                conn.execute(
-                    text(f"""
-                        UPDATE {self.SCHEMA}.documents
-                        SET {", ".join(updates)}
-                        WHERE id = :id
-                    """),
-                    params,
+        with log_operation("document.update", document_id=doc_id) as event:
+            if event:
+                event.input(
+                    document_id=doc_id,
+                    has_metadata=metadata is not None,
+                    new_status=status,
                 )
-                conn.commit()
+            
+            if not self.db or not self.db._engine:
+                if event:
+                    event.error("DatabaseUnavailable", "Database not available")
+                return None
 
-            return await self.get_document(doc_id)
+            from sqlalchemy import text
 
-        except Exception as e:
-            logger.error(f"Failed to update document {doc_id}: {e}")
-            return None
+            updates = []
+            params = {"id": doc_id, "updated_at": datetime.utcnow()}
+
+            if status:
+                updates.append("status = :status")
+                params["status"] = status
+                if status == DocumentStatus.COMPLETED.value:
+                    updates.append("processed_at = :processed_at")
+                    params["processed_at"] = datetime.utcnow()
+
+            if metadata:
+                updates.append("metadata = metadata || :metadata")
+                params["metadata"] = metadata
+
+            if not updates:
+                return await self.get_document(doc_id)
+
+            updates.append("updated_at = :updated_at")
+
+            try:
+                with self.db._engine.connect() as conn:
+                    conn.execute(
+                        text(f"""
+                            UPDATE {self.SCHEMA}.documents
+                            SET {", ".join(updates)}
+                            WHERE id = :id
+                        """),
+                        params,
+                    )
+                    conn.commit()
+
+                updated_doc = await self.get_document(doc_id)
+                if event and updated_doc:
+                    event.output(
+                        document_id=updated_doc.id,
+                        status=updated_doc.status.value,
+                        updated=True,
+                    )
+                return updated_doc
+
+            except Exception as e:
+                logger.error(f"Failed to update document {doc_id}: {e}")
+                if event:
+                    event.error("DocumentUpdateFailed", str(e))
+                return None
 
     async def delete_document(self, doc_id: str) -> bool:
         """
@@ -515,42 +618,64 @@ class DocumentService:
         Returns:
             True if deleted, False if not found
         """
-        if not self.db or not self.db._engine:
-            return False
+        with log_operation("document.delete", document_id=doc_id) as event:
+            if event:
+                event.input(document_id=doc_id)
+            
+            if not self.db or not self.db._engine:
+                if event:
+                    event.error("DatabaseUnavailable", "Database not available")
+                return False
 
-        # Get document first for cleanup
-        doc = await self.get_document(doc_id)
-        if not doc:
-            return False
+            # Get document first for cleanup
+            doc = await self.get_document(doc_id)
+            if not doc:
+                if event:
+                    event.output(found=False, deleted=False)
+                return False
 
-        from sqlalchemy import text
-
-        try:
-            with self.db._engine.connect() as conn:
-                # Delete from DB (cascades to chunks and pages)
-                result = conn.execute(
-                    text(f"DELETE FROM {self.SCHEMA}.documents WHERE id = :id"),
-                    {"id": doc_id},
+            if event and doc:
+                event.context("project_id", doc.project_id)
+                event.input(
+                    filename=doc.filename,
+                    storage_id=doc.storage_id,
+                    has_storage=bool(doc.storage_id),
                 )
-                conn.commit()
 
-                if result.rowcount == 0:
-                    return False
+            from sqlalchemy import text
 
-            # Clean up storage
-            if self.storage and doc.storage_id:
-                await self.storage.delete(doc.storage_id)
+            try:
+                with self.db._engine.connect() as conn:
+                    # Delete from DB (cascades to chunks and pages)
+                    result = conn.execute(
+                        text(f"DELETE FROM {self.SCHEMA}.documents WHERE id = :id"),
+                        {"id": doc_id},
+                    )
+                    conn.commit()
 
-            # Clean up vectors
-            if self.vectors:
-                await self.vectors.delete_by_document(doc_id)
+                    if result.rowcount == 0:
+                        if event:
+                            event.output(deleted=False)
+                        return False
 
-            logger.debug(f"Deleted document: {doc_id}")
-            return True
+                # Clean up storage
+                if self.storage and doc.storage_id:
+                    await self.storage.delete(doc.storage_id)
 
-        except Exception as e:
-            logger.error(f"Failed to delete document {doc_id}: {e}")
-            return False
+                # Clean up vectors
+                if self.vectors:
+                    await self.vectors.delete_by_document(doc_id)
+
+                logger.debug(f"Deleted document: {doc_id}")
+                if event:
+                    event.output(deleted=True, storage_cleaned=bool(doc.storage_id))
+                return True
+
+            except Exception as e:
+                logger.error(f"Failed to delete document {doc_id}: {e}")
+                if event:
+                    event.error("DocumentDeleteFailed", str(e))
+                return False
 
     # =========================================================================
     # Content Access

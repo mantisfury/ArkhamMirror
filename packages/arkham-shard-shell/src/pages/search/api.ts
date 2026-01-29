@@ -5,6 +5,7 @@
  */
 
 import { useState, useEffect, useCallback } from 'react';
+import { apiFetch } from '../../utils/api';
 import type {
   SearchRequest,
   SearchResponse,
@@ -24,7 +25,7 @@ const API_PREFIX = '/api/search';
 
 // Generic fetch wrapper with error handling
 async function fetchAPI<T>(endpoint: string, options?: RequestInit): Promise<T> {
-  const response = await fetch(`${API_PREFIX}${endpoint}`, {
+  const response = await apiFetch(`${API_PREFIX}${endpoint}`, {
     headers: {
       'Content-Type': 'application/json',
       ...options?.headers,
@@ -208,7 +209,7 @@ export async function getDetectedPatterns(params?: {
   if (params?.pattern_type) searchParams.set('type', params.pattern_type);
   if (params?.limit) searchParams.set('page_size', params.limit.toString());
 
-  const response = await fetch(`/api/patterns/?${searchParams.toString()}`, {
+  const response = await apiFetch(`/api/patterns/?${searchParams.toString()}`, {
     headers: { 'Content-Type': 'application/json' },
   });
 

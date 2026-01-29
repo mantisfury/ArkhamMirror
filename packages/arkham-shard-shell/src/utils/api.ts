@@ -5,6 +5,7 @@
  * and handle 401 responses gracefully.
  */
 
+/** localStorage key for the current user's JWT. Same key app-wide; the value is per-user (whoever is logged in). Not secret — the token value is what must be protected. */
 const TOKEN_KEY = 'arkham_token';
 
 /**
@@ -19,7 +20,8 @@ export async function apiFetch(
   const headers = new Headers(options.headers);
 
   // Add auth token if present
-  if (token) {
+  // Allow callers to override Authorization explicitly (e.g. login flows)
+  if (token && !headers.has('Authorization')) {
     headers.set('Authorization', `Bearer ${token}`);
   }
 
@@ -28,7 +30,11 @@ export async function apiFetch(
     headers.set('Content-Type', 'application/json');
   }
 
-  const response = await fetch(url, { ...options, headers });
+  const response = await fetch(url, { 
+    ...options, 
+    headers,
+    credentials: 'include', // Include cookies for session management
+  });
 
   // Handle 401 Unauthorized - token expired or invalid
   if (response.status === 401) {

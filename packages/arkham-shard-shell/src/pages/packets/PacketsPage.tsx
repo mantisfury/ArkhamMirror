@@ -10,6 +10,7 @@ import { Icon } from '../../components/common/Icon';
 import { useToast } from '../../context/ToastContext';
 import { useFetch } from '../../hooks/useFetch';
 import { usePaginatedFetch } from '../../hooks';
+import { apiDelete, apiGet, apiPost } from '../../utils/api';
 import './PacketsPage.css';
 
 // Types
@@ -67,22 +68,11 @@ export function PacketsPage() {
 
   const handleCreatePacket = async (name: string, description: string) => {
     try {
-      const response = await fetch('/api/packets/', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          name,
-          description,
-          visibility: 'private',
-        }),
+      const newPacket = await apiPost<Packet>('/api/packets/', {
+        name,
+        description,
+        visibility: 'private',
       });
-
-      if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.detail || 'Failed to create packet');
-      }
-
-      const newPacket = await response.json();
       toast.success('Packet created successfully');
       setShowCreateModal(false);
       setSelectedPacket(newPacket.id);
@@ -94,14 +84,7 @@ export function PacketsPage() {
 
   const handleFinalizePacket = async (packetId: string) => {
     try {
-      const response = await fetch(`/api/packets/${packetId}/finalize`, {
-        method: 'POST',
-      });
-
-      if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.detail || 'Failed to finalize packet');
-      }
+      await apiPost(`/api/packets/${packetId}/finalize`);
 
       toast.success('Packet finalized successfully');
       refetch();
@@ -114,14 +97,7 @@ export function PacketsPage() {
     if (!confirm('Archive this packet?')) return;
 
     try {
-      const response = await fetch(`/api/packets/${packetId}`, {
-        method: 'DELETE',
-      });
-
-      if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.detail || 'Failed to delete packet');
-      }
+      await apiDelete(`/api/packets/${packetId}`);
 
       toast.success('Packet archived successfully');
       if (selectedPacket === packetId) {
@@ -135,14 +111,7 @@ export function PacketsPage() {
 
   const handleRemoveContent = async (packetId: string, contentId: string) => {
     try {
-      const response = await fetch(`/api/packets/${packetId}/contents/${contentId}`, {
-        method: 'DELETE',
-      });
-
-      if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.detail || 'Failed to remove content');
-      }
+      await apiDelete(`/api/packets/${packetId}/contents/${contentId}`);
 
       toast.success('Content removed from packet');
       refetch();
@@ -369,20 +338,12 @@ export function PacketsPage() {
           onClose={() => setShowAddContentModal(false)}
           onAdd={async (contentType, contentId, contentTitle) => {
             try {
-              const response = await fetch(`/api/packets/${selectedPacket}/contents`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                  content_type: contentType,
-                  content_id: contentId,
-                  content_title: contentTitle,
-                  order: 0,
-                }),
+              await apiPost(`/api/packets/${selectedPacket}/contents`, {
+                content_type: contentType,
+                content_id: contentId,
+                content_title: contentTitle,
+                order: 0,
               });
-              if (!response.ok) {
-                const error = await response.json();
-                throw new Error(error.detail || 'Failed to add content');
-              }
               toast.success('Content added to packet');
               setShowAddContentModal(false);
               refetchContents();
@@ -505,13 +466,7 @@ function AddContentModal({ onClose, onAdd }: AddContentModalProps) {
           params.append('search', searchQuery);
         }
 
-        const response = await fetch(`${currentType.endpoint}?${params}`);
-        if (!response.ok) {
-          setResults([]);
-          return;
-        }
-
-        const data = await response.json();
+        const data = await apiGet<any>(`${currentType.endpoint}?${params}`);
 
         // Normalize different response formats
         let items: ContentSearchResult[] = [];

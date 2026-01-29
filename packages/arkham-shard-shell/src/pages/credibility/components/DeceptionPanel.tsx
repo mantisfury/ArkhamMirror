@@ -15,6 +15,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { Icon } from '../../../components/common/Icon';
 import { useToast } from '../../../context/ToastContext';
 import { DeceptionChecklist } from './DeceptionChecklist';
+import { apiDelete, apiGet, apiPost, apiPut } from '../../../utils/api';
 import type {
   DeceptionAssessment,
   DeceptionChecklistType,
@@ -64,35 +65,26 @@ export function DeceptionPanel({
   const fetchSourceInfo = useCallback(async () => {
     try {
       if (sourceType === 'document') {
-        const res = await fetch(`/api/documents/${sourceId}`);
-        if (res.ok) {
-          const doc = await res.json();
-          setSourceInfo({
-            name: doc.name || 'Unknown Document',
-            type: 'Document',
-            detail: doc.mime_type || undefined,
-          });
-        }
+        const doc = await apiGet<any>(`/api/documents/${sourceId}`);
+        setSourceInfo({
+          name: doc.name || 'Unknown Document',
+          type: 'Document',
+          detail: doc.mime_type || undefined,
+        });
       } else if (sourceType === 'entity') {
-        const res = await fetch(`/api/entities/${sourceId}`);
-        if (res.ok) {
-          const entity = await res.json();
-          setSourceInfo({
-            name: entity.name || 'Unknown Entity',
-            type: entity.entity_type || 'Entity',
-            detail: entity.description?.substring(0, 100) || undefined,
-          });
-        }
+        const entity = await apiGet<any>(`/api/entities/${sourceId}`);
+        setSourceInfo({
+          name: entity.name || 'Unknown Entity',
+          type: entity.entity_type || 'Entity',
+          detail: entity.description?.substring(0, 100) || undefined,
+        });
       } else if (sourceType === 'claim') {
-        const res = await fetch(`/api/claims/${sourceId}`);
-        if (res.ok) {
-          const claim = await res.json();
-          setSourceInfo({
-            name: claim.statement?.substring(0, 80) || 'Unknown Claim',
-            type: 'Claim',
-            detail: claim.source_text?.substring(0, 100) || undefined,
-          });
-        }
+        const claim = await apiGet<any>(`/api/claims/${sourceId}`);
+        setSourceInfo({
+          name: claim.statement?.substring(0, 80) || 'Unknown Claim',
+          type: 'Claim',
+          detail: claim.source_text?.substring(0, 100) || undefined,
+        });
       } else {
         setSourceInfo({
           name: sourceId,
@@ -119,7 +111,7 @@ export function DeceptionPanel({
 
         // Fetch standard indicators for all checklist types
         const indicatorPromises = CHECKLIST_TYPES.map(type =>
-          fetch(`/api/credibility/deception/indicators/${type}`).then(r => r.json())
+          apiGet<unknown>(`/api/credibility/deception/indicators/${type}`)
         );
         const indicatorResults = await Promise.all(indicatorPromises);
         const indicators: Record<DeceptionChecklistType, StandardIndicator[]> = {
@@ -131,17 +123,14 @@ export function DeceptionPanel({
         setStandardIndicators(indicators);
 
         // Try to fetch existing assessment for this source
-        const assessmentRes = await fetch(
-          `/api/credibility/deception/source/${sourceType}/${sourceId}`
-        );
-        if (assessmentRes.ok) {
-          const data = await assessmentRes.json();
+        try {
+          const data = await apiGet<unknown>(`/api/credibility/deception/source/${sourceType}/${sourceId}`);
           if (Array.isArray(data) && data.length > 0) {
-            setAssessment(data[0]);
-            if (onRiskChange) {
-              onRiskChange(data[0].risk_level);
-            }
+            setAssessment(data[0] as DeceptionAssessment);
+            onRiskChange?.((data[0] as DeceptionAssessment).risk_level);
           }
+        } catch {
+          // No existing assessment (or not accessible) is fine
         }
       } catch (err) {
         console.error('Failed to fetch deception data:', err);
@@ -157,25 +146,15 @@ export function DeceptionPanel({
   const handleCreateAssessment = async () => {
     setSaving(true);
     try {
-      const response = await fetch('/api/credibility/deception', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          source_type: sourceType,
-          source_id: sourceId,
-          source_name: sourceInfo?.name,
-          linked_assessment_id: credibilityAssessmentId,
-          assessed_by: 'manual',
-          affects_credibility: true,
-          credibility_weight: 0.7, // Higher weight for meaningful impact
-        }),
+      const data = await apiPost<DeceptionAssessment>('/api/credibility/deception', {
+        source_type: sourceType,
+        source_id: sourceId,
+        source_name: sourceInfo?.name,
+        linked_assessment_id: credibilityAssessmentId,
+        assessed_by: 'manual',
+        affects_credibility: true,
+        credibility_weight: 0.7, // Higher weight for meaningful impact
       });
-
-      if (!response.ok) {
-        throw new Error('Failed to create assessment');
-      }
-
-      const data = await response.json();
       setAssessment(data);
       toast.success('Deception assessment created');
     } catch (err) {
@@ -211,22 +190,10 @@ export function DeceptionPanel({
 
     setSaving(true);
     try {
-      const response = await fetch(
+      const data = await apiPut<DeceptionAssessment>(
         `/api/credibility/deception/${assessment.id}/checklist/${checklistType}`,
-        {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            indicators: updatedIndicators,
-          }),
-        }
+        { indicators: updatedIndicators }
       );
-
-      if (!response.ok) {
-        throw new Error('Failed to update checklist');
-      }
-
-      const data = await response.json();
       setAssessment(data);
 
       if (onRiskChange && data.risk_level !== assessment.risk_level) {
@@ -250,155 +217,131 @@ export function DeceptionPanel({
     try {
       if (sourceType === 'document') {
         // Fetch document metadata
-        const docRes = await fetch(`/api/documents/items/${sourceId}`);
-        if (docRes.ok) {
-          const doc = await docRes.json();
+        const doc = await apiGet<any>(`/api/documents/items/${sourceId}`);
 
-          contextParts.push(`\n=== DOCUMENT METADATA ===`);
-          if (doc.title) contextParts.push(`Title: ${doc.title}`);
-          if (doc.filename) contextParts.push(`Filename: ${doc.filename}`);
-          if (doc.file_type) contextParts.push(`File Type: ${doc.file_type}`);
-          if (doc.created_at) contextParts.push(`Ingested: ${new Date(doc.created_at).toLocaleString()}`);
-          if (doc.page_count) contextParts.push(`Pages: ${doc.page_count}`);
-          if (doc.tags?.length) contextParts.push(`Tags: ${doc.tags.join(', ')}`);
+        contextParts.push(`\n=== DOCUMENT METADATA ===`);
+        if (doc.title) contextParts.push(`Title: ${doc.title}`);
+        if (doc.filename) contextParts.push(`Filename: ${doc.filename}`);
+        if (doc.file_type) contextParts.push(`File Type: ${doc.file_type}`);
+        if (doc.created_at) contextParts.push(`Ingested: ${new Date(doc.created_at).toLocaleString()}`);
+        if (doc.page_count) contextParts.push(`Pages: ${doc.page_count}`);
+        if (doc.tags?.length) contextParts.push(`Tags: ${doc.tags.join(', ')}`);
 
-          // Extract custom metadata (author, publisher, date, source URL, etc.)
-          if (doc.custom_metadata && Object.keys(doc.custom_metadata).length > 0) {
-            contextParts.push(`\n=== PROVENANCE & ATTRIBUTION ===`);
-            const meta = doc.custom_metadata;
-            if (meta.author) contextParts.push(`Author: ${meta.author}`);
-            if (meta.publisher) contextParts.push(`Publisher: ${meta.publisher}`);
-            if (meta.publication_date) contextParts.push(`Publication Date: ${meta.publication_date}`);
-            if (meta.source_url) contextParts.push(`Source URL: ${meta.source_url}`);
-            if (meta.organization) contextParts.push(`Organization: ${meta.organization}`);
-            if (meta.classification) contextParts.push(`Classification: ${meta.classification}`);
-            if (meta.reliability_rating) contextParts.push(`Previous Reliability Rating: ${meta.reliability_rating}`);
-            // Include any other custom fields
-            for (const [key, value] of Object.entries(meta)) {
-              if (!['author', 'publisher', 'publication_date', 'source_url', 'organization', 'classification', 'reliability_rating'].includes(key)) {
-                contextParts.push(`${key}: ${value}`);
-              }
+        // Extract custom metadata (author, publisher, date, source URL, etc.)
+        if (doc.custom_metadata && Object.keys(doc.custom_metadata).length > 0) {
+          contextParts.push(`\n=== PROVENANCE & ATTRIBUTION ===`);
+          const meta = doc.custom_metadata;
+          if (meta.author) contextParts.push(`Author: ${meta.author}`);
+          if (meta.publisher) contextParts.push(`Publisher: ${meta.publisher}`);
+          if (meta.publication_date) contextParts.push(`Publication Date: ${meta.publication_date}`);
+          if (meta.source_url) contextParts.push(`Source URL: ${meta.source_url}`);
+          if (meta.organization) contextParts.push(`Organization: ${meta.organization}`);
+          if (meta.classification) contextParts.push(`Classification: ${meta.classification}`);
+          if (meta.reliability_rating) contextParts.push(`Previous Reliability Rating: ${meta.reliability_rating}`);
+          // Include any other custom fields
+          for (const [key, value] of Object.entries(meta)) {
+            if (!['author', 'publisher', 'publication_date', 'source_url', 'organization', 'classification', 'reliability_rating'].includes(key)) {
+              contextParts.push(`${key}: ${value}`);
             }
           }
         }
 
         // Fetch entities extracted from this document
         try {
-          const entitiesRes = await fetch(`/api/documents/${sourceId}/entities`);
-          if (entitiesRes.ok) {
-            const entitiesData = await entitiesRes.json();
-            const entities = entitiesData.items || [];
-            if (entities.length > 0) {
-              contextParts.push(`\n=== ENTITIES MENTIONED IN DOCUMENT ===`);
-              const byType: Record<string, string[]> = {};
-              for (const e of entities.slice(0, 30)) {
-                const type = e.entity_type || 'OTHER';
-                if (!byType[type]) byType[type] = [];
-                byType[type].push(e.text);
-              }
-              for (const [type, names] of Object.entries(byType)) {
-                contextParts.push(`${type}: ${names.slice(0, 10).join(', ')}${names.length > 10 ? ` (+${names.length - 10} more)` : ''}`);
-              }
+          const entitiesData = await apiGet<any>(`/api/documents/${sourceId}/entities`);
+          const entities = entitiesData.items || [];
+          if (entities.length > 0) {
+            contextParts.push(`\n=== ENTITIES MENTIONED IN DOCUMENT ===`);
+            const byType: Record<string, string[]> = {};
+            for (const e of entities.slice(0, 30)) {
+              const type = e.entity_type || 'OTHER';
+              if (!byType[type]) byType[type] = [];
+              byType[type].push(e.text);
+            }
+            for (const [type, names] of Object.entries(byType)) {
+              contextParts.push(`${type}: ${names.slice(0, 10).join(', ')}${names.length > 10 ? ` (+${names.length - 10} more)` : ''}`);
             }
           }
         } catch { /* ignore entity fetch errors */ }
 
         // Fetch claims made in this document
         try {
-          const claimsRes = await fetch(`/api/claims/by-document/${sourceId}?page_size=10`);
-          if (claimsRes.ok) {
-            const claimsData = await claimsRes.json();
-            const claims = claimsData.items || [];
-            if (claims.length > 0) {
-              contextParts.push(`\n=== CLAIMS MADE IN THIS DOCUMENT ===`);
-              for (const claim of claims.slice(0, 8)) {
-                const status = claim.verification_status ? ` [${claim.verification_status}]` : '';
-                contextParts.push(`- "${claim.statement}"${status}`);
-              }
-              if (claims.length > 8) {
-                contextParts.push(`(+${claims.length - 8} more claims)`);
-              }
+          const claimsData = await apiGet<any>(`/api/claims/by-document/${sourceId}?page_size=10`);
+          const claims = claimsData.items || [];
+          if (claims.length > 0) {
+            contextParts.push(`\n=== CLAIMS MADE IN THIS DOCUMENT ===`);
+            for (const claim of claims.slice(0, 8)) {
+              const status = claim.verification_status ? ` [${claim.verification_status}]` : '';
+              contextParts.push(`- "${claim.statement}"${status}`);
+            }
+            if (claims.length > 8) {
+              contextParts.push(`(+${claims.length - 8} more claims)`);
             }
           }
         } catch { /* ignore claims fetch errors */ }
 
         // Fetch contradictions involving this document
         try {
-          const contradictionsRes = await fetch(`/api/contradictions/by-document/${sourceId}`);
-          if (contradictionsRes.ok) {
-            const contradictionsData = await contradictionsRes.json();
-            const contradictions = contradictionsData.contradictions || contradictionsData.items || [];
-            if (contradictions.length > 0) {
-              contextParts.push(`\n=== KNOWN CONTRADICTIONS ===`);
-              contextParts.push(`WARNING: This document contains ${contradictions.length} known contradiction(s) with other sources.`);
-              for (const c of contradictions.slice(0, 5)) {
-                const severity = c.severity ? ` [${c.severity}]` : '';
-                contextParts.push(`- ${c.description || c.claim_1 || 'Contradiction'}${severity}`);
-              }
+          const contradictionsData = await apiGet<any>(`/api/contradictions/by-document/${sourceId}`);
+          const contradictions = contradictionsData.contradictions || contradictionsData.items || [];
+          if (contradictions.length > 0) {
+            contextParts.push(`\n=== KNOWN CONTRADICTIONS ===`);
+            contextParts.push(`WARNING: This document contains ${contradictions.length} known contradiction(s) with other sources.`);
+            for (const c of contradictions.slice(0, 5)) {
+              const severity = c.severity ? ` [${c.severity}]` : '';
+              contextParts.push(`- ${c.description || c.claim_1 || 'Contradiction'}${severity}`);
             }
           }
         } catch { /* ignore contradictions fetch errors */ }
 
         // Fetch document content preview
         try {
-          const contentRes = await fetch(`/api/documents/${sourceId}/chunks?page_size=10`);
-          if (contentRes.ok) {
-            const chunks = await contentRes.json();
-            const items = chunks.items || [];
-            if (items.length > 0) {
-              const textPreview = items.slice(0, 5).map((c: { content?: string; text?: string }) => c.content || c.text || '').join('\n\n');
-              if (textPreview) {
-                contextParts.push(`\n=== DOCUMENT CONTENT PREVIEW ===`);
-                contextParts.push(textPreview.substring(0, 3000));
-              }
+          const chunks = await apiGet<any>(`/api/documents/${sourceId}/chunks?page_size=10`);
+          const items = chunks.items || [];
+          if (items.length > 0) {
+            const textPreview = items.slice(0, 5).map((c: { content?: string; text?: string }) => c.content || c.text || '').join('\n\n');
+            if (textPreview) {
+              contextParts.push(`\n=== DOCUMENT CONTENT PREVIEW ===`);
+              contextParts.push(textPreview.substring(0, 3000));
             }
           }
         } catch { /* ignore content fetch errors */ }
 
       } else if (sourceType === 'entity') {
-        const entityRes = await fetch(`/api/entities/${sourceId}`);
-        if (entityRes.ok) {
-          const entity = await entityRes.json();
-          contextParts.push(`\n=== ENTITY DETAILS ===`);
-          if (entity.name) contextParts.push(`Name: ${entity.name}`);
-          if (entity.entity_type) contextParts.push(`Type: ${entity.entity_type}`);
-          if (entity.description) contextParts.push(`Description: ${entity.description}`);
-          if (entity.aliases?.length) contextParts.push(`Also known as: ${entity.aliases.join(', ')}`);
-          if (entity.attributes) {
-            for (const [key, value] of Object.entries(entity.attributes)) {
-              contextParts.push(`${key}: ${value}`);
-            }
+        const entity = await apiGet<any>(`/api/entities/${sourceId}`);
+        contextParts.push(`\n=== ENTITY DETAILS ===`);
+        if (entity.name) contextParts.push(`Name: ${entity.name}`);
+        if (entity.entity_type) contextParts.push(`Type: ${entity.entity_type}`);
+        if (entity.description) contextParts.push(`Description: ${entity.description}`);
+        if (entity.aliases?.length) contextParts.push(`Also known as: ${entity.aliases.join(', ')}`);
+        if (entity.attributes) {
+          for (const [key, value] of Object.entries(entity.attributes)) {
+            contextParts.push(`${key}: ${value}`);
           }
+        }
 
-          // Fetch related documents
-          if (entity.document_ids?.length) {
-            contextParts.push(`\n=== APPEARS IN ${entity.document_ids.length} DOCUMENT(S) ===`);
-          }
+        // Fetch related documents
+        if (entity.document_ids?.length) {
+          contextParts.push(`\n=== APPEARS IN ${entity.document_ids.length} DOCUMENT(S) ===`);
         }
       } else if (sourceType === 'claim') {
-        const claimRes = await fetch(`/api/claims/${sourceId}`);
-        if (claimRes.ok) {
-          const claim = await claimRes.json();
-          contextParts.push(`\n=== CLAIM DETAILS ===`);
-          if (claim.statement) contextParts.push(`Statement: "${claim.statement}"`);
-          if (claim.source_text) contextParts.push(`Source Context: ${claim.source_text}`);
-          if (claim.source_document_id) contextParts.push(`Source Document ID: ${claim.source_document_id}`);
-          if (claim.claim_type) contextParts.push(`Claim Type: ${claim.claim_type}`);
-          if (claim.verification_status) contextParts.push(`Verification Status: ${claim.verification_status}`);
-          if (claim.confidence) contextParts.push(`Extraction Confidence: ${(claim.confidence * 100).toFixed(0)}%`);
+        const claim = await apiGet<any>(`/api/claims/${sourceId}`);
+        contextParts.push(`\n=== CLAIM DETAILS ===`);
+        if (claim.statement) contextParts.push(`Statement: "${claim.statement}"`);
+        if (claim.source_text) contextParts.push(`Source Context: ${claim.source_text}`);
+        if (claim.source_document_id) contextParts.push(`Source Document ID: ${claim.source_document_id}`);
+        if (claim.claim_type) contextParts.push(`Claim Type: ${claim.claim_type}`);
+        if (claim.verification_status) contextParts.push(`Verification Status: ${claim.verification_status}`);
+        if (claim.confidence) contextParts.push(`Extraction Confidence: ${(claim.confidence * 100).toFixed(0)}%`);
 
-          // Check for contradictions with this claim
-          try {
-            const contradictionsRes = await fetch(`/api/contradictions/by-claim/${sourceId}`);
-            if (contradictionsRes.ok) {
-              const data = await contradictionsRes.json();
-              const contradictions = data.contradictions || data.items || [];
-              if (contradictions.length > 0) {
-                contextParts.push(`\nWARNING: This claim has ${contradictions.length} known contradiction(s).`);
-              }
-            }
-          } catch { /* ignore */ }
-        }
+        // Check for contradictions with this claim
+        try {
+          const data = await apiGet<any>(`/api/contradictions/by-claim/${sourceId}`);
+          const contradictions = data.contradictions || data.items || [];
+          if (contradictions.length > 0) {
+            contextParts.push(`\nWARNING: This claim has ${contradictions.length} known contradiction(s).`);
+          }
+        } catch { /* ignore */ }
       }
     } catch (err) {
       console.error('Failed to fetch source context:', err);
@@ -420,35 +363,19 @@ export function DeceptionPanel({
     try {
       const sourceContext = await fetchSourceContext();
 
-      const response = await fetch(
+      const llmResult = await apiPost<any>(
         `/api/credibility/deception/${assessment.id}/checklist/${checklistType}/llm`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            context: sourceContext,
-          }),
-        }
+        { context: sourceContext }
       );
 
-      if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.detail || 'LLM analysis failed');
-      }
+      const updatedAssessment = await apiGet<DeceptionAssessment>(`/api/credibility/deception/${assessment.id}`);
+      setAssessment(updatedAssessment);
+      toast.success(
+        `${CHECKLIST_INFO[checklistType].name} analysis complete (${(llmResult.processing_time_ms / 1000).toFixed(1)}s)`
+      );
 
-      const llmResult = await response.json();
-
-      const assessmentRes = await fetch(`/api/credibility/deception/${assessment.id}`);
-      if (assessmentRes.ok) {
-        const updatedAssessment = await assessmentRes.json();
-        setAssessment(updatedAssessment);
-        toast.success(
-          `${CHECKLIST_INFO[checklistType].name} analysis complete (${(llmResult.processing_time_ms / 1000).toFixed(1)}s)`
-        );
-
-        if (onRiskChange && updatedAssessment.risk_level !== assessment.risk_level) {
-          onRiskChange(updatedAssessment.risk_level);
-        }
+      if (onRiskChange && updatedAssessment.risk_level !== assessment.risk_level) {
+        onRiskChange(updatedAssessment.risk_level);
       }
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Failed to analyze with AI');
@@ -463,16 +390,7 @@ export function DeceptionPanel({
 
     setSaving(true);
     try {
-      const response = await fetch(
-        `/api/credibility/deception/${assessment.id}/recalculate`,
-        { method: 'POST' }
-      );
-
-      if (!response.ok) {
-        throw new Error('Failed to recalculate');
-      }
-
-      const data = await response.json();
+      const data = await apiPost<DeceptionAssessment>(`/api/credibility/deception/${assessment.id}/recalculate`);
       setAssessment(data);
       toast.success('Scores recalculated');
 
@@ -493,13 +411,7 @@ export function DeceptionPanel({
 
     setSaving(true);
     try {
-      const response = await fetch(`/api/credibility/deception/${assessment.id}`, {
-        method: 'DELETE',
-      });
-
-      if (!response.ok) {
-        throw new Error('Failed to delete');
-      }
+      await apiDelete(`/api/credibility/deception/${assessment.id}`);
 
       setAssessment(null);
       toast.success('Assessment deleted');

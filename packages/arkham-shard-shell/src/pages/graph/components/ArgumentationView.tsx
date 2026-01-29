@@ -11,6 +11,7 @@
 import { useState, useEffect, useRef, useMemo } from 'react';
 import * as d3 from 'd3';
 import { Icon } from '../../../components/common/Icon';
+import { apiGet } from '../../../utils/api';
 
 // Types
 export interface ArgumentNode {
@@ -112,9 +113,7 @@ export function ArgumentationView({
   useEffect(() => {
     async function fetchMatrices() {
       try {
-        const response = await fetch(`/api/graph/argumentation/matrices/${projectId}`);
-        if (!response.ok) throw new Error('Failed to fetch matrices');
-        const result = await response.json();
+        const result = await apiGet<any>(`/api/graph/argumentation/matrices/${projectId}`);
         setMatrices(result.matrices || []);
         // Auto-select first matrix if available
         if (result.matrices?.length > 0 && !selectedMatrixId) {
@@ -135,9 +134,7 @@ export function ArgumentationView({
       setLoading(true);
       setError(null);
       try {
-        const response = await fetch(`/api/graph/argumentation/${selectedMatrixId}`);
-        if (!response.ok) throw new Error('Failed to fetch argumentation data');
-        const result = await response.json();
+        const result = await apiGet<ArgumentationData>(`/api/graph/argumentation/${selectedMatrixId}`);
         setData(result);
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Unknown error');

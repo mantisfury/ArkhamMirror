@@ -8,6 +8,7 @@ import { useState } from 'react';
 import { Icon } from '../../components/common/Icon';
 import { useToast } from '../../context/ToastContext';
 import { useFetch } from '../../hooks/useFetch';
+import { apiPost } from '../../utils/api';
 import './MergeDuplicates.css';
 
 interface EntityInfo {
@@ -73,18 +74,10 @@ export function MergeDuplicates({ onMergeComplete }: MergeDuplicatesProps) {
     setConfirmMerge(null);
 
     try {
-      const response = await fetch('/api/entities/merge', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          entity_ids: [candidate.entity_a.id, candidate.entity_b.id],
-          canonical_id: canonicalId,
-        }),
+      await apiPost('/api/entities/merge', {
+        entity_ids: [candidate.entity_a.id, candidate.entity_b.id],
+        canonical_id: canonicalId,
       });
-
-      if (!response.ok) {
-        throw new Error('Merge failed');
-      }
 
       toast.success('Entities merged successfully');
 
@@ -114,13 +107,9 @@ export function MergeDuplicates({ onMergeComplete }: MergeDuplicatesProps) {
       const pairsToMerge = duplicates?.filter(d => selectedPairs.has(getPairKey(d))) || [];
 
       for (const pair of pairsToMerge) {
-        await fetch('/api/entities/merge', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            entity_ids: [pair.entity_a.id, pair.entity_b.id],
-            canonical_id: pair.entity_a.id, // Keep first entity as canonical
-          }),
+        await apiPost('/api/entities/merge', {
+          entity_ids: [pair.entity_a.id, pair.entity_b.id],
+          canonical_id: pair.entity_a.id, // Keep first entity as canonical
         });
       }
 

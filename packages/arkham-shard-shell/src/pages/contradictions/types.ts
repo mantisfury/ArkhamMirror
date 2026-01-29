@@ -59,10 +59,10 @@ export const STATUS_LABELS: Record<ContradictionStatus, string> = {
 };
 
 export const STATUS_COLORS: Record<ContradictionStatus, string> = {
-  detected: 'var(--arkham-info)',
-  confirmed: 'var(--arkham-error)',
-  dismissed: 'var(--arkham-text-muted)',
-  investigating: 'var(--arkham-warning)',
+  detected: 'var(--info)',
+  confirmed: 'var(--error)',
+  dismissed: 'var(--text-muted)',
+  investigating: 'var(--warning)',
 };
 
 export const SEVERITY_LABELS: Record<Severity, string> = {
@@ -72,9 +72,9 @@ export const SEVERITY_LABELS: Record<Severity, string> = {
 };
 
 export const SEVERITY_COLORS: Record<Severity, string> = {
-  high: 'var(--arkham-error)',
-  medium: 'var(--arkham-warning)',
-  low: 'var(--arkham-info)',
+  high: 'var(--error)',
+  medium: 'var(--warning)',
+  low: 'var(--info)',
 };
 
 export const TYPE_LABELS: Record<ContradictionType, string> = {

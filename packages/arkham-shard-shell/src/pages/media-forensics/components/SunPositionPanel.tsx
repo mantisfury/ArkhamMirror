@@ -272,10 +272,10 @@ export function SunPositionPanel({ analysis }: SunPositionPanelProps) {
                   width: `${sunResult.shadow_analysis.consistency_score * 100}%`,
                   backgroundColor:
                     sunResult.shadow_analysis.consistency_score > 0.7
-                      ? 'var(--arkham-success)'
+                      ? 'var(--success)'
                       : sunResult.shadow_analysis.consistency_score > 0.4
-                        ? 'var(--arkham-warning)'
-                        : 'var(--arkham-error)',
+                        ? 'var(--warning)'
+                        : 'var(--error)',
                 }}
               />
             </div>

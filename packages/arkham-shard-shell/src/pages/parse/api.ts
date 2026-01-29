@@ -6,6 +6,7 @@
 
 import { useState, useCallback } from 'react';
 import { useFetch } from '../../hooks/useFetch';
+import { apiFetch } from '../../utils/api';
 import type {
   ParseTextRequest,
   ParseTextResponse,
@@ -24,7 +25,7 @@ const API_PREFIX = '/api/parse';
 // --- API Functions ---
 
 async function fetchAPI<T>(endpoint: string, options?: RequestInit): Promise<T> {
-  const response = await fetch(`${API_PREFIX}${endpoint}`, {
+  const response = await apiFetch(`${API_PREFIX}${endpoint}`, {
     headers: {
       'Content-Type': 'application/json',
       ...options?.headers,
@@ -250,11 +251,7 @@ export interface ChunkingConfig {
 }
 
 export async function getChunkingConfig(): Promise<ChunkingConfig> {
-  const response = await fetch(`${API_PREFIX}/config/chunking`);
-  if (!response.ok) {
-    throw new Error('Failed to fetch chunking config');
-  }
-  return response.json();
+  return fetchAPI<ChunkingConfig>('/config/chunking');
 }
 
 export async function updateChunkingConfig(config: {
@@ -262,16 +259,10 @@ export async function updateChunkingConfig(config: {
   chunk_overlap?: number;
   chunk_method?: string;
 }): Promise<ChunkingConfig> {
-  const response = await fetch(`${API_PREFIX}/config/chunking`, {
+  return fetchAPI<ChunkingConfig>('/config/chunking', {
     method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(config),
   });
-  if (!response.ok) {
-    const error = await response.json().catch(() => ({ detail: 'Update failed' }));
-    throw new Error(error.detail || 'Failed to update chunking config');
-  }
-  return response.json();
 }
 
 export function useChunkingConfig() {

@@ -11,6 +11,7 @@ import { useToast } from '../../context/ToastContext';
 import { useFetch } from '../../hooks/useFetch';
 import { usePaginatedFetch } from '../../hooks';
 import { sanitizeHtml } from '../../utils/sanitize';
+import { apiDelete, apiGet, apiPost } from '../../utils/api';
 import './ReportsPage.css';
 
 // Types
@@ -122,21 +123,12 @@ export function ReportsPage() {
 
     setCreating(true);
     try {
-      const response = await fetch('/api/reports/', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          report_type: reportType,
-          title: reportTitle,
-          parameters: {},
-          output_format: outputFormat,
-        }),
+      await apiPost('/api/reports/', {
+        report_type: reportType,
+        title: reportTitle,
+        parameters: {},
+        output_format: outputFormat,
       });
-
-      if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.detail || 'Failed to create report');
-      }
 
       toast.success('Report generation started');
       setShowCreateDialog(false);
@@ -153,14 +145,7 @@ export function ReportsPage() {
 
   const handleDeleteReport = async (reportId: string) => {
     try {
-      const response = await fetch(`/api/reports/${reportId}`, {
-        method: 'DELETE',
-      });
-
-      if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.detail || 'Failed to delete report');
-      }
+      await apiDelete(`/api/reports/${reportId}`);
 
       toast.success('Report deleted');
       refetchReports();
@@ -182,13 +167,8 @@ export function ReportsPage() {
     setViewingReport(report);
     setLoadingContent(true);
     try {
-      const response = await fetch(`/api/reports/${report.id}/content`);
-      if (response.ok) {
-        const data = await response.json();
-        setReportContent(data.content);
-      } else {
-        setReportContent('Unable to load report content');
-      }
+      const data = await apiGet<{ content: string }>(`/api/reports/${report.id}/content`);
+      setReportContent(data.content);
     } catch (err) {
       setReportContent('Error loading report content');
     } finally {
@@ -204,25 +184,15 @@ export function ReportsPage() {
 
     setCreating(true);
     try {
-      const response = await fetch('/api/reports/from-shared-template', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          template_id: templateDialog.id,
-          title: templateTitle,
-          placeholder_values: {},
-        }),
+      await apiPost('/api/reports/from-shared-template', {
+        template_id: templateDialog.id,
+        title: templateTitle,
+        placeholder_values: {},
       });
-
-      if (response.ok) {
-        toast.success('Report created from template');
-        setTemplateDialog(null);
-        setTemplateTitle('');
-        refetchReports();
-      } else {
-        const error = await response.json();
-        toast.error(error.detail || 'Failed to create report');
-      }
+      toast.success('Report created from template');
+      setTemplateDialog(null);
+      setTemplateTitle('');
+      refetchReports();
     } catch (err) {
       toast.error('Failed to create report from template');
     } finally {

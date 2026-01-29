@@ -4,6 +4,7 @@ Export Shard - FastAPI Routes
 REST API endpoints for export management.
 """
 
+import time
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
 from fastapi import APIRouter, HTTPException, Query, Request
@@ -18,6 +19,17 @@ from .models import (
 
 if TYPE_CHECKING:
     from .shard import ExportShard
+
+# Import wide event logging utilities (with fallback)
+try:
+    from arkham_frame import log_operation
+    WIDE_EVENTS_AVAILABLE = True
+except ImportError:
+    WIDE_EVENTS_AVAILABLE = False
+    from contextlib import contextmanager
+    @contextmanager
+    def log_operation(*args, **kwargs):
+        yield None
 
 router = APIRouter(prefix="/api/export", tags=["export"])
 
@@ -223,34 +235,56 @@ async def list_jobs(
 @router.post("/jobs", response_model=ExportJobResponse, status_code=201)
 async def create_job(body: ExportJobCreate, request: Request):
     """Create a new export job."""
-    from .models import ExportOptions
+    with log_operation("export.create_job", format=body.format.value if hasattr(body.format, 'value') else str(body.format), target=body.target.value if hasattr(body.target, 'value') else str(body.target)) as event:
+        try:
+            if event:
+                event.context("shard", "export")
+                event.context("operation", "create_job")
+                event.input(
+                    format=body.format.value if hasattr(body.format, 'value') else str(body.format),
+                    target=body.target.value if hasattr(body.target, 'value') else str(body.target),
+                    has_filters=bool(body.filters),
+                    has_options=body.options is not None,
+                )
 
-    shard = get_shard(request)
+            from .models import ExportOptions
 
-    # Convert request options to ExportOptions
-    options = None
-    if body.options:
-        from datetime import datetime
-        options = ExportOptions(
-            include_metadata=body.options.include_metadata,
-            include_relationships=body.options.include_relationships,
-            date_range_start=datetime.fromisoformat(body.options.date_range_start) if body.options.date_range_start else None,
-            date_range_end=datetime.fromisoformat(body.options.date_range_end) if body.options.date_range_end else None,
-            entity_types=body.options.entity_types,
-            flatten=body.options.flatten,
-            max_records=body.options.max_records,
-            sort_by=body.options.sort_by,
-            sort_order=body.options.sort_order,
-        )
+            shard = get_shard(request)
 
-    job = await shard.create_export_job(
-        format=body.format,
-        target=body.target,
-        filters=body.filters,
-        options=options,
-    )
+            # Convert request options to ExportOptions
+            options = None
+            if body.options:
+                from datetime import datetime
+                options = ExportOptions(
+                    include_metadata=body.options.include_metadata,
+                    include_relationships=body.options.include_relationships,
+                    date_range_start=datetime.fromisoformat(body.options.date_range_start) if body.options.date_range_start else None,
+                    date_range_end=datetime.fromisoformat(body.options.date_range_end) if body.options.date_range_end else None,
+                    entity_types=body.options.entity_types,
+                    flatten=body.options.flatten,
+                    max_records=body.options.max_records,
+                    sort_by=body.options.sort_by,
+                    sort_order=body.options.sort_order,
+                )
 
-    return _job_to_response(job)
+            job = await shard.create_export_job(
+                format=body.format,
+                target=body.target,
+                filters=body.filters,
+                options=options,
+            )
+
+            if event:
+                event.output(
+                    job_id=job.id,
+                    status=job.status.value if hasattr(job.status, 'value') else str(job.status),
+                )
+
+            return _job_to_response(job)
+        except Exception as e:
+            if event:
+                event.error(str(e), exc_info=True)
+            raise
 
 
 @router.get("/jobs/{job_id}", response_model=ExportJobResponse)
@@ -279,42 +313,60 @@ async def cancel_job(job_id: str, request: Request):
 @router.get("/jobs/{job_id}/download")
 async def download_job(job_id: str, request: Request):
     """Download the export file for a completed job."""
-    shard = get_shard(request)
+    with log_operation("export.download", job_id=job_id) as event:
+        try:
+            if event:
+                event.context("shard", "export")
+                event.context("operation", "download")
+                event.input(job_id=job_id)
 
-    job = await shard.get_job_status(job_id)
-    if not job:
-        raise HTTPException(status_code=404, detail=f"Export job {job_id} not found")
+            shard = get_shard(request)
 
-    if job.status != ExportStatus.COMPLETED:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Export job is not completed (status: {job.status.value})",
-        )
+            job = await shard.get_job_status(job_id)
+            if not job:
+                raise HTTPException(status_code=404, detail=f"Export job {job_id} not found")
 
-    if not job.file_path:
-        raise HTTPException(status_code=404, detail="Export file not found")
+            if job.status != ExportStatus.COMPLETED:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Export job is not completed (status: {job.status.value})",
+                )
 
-    # Check expiration
-    from datetime import datetime
-    if job.expires_at and datetime.utcnow() > job.expires_at:
-        raise HTTPException(status_code=410, detail="Export file has expired")
+            if not job.file_path:
+                raise HTTPException(status_code=404, detail="Export file not found")
 
-    # Emit download event
-    if shard._events:
-        await shard._events.emit(
-            "export.file.downloaded",
-            {"job_id": job_id, "file_path": job.file_path},
-            source=shard.name,
-        )
+            # Check expiration
+            from datetime import datetime
+            if job.expires_at and datetime.utcnow() > job.expires_at:
+                raise HTTPException(status_code=410, detail="Export file has expired")
 
-    # Return file
-    import os
-    filename = os.path.basename(job.file_path)
-    return FileResponse(
-        path=job.file_path,
-        filename=filename,
-        media_type=_get_mime_type(job.format),
-    )
+            if event:
+                event.output(
+                    job_id=job_id,
+                    file_size=job.file_size,
+                    format=job.format.value if hasattr(job.format, 'value') else str(job.format),
+                )
+
+            # Emit download event
+            if shard._events:
+                await shard._events.emit(
+                    "export.file.downloaded",
+                    {"job_id": job_id, "file_path": job.file_path},
+                    source=shard.name,
+                )
+
+            # Return file
+            import os
+            filename = os.path.basename(job.file_path)
+            return FileResponse(
+                path=job.file_path,
+                filename=filename,
+                media_type=_get_mime_type(job.format),
+            )
+        except Exception as e:
+            if event:
+                event.error(str(e), exc_info=True)
+            raise
 
 
 @router.get("/formats", response_model=List[FormatInfoResponse])

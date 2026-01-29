@@ -4,6 +4,7 @@
  * API client for the Media Forensics shard backend.
  */
 
+import { apiFetch, apiUpload } from '../../utils/api';
 import type {
   MediaAnalysis,
   AnalysisListResponse,
@@ -24,7 +25,7 @@ const API_PREFIX = '/api/media-forensics';
 
 // Generic fetch wrapper with error handling
 async function fetchAPI<T>(endpoint: string, options?: RequestInit): Promise<T> {
-  const response = await fetch(`${API_PREFIX}${endpoint}`, {
+  const response = await apiFetch(`${API_PREFIX}${endpoint}`, {
     headers: {
       'Content-Type': 'application/json',
       ...options?.headers,
@@ -105,18 +106,10 @@ export async function uploadAndAnalyze(
   if (options?.run_ela) params.set('run_ela', 'true');
 
   const query = params.toString();
-  const response = await fetch(`${API_PREFIX}/upload${query ? `?${query}` : ''}`, {
-    method: 'POST',
-    body: formData,
-    // Note: Don't set Content-Type header - browser sets it with boundary for FormData
-  });
-
-  if (!response.ok) {
-    const error = await response.json().catch(() => ({ detail: response.statusText }));
-    throw new Error(error.detail || error.message || `HTTP ${response.status}`);
-  }
-
-  return response.json();
+  return apiUpload<MediaAnalysis>(
+    `${API_PREFIX}/upload${query ? `?${query}` : ''}`,
+    formData
+  );
 }
 
 /**

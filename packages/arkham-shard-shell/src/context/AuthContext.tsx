@@ -6,6 +6,7 @@
  */
 
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
+import { apiFetch } from '../utils/api';
 
 // Types
 interface User {
@@ -80,7 +81,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   // Check if initial setup is required
   const checkSetupRequired = useCallback(async (): Promise<boolean> => {
     try {
-      const res = await fetch(`${API_BASE}/setup-required`);
+      const res = await apiFetch(`${API_BASE}/setup-required`);
       if (res.ok) {
         const data = await res.json();
         return data.setup_required === true;
@@ -95,10 +96,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const fetchUser = useCallback(async (token: string): Promise<boolean> => {
     try {
       const [userRes, tenantRes] = await Promise.all([
-        fetch(`${API_BASE}/me`, {
+        apiFetch(`${API_BASE}/me`, {
           headers: { Authorization: `Bearer ${token}` },
         }),
-        fetch(`${API_BASE}/me/tenant`, {
+        apiFetch(`${API_BASE}/me/tenant`, {
           headers: { Authorization: `Bearer ${token}` },
         }),
       ]);
@@ -173,7 +174,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     formData.append('username', email);
     formData.append('password', password);
 
-    const res = await fetch(`${API_BASE}/jwt/login`, {
+    const res = await apiFetch(`${API_BASE}/jwt/login`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: formData,

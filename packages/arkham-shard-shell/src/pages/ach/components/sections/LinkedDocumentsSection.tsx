@@ -13,6 +13,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { Icon } from '../../../../components/common/Icon';
 import { useToast } from '../../../../context/ToastContext';
 import * as achApi from '../../api';
+import { apiGet } from '../../../../utils/api';
 
 interface LinkedDocumentsSectionProps {
   matrixId: string;
@@ -53,15 +54,12 @@ export function LinkedDocumentsSection({
   const fetchAvailableDocuments = useCallback(async () => {
     setLoadingDocs(true);
     try {
-      const response = await fetch('/api/documents/items?status=processed&page_size=100');
-      if (response.ok) {
-        const data: DocumentsResponse = await response.json();
-        // Filter out already linked documents
-        const available = data.items.filter(
-          (doc) => !linkedDocumentIds.includes(doc.id)
-        );
-        setAvailableDocuments(available);
-      }
+      const data = await apiGet<DocumentsResponse>('/api/documents/items?status=processed&page_size=100');
+      // Filter out already linked documents
+      const available = data.items.filter(
+        (doc) => !linkedDocumentIds.includes(doc.id)
+      );
+      setAvailableDocuments(available);
     } catch (err) {
       console.error('Failed to fetch documents:', err);
     } finally {

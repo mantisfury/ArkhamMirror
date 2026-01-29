@@ -3,6 +3,7 @@
 import logging
 import os
 import shutil
+import time
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -14,6 +15,17 @@ from pydantic import BaseModel, Field
 
 if TYPE_CHECKING:
     from .shard import MediaForensicsShard
+
+# Import wide event logging utilities (with fallback)
+try:
+    from arkham_frame import log_operation
+    WIDE_EVENTS_AVAILABLE = True
+except ImportError:
+    WIDE_EVENTS_AVAILABLE = False
+    from contextlib import contextmanager
+    @contextmanager
+    def log_operation(*args, **kwargs):
+        yield None
 
 logger = logging.getLogger(__name__)
 
@@ -224,19 +236,48 @@ async def analyze_document(request: Request, body: AnalyzeRequest):
         - Warnings and anomalies detected
         - Integrity status assessment
     """
-    shard = get_shard(request)
+    with log_operation("media_forensics.analyze", document_id=body.document_id) as event:
+        try:
+            start_time = time.time()
 
-    try:
-        result = await shard.analyze_document(body.document_id)
-        return result
+            if event:
+                event.context("shard", "media_forensics")
+                event.context("operation", "analyze")
+                event.input(document_id=body.document_id)
 
-    except FileNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        logger.error(f"Analysis failed: {e}")
-        raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
+            shard = get_shard(request)
+
+            result = await shard.analyze_document(body.document_id)
+
+            duration_ms = (time.time() - start_time) * 1000
+
+            if event:
+                event.output(
+                    analysis_id=result.get("analysis_id"),
+                    document_id=body.document_id,
+                    integrity_status=result.get("integrity_status"),
+                    has_exif=bool(result.get("exif_data")),
+                    has_c2pa=bool(result.get("c2pa_data")),
+                    warnings_count=len(result.get("warnings", [])),
+                    findings_count=len(result.get("findings", [])),
+                    duration_ms=duration_ms,
+                )
+
+            return result
+
+        except FileNotFoundError as e:
+            if event:
+                event.error(str(e), exc_info=True)
+            raise HTTPException(status_code=404, detail=str(e))
+        except ValueError as e:
+            if event:
+                event.error(str(e), exc_info=True)
+            raise HTTPException(status_code=400, detail=str(e))
+        except Exception as e:
+            logger.error(f"Analysis failed: {e}")
+            if event:
+                event.error(str(e), exc_info=True)
+            raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
 
 
 @router.post("/analyze/batch")

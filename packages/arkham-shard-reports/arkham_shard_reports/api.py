@@ -4,6 +4,7 @@ Reports Shard - FastAPI Routes
 REST API endpoints for report generation and management.
 """
 
+import time
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
 import httpx
@@ -20,6 +21,17 @@ from .models import (
     ReportStatus,
     ReportType,
 )
+
+# Import wide event logging utilities (with fallback)
+try:
+    from arkham_frame import log_operation
+    WIDE_EVENTS_AVAILABLE = True
+except ImportError:
+    WIDE_EVENTS_AVAILABLE = False
+    from contextlib import contextmanager
+    @contextmanager
+    def log_operation(*args, **kwargs):
+        yield None
 
 router = APIRouter(prefix="/api/reports", tags=["reports"])
 
@@ -289,16 +301,44 @@ async def list_reports(
 @router.post("/", response_model=ReportResponse, status_code=201)
 async def create_report(request: Request, body: ReportCreate):
     """Generate a new report."""
-    shard = get_shard(request)
+    with log_operation("reports.generate", report_type=body.report_type.value if hasattr(body.report_type, 'value') else str(body.report_type)) as event:
+        try:
+            start_time = time.time()
 
-    report = await shard.generate_report(
-        report_type=body.report_type,
-        title=body.title,
-        parameters=body.parameters,
-        output_format=body.output_format,
-    )
+            if event:
+                event.context("shard", "reports")
+                event.context("operation", "generate")
+                event.input(
+                    report_type=body.report_type.value if hasattr(body.report_type, 'value') else str(body.report_type),
+                    title=body.title,
+                    output_format=body.output_format.value if hasattr(body.output_format, 'value') else str(body.output_format),
+                    has_parameters=body.parameters is not None,
+                )
 
-    return _report_to_response(report)
+            shard = get_shard(request)
+
+            report = await shard.generate_report(
+                report_type=body.report_type,
+                title=body.title,
+                parameters=body.parameters,
+                output_format=body.output_format,
+            )
+
+            duration_ms = (time.time() - start_time) * 1000
+
+            if event:
+                event.output(
+                    report_id=report.id,
+                    status=report.status.value if hasattr(report.status, 'value') else str(report.status),
+                    file_size=report.file_size,
+                    duration_ms=duration_ms,
+                )
+
+            return _report_to_response(report)
+        except Exception as e:
+            if event:
+                event.error(str(e), exc_info=True)
+            raise
 
 
 @router.get("/{report_id}", response_model=ReportResponse)
@@ -353,33 +393,51 @@ async def get_report_content(request: Request, report_id: str):
 @router.get("/{report_id}/download")
 async def download_report(request: Request, report_id: str):
     """Download a report file."""
-    shard = get_shard(request)
-    report = await shard.get_report(report_id)
+    with log_operation("reports.download", report_id=report_id) as event:
+        try:
+            if event:
+                event.context("shard", "reports")
+                event.context("operation", "download")
+                event.input(report_id=report_id)
 
-    if not report:
-        raise HTTPException(status_code=404, detail=f"Report {report_id} not found")
+            shard = get_shard(request)
+            report = await shard.get_report(report_id)
 
-    if not report.file_path:
-        raise HTTPException(status_code=404, detail=f"Report file not generated yet")
+            if not report:
+                raise HTTPException(status_code=404, detail=f"Report {report_id} not found")
 
-    file_path = Path(report.file_path)
-    if not file_path.exists():
-        raise HTTPException(status_code=404, detail=f"Report file not found on disk")
+            if not report.file_path:
+                raise HTTPException(status_code=404, detail=f"Report file not generated yet")
 
-    # Determine media type based on format
-    media_types = {
-        'html': 'text/html',
-        'pdf': 'application/pdf',
-        'markdown': 'text/markdown',
-        'json': 'application/json',
-    }
-    media_type = media_types.get(report.output_format, 'application/octet-stream')
+            file_path = Path(report.file_path)
+            if not file_path.exists():
+                raise HTTPException(status_code=404, detail=f"Report file not found on disk")
 
-    return FileResponse(
-        path=str(file_path),
-        filename=f"{report.title.replace(' ', '_')}.{report.output_format}",
-        media_type=media_type,
-    )
+            if event:
+                event.output(
+                    report_id=report_id,
+                    file_size=report.file_size,
+                    output_format=report.output_format,
+                )
+
+            # Determine media type based on format
+            media_types = {
+                'html': 'text/html',
+                'pdf': 'application/pdf',
+                'markdown': 'text/markdown',
+                'json': 'application/json',
+            }
+            media_type = media_types.get(report.output_format, 'application/octet-stream')
+
+            return FileResponse(
+                path=str(file_path),
+                filename=f"{report.title.replace(' ', '_')}.{report.output_format}",
+                media_type=media_type,
+            )
+        except Exception as e:
+            if event:
+                event.error(str(e), exc_info=True)
+            raise
 
 
 # === Templates ===

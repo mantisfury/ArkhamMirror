@@ -6,7 +6,7 @@ Provides CRUD operations, settings management, and statistics for projects.
 
 from typing import Optional, List, Dict, Any, Tuple
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 import logging
 import uuid
 import json
@@ -69,8 +69,9 @@ class ProjectService:
     - Export/Import capabilities
     """
 
-    # Frame schema for core tables
-    SCHEMA = "arkham_frame"
+    # Use projects shard's table (public.arkham_projects) for consistency
+    # This service now acts as a compatibility layer that delegates to the projects shard when available
+    PROJECTS_TABLE = "public.arkham_projects"
 
     def __init__(self, db=None, storage=None, config=None):
         """
@@ -98,44 +99,51 @@ class ProjectService:
             logger.warning("ProjectService: Database not available")
 
     async def _ensure_tables(self) -> None:
-        """Ensure project tables exist."""
+        """Ensure project tables exist.
+        
+        Note: Projects shard creates public.arkham_projects. This method is kept
+        for backward compatibility but should not be needed if projects shard is loaded.
+        """
         if not self.db or not self.db._engine:
             return
 
+        # Projects shard should create the table, but we ensure it exists as fallback
+        # Table structure matches projects shard's arkham_projects table
         from sqlalchemy import text
 
         try:
             with self.db._engine.connect() as conn:
-                # Create schema if not exists
-                conn.execute(text(f"CREATE SCHEMA IF NOT EXISTS {self.SCHEMA}"))
-
-                # Projects table
+                # Projects table (matches projects shard structure)
                 conn.execute(text(f"""
-                    CREATE TABLE IF NOT EXISTS {self.SCHEMA}.projects (
-                        id VARCHAR(36) PRIMARY KEY,
-                        name VARCHAR(255) NOT NULL UNIQUE,
+                    CREATE TABLE IF NOT EXISTS {self.PROJECTS_TABLE} (
+                        id TEXT PRIMARY KEY,
+                        name TEXT NOT NULL,
                         description TEXT DEFAULT '',
-                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        settings JSONB DEFAULT '{{}}',
-                        metadata JSONB DEFAULT '{{}}'
+                        status TEXT DEFAULT 'active',
+                        tenant_id TEXT,
+                        created_at TEXT,
+                        updated_at TEXT,
+                        settings TEXT DEFAULT '{{}}',
+                        metadata TEXT DEFAULT '{{}}',
+                        member_count INTEGER DEFAULT 0,
+                        document_count INTEGER DEFAULT 0
                     )
                 """))
 
                 # Indexes
                 conn.execute(text(f"""
-                    CREATE INDEX IF NOT EXISTS idx_projects_name ON {self.SCHEMA}.projects(name)
+                    CREATE INDEX IF NOT EXISTS idx_projects_name ON {self.PROJECTS_TABLE}(name)
                 """))
                 conn.execute(text(f"""
-                    CREATE INDEX IF NOT EXISTS idx_projects_updated ON {self.SCHEMA}.projects(updated_at)
+                    CREATE INDEX IF NOT EXISTS idx_projects_updated ON {self.PROJECTS_TABLE}(updated_at)
                 """))
 
                 conn.commit()
-                logger.debug("Project tables created/verified")
+                logger.debug("Project tables created/verified (fallback)")
 
         except Exception as e:
-            logger.error(f"Failed to create project tables: {e}")
-            raise ProjectError(f"Table creation failed: {e}")
+            logger.warning(f"Failed to create project tables (projects shard should handle this): {e}")
+            # Don't raise - projects shard will create the table
 
     # =========================================================================
     # Project CRUD
@@ -170,26 +178,31 @@ class ProjectService:
             raise ProjectExistsError(name)
 
         project_id = str(uuid.uuid4())
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
 
         from sqlalchemy import text
 
         try:
             with self.db._engine.connect() as conn:
+                # Convert datetimes to ISO strings for TEXT fields, set defaults for shard table
                 conn.execute(
                     text(f"""
-                        INSERT INTO {self.SCHEMA}.projects
-                        (id, name, description, created_at, updated_at, settings, metadata)
-                        VALUES (:id, :name, :description, :created_at, :updated_at, :settings, :metadata)
+                        INSERT INTO {self.PROJECTS_TABLE}
+                        (id, name, description, status, owner_id, created_at, updated_at, settings, metadata, member_count, document_count)
+                        VALUES (:id, :name, :description, :status, :owner_id, :created_at, :updated_at, :settings, :metadata, :member_count, :document_count)
                     """),
                     {
                         "id": project_id,
                         "name": name,
                         "description": description,
-                        "created_at": now,
-                        "updated_at": now,
+                        "status": "active",
+                        "owner_id": "system",
+                        "created_at": now.isoformat() if hasattr(now, "isoformat") else str(now),
+                        "updated_at": now.isoformat() if hasattr(now, "isoformat") else str(now),
                         "settings": json.dumps(settings or {}),
                         "metadata": json.dumps({}),
+                        "member_count": 0,
+                        "document_count": 0,
                     },
                 )
                 conn.commit()
@@ -219,6 +232,8 @@ class ProjectService:
     async def get_project(self, project_id: str) -> Optional[Project]:
         """
         Get a project by ID.
+        
+        Delegates to projects shard if available, otherwise reads from public.arkham_projects.
 
         Args:
             project_id: Project ID
@@ -226,15 +241,38 @@ class ProjectService:
         Returns:
             Project or None if not found
         """
+        # Try projects shard first
+        try:
+            from ..main import get_frame
+            frame = get_frame()
+            projects_shard = frame.shards.get("projects")
+            if projects_shard:
+                proj = await projects_shard.get_project(project_id)
+                if proj:
+                    # Convert shard's Project to this service's Project format
+                    return Project(
+                        id=proj.id,
+                        name=proj.name,
+                        description=proj.description,
+                        created_at=proj.created_at if isinstance(proj.created_at, datetime) else datetime.fromisoformat(str(proj.created_at)),
+                        updated_at=proj.updated_at if isinstance(proj.updated_at, datetime) else datetime.fromisoformat(str(proj.updated_at)),
+                        settings=proj.settings,
+                        metadata=proj.metadata,
+                    )
+        except Exception as e:
+            logger.debug(f"Projects shard not available or project not found: {e}")
+
+        # Fall back to direct database query
         if not self.db or not self.db._engine:
             return None
 
         from sqlalchemy import text
+        import json
 
         try:
             with self.db._engine.connect() as conn:
                 result = conn.execute(
-                    text(f"SELECT * FROM {self.SCHEMA}.projects WHERE id = :id"),
+                    text(f"SELECT * FROM {self.PROJECTS_TABLE} WHERE id = :id"),
                     {"id": project_id},
                 )
                 row = result.fetchone()
@@ -250,6 +288,8 @@ class ProjectService:
     async def get_project_by_name(self, name: str) -> Optional[Project]:
         """
         Get a project by name.
+        
+        Delegates to projects shard if available, otherwise reads from public.arkham_projects.
 
         Args:
             name: Project name
@@ -257,6 +297,29 @@ class ProjectService:
         Returns:
             Project or None if not found
         """
+        # Try projects shard first
+        try:
+            from ..main import get_frame
+            frame = get_frame()
+            projects_shard = frame.shards.get("projects")
+            if projects_shard:
+                # List projects and find by name
+                projects = await projects_shard.list_projects(limit=1000, offset=0)
+                for proj in projects:
+                    if proj.name == name:
+                        return Project(
+                            id=proj.id,
+                            name=proj.name,
+                            description=proj.description,
+                            created_at=proj.created_at if isinstance(proj.created_at, datetime) else datetime.fromisoformat(str(proj.created_at)),
+                            updated_at=proj.updated_at if isinstance(proj.updated_at, datetime) else datetime.fromisoformat(str(proj.updated_at)),
+                            settings=proj.settings,
+                            metadata=proj.metadata,
+                        )
+        except Exception as e:
+            logger.debug(f"Projects shard not available: {e}")
+
+        # Fall back to direct database query
         if not self.db or not self.db._engine:
             return None
 
@@ -265,7 +328,7 @@ class ProjectService:
         try:
             with self.db._engine.connect() as conn:
                 result = conn.execute(
-                    text(f"SELECT * FROM {self.SCHEMA}.projects WHERE name = :name"),
+                    text(f"SELECT * FROM {self.PROJECTS_TABLE} WHERE name = :name"),
                     {"name": name},
                 )
                 row = result.fetchone()
@@ -287,6 +350,8 @@ class ProjectService:
     ) -> Tuple[List[Project], int]:
         """
         List projects with pagination.
+        
+        Delegates to projects shard if available, otherwise reads from public.arkham_projects.
 
         Args:
             offset: Number of records to skip
@@ -297,6 +362,32 @@ class ProjectService:
         Returns:
             Tuple of (projects list, total count)
         """
+        # Try projects shard first
+        try:
+            from ..main import get_frame
+            frame = get_frame()
+            projects_shard = frame.shards.get("projects")
+            if projects_shard:
+                projects = await projects_shard.list_projects(limit=limit, offset=offset)
+                total = await projects_shard.get_count()
+                # Convert shard's Project to this service's Project format
+                converted = [
+                    Project(
+                        id=p.id,
+                        name=p.name,
+                        description=p.description,
+                        created_at=p.created_at if isinstance(p.created_at, datetime) else datetime.fromisoformat(str(p.created_at)),
+                        updated_at=p.updated_at if isinstance(p.updated_at, datetime) else datetime.fromisoformat(str(p.updated_at)),
+                        settings=p.settings,
+                        metadata=p.metadata,
+                    )
+                    for p in projects
+                ]
+                return converted, total
+        except Exception as e:
+            logger.debug(f"Projects shard not available: {e}")
+
+        # Fall back to direct database query
         if not self.db or not self.db._engine:
             return [], 0
 
@@ -313,14 +404,14 @@ class ProjectService:
             with self.db._engine.connect() as conn:
                 # Get total count
                 count_result = conn.execute(
-                    text(f"SELECT COUNT(*) FROM {self.SCHEMA}.projects"),
+                    text(f"SELECT COUNT(*) FROM {self.PROJECTS_TABLE}"),
                 )
                 total = count_result.scalar()
 
                 # Get projects
                 result = conn.execute(
                     text(f"""
-                        SELECT * FROM {self.SCHEMA}.projects
+                        SELECT * FROM {self.PROJECTS_TABLE}
                         ORDER BY {sort} {order}
                         OFFSET :offset LIMIT :limit
                     """),
@@ -368,7 +459,7 @@ class ProjectService:
         from sqlalchemy import text
 
         updates = []
-        params = {"id": project_id, "updated_at": datetime.utcnow()}
+        params = {"id": project_id, "updated_at": datetime.now(timezone.utc)}
 
         if name is not None:
             updates.append("name = :name")
@@ -379,8 +470,16 @@ class ProjectService:
             params["description"] = description
 
         if settings is not None:
-            updates.append("settings = settings || :settings")
-            params["settings"] = json.dumps(settings)
+            # For TEXT field, we need to merge JSON strings
+            # Get current settings first
+            current = await self.get_project(project_id)
+            if current:
+                merged_settings = {**(current.settings or {}), **(settings or {})}
+                updates.append("settings = :settings")
+                params["settings"] = json.dumps(merged_settings)
+            else:
+                updates.append("settings = :settings")
+                params["settings"] = json.dumps(settings or {})
 
         if not updates:
             return await self.get_project(project_id)
@@ -389,9 +488,11 @@ class ProjectService:
 
         try:
             with self.db._engine.connect() as conn:
+                # Convert updated_at to ISO string for TEXT field
+                params["updated_at"] = params["updated_at"].isoformat() if hasattr(params["updated_at"], "isoformat") else str(params["updated_at"])
                 result = conn.execute(
                     text(f"""
-                        UPDATE {self.SCHEMA}.projects
+                        UPDATE {self.PROJECTS_TABLE}
                         SET {", ".join(updates)}
                         WHERE id = :id
                     """),
@@ -433,15 +534,15 @@ class ProjectService:
         try:
             with self.db._engine.connect() as conn:
                 if cascade:
-                    # Delete associated documents
+                    # Delete associated documents (in arkham_frame.documents)
                     conn.execute(
-                        text(f"DELETE FROM {self.SCHEMA}.documents WHERE project_id = :project_id"),
+                        text("DELETE FROM arkham_frame.documents WHERE project_id = :project_id"),
                         {"project_id": project_id},
                     )
 
                 # Delete project
                 result = conn.execute(
-                    text(f"DELETE FROM {self.SCHEMA}.projects WHERE id = :id"),
+                    text(f"DELETE FROM {self.PROJECTS_TABLE} WHERE id = :id"),
                     {"id": project_id},
                 )
                 conn.commit()
@@ -684,7 +785,7 @@ class ProjectService:
                 "settings": project.settings,
                 "metadata": project.metadata,
             },
-            "exported_at": datetime.utcnow().isoformat(),
+            "exported_at": datetime.now(timezone.utc).isoformat(),
             "version": "1.0",
         }
 
@@ -718,21 +819,50 @@ class ProjectService:
     # =========================================================================
 
     def _row_to_project(self, row: Dict) -> Project:
-        """Convert database row to Project object."""
+        """Convert database row to Project object.
+        
+        Handles both arkham_frame.projects (JSONB, TIMESTAMP) and 
+        public.arkham_projects (TEXT fields) formats.
+        """
         settings = row.get("settings", {})
         if isinstance(settings, str):
-            settings = json.loads(settings)
+            try:
+                settings = json.loads(settings)
+            except (json.JSONDecodeError, TypeError):
+                settings = {}
 
         metadata = row.get("metadata", {})
         if isinstance(metadata, str):
-            metadata = json.loads(metadata)
+            try:
+                metadata = json.loads(metadata)
+            except (json.JSONDecodeError, TypeError):
+                metadata = {}
+
+        # Handle datetime - could be datetime object or ISO string
+        created_at = row.get("created_at")
+        if isinstance(created_at, str):
+            try:
+                created_at = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
+            except (ValueError, AttributeError):
+                created_at = datetime.now(timezone.utc)
+        elif not isinstance(created_at, datetime):
+            created_at = datetime.now(timezone.utc)
+
+        updated_at = row.get("updated_at")
+        if isinstance(updated_at, str):
+            try:
+                updated_at = datetime.fromisoformat(updated_at.replace('Z', '+00:00'))
+            except (ValueError, AttributeError):
+                updated_at = datetime.now(timezone.utc)
+        elif not isinstance(updated_at, datetime):
+            updated_at = datetime.now(timezone.utc)
 
         return Project(
             id=row["id"],
             name=row["name"],
             description=row.get("description", ""),
-            created_at=row.get("created_at", datetime.utcnow()),
-            updated_at=row.get("updated_at", datetime.utcnow()),
+            created_at=created_at,
+            updated_at=updated_at,
             settings=settings,
             metadata=metadata,
         )

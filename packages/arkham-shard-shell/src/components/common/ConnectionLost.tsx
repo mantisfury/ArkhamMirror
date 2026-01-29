@@ -4,6 +4,7 @@
 
 import { useState, useEffect } from 'react';
 import { Icon } from './Icon';
+import { apiFetch } from '../../utils/api';
 
 interface ConnectionLostProps {
   lastConnectedTime?: Date;
@@ -18,7 +19,7 @@ export function ConnectionLost({ lastConnectedTime }: ConnectionLostProps) {
     const interval = setInterval(async () => {
       setRetrying(true);
       try {
-        const response = await fetch('/api/health');
+        const response = await apiFetch('/api/health');
         if (response.ok) {
           window.location.reload();
         }

@@ -1010,7 +1010,7 @@ Length: {length_map.get(request.target_length, "medium-length")}
             logger.error(f"Error fetching source content for {source_type.value}: {e}", exc_info=True)
             return ""
 
-    async def _fetch_document_content(self, doc_id: str) -> Optional[str]:
+    async def _fetch_document_content(self, doc_id: str, project_id: str | None = None) -> Optional[str]:
         """
         Fetch content for a single document.
 
@@ -1027,7 +1027,17 @@ Length: {length_map.get(request.target_length, "medium-length")}
 
         # Try arkham_frame.documents first (canonical location)
         try:
-            row = await self._db.fetch_one(
+            if project_id:
+                row = await self._db.fetch_one(
+                    """
+                    SELECT id, filename, metadata
+                    FROM arkham_frame.documents
+                    WHERE id = :id AND project_id = :project_id
+                    """,
+                    {"id": doc_id, "project_id": str(project_id)},
+                )
+            else:
+                row = await self._db.fetch_one(
                 """
                 SELECT id, filename, metadata
                 FROM arkham_frame.documents
@@ -1045,7 +1055,7 @@ Length: {length_map.get(request.target_length, "medium-length")}
                     return f"# {filename}\n\n{content}"
 
                 # Try to get content from chunks table
-                chunk_content = await self._fetch_document_chunks(doc_id)
+                chunk_content = await self._fetch_document_chunks(doc_id, project_id=project_id)
                 if chunk_content:
                     return f"# {filename}\n\n{chunk_content}"
 
@@ -1072,7 +1082,7 @@ Length: {length_map.get(request.target_length, "medium-length")}
 
         return None
 
-    async def _fetch_document_chunks(self, doc_id: str) -> Optional[str]:
+    async def _fetch_document_chunks(self, doc_id: str, project_id: str | None = None) -> Optional[str]:
         """
         Fetch document content from chunks table.
 
@@ -1087,15 +1097,27 @@ Length: {length_map.get(request.target_length, "medium-length")}
 
         try:
             # Try to get chunks from arkham_frame.chunks
-            rows = await self._db.fetch_all(
-                """
-                SELECT text, chunk_index
-                FROM arkham_frame.chunks
-                WHERE document_id = :doc_id
-                ORDER BY chunk_index
-                """,
-                {"doc_id": doc_id}
-            )
+            if project_id:
+                rows = await self._db.fetch_all(
+                    """
+                    SELECT c.text, c.chunk_index
+                    FROM arkham_frame.chunks c
+                    INNER JOIN arkham_frame.documents d ON d.id = c.document_id
+                    WHERE c.document_id = :doc_id AND d.project_id = :project_id
+                    ORDER BY c.chunk_index
+                    """,
+                    {"doc_id": doc_id, "project_id": str(project_id)},
+                )
+            else:
+                rows = await self._db.fetch_all(
+                    """
+                    SELECT text, chunk_index
+                    FROM arkham_frame.chunks
+                    WHERE document_id = :doc_id
+                    ORDER BY chunk_index
+                    """,
+                    {"doc_id": doc_id},
+                )
             if rows:
                 chunks = [row.get("text", "") for row in rows]
                 return "\n\n".join(chunks)

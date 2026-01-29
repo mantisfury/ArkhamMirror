@@ -60,13 +60,13 @@ export function SimilarImagesPanel({ analysis, onSearch }: SimilarImagesPanelPro
   const getSimilarityTypeColor = (type: SimilarImage['similarity_type']): string => {
     switch (type) {
       case 'exact':
-        return 'var(--arkham-error, #ef4444)';
+        return 'var(--error, #ef4444)';
       case 'near_duplicate':
-        return 'var(--arkham-warning, #f97316)';
+        return 'var(--warning, #f97316)';
       case 'visually_similar':
-        return 'var(--arkham-warning, #eab308)';
+        return 'var(--warning, #eab308)';
       case 'content_similar':
-        return 'var(--arkham-info, #3b82f6)';
+        return 'var(--info, #3b82f6)';
       default:
         return 'var(--color-text-muted)';
     }
@@ -154,19 +154,19 @@ export function SimilarImagesPanel({ analysis, onSearch }: SimilarImagesPanelPro
           <span className="stat-label">Total Found</span>
         </div>
         <div className="similar-stat">
-          <span className="stat-value" style={{ color: 'var(--arkham-error)' }}>
+          <span className="stat-value" style={{ color: 'var(--error)' }}>
             {result.exact_matches}
           </span>
           <span className="stat-label">Exact Matches</span>
         </div>
         <div className="similar-stat">
-          <span className="stat-value" style={{ color: 'var(--arkham-warning)' }}>
+          <span className="stat-value" style={{ color: 'var(--warning)' }}>
             {result.near_duplicates}
           </span>
           <span className="stat-label">Near Duplicates</span>
         </div>
         <div className="similar-stat">
-          <span className="stat-value" style={{ color: 'var(--arkham-info)' }}>
+          <span className="stat-value" style={{ color: 'var(--info)' }}>
             {result.visually_similar}
           </span>
           <span className="stat-label">Visually Similar</span>

@@ -57,8 +57,22 @@ export function ShellProvider({ children }: { children: ReactNode }) {
   const navigate = useNavigate();
   const location = useLocation();
 
-  // Fetch shards from Frame API
-  const { data: shardsData, loading, error, refetch: refetchShards } = useFetch<ShardsApiResponse>('/api/shards/');
+  // Fetch shards from Frame API with background refetch for polling
+  const { data: shardsData, loading, error, refetch: refetchShards } = useFetch<ShardsApiResponse>(
+    '/api/shards/',
+    { backgroundRefetch: true }
+  );
+
+  // Poll connection status periodically (every 5 seconds)
+  useEffect(() => {
+    const pollInterval = setInterval(() => {
+      refetchShards();
+    }, 5000); // Poll every 5 seconds
+
+    return () => {
+      clearInterval(pollInterval);
+    };
+  }, [refetchShards]);
 
   // Filter shards that have navigation config (can be displayed in sidebar)
   // Use fallback shards if API fails or returns empty

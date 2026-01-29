@@ -6,6 +6,7 @@
 
 import { useState, useCallback } from 'react';
 import { useFetch } from '../../hooks/useFetch';
+import { apiFetch } from '../../utils/api';
 
 const API_PREFIX = '/api/documents';
 
@@ -126,7 +127,7 @@ export interface MergeRequest {
 // --- API Functions ---
 
 async function fetchAPI<T>(endpoint: string, options?: RequestInit): Promise<T> {
-  const response = await fetch(`${API_PREFIX}${endpoint}`, {
+  const response = await apiFetch(`${API_PREFIX}${endpoint}`, {
     ...options,
   });
 

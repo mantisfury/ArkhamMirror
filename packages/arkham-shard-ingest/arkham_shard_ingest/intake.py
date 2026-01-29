@@ -119,6 +119,7 @@ class IntakeManager:
         filename: str,
         priority: JobPriority = JobPriority.USER,
         ocr_mode: str | None = None,
+        project_id: str | None = None,
     ) -> IngestJob:
         """
         Receive an uploaded file and create an ingest job.
@@ -129,6 +130,7 @@ class IntakeManager:
             priority: Job priority level
             ocr_mode: OCR routing mode override (auto, paddle_only, qwen_only).
                       If None, uses the instance default.
+            project_id: Project ID to associate the document with
 
         Returns:
             Created IngestJob
@@ -202,6 +204,7 @@ class IntakeManager:
             file_info=file_info,
             priority=priority,
             worker_route=route,
+            project_id=project_id,
         )
 
         # Quality classification for images
@@ -245,6 +248,7 @@ class IntakeManager:
         files: list[tuple[BinaryIO, str]],
         priority: JobPriority = JobPriority.BATCH,
         ocr_mode: str | None = None,
+        project_id: str | None = None,
     ) -> IngestBatch:
         """
         Receive multiple files as a batch.
@@ -253,6 +257,7 @@ class IntakeManager:
             files: List of (file, filename) tuples
             priority: Priority for all jobs in batch
             ocr_mode: OCR routing mode override for all files in batch
+            project_id: Project ID to associate all documents with
 
         Returns:
             Created IngestBatch
@@ -266,7 +271,7 @@ class IntakeManager:
 
         for file, filename in files:
             try:
-                job = await self.receive_file(file, filename, priority, ocr_mode=ocr_mode)
+                job = await self.receive_file(file, filename, priority, ocr_mode=ocr_mode, project_id=project_id)
                 batch.jobs.append(job)
             except Exception as e:
                 logger.error(f"Failed to receive {filename}: {e}")
@@ -289,6 +294,7 @@ class IntakeManager:
         priority: JobPriority = JobPriority.BATCH,
         recursive: bool = True,
         ocr_mode: str | None = None,
+        project_id: str | None = None,
     ) -> IngestBatch:
         """
         Ingest files from a local path.
@@ -298,6 +304,7 @@ class IntakeManager:
             priority: Job priority
             recursive: If directory, recurse into subdirectories
             ocr_mode: OCR routing mode override
+            project_id: Project ID to associate all documents with
 
         Returns:
             Created IngestBatch
@@ -307,7 +314,7 @@ class IntakeManager:
         if path.is_file():
             # Single file
             with open(path, "rb") as f:
-                job = await self.receive_file(f, path.name, priority, ocr_mode=ocr_mode)
+                job = await self.receive_file(f, path.name, priority, ocr_mode=ocr_mode, project_id=project_id)
             batch = IngestBatch(
                 id=str(uuid.uuid4()),
                 jobs=[job],
@@ -325,7 +332,7 @@ class IntakeManager:
                 if file_path.is_file():
                     files.append((open(file_path, "rb"), file_path.name))
 
-            batch = await self.receive_batch(files, priority, ocr_mode=ocr_mode)
+            batch = await self.receive_batch(files, priority, ocr_mode=ocr_mode, project_id=project_id)
 
             # Close file handles
             for f, _ in files:

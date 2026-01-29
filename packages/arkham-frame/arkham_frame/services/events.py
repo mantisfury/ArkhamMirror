@@ -29,6 +29,7 @@ class Event:
     source: str
     timestamp: datetime = field(default_factory=datetime.utcnow)
     sequence: int = 0
+    trace_id: Optional[str] = None
 
 
 class EventBus:
@@ -78,11 +79,28 @@ class EventBus:
         """Emit an event."""
         self._sequence += 1
 
+        # Extract trace_id from context if available
+        trace_id = None
+        try:
+            from arkham_logging.tracing import get_trace_id
+            trace_id = get_trace_id()
+        except ImportError:
+            pass
+        
+        # Also check payload for trace_id (in case it was passed explicitly)
+        if trace_id is None and "trace_id" in payload:
+            trace_id = payload.get("trace_id")
+        
+        # Add trace_id to payload if not already present
+        if trace_id and "trace_id" not in payload:
+            payload = {**payload, "trace_id": trace_id}
+
         event = Event(
             event_type=event_type,
             payload=payload,
             source=source,
             sequence=self._sequence,
+            trace_id=trace_id,
         )
 
         # Add to history

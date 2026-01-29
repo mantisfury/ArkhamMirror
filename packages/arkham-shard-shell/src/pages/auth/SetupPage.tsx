@@ -8,6 +8,7 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Icon } from '../../components/common/Icon';
+import { apiPost } from '../../utils/api';
 import './AuthPages.css';
 
 interface SetupData {
@@ -104,22 +105,13 @@ export function SetupPage() {
     setIsSubmitting(true);
 
     try {
-      const res = await fetch('/api/auth/setup', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          tenant_name: data.tenant_name,
-          tenant_slug: data.tenant_slug,
-          admin_email: data.admin_email,
-          admin_password: data.admin_password,
-          admin_display_name: data.admin_display_name || 'Admin',
-        }),
+      await apiPost('/api/auth/setup', {
+        tenant_name: data.tenant_name,
+        tenant_slug: data.tenant_slug,
+        admin_email: data.admin_email,
+        admin_password: data.admin_password,
+        admin_display_name: data.admin_display_name || 'Admin',
       });
-
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({ detail: 'Setup failed' }));
-        throw new Error(err.detail || 'Setup failed');
-      }
 
       setSetupComplete(true);
     } catch (err) {

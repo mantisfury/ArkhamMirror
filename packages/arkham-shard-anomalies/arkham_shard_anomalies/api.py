@@ -4,7 +4,7 @@ import logging
 import time
 from typing import Annotated, Any, Dict, List, Optional, TYPE_CHECKING
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
@@ -30,6 +30,33 @@ from .models import (
     HiddenContentScanType,
     HiddenContentStats,
 )
+
+try:
+    from arkham_frame.auth import (
+        current_active_user,
+        current_optional_user,
+        require_project_member,
+    )
+except ImportError:
+    async def current_active_user():
+        return None
+
+    async def current_optional_user():
+        return None
+
+    async def require_project_member(*args, **kwargs):
+        return None
+
+# Import wide event logging utilities (with fallback)
+try:
+    from arkham_frame import log_operation
+    WIDE_EVENTS_AVAILABLE = True
+except ImportError:
+    WIDE_EVENTS_AVAILABLE = False
+    from contextlib import contextmanager
+    @contextmanager
+    def log_operation(*args, **kwargs):
+        yield None
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +90,28 @@ def get_shard(request: Request) -> "AnomaliesShard":
     if not shard:
         raise HTTPException(status_code=503, detail="Anomalies shard not available")
     return shard
+
+
+async def _require_active_project_id(request: Request, shard: "AnomaliesShard", user: Any) -> str:
+    """
+    Resolve the user's active project_id and validate membership.
+
+    Returns project_id (string). Raises HTTPException if none.
+    """
+    if not user:
+        raise HTTPException(status_code=401, detail="Authentication required")
+
+    frame = getattr(shard, "frame", None) or getattr(shard, "_frame", None)
+    if not frame or not hasattr(frame, "get_active_project_id"):
+        raise HTTPException(status_code=503, detail="Frame project service not available")
+
+    user_id_str = str(getattr(user, "id", "")).lower().strip()
+    project_id = await frame.get_active_project_id(user_id_str)
+    if not project_id:
+        raise HTTPException(status_code=400, detail="No active project selected")
+
+    await require_project_member(str(project_id), user, request)
+    return str(project_id)
 
 
 # --- Request/Response Models ---
@@ -126,72 +175,97 @@ async def detect_anomalies(request: DetectRequest):
 
     This endpoint may run as a background job for large corpora.
     """
-    if not _detector or not _store:
-        raise HTTPException(status_code=503, detail="Anomaly service not initialized")
+    with log_operation("anomalies.detect", project_id=request.project_id) as event:
+        if event:
+            event.context("shard", "anomalies")
+            event.context("operation", "detect")
+            event.input(
+                project_id=request.project_id,
+                doc_count=len(request.doc_ids) if request.doc_ids else 0,
+                has_config=request.config is not None,
+            )
+            if request.project_id:
+                event.context("project_id", request.project_id)
+        
+        if not _detector or not _store:
+            if event:
+                event.error("ServiceUnavailable", "Anomaly service not initialized")
+            raise HTTPException(status_code=503, detail="Anomaly service not initialized")
 
-    start_time = time.time()
+        start_time = time.time()
 
-    try:
-        logger.info(f"Anomaly detection requested for project: {request.project_id}")
+        try:
+            logger.info(f"Anomaly detection requested for project: {request.project_id}")
 
-        # Emit detection started event
-        if _event_bus:
-            await _event_bus.emit(
-                "anomalies.detection_started",
-                {
-                    "project_id": request.project_id,
-                    "doc_ids": request.doc_ids,
-                    "config": request.config.__dict__ if request.config else None,
-                },
-                source="anomalies-shard",
+            # Emit detection started event
+            if _event_bus:
+                await _event_bus.emit(
+                    "anomalies.detection_started",
+                    {
+                        "project_id": request.project_id,
+                        "doc_ids": request.doc_ids,
+                        "config": request.config.__dict__ if request.config else None,
+                    },
+                    source="anomalies-shard",
+                )
+
+            # Get documents to analyze
+            doc_ids = request.doc_ids
+            if not doc_ids and _db:
+                # If no specific doc_ids, get all documents from arkham_frame.documents
+                rows = await _db.fetch_all(
+                    "SELECT id FROM arkham_frame.documents WHERE project_id = :project_id LIMIT 1000",
+                    {"project_id": str(request.project_id)},
+                )
+                doc_ids = [row["id"] for row in rows] if rows else []
+
+            detected_anomalies = []
+            config = request.config or DetectionConfig()
+
+            # Run detection on each document
+            for doc_id in doc_ids:
+                try:
+                    doc_anomalies = await _detect_document_anomalies_internal(doc_id, config)
+                    for anomaly in doc_anomalies:
+                        await _store.create_anomaly(anomaly)
+                        detected_anomalies.append(anomaly)
+                except Exception as doc_error:
+                    logger.warning(f"Failed to detect anomalies for doc {doc_id}: {doc_error}")
+
+            duration_ms = (time.time() - start_time) * 1000
+
+            # Emit detection completed event
+            if _event_bus:
+                await _event_bus.emit(
+                    "anomalies.detection_completed",
+                    {
+                        "project_id": request.project_id,
+                        "doc_ids": doc_ids,
+                        "anomalies_detected": len(detected_anomalies),
+                        "duration_ms": duration_ms,
+                    },
+                    source="anomalies-shard",
+                )
+
+            if event:
+                event.output(
+                    anomalies_detected=len(detected_anomalies),
+                    documents_analyzed=len(doc_ids),
+                    duration_ms=duration_ms,
+                )
+
+            return DetectResponse(
+                anomalies_detected=len(detected_anomalies),
+                duration_ms=duration_ms,
+                job_id=f"detect-{int(start_time)}",
             )
 
-        # Get documents to analyze
-        doc_ids = request.doc_ids
-        if not doc_ids and _db:
-            # If no specific doc_ids, get all documents from arkham_frame.documents
-            rows = await _db.fetch_all(
-                "SELECT id FROM arkham_frame.documents LIMIT 1000"
-            )
-            doc_ids = [row["id"] for row in rows] if rows else []
-
-        detected_anomalies = []
-        config = request.config or DetectionConfig()
-
-        # Run detection on each document
-        for doc_id in doc_ids:
-            try:
-                doc_anomalies = await _detect_document_anomalies_internal(doc_id, config)
-                for anomaly in doc_anomalies:
-                    await _store.create_anomaly(anomaly)
-                    detected_anomalies.append(anomaly)
-            except Exception as doc_error:
-                logger.warning(f"Failed to detect anomalies for doc {doc_id}: {doc_error}")
-
-        duration_ms = (time.time() - start_time) * 1000
-
-        # Emit detection completed event
-        if _event_bus:
-            await _event_bus.emit(
-                "anomalies.detection_completed",
-                {
-                    "project_id": request.project_id,
-                    "doc_ids": doc_ids,
-                    "anomalies_detected": len(detected_anomalies),
-                    "duration_ms": duration_ms,
-                },
-                source="anomalies-shard",
-            )
-
-        return DetectResponse(
-            anomalies_detected=len(detected_anomalies),
-            duration_ms=duration_ms,
-            job_id=f"detect-{int(start_time)}",
-        )
-
-    except Exception as e:
-        logger.error(f"Anomaly detection failed: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Detection failed: {str(e)}")
+        except Exception as e:
+            duration_ms = int((time.time() - start_time) * 1000)
+            logger.error(f"Anomaly detection failed: {e}", exc_info=True)
+            if event:
+                event.error("AnomalyDetectionFailed", str(e))
+            raise HTTPException(status_code=500, detail=f"Detection failed: {str(e)}")
 
 
 @router.post("/document/{doc_id}", response_model=DetectResponse)
@@ -1166,6 +1240,7 @@ class HiddenContentStatsResponse(BaseModel):
 async def scan_hidden_content(
     request: Request,
     body: HiddenContentScanRequest,
+    user=Depends(current_active_user),
 ):
     """
     Scan a document for hidden content.
@@ -1183,6 +1258,7 @@ async def scan_hidden_content(
         Scan results with findings
     """
     shard = get_shard(request)
+    active_project_id = await _require_active_project_id(request, shard, user)
 
     if not shard.hidden_detector:
         raise HTTPException(
@@ -1196,8 +1272,8 @@ async def scan_hidden_content(
 
     doc_row = await _db.fetch_one(
         """SELECT id, filename, storage_id, mime_type, file_size, metadata
-           FROM arkham_frame.documents WHERE id = :doc_id""",
-        {"doc_id": body.doc_id}
+           FROM arkham_frame.documents WHERE id = :doc_id AND project_id = :project_id""",
+        {"doc_id": body.doc_id, "project_id": active_project_id}
     )
 
     if not doc_row:
@@ -1352,6 +1428,7 @@ async def scan_hidden_content(
 async def quick_scan_hidden_content(
     request: Request,
     body: HiddenContentQuickScanRequest,
+    user=Depends(current_active_user),
 ):
     """
     Perform quick entropy-only scan on multiple documents.
@@ -1366,6 +1443,7 @@ async def quick_scan_hidden_content(
         List of quick scan results with recommendations
     """
     shard = get_shard(request)
+    active_project_id = await _require_active_project_id(request, shard, user)
 
     if not shard.hidden_detector:
         raise HTTPException(
@@ -1382,8 +1460,9 @@ async def quick_scan_hidden_content(
         try:
             # Get document file path
             doc_row = await _db.fetch_one(
-                """SELECT storage_id, metadata FROM arkham_frame.documents WHERE id = :doc_id""",
-                {"doc_id": doc_id}
+                """SELECT storage_id, metadata FROM arkham_frame.documents
+                   WHERE id = :doc_id AND project_id = :project_id""",
+                {"doc_id": doc_id, "project_id": active_project_id}
             )
 
             if not doc_row:
@@ -1449,7 +1528,7 @@ async def quick_scan_hidden_content(
 
 
 @router.get("/hidden-content/stats", response_model=HiddenContentStatsResponse)
-async def get_hidden_content_stats(request: Request):
+async def get_hidden_content_stats(request: Request, user=Depends(current_active_user)):
     """
     Get hidden content detection statistics.
 
@@ -1461,8 +1540,9 @@ async def get_hidden_content_stats(request: Request):
     - Steganography candidates
     """
     shard = get_shard(request)
+    active_project_id = await _require_active_project_id(request, shard, user)
 
-    stats = await shard.get_hidden_content_stats()
+    stats = await shard.get_hidden_content_stats(project_id=active_project_id)
     return HiddenContentStatsResponse(stats=stats)
 
 
@@ -1470,6 +1550,7 @@ async def get_hidden_content_stats(request: Request):
 async def get_document_hidden_scans(
     request: Request,
     doc_id: str,
+    user=Depends(current_active_user),
 ):
     """
     Get all hidden content scans for a document.
@@ -1481,8 +1562,9 @@ async def get_document_hidden_scans(
         List of scans for the document
     """
     shard = get_shard(request)
+    active_project_id = await _require_active_project_id(request, shard, user)
 
-    scans = await shard.get_document_hidden_scans(doc_id)
+    scans = await shard.get_document_hidden_scans(doc_id, project_id=active_project_id)
     return {"scans": scans, "total": len(scans)}
 
 
@@ -1490,6 +1572,7 @@ async def get_document_hidden_scans(
 async def get_hidden_content_scan(
     request: Request,
     scan_id: str,
+    user=Depends(current_active_user),
 ):
     """
     Get a specific hidden content scan by ID.
@@ -1501,8 +1584,9 @@ async def get_hidden_content_scan(
         Scan details
     """
     shard = get_shard(request)
+    active_project_id = await _require_active_project_id(request, shard, user)
 
-    scan = await shard.get_hidden_content_scan(scan_id)
+    scan = await shard.get_hidden_content_scan(scan_id, project_id=active_project_id)
     if not scan:
         raise HTTPException(status_code=404, detail=f"Scan {scan_id} not found")
 

@@ -61,6 +61,38 @@ frame:
   # Logging level: DEBUG, INFO, WARNING, ERROR
   log_level: INFO
 
+  # Logging configuration
+  logging:
+    console:
+      enabled: true
+      level: WARNING
+      format: colored  # colored, standard, json
+    
+    file:
+      enabled: true
+      path: data_silo/logs/arkham.log
+      level: DEBUG
+      max_bytes: 104857600  # 100MB
+      backup_count: 5
+      retention_days: 30
+    
+    error_file:
+      enabled: true
+      path: data_silo/logs/errors.log
+      level: ERROR
+      max_bytes: 52428800  # 50MB
+      backup_count: 5
+    
+    wide_events:
+      enabled: true
+      sampling_rate: 0.05  # 5% of normal requests
+      tail_sampling: true
+      always_sample_errors: true
+      always_sample_slow: true
+      slow_threshold_ms: 2000
+      always_sample_users: []  # List of user IDs to always log
+      always_sample_projects: []  # List of project IDs to always log
+
   # LLM configuration (can also use environment variables)
   llm:
     # Provider: lm_studio, openai, openrouter, anthropic

@@ -2,9 +2,21 @@
 Dashboard API routes.
 """
 
+import time
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 from typing import Dict, Any, List, Optional
+
+# Import wide event logging utilities (with fallback)
+try:
+    from arkham_frame import log_operation
+    WIDE_EVENTS_AVAILABLE = True
+except ImportError:
+    WIDE_EVENTS_AVAILABLE = False
+    from contextlib import contextmanager
+    @contextmanager
+    def log_operation(*args, **kwargs):
+        yield None
 
 router = APIRouter(prefix="/api/dashboard", tags=["dashboard"])
 
@@ -88,11 +100,34 @@ async def get_llm_config() -> Dict[str, Any]:
 @router.post("/llm")
 async def update_llm_config(request: UpdateLLMRequest) -> Dict[str, Any]:
     """Update LLM configuration."""
-    shard = get_dashboard_shard()
-    return await shard.update_llm_config(
-        endpoint=request.endpoint,
-        model=request.model,
-    )
+    with log_operation("dashboard.update_llm_config") as event:
+        try:
+            if event:
+                event.context("shard", "dashboard")
+                event.context("operation", "update_llm_config")
+                event.input(
+                    endpoint_updated=request.endpoint is not None,
+                    model_updated=request.model is not None,
+                )
+
+            shard = get_dashboard_shard()
+            result = await shard.update_llm_config(
+                endpoint=request.endpoint,
+                model=request.model,
+            )
+
+            if event:
+                event.output(
+                    endpoint=result.get("endpoint"),
+                    model=result.get("model"),
+                    success=result.get("success", False),
+                )
+
+            return result
+        except Exception as e:
+            if event:
+                event.error(str(e), exc_info=True)
+            raise
 
 
 @router.post("/llm/test")
@@ -143,8 +178,26 @@ async def get_database_info() -> Dict[str, Any]:
 @router.get("/database/stats")
 async def get_database_stats() -> Dict[str, Any]:
     """Get detailed database statistics."""
-    shard = get_dashboard_shard()
-    return await shard.get_database_stats()
+    with log_operation("dashboard.get_database_stats") as event:
+        try:
+            if event:
+                event.context("shard", "dashboard")
+                event.context("operation", "get_database_stats")
+
+            shard = get_dashboard_shard()
+            stats = await shard.get_database_stats()
+
+            if event:
+                event.output(
+                    schema_count=len(stats.get("schemas", [])),
+                    total_size_bytes=stats.get("total_size_bytes", 0),
+                )
+
+            return stats
+        except Exception as e:
+            if event:
+                event.error(str(e), exc_info=True)
+            raise
 
 
 @router.get("/database/tables/{schema}")
@@ -197,8 +250,32 @@ async def get_queue_stats() -> Dict[str, Any]:
 @router.post("/workers/scale")
 async def scale_workers(request: ScaleWorkersRequest) -> Dict[str, Any]:
     """Scale workers for a queue."""
-    shard = get_dashboard_shard()
-    return await shard.scale_workers(queue=request.queue, count=request.count)
+    with log_operation("dashboard.scale_workers", queue=request.queue, count=request.count) as event:
+        try:
+            if event:
+                event.context("shard", "dashboard")
+                event.context("operation", "scale_workers")
+                event.input(
+                    queue=request.queue,
+                    count=request.count,
+                )
+
+            shard = get_dashboard_shard()
+            result = await shard.scale_workers(queue=request.queue, count=request.count)
+
+            if event:
+                event.output(
+                    queue=request.queue,
+                    target_count=request.count,
+                    actual_count=result.get("count", request.count),
+                    success=result.get("success", False),
+                )
+
+            return result
+        except Exception as e:
+            if event:
+                event.error(str(e), exc_info=True)
+            raise
 
 
 @router.post("/workers/start")

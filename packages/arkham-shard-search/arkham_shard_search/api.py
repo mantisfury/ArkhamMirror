@@ -4,7 +4,7 @@ import logging
 import time
 from typing import Annotated, Any, TYPE_CHECKING
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
@@ -23,6 +23,28 @@ from .models import (
     SimilarityRequest,
 )
 from .filters import FilterBuilder
+
+try:
+    from arkham_frame.auth import (
+        current_optional_user,
+        require_project_member,
+    )
+except ImportError:
+    async def current_optional_user():
+        return None
+    async def require_project_member():
+        return None
+
+# Import wide event logging utilities (with fallback)
+try:
+    from arkham_frame import log_operation
+    WIDE_EVENTS_AVAILABLE = True
+except ImportError:
+    WIDE_EVENTS_AVAILABLE = False
+    from contextlib import contextmanager
+    @contextmanager
+    def log_operation(*args, **kwargs):
+        yield None
 
 logger = logging.getLogger(__name__)
 
@@ -142,7 +164,11 @@ async def get_search_config():
 
 
 @router.post("/", response_model=SearchResponse)
-async def search(request: SearchRequest):
+async def search(
+    req: Request,
+    request: SearchRequest,
+    user = Depends(current_optional_user),
+):
     """
     Main search endpoint - supports hybrid, semantic, and keyword search.
 
@@ -150,116 +176,197 @@ async def search(request: SearchRequest):
     - hybrid: Combines semantic and keyword search with configurable weights
     - semantic: Vector similarity search only
     - keyword: Full-text search only
+    
+    All searches are scoped to the active project for data isolation.
     """
-    if not _hybrid_engine:
-        raise HTTPException(status_code=503, detail="Search service not initialized")
+    if not user:
+        raise HTTPException(status_code=401, detail="Authentication required for search")
+    
+    # Get active project from frame
+    shard = get_shard(req)
+    active_project_id = await shard.frame.get_active_project_id(str(user.id)) if shard.frame else None
+    
+    with log_operation("search.execute", query=request.query, mode=request.mode, project_id=active_project_id) as event:
+        if event:
+            event.user(id=str(user.id))
+            event.context("shard", "search")
+            event.context("operation", "search")
+            event.input(
+                query_length=len(request.query),
+                mode=request.mode,
+                limit=request.limit,
+                offset=request.offset,
+                has_filters=request.filters is not None,
+                semantic_weight=request.semantic_weight,
+                keyword_weight=request.keyword_weight,
+            )
+            if active_project_id:
+                event.context("project_id", active_project_id)
+        
+        if not _hybrid_engine:
+            if event:
+                event.error("ServiceUnavailable", "Search service not initialized")
+            raise HTTPException(status_code=503, detail="Search service not initialized")
+        
+        if not active_project_id:
+            if event:
+                event.error("NoActiveProject", "No active project selected")
+            raise HTTPException(
+                status_code=400, 
+                detail="No active project selected. Please select a project to search."
+            )
+        
+        # Verify user is a member of the project
+        await require_project_member(active_project_id, user, req)
 
-    start_time = time.time()
+        start_time = time.time()
 
-    # Parse search mode
-    try:
-        mode = SearchMode(request.mode.lower())
-    except ValueError:
-        raise HTTPException(status_code=400, detail=f"Invalid search mode: {request.mode}")
+        # Parse search mode
+        try:
+            mode = SearchMode(request.mode.lower())
+        except ValueError:
+            if event:
+                event.error("InvalidSearchMode", f"Invalid search mode: {request.mode}")
+            raise HTTPException(status_code=400, detail=f"Invalid search mode: {request.mode}")
 
-    # Parse filters
-    filters = None
-    if request.filters:
-        filters = FilterBuilder.from_dict(request.filters)
-        is_valid, error = FilterBuilder.validate(filters)
-        if not is_valid:
-            raise HTTPException(status_code=400, detail=error)
+        # Parse filters and force project_id
+        filters = None
+        if request.filters:
+            filters = FilterBuilder.from_dict(request.filters)
+            is_valid, error = FilterBuilder.validate(filters)
+            if not is_valid:
+                if event:
+                    event.error("InvalidFilters", error)
+                raise HTTPException(status_code=400, detail=error)
+        else:
+            filters = SearchFilters()
+        
+        # Force project_id to active project for data isolation
+        if not filters.project_ids:
+            filters.project_ids = []
+        if active_project_id not in filters.project_ids:
+            filters.project_ids = [active_project_id]
 
-    # Parse sort options
-    try:
-        sort_by = SortBy(request.sort_by.lower())
-        sort_order = SortOrder(request.sort_order.lower())
-    except ValueError:
-        sort_by = SortBy.RELEVANCE
-        sort_order = SortOrder.DESC
+        # Parse sort options
+        try:
+            sort_by = SortBy(request.sort_by.lower())
+            sort_order = SortOrder(request.sort_order.lower())
+        except ValueError:
+            sort_by = SortBy.RELEVANCE
+            sort_order = SortOrder.DESC
 
-    # Build query
-    query = SearchQuery(
-        query=request.query,
-        mode=mode,
-        filters=filters,
-        limit=request.limit,
-        offset=request.offset,
-        sort_by=sort_by,
-        sort_order=sort_order,
-        semantic_weight=request.semantic_weight,
-        keyword_weight=request.keyword_weight,
-    )
-
-    # Execute search
-    try:
-        if mode == SearchMode.SEMANTIC:
-            results = await _semantic_engine.search(query)
-        elif mode == SearchMode.KEYWORD:
-            results = await _keyword_engine.search(query)
-        else:  # HYBRID
-            results = await _hybrid_engine.search(query)
-    except Exception as e:
-        logger.error(f"Search failed: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Search failed: {str(e)}")
-
-    duration_ms = (time.time() - start_time) * 1000
-
-    # Emit event
-    if _event_bus:
-        await _event_bus.emit(
-            "search.query.executed",
-            {
-                "query": request.query,
-                "mode": mode.value,
-                "results_count": len(results),
-                "duration_ms": duration_ms,
-            },
-            source="search-shard",
+        # Build query
+        query = SearchQuery(
+            query=request.query,
+            mode=mode,
+            filters=filters,
+            limit=request.limit,
+            offset=request.offset,
+            sort_by=sort_by,
+            sort_order=sort_order,
+            semantic_weight=request.semantic_weight,
+            keyword_weight=request.keyword_weight,
         )
 
-    # Get facets for filtering UI
-    facets = {}
-    if _filter_optimizer:
+        # Execute search with dependency tracking
+        search_start = time.time()
         try:
-            facets = await _filter_optimizer.get_available_filters(request.query)
+            if mode == SearchMode.SEMANTIC:
+                results = await _semantic_engine.search(query)
+                search_duration_ms = int((time.time() - search_start) * 1000)
+                if event:
+                    event.dependency("vector_search", duration_ms=search_duration_ms, mode="semantic")
+            elif mode == SearchMode.KEYWORD:
+                results = await _keyword_engine.search(query)
+                search_duration_ms = int((time.time() - search_start) * 1000)
+                if event:
+                    event.dependency("keyword_search", duration_ms=search_duration_ms, mode="keyword")
+            else:  # HYBRID
+                results = await _hybrid_engine.search(query)
+                search_duration_ms = int((time.time() - search_start) * 1000)
+                if event:
+                    event.dependency("hybrid_search", duration_ms=search_duration_ms, mode="hybrid")
         except Exception as e:
-            logger.warning(f"Failed to get facets: {e}")
+            search_duration_ms = int((time.time() - search_start) * 1000)
+            logger.error(f"Search failed: {e}", exc_info=True)
+            if event:
+                event.dependency("search_engine", duration_ms=search_duration_ms, error=str(e))
+                event.error("SearchFailed", str(e))
+            raise HTTPException(status_code=500, detail=f"Search failed: {str(e)}")
 
-    # Calculate total: if we got fewer results than limit, we know the total
-    # Otherwise, estimate based on whether there are more results
-    total = len(results)
-    if len(results) == request.limit:
-        # There may be more results - estimate total from facets if available
-        if facets.get("date_ranges", {}).get("last_year", {}).get("count"):
-            total = max(total, facets["date_ranges"]["last_year"]["count"])
-    has_more = len(results) == request.limit
+        duration_ms = (time.time() - start_time) * 1000
 
-    return SearchResponse(
-        query=request.query,
-        mode=mode.value,
-        total=total,
-        items=[_result_to_dict(r) for r in results],
-        duration_ms=duration_ms,
-        facets=facets,
-        offset=request.offset,
-        limit=request.limit,
-        has_more=has_more,
-    )
+        # Emit event
+        if _event_bus:
+            await _event_bus.emit(
+                "search.query.executed",
+                {
+                    "query": request.query,
+                    "mode": mode.value,
+                    "results_count": len(results),
+                    "duration_ms": duration_ms,
+                },
+                source="search-shard",
+            )
+
+        # Get facets for filtering UI
+        facets = {}
+        if _filter_optimizer:
+            try:
+                facets = await _filter_optimizer.get_available_filters(request.query)
+            except Exception as e:
+                logger.warning(f"Failed to get facets: {e}")
+
+        # Calculate total: if we got fewer results than limit, we know the total
+        # Otherwise, estimate based on whether there are more results
+        total = len(results)
+        if len(results) == request.limit:
+            # There may be more results - estimate total from facets if available
+            if facets.get("date_ranges", {}).get("last_year", {}).get("count"):
+                total = max(total, facets["date_ranges"]["last_year"]["count"])
+        has_more = len(results) == request.limit
+
+        if event:
+            event.output(
+                result_count=len(results),
+                total=total,
+                top_score=results[0].score if results else None,
+                duration_ms=duration_ms,
+            )
+
+        return SearchResponse(
+            query=request.query,
+            mode=mode.value,
+            total=total,
+            items=[_result_to_dict(r) for r in results],
+            duration_ms=duration_ms,
+            facets=facets,
+            offset=request.offset,
+            limit=request.limit,
+            has_more=has_more,
+        )
 
 
 @router.post("/semantic", response_model=SearchResponse)
-async def search_semantic(request: SearchRequest):
+async def search_semantic(
+    req: Request,
+    request: SearchRequest,
+    user = Depends(current_optional_user),
+):
     """Vector-only semantic search."""
     request.mode = "semantic"
-    return await search(request)
+    return await search(req, request, user)
 
 
 @router.post("/keyword", response_model=SearchResponse)
-async def search_keyword(request: SearchRequest):
+async def search_keyword(
+    req: Request,
+    request: SearchRequest,
+    user = Depends(current_optional_user),
+):
     """Text-only keyword search."""
     request.mode = "keyword"
-    return await search(request)
+    return await search(req, request, user)
 
 
 @router.get("/suggest", response_model=SuggestResponse)

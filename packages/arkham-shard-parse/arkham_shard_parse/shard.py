@@ -359,6 +359,14 @@ class ParseShard(ArkhamShard):
         # Emit entity extraction event for Entities shard to process
         event_bus = self._frame.get_service("events")
         if event_bus and all_entities:
+            # Include project scoping info so downstream shards (entities) can persist correctly
+            project_id = None
+            try:
+                doc = await doc_service.get_document(document_id)
+                project_id = getattr(doc, "project_id", None)
+            except Exception:
+                project_id = None
+
             entity_data = []
             for entity in all_entities:
                 entity_type_val = entity.entity_type.value if hasattr(entity.entity_type, 'value') else str(entity.entity_type)
@@ -374,6 +382,7 @@ class ParseShard(ArkhamShard):
                 "parse.entity.extracted",
                 {
                     "document_id": document_id,
+                    "project_id": project_id,
                     "entities": entity_data,
                 },
                 source="parse-shard",
@@ -382,6 +391,13 @@ class ParseShard(ArkhamShard):
 
         # Emit relationship extraction event for Entities shard to process
         if event_bus and all_relationships:
+            project_id = None
+            try:
+                doc = await doc_service.get_document(document_id)
+                project_id = getattr(doc, "project_id", None)
+            except Exception:
+                project_id = None
+
             relationship_data = []
             for rel in all_relationships:
                 relationship_data.append({
@@ -395,6 +411,7 @@ class ParseShard(ArkhamShard):
                 "parse.relationships.extracted",
                 {
                     "document_id": document_id,
+                    "project_id": project_id,
                     "relationships": relationship_data,
                 },
                 source="parse-shard",

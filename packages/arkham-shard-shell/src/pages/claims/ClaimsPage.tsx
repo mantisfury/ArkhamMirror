@@ -11,6 +11,7 @@ import { AIAnalystButton } from '../../components/AIAnalyst';
 import { useToast } from '../../context/ToastContext';
 import { useFetch } from '../../hooks/useFetch';
 import { usePaginatedFetch } from '../../hooks';
+import { apiGet, apiPatch, apiPost } from '../../utils/api';
 import './ClaimsPage.css';
 
 // Document type for extraction
@@ -110,9 +111,7 @@ export function ClaimsPage() {
   const fetchDocuments = async () => {
     setDocumentsLoading(true);
     try {
-      const response = await fetch('/api/documents/items?limit=100&status=processed');
-      if (!response.ok) throw new Error('Failed to fetch documents');
-      const data = await response.json();
+      const data = await apiGet<any>('/api/documents/items?limit=100&status=processed');
       setDocuments(data.items || []);
     } catch (err) {
       toast.error('Failed to load documents');
@@ -159,16 +158,9 @@ export function ClaimsPage() {
       setExtractionProgress({ current: i + 1, total: docIds.length });
 
       try {
-        const response = await fetch(`/api/claims/extract-from-document/${docIds[i]}`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-        });
-
-        if (response.ok) {
-          const result = await response.json();
-          totalClaims += result.total_extracted || 0;
-          successCount++;
-        }
+        const result = await apiPost<any>(`/api/claims/extract-from-document/${docIds[i]}`);
+        totalClaims += result.total_extracted || 0;
+        successCount++;
       } catch (err) {
         console.error(`Failed to extract from document ${docIds[i]}:`, err);
       }
@@ -205,23 +197,13 @@ export function ClaimsPage() {
 
   const handleStatusChange = async (claimId: string, newStatus: string) => {
     try {
-      const response = await fetch(`/api/claims/${claimId}/status`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ status: newStatus }),
-      });
-
-      if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.detail || 'Failed to update claim status');
-      }
+      const updated = await apiPatch<Claim>(`/api/claims/${claimId}/status`, { status: newStatus });
 
       toast.success(`Claim marked as ${newStatus}`);
       refetch();
 
       // Update selected claim if it's the one we changed
       if (selectedClaim?.id === claimId) {
-        const updated = await response.json();
         setSelectedClaim(updated);
       }
     } catch (err) {

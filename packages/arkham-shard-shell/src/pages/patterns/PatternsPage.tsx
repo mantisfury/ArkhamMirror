@@ -17,6 +17,7 @@ import { AIAnalystButton } from '../../components/AIAnalyst';
 import { useToast } from '../../context/ToastContext';
 import { useFetch } from '../../hooks/useFetch';
 import { usePaginatedFetch } from '../../hooks';
+import { apiDelete, apiGet, apiPost, apiPut } from '../../utils/api';
 import './PatternsPage.css';
 
 // Types
@@ -160,15 +161,10 @@ export function PatternsPage() {
       // Fetch document content and open analyze modal
       const fetchDocContent = async () => {
         try {
-          const response = await fetch(`/api/documents/${docId}/content`);
-          if (response.ok) {
-            const data = await response.json();
-            setAnalyzeText(data.content || '');
-            setShowAnalyzeModal(true);
-            toast.info('Document content loaded for analysis');
-          } else {
-            toast.error('Failed to fetch document content');
-          }
+          const data = await apiGet<{ content?: string }>(`/api/documents/${docId}/content`);
+          setAnalyzeText(data.content || '');
+          setShowAnalyzeModal(true);
+          toast.info('Document content loaded for analysis');
         } catch (err) {
           toast.error('Failed to fetch document content');
         }
@@ -250,26 +246,17 @@ export function PatternsPage() {
       const keywords = formKeywords.split(',').map(k => k.trim()).filter(k => k);
       const regexPatterns = formRegex.split('\n').map(r => r.trim()).filter(r => r);
 
-      const response = await fetch('/api/patterns/', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          name: formName,
-          description: formDescription,
-          pattern_type: formType,
-          confidence: formConfidence,
-          criteria: {
-            keywords,
-            regex_patterns: regexPatterns,
-            min_occurrences: formMinOccurrences,
-          },
-        }),
+      await apiPost('/api/patterns/', {
+        name: formName,
+        description: formDescription,
+        pattern_type: formType,
+        confidence: formConfidence,
+        criteria: {
+          keywords,
+          regex_patterns: regexPatterns,
+          min_occurrences: formMinOccurrences,
+        },
       });
-
-      if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.detail || 'Failed to create pattern');
-      }
 
       toast.success('Pattern created');
       setShowCreateModal(false);
@@ -288,27 +275,16 @@ export function PatternsPage() {
       const keywords = formKeywords.split(',').map(k => k.trim()).filter(k => k);
       const regexPatterns = formRegex.split('\n').map(r => r.trim()).filter(r => r);
 
-      const response = await fetch(`/api/patterns/${selectedPattern.id}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          name: formName,
-          description: formDescription,
-          confidence: formConfidence,
-          criteria: {
-            keywords,
-            regex_patterns: regexPatterns,
-            min_occurrences: formMinOccurrences,
-          },
-        }),
+      const updated = await apiPut<Pattern>(`/api/patterns/${selectedPattern.id}`, {
+        name: formName,
+        description: formDescription,
+        confidence: formConfidence,
+        criteria: {
+          keywords,
+          regex_patterns: regexPatterns,
+          min_occurrences: formMinOccurrences,
+        },
       });
-
-      if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.detail || 'Failed to update pattern');
-      }
-
-      const updated = await response.json();
       toast.success('Pattern updated');
       setShowEditModal(false);
       setSelectedPattern(updated);
@@ -321,20 +297,11 @@ export function PatternsPage() {
   // Confirm pattern
   const handleConfirmPattern = async (patternId: string) => {
     try {
-      const response = await fetch(`/api/patterns/${patternId}/confirm`, {
-        method: 'POST',
-      });
-
-      if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.detail || 'Failed to confirm pattern');
-      }
-
+      const updated = await apiPost<Pattern>(`/api/patterns/${patternId}/confirm`);
       toast.success('Pattern confirmed');
       refetch();
       refetchStats();
       if (selectedPattern?.id === patternId) {
-        const updated = await response.json();
         setSelectedPattern(updated);
       }
     } catch (err) {
@@ -345,15 +312,7 @@ export function PatternsPage() {
   // Dismiss pattern
   const handleDismissPattern = async (patternId: string) => {
     try {
-      const response = await fetch(`/api/patterns/${patternId}/dismiss`, {
-        method: 'POST',
-      });
-
-      if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.detail || 'Failed to dismiss pattern');
-      }
-
+      await apiPost(`/api/patterns/${patternId}/dismiss`);
       toast.success('Pattern dismissed');
       refetch();
       refetchStats();
@@ -370,14 +329,7 @@ export function PatternsPage() {
     if (!confirm('Are you sure you want to delete this pattern?')) return;
 
     try {
-      const response = await fetch(`/api/patterns/${patternId}`, {
-        method: 'DELETE',
-      });
-
-      if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.detail || 'Failed to delete pattern');
-      }
+      await apiDelete(`/api/patterns/${patternId}`);
 
       toast.success('Pattern deleted');
       refetch();
@@ -401,21 +353,10 @@ export function PatternsPage() {
     setAnalysisResult(null);
 
     try {
-      const response = await fetch('/api/patterns/analyze', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          text: analyzeText,
-          min_confidence: analyzeMinConfidence,
-        }),
+      const result = await apiPost<AnalysisResult>('/api/patterns/analyze', {
+        text: analyzeText,
+        min_confidence: analyzeMinConfidence,
       });
-
-      if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.detail || 'Analysis failed');
-      }
-
-      const result = await response.json();
       setAnalysisResult(result);
       toast.success(`Found ${result.patterns_detected.length} patterns`);
       refetch();

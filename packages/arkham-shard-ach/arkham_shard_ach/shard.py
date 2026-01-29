@@ -1407,6 +1407,23 @@ class ACHShard(ArkhamShard):
             logger.error(f"Failed to load matrices: {e}")
             return []
 
+    async def delete_data_for_project(self, project_id: str) -> None:
+        """
+        Delete all ACH data for a project. Called when a project is deleted.
+
+        Removes all matrices for the project (CASCADE deletes hypotheses, evidence, ratings).
+        """
+        if not self._db:
+            return
+        try:
+            await self._db.execute(
+                "DELETE FROM arkham_ach.matrices WHERE project_id = :project_id",
+                {"project_id": project_id},
+            )
+            logger.info(f"Deleted ACH data for project {project_id}")
+        except Exception as e:
+            logger.warning("Failed to delete ACH data for project %s: %s", project_id, e)
+
     async def _delete_matrix_from_db(self, matrix_id: str) -> bool:
         """
         Delete an ACH matrix and all its components from the database.

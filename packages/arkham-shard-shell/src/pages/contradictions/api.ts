@@ -4,6 +4,7 @@
  * API client for the Contradictions shard backend.
  */
 
+import { apiFetch } from '../../utils/api';
 import type {
   Contradiction,
   ContradictionListResponse,
@@ -15,7 +16,7 @@ const API_PREFIX = '/api/contradictions';
 
 // Generic fetch wrapper with error handling
 async function fetchAPI<T>(endpoint: string, options?: RequestInit): Promise<T> {
-  const response = await fetch(`${API_PREFIX}${endpoint}`, {
+  const response = await apiFetch(`${API_PREFIX}${endpoint}`, {
     headers: {
       'Content-Type': 'application/json',
       ...options?.headers,
@@ -283,16 +284,25 @@ export interface DocumentItem {
 
 export async function fetchDocuments(
   page: number = 1,
-  pageSize: number = 100
+  pageSize: number = 100,
+  projectId?: string | null
 ): Promise<{
   items: DocumentItem[];
   total: number;
   page: number;
   page_size: number;
 }> {
-  const response = await fetch(`/api/documents/items?page=${page}&page_size=${pageSize}`);
+  const params = new URLSearchParams();
+  params.set('page', page.toString());
+  params.set('page_size', pageSize.toString());
+  if (projectId) {
+    params.set('project_id', projectId);
+  }
+  
+  const response = await apiFetch(`/api/documents/items?${params.toString()}`);
   if (!response.ok) {
-    throw new Error('Failed to fetch documents');
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(errorData.detail || `Failed to fetch documents: ${response.status}`);
   }
   return response.json();
 }

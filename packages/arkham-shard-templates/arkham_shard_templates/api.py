@@ -4,6 +4,7 @@ Templates Shard - FastAPI Routes
 API endpoints for template management, versioning, and rendering.
 """
 
+import time
 from typing import Optional, TYPE_CHECKING
 
 from fastapi import APIRouter, HTTPException, Query, Request
@@ -30,6 +31,17 @@ from .models import (
     TemplateVersionCreate,
     PlaceholderWarning,
 )
+
+# Import wide event logging utilities (with fallback)
+try:
+    from arkham_frame import log_operation
+    WIDE_EVENTS_AVAILABLE = True
+except ImportError:
+    WIDE_EVENTS_AVAILABLE = False
+    from contextlib import contextmanager
+    @contextmanager
+    def log_operation(*args, **kwargs):
+        yield None
 
 router = APIRouter(prefix="/api/templates", tags=["templates"])
 
@@ -160,15 +172,36 @@ async def create_template(template_data: TemplateCreate, request: Request):
     Raises:
         HTTPException: If template creation fails
     """
-    shard = get_shard(request)
+    with log_operation("templates.create", template_type=template_data.template_type.value if hasattr(template_data.template_type, 'value') else str(template_data.template_type)) as event:
+        try:
+            if event:
+                event.context("shard", "templates")
+                event.context("operation", "create")
+                event.input(
+                    template_type=template_data.template_type.value if hasattr(template_data.template_type, 'value') else str(template_data.template_type),
+                    name=template_data.name,
+                    placeholder_count=len(template_data.placeholders) if hasattr(template_data, 'placeholders') else 0,
+                )
 
-    try:
-        template = await shard.create_template(template_data)
-        return template
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to create template: {e}")
+            shard = get_shard(request)
+            template = await shard.create_template(template_data)
+
+            if event:
+                event.output(
+                    template_id=template.id,
+                    is_active=template.is_active,
+                    placeholder_count=len(template.placeholders) if hasattr(template, 'placeholders') else 0,
+                )
+
+            return template
+        except ValueError as e:
+            if event:
+                event.error(str(e), exc_info=True)
+            raise HTTPException(status_code=400, detail=str(e))
+        except Exception as e:
+            if event:
+                event.error(str(e), exc_info=True)
+            raise HTTPException(status_code=500, detail=f"Failed to create template: {e}")
 
 
 @router.get("/{template_id}", response_model=Template)
@@ -435,19 +468,44 @@ async def render_template(template_id: str, render_request: TemplateRenderReques
     Raises:
         HTTPException: If template not found or rendering fails
     """
-    shard = get_shard(request)
+    with log_operation("templates.render", template_id=template_id) as event:
+        try:
+            start_time = time.time()
 
-    try:
-        result = await shard.render_template(template_id, render_request)
+            if event:
+                event.context("shard", "templates")
+                event.context("operation", "render")
+                event.input(
+                    template_id=template_id,
+                    output_format=render_request.output_format.value if hasattr(render_request.output_format, 'value') else str(render_request.output_format),
+                    has_data=bool(render_request.data),
+                )
 
-        if not result:
-            raise HTTPException(status_code=404, detail="Template not found")
+            shard = get_shard(request)
+            result = await shard.render_template(template_id, render_request)
 
-        return result
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to render template: {e}")
+            if not result:
+                raise HTTPException(status_code=404, detail="Template not found")
+
+            duration_ms = (time.time() - start_time) * 1000
+
+            if event:
+                event.output(
+                    template_id=template_id,
+                    rendered_length=len(result.rendered_content) if hasattr(result, 'rendered_content') else 0,
+                    warnings_count=len(result.warnings) if hasattr(result, 'warnings') else 0,
+                    duration_ms=duration_ms,
+                )
+
+            return result
+        except ValueError as e:
+            if event:
+                event.error(str(e), exc_info=True)
+            raise HTTPException(status_code=400, detail=str(e))
+        except Exception as e:
+            if event:
+                event.error(str(e), exc_info=True)
+            raise HTTPException(status_code=500, detail=f"Failed to render template: {e}")
 
 
 @router.post("/{template_id}/preview", response_model=TemplateRenderResult)

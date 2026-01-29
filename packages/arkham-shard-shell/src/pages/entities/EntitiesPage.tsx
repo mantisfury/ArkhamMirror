@@ -10,6 +10,7 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import { Icon } from '../../components/common/Icon';
 import { AIAnalystButton } from '../../components/AIAnalyst';
 import { useToast } from '../../context/ToastContext';
+import { useProject } from '../../context/ProjectContext';
 import { useFetch } from '../../hooks/useFetch';
 import { usePaginatedFetch } from '../../hooks';
 import { MergeDuplicates } from './MergeDuplicates';
@@ -65,6 +66,7 @@ const TABS: { id: TabId; label: string; icon: string; route: string }[] = [
 export function EntitiesPage() {
   const { toast: _toast } = useToast();
   void _toast;
+  const { activeProjectId } = useProject();
 
   const location = useLocation();
   const navigate = useNavigate();
@@ -92,18 +94,22 @@ export function EntitiesPage() {
   const [selectedEntity, setSelectedEntity] = useState<Entity | null>(null);
   const [viewingMentions, setViewingMentions] = useState(false);
 
-  // Fetch entity count/stats
+  // Fetch entity count/stats (scoped to active project when set)
+  const countUrl = activeProjectId 
+    ? `/api/entities/count?project_id=${activeProjectId}`
+    : '/api/entities/count';
   const { data: stats, refetch: refetchStats } = useFetch<{ count: number }>(
-    '/api/entities/count'
+    countUrl
   );
 
-  // Fetch entities with pagination
+  // Fetch entities with pagination (scoped to active project when set)
   const { items: entities, loading, error, refetch } = usePaginatedFetch<Entity>(
     '/api/entities/items',
     {
       params: {
         ...(searchQuery && { q: searchQuery }),
         ...(typeFilter && { filter: typeFilter }),
+        ...(activeProjectId && { project_id: activeProjectId }),
       },
       syncToUrl: false,
     }

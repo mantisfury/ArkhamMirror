@@ -306,11 +306,11 @@ class IngestShard(ArkhamShard):
                         metadata[key] = value
                 logger.info(f"Including extracted metadata for job {job.id}: {list(document_metadata.keys())}")
 
-            # Create document in Frame's document service
+            # Create document in Frame's document service with project association
             doc = await doc_service.create_document(
                 filename=job.file_info.original_name,
                 content=content,
-                project_id=None,  # Could be extracted from job metadata
+                project_id=job.project_id,
                 metadata=metadata,
             )
 
@@ -332,23 +332,42 @@ class IngestShard(ArkhamShard):
             else:
                 logger.warning(f"Job {job.id}: No text in result for document {doc.id}")
 
-            logger.info(f"Registered document {doc.id} from job {job.id}")
+            logger.info(f"Registered document {doc.id} from job {job.id} for project {job.project_id}")
+
+            # Associate document with project via projects shard
+            if job.project_id:
+                projects_shard = self._frame.shards.get("projects")
+                if projects_shard:
+                    try:
+                        await projects_shard.add_document(
+                            project_id=job.project_id,
+                            document_id=doc.id,
+                            added_by="ingest-shard",
+                        )
+                        logger.info(f"Associated document {doc.id} with project {job.project_id}")
+                    except Exception as e:
+                        logger.warning(f"Failed to associate document {doc.id} with project {job.project_id}: {e}")
 
             # Emit document created event for provenance tracking
             event_bus = self._frame.get_service("events")
             if event_bus:
+                payload = {
+                    "id": doc.id,
+                    "document_id": doc.id,
+                    "title": job.file_info.original_name,
+                    "filename": job.file_info.original_name,
+                    "mime_type": doc.mime_type,
+                    "file_size": doc.file_size,
+                    "source": "ingest",
+                    "job_id": job.id,
+                    "project_id": job.project_id,
+                }
+                if job.project_id:
+                    payload["metadata"] = {"project_id": job.project_id}
+                
                 await event_bus.emit(
                     "documents.document.created",
-                    {
-                        "id": doc.id,
-                        "document_id": doc.id,
-                        "title": job.file_info.original_name,
-                        "filename": job.file_info.original_name,
-                        "mime_type": doc.mime_type,
-                        "file_size": doc.file_size,
-                        "source": "ingest",
-                        "job_id": job.id,
-                    },
+                    payload,
                     source="ingest-shard",
                 )
 
@@ -625,18 +644,21 @@ class IngestShard(ArkhamShard):
         # Get tenant_id for multi-tenancy
         tenant_id = self.get_tenant_id_or_none()
 
+        # Build metadata JSON with project_id
+        metadata_json = json.dumps({"project_id": job.project_id}) if job.project_id else None
+
         await self._db.execute(
             """
             INSERT INTO arkham_ingest.jobs (
                 id, filename, original_path, status, file_category, mime_type,
                 file_size, checksum, quality_score, worker_route, current_worker,
                 batch_id, retry_count, max_retries, error_message, result,
-                created_at, started_at, completed_at, tenant_id
+                created_at, started_at, completed_at, tenant_id, metadata
             ) VALUES (
                 :id, :filename, :original_path, :status, :file_category, :mime_type,
                 :file_size, :checksum, :quality_score, :worker_route, :current_worker,
                 :batch_id, :retry_count, :max_retries, :error_message, :result,
-                :created_at, :started_at, :completed_at, :tenant_id
+                :created_at, :started_at, :completed_at, :tenant_id, :metadata
             )
             ON CONFLICT (id) DO UPDATE SET
                 status = EXCLUDED.status,
@@ -645,7 +667,8 @@ class IngestShard(ArkhamShard):
                 error_message = EXCLUDED.error_message,
                 result = EXCLUDED.result,
                 started_at = EXCLUDED.started_at,
-                completed_at = EXCLUDED.completed_at
+                completed_at = EXCLUDED.completed_at,
+                metadata = EXCLUDED.metadata
             """,
             {
                 "id": job.id,
@@ -668,6 +691,7 @@ class IngestShard(ArkhamShard):
                 "started_at": job.started_at,
                 "completed_at": job.completed_at,
                 "tenant_id": str(tenant_id) if tenant_id else None,
+                "metadata": metadata_json,
             },
         )
 
@@ -698,6 +722,7 @@ class IngestShard(ArkhamShard):
         self,
         status: str | None = None,
         batch_id: str | None = None,
+        project_id: str | None = None,
         limit: int = 100,
     ) -> list[IngestJob]:
         """List jobs with optional filtering."""
@@ -712,6 +737,17 @@ class IngestShard(ArkhamShard):
         if tenant_id:
             query += " AND tenant_id = :tenant_id"
             params["tenant_id"] = str(tenant_id)
+
+        # Filter by project_id if provided, otherwise use active project
+        if project_id is None and self._frame:
+            # Prefer legacy global context if present. (Per-user active project
+            # requires user_id and should be resolved at the API layer.)
+            project_id = getattr(self._frame, "active_project_id", None) or getattr(self._frame, "_active_project_id", None)
+        
+        if project_id:
+            # Filter by project_id stored in metadata JSONB
+            query += " AND metadata->>'project_id' = :project_id"
+            params["project_id"] = str(project_id)
 
         if status:
             query += " AND status = :status"
@@ -1092,12 +1128,17 @@ class IngestShard(ArkhamShard):
             checksum=row.get("checksum"),
         )
 
+        # Parse metadata to get project_id
+        metadata = _parse_json_field(row.get("metadata"), {})
+        project_id = metadata.get("project_id") if metadata else None
+
         # Build IngestJob
         return IngestJob(
             id=row["id"],
             file_info=file_info,
             priority=priority,
             status=status,
+            project_id=project_id,
             worker_route=_parse_json_field(row.get("worker_route"), []),
             current_worker=row.get("current_worker"),
             quality_score=quality_score,

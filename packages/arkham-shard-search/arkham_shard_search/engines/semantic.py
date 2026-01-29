@@ -83,10 +83,10 @@ class SemanticSearchEngine:
             return self.vectors._pool
         return None
 
-    def _get_collection_name(self, base_name: str) -> str:
+    async def _get_collection_name(self, base_name: str) -> str:
         """Get collection name with project scope if active."""
         if self.frame:
-            return self.frame.get_collection_name(base_name)
+            return await self.frame.get_collection_name(base_name)
         # Fallback to global collection
         return f"arkham_{base_name}"
 
@@ -111,7 +111,7 @@ class SemanticSearchEngine:
 
         # Get project-scoped collection name
         # Note: embeddings are stored in "documents" collection by embed shard
-        collection_name = self._get_collection_name("documents")
+        collection_name = await self._get_collection_name("documents")
         logger.debug(f"Searching collection: {collection_name}")
 
         # Search pgvector for similar vectors
@@ -208,7 +208,7 @@ class SemanticSearchEngine:
         logger.info(f"Finding similar documents to {doc_id}")
 
         # Get project-scoped collection name
-        collection_name = self._get_collection_name("documents")
+        collection_name = await self._get_collection_name("documents")
         logger.debug(f"Searching collection: {collection_name}")
 
         # Get document vector from vector store

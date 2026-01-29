@@ -330,10 +330,30 @@ class ContradictionsShard(ArkhamShard):
             return
 
         try:
-            # Get all other document IDs
+            # First, get the document's project_id to filter by project
+            doc_row = await self._db_service.fetch_one(
+                "SELECT project_id FROM arkham_frame.documents WHERE id = :id",
+                {"id": doc_id}
+            )
+            
+            if not doc_row:
+                logger.warning(f"Document {doc_id} not found, skipping contradiction analysis")
+                return
+            
+            project_id = doc_row.get("project_id")
+            
+            # Get all other document IDs from the same project
             query = """SELECT id FROM arkham_frame.documents
                    WHERE id != :id"""
             params = {"id": doc_id}
+
+            # Add project filtering for data isolation
+            if project_id:
+                query += " AND project_id = :project_id"
+                params["project_id"] = str(project_id)
+            else:
+                logger.warning(f"Document {doc_id} has no project_id, skipping contradiction analysis")
+                return
 
             # Add tenant filtering if tenant context is available
             tenant_id = self.get_tenant_id_or_none()
@@ -405,9 +425,17 @@ class ContradictionsShard(ArkhamShard):
         if not self.detector or not self.storage:
             raise RuntimeError("Contradictions Shard not initialized")
 
-        # Fetch document content from Frame
-        doc_a_content = await self._get_document_content(doc_a_id)
-        doc_b_content = await self._get_document_content(doc_b_id)
+        # Get project_id from first document to ensure both are from same project
+        doc_a_row = await self._db_service.fetch_one(
+            "SELECT project_id FROM arkham_frame.documents WHERE id = :id",
+            {"id": doc_a_id}
+        ) if self._db_service else None
+        
+        project_id = doc_a_row.get("project_id") if doc_a_row else None
+        
+        # Fetch document content from Frame (filtered by project_id for isolation)
+        doc_a_content = await self._get_document_content(doc_a_id, project_id=project_id)
+        doc_b_content = await self._get_document_content(doc_b_id, project_id=project_id)
 
         if not doc_a_content or not doc_b_content:
             raise RuntimeError(f"Could not fetch document content for analysis")
@@ -447,20 +475,29 @@ class ContradictionsShard(ArkhamShard):
 
         return contradictions
 
-    async def _get_document_content(self, doc_id: str) -> dict | None:
+    async def _get_document_content(self, doc_id: str, project_id: Optional[str] = None) -> dict | None:
         """
         Fetch document content from Frame database.
 
         Gets document metadata and combines chunk text for content.
         Matches the implementation in api.py for consistency.
+        Optionally filters by project_id for project isolation.
+
+        Args:
+            doc_id: Document ID to fetch
+            project_id: Optional project ID to filter by (for project isolation)
         """
         if not self._db_service:
             return None
 
         try:
-            # Get document metadata
-            query = "SELECT id, filename FROM arkham_frame.documents WHERE id = :id"
+            # Get document metadata with optional project_id filtering
+            query = "SELECT id, filename, project_id FROM arkham_frame.documents WHERE id = :id"
             params = {"id": doc_id}
+            
+            if project_id:
+                query += " AND project_id = :project_id"
+                params["project_id"] = str(project_id)
 
             # Add tenant filtering if tenant context is available
             tenant_id = self.get_tenant_id_or_none()
@@ -471,16 +508,26 @@ class ContradictionsShard(ArkhamShard):
             doc_result = await self._db_service.fetch_one(query, params)
 
             if not doc_result:
-                logger.warning(f"Document not found: {doc_id}")
+                logger.warning(f"Document not found: {doc_id}" + (f" in project {project_id}" if project_id else ""))
                 return None
 
             # Get all chunks for the document, ordered by chunk_index
             chunk_query = """SELECT text FROM arkham_frame.chunks
                    WHERE document_id = :id"""
             chunk_params = {"id": doc_id}
+            
+            # Filter chunks by project_id if provided (via join with documents table)
+            if project_id:
+                chunk_query = """SELECT c.text FROM arkham_frame.chunks c
+                       INNER JOIN arkham_frame.documents d ON c.document_id = d.id
+                       WHERE c.document_id = :id AND d.project_id = :project_id"""
+                chunk_params["project_id"] = str(project_id)
 
             if tenant_id:
-                chunk_query += " AND tenant_id = :tenant_id"
+                if project_id:
+                    chunk_query += " AND c.tenant_id = :tenant_id"
+                else:
+                    chunk_query += " AND tenant_id = :tenant_id"
                 chunk_params["tenant_id"] = str(tenant_id)
 
             chunk_query += " ORDER BY chunk_index"

@@ -1,0 +1,23 @@
+---
+description: Prefer existing running servers; use curl for endpoint tests; use .env creds for DB access
+alwaysApply: true
+---
+
+# Runtime, Refresh, and Testing Workflow
+
+## Assume servers are already running
+
+- Do **not** start dev servers, API servers, or background watchers from the assistant.
+- Assume servers are running with **automatic refresh** already enabled.
+- If a live refresh/reload is needed, **ask the user to trigger it** (refresh browser, restart service, redeploy container, etc.).
+
+## Endpoint testing
+
+- Prefer testing endpoints with `curl` (or an equivalent HTTP client) instead of spinning up or restarting servers.
+- If you need the user to run a request locally (auth, TLS, localhost-only), ask them to run the `curl` command and paste results.
+
+## Database access
+
+- When inspecting the database, use credentials from the repo’s `.env` (or `.env.example` as a template if `.env` is unavailable).
+- View/query the database directly using those credentials rather than trying to infer state indirectly.
+

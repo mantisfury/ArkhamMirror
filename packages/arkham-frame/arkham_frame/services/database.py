@@ -4,8 +4,24 @@ DatabaseService - PostgreSQL database access with schema isolation.
 
 from typing import Optional, List, Dict, Any
 import logging
+import time
+import re
 
 logger = logging.getLogger(__name__)
+
+# Import wide event logging utilities (with fallback)
+try:
+    from arkham_frame import log_operation
+    from arkham_logging.sanitizer import DataSanitizer
+    WIDE_EVENTS_AVAILABLE = True
+except ImportError:
+    WIDE_EVENTS_AVAILABLE = False
+    # Fallback: create no-op context manager
+    from contextlib import contextmanager
+    @contextmanager
+    def log_operation(*args, **kwargs):
+        yield None
+    DataSanitizer = None
 
 
 class DatabaseError(Exception):
@@ -43,6 +59,24 @@ class DatabaseService:
         self._engine = None
         self._session_factory = None
         self._connected = False
+        self._sanitizer = DataSanitizer() if WIDE_EVENTS_AVAILABLE and DataSanitizer else None
+    
+    def _sanitize_query(self, query: str) -> str:
+        """Sanitize query for logging - remove sensitive patterns and truncate."""
+        if not query:
+            return ""
+        
+        # Truncate very long queries
+        max_query_length = 500
+        sanitized = query[:max_query_length]
+        if len(query) > max_query_length:
+            sanitized += "... [truncated]"
+        
+        # Remove potential password/credential patterns
+        sanitized = re.sub(r'(?i)(password|pwd|passwd)\s*=\s*[\'"]?[^\'";\s]+', r'\1=***', sanitized)
+        sanitized = re.sub(r'(?i)(api[_-]?key|token|secret)\s*=\s*[\'"]?[^\'";\s]+', r'\1=***', sanitized)
+        
+        return sanitized
 
     async def initialize(self) -> None:
         """Initialize database connection."""
@@ -315,42 +349,122 @@ class DatabaseService:
 
     async def execute(self, query: str, params=None) -> None:
         """Execute a query (for DDL, INSERT, UPDATE, DELETE)."""
-        if not self._connected:
-            raise DatabaseError("Database not connected")
-        try:
-            from sqlalchemy import text
-            query, params = self._convert_params(query, params)
-            with self._engine.connect() as conn:
-                conn.execute(text(query), params)
-                conn.commit()
-        except Exception as e:
-            raise QueryExecutionError(str(e), query)
+        sanitized_query = self._sanitize_query(query)
+        query_type = query.strip().split()[0].upper() if query.strip() else "UNKNOWN"
+        
+        with log_operation("database.execute", query_type=query_type) as event:
+            if event:
+                event.input(
+                    query_type=query_type,
+                    query_preview=sanitized_query,
+                    has_params=params is not None,
+                )
+                if self._sanitizer and params:
+                    sanitized_params = self._sanitizer.sanitize(params)
+                    event.input(params=sanitized_params)
+            
+            if not self._connected:
+                if event:
+                    event.error("DatabaseNotConnected", "Database not connected")
+                raise DatabaseError("Database not connected")
+            
+            start_time = time.time()
+            try:
+                from sqlalchemy import text
+                query, params = self._convert_params(query, params)
+                with self._engine.connect() as conn:
+                    conn.execute(text(query), params)
+                    conn.commit()
+                
+                duration_ms = int((time.time() - start_time) * 1000)
+                if event:
+                    event.dependency("postgresql", duration_ms=duration_ms)
+                    event.output(executed=True)
+            except Exception as e:
+                duration_ms = int((time.time() - start_time) * 1000)
+                if event:
+                    event.dependency("postgresql", duration_ms=duration_ms, error=str(e))
+                    event.error("QueryExecutionFailed", str(e))
+                raise QueryExecutionError(str(e), query)
 
     async def fetch_one(self, query: str, params=None) -> Optional[Dict[str, Any]]:
         """Fetch a single row."""
-        if not self._connected:
-            raise DatabaseError("Database not connected")
-        try:
-            from sqlalchemy import text
-            query, params = self._convert_params(query, params)
-            with self._engine.connect() as conn:
-                result = conn.execute(text(query), params)
-                row = result.fetchone()
-                if row:
-                    return dict(row._mapping)
-                return None
-        except Exception as e:
-            raise QueryExecutionError(str(e), query)
+        sanitized_query = self._sanitize_query(query)
+        
+        with log_operation("database.fetch_one") as event:
+            if event:
+                event.input(
+                    query_preview=sanitized_query,
+                    has_params=params is not None,
+                )
+                if self._sanitizer and params:
+                    sanitized_params = self._sanitizer.sanitize(params)
+                    event.input(params=sanitized_params)
+            
+            if not self._connected:
+                if event:
+                    event.error("DatabaseNotConnected", "Database not connected")
+                raise DatabaseError("Database not connected")
+            
+            start_time = time.time()
+            try:
+                from sqlalchemy import text
+                query, params = self._convert_params(query, params)
+                with self._engine.connect() as conn:
+                    result = conn.execute(text(query), params)
+                    row = result.fetchone()
+                    
+                    duration_ms = int((time.time() - start_time) * 1000)
+                    if event:
+                        event.dependency("postgresql", duration_ms=duration_ms)
+                        event.output(found=row is not None)
+                    
+                    if row:
+                        return dict(row._mapping)
+                    return None
+            except Exception as e:
+                duration_ms = int((time.time() - start_time) * 1000)
+                if event:
+                    event.dependency("postgresql", duration_ms=duration_ms, error=str(e))
+                    event.error("QueryExecutionFailed", str(e))
+                raise QueryExecutionError(str(e), query)
 
     async def fetch_all(self, query: str, params=None) -> List[Dict[str, Any]]:
         """Fetch all rows."""
-        if not self._connected:
-            raise DatabaseError("Database not connected")
-        try:
-            from sqlalchemy import text
-            query, params = self._convert_params(query, params)
-            with self._engine.connect() as conn:
-                result = conn.execute(text(query), params)
-                return [dict(row._mapping) for row in result.fetchall()]
-        except Exception as e:
-            raise QueryExecutionError(str(e), query)
+        sanitized_query = self._sanitize_query(query)
+        
+        with log_operation("database.fetch_all") as event:
+            if event:
+                event.input(
+                    query_preview=sanitized_query,
+                    has_params=params is not None,
+                )
+                if self._sanitizer and params:
+                    sanitized_params = self._sanitizer.sanitize(params)
+                    event.input(params=sanitized_params)
+            
+            if not self._connected:
+                if event:
+                    event.error("DatabaseNotConnected", "Database not connected")
+                raise DatabaseError("Database not connected")
+            
+            start_time = time.time()
+            try:
+                from sqlalchemy import text
+                query, params = self._convert_params(query, params)
+                with self._engine.connect() as conn:
+                    result = conn.execute(text(query), params)
+                    rows = [dict(row._mapping) for row in result.fetchall()]
+                    
+                    duration_ms = int((time.time() - start_time) * 1000)
+                    if event:
+                        event.dependency("postgresql", duration_ms=duration_ms)
+                        event.output(row_count=len(rows))
+                    
+                    return rows
+            except Exception as e:
+                duration_ms = int((time.time() - start_time) * 1000)
+                if event:
+                    event.dependency("postgresql", duration_ms=duration_ms, error=str(e))
+                    event.error("QueryExecutionFailed", str(e))
+                raise QueryExecutionError(str(e), query)

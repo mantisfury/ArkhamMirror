@@ -4,6 +4,7 @@
  * API client for the OCR shard backend.
  */
 
+import { apiFetch, apiUpload } from '../../utils/api';
 import type {
   OCRResponse,
   OCRHealthResponse,
@@ -23,7 +24,7 @@ export interface DocumentInfo {
 
 // Generic fetch wrapper with error handling
 async function fetchAPI<T>(endpoint: string, options?: RequestInit): Promise<T> {
-  const response = await fetch(`${API_PREFIX}${endpoint}`, {
+  const response = await apiFetch(`${API_PREFIX}${endpoint}`, {
     headers: {
       'Content-Type': 'application/json',
       ...options?.headers,
@@ -89,20 +90,10 @@ export async function ocrUpload(
   const formData = new FormData();
   formData.append('file', file);
 
-  const response = await fetch(
+  return apiUpload<OCRResponse>(
     `${API_PREFIX}/upload?engine=${engine}&language=${language}`,
-    {
-      method: 'POST',
-      body: formData,
-    }
+    formData
   );
-
-  if (!response.ok) {
-    const error = await response.json().catch(() => ({ detail: response.statusText }));
-    throw new Error(error.detail || error.message || `HTTP ${response.status}`);
-  }
-
-  return response.json();
 }
 
 // ============================================
@@ -111,7 +102,7 @@ export async function ocrUpload(
 
 export async function getDocumentsForOCR(): Promise<DocumentInfo[]> {
   // Fetch documents that can be OCR'd (images, scanned PDFs)
-  const response = await fetch('/api/documents/items?limit=100');
+  const response = await apiFetch('/api/documents/items?limit=100');
 
   if (!response.ok) {
     throw new Error(`Failed to fetch documents: ${response.statusText}`);

@@ -7,9 +7,13 @@
  */
 
 import { useState, useCallback, useEffect } from 'react';
+import { Link } from 'react-router-dom';
 import { Icon } from '../../components/common/Icon';
 import { useToast } from '../../context/ToastContext';
+import { useAuth } from '../../context/AuthContext';
+import { useProject } from '../../context/ProjectContext';
 import { usePaginatedFetch } from '../../hooks';
+import { apiDelete, apiFetch, apiGet, apiPost, apiPut } from '../../utils/api';
 import './ProjectsPage.css';
 
 // Types
@@ -18,7 +22,6 @@ interface Project {
   name: string;
   description: string;
   status: string;
-  owner_id: string;
   created_at: string;
   updated_at: string;
   settings: {
@@ -49,6 +52,23 @@ interface CollectionStats {
   }>;
 }
 
+interface ProjectDocument {
+  id: string;
+  project_id: string;
+  document_id: string;
+  added_at: string;
+  added_by: string;
+}
+
+interface ProjectMember {
+  id: string;
+  project_id: string;
+  user_id: string;
+  role: string;
+  added_at: string;
+  added_by: string;
+}
+
 const STATUS_COLORS: Record<string, string> = {
   active: 'status-active',
   archived: 'status-archived',
@@ -65,15 +85,19 @@ const STATUS_LABELS: Record<string, string> = {
 
 export function ProjectsPage() {
   const { toast } = useToast();
+  const { user: currentUser } = useAuth();
+  const { refreshProjects } = useProject();
   const [statusFilter, setStatusFilter] = useState<string>('');
   const [searchQuery, setSearchQuery] = useState('');
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [selectedProject, setSelectedProject] = useState<Project | null>(null);
   const [showEditModal, setShowEditModal] = useState(false);
   const [showDetailsModal, setShowDetailsModal] = useState(false);
+  const [showDeleteConfirmModal, setShowDeleteConfirmModal] = useState(false);
+  const [projectToDelete, setProjectToDelete] = useState<Project | null>(null);
   const [embeddingModels, setEmbeddingModels] = useState<EmbeddingModel[]>([]);
 
-  // Fetch projects with usePaginatedFetch
+  // Fetch projects with usePaginatedFetch (auth header automatically included)
   const { items: projects, total, loading, error, refetch } = usePaginatedFetch<Project>(
     '/api/projects/',
     {
@@ -81,61 +105,44 @@ export function ProjectsPage() {
         status: statusFilter || undefined,
         search: searchQuery || undefined,
       },
+      itemsKey: 'projects',  // API returns { projects, total, limit, offset }
     }
   );
 
   // Fetch available embedding models
   useEffect(() => {
-    fetch('/api/projects/embedding-models')
-      .then(res => res.json())
-      .then(data => setEmbeddingModels(data))
-      .catch(err => console.error('Failed to fetch embedding models:', err));
+    apiGet<EmbeddingModel[]>('/api/projects/embedding-models')
+      .then((data) => setEmbeddingModels(Array.isArray(data) ? data : []))
+      .catch((err) => console.error('Failed to fetch embedding models:', err));
   }, []);
 
   const handleCreateProject = useCallback(async (
     name: string,
     description: string,
+    status?: string,
     embeddingModel?: string
   ) => {
     try {
-      const response = await fetch('/api/projects/', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          name,
-          description,
-          owner_id: 'system',
-          status: 'active',
-          embedding_model: embeddingModel || 'all-MiniLM-L6-v2',
-          create_collections: true,
-        }),
+      await apiPost('/api/projects/', {
+        name,
+        description,
+        status: status || 'active',
+        embedding_model: embeddingModel || 'all-MiniLM-L6-v2',
+        create_collections: true,
       });
-
-      if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.detail || 'Failed to create project');
-      }
 
       toast.success('Project created with isolated vector collections');
       setShowCreateModal(false);
       refetch();
+      refreshProjects();
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Failed to create project');
     }
-  }, [toast, refetch]);
+  }, [toast, refetch, refreshProjects]);
 
   const handleUpdateProject = useCallback(async (id: string, name: string, description: string, status: string) => {
     try {
-      const response = await fetch(`/api/projects/${id}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, description, status }),
-      });
-
-      if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.detail || 'Failed to update project');
-      }
+      await apiPut(`/api/projects/${id}`, { name, description, status });
 
       toast.success('Project updated successfully');
       setShowEditModal(false);
@@ -150,14 +157,7 @@ export function ProjectsPage() {
     if (!confirm('Are you sure you want to archive this project?')) return;
 
     try {
-      const response = await fetch(`/api/projects/${id}/archive`, {
-        method: 'POST',
-      });
-
-      if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.detail || 'Failed to archive project');
-      }
+      await apiPost(`/api/projects/${id}/archive`);
 
       toast.success('Project archived');
       refetch();
@@ -168,41 +168,29 @@ export function ProjectsPage() {
 
   const handleRestoreProject = useCallback(async (id: string) => {
     try {
-      const response = await fetch(`/api/projects/${id}/restore`, {
-        method: 'POST',
-      });
-
-      if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.detail || 'Failed to restore project');
-      }
+      await apiPost(`/api/projects/${id}/restore`);
 
       toast.success('Project restored');
       refetch();
+      refreshProjects();
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Failed to restore project');
     }
-  }, [toast, refetch]);
+  }, [toast, refetch, refreshProjects]);
 
   const handleDeleteProject = useCallback(async (id: string) => {
-    if (!confirm('Are you sure you want to delete this project? This action cannot be undone.')) return;
-
     try {
-      const response = await fetch(`/api/projects/${id}`, {
-        method: 'DELETE',
-      });
-
-      if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.detail || 'Failed to delete project');
-      }
+      await apiDelete(`/api/projects/${id}`);
 
       toast.success('Project deleted');
+      setShowDeleteConfirmModal(false);
+      setProjectToDelete(null);
       refetch();
+      refreshProjects();
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Failed to delete project');
     }
-  }, [toast, refetch]);
+  }, [toast, refetch, refreshProjects]);
 
   return (
     <div className="projects-page">
@@ -315,7 +303,10 @@ export function ProjectsPage() {
                     )}
                     <button
                       className="icon-btn danger"
-                      onClick={() => handleDeleteProject(project.id)}
+                      onClick={() => {
+                        setProjectToDelete(project);
+                        setShowDeleteConfirmModal(true);
+                      }}
                       title="Delete project"
                     >
                       <Icon name="Trash2" size={16} />
@@ -415,6 +406,49 @@ export function ProjectsPage() {
           onRefresh={refetch}
         />
       )}
+
+      {/* Delete Project Confirmation Modal */}
+      {showDeleteConfirmModal && projectToDelete && (
+        <div className="modal-overlay" onClick={() => { setShowDeleteConfirmModal(false); setProjectToDelete(null); }}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h2>Delete project?</h2>
+              <button className="icon-btn" onClick={() => { setShowDeleteConfirmModal(false); setProjectToDelete(null); }}>
+                <Icon name="X" size={20} />
+              </button>
+            </div>
+            <div className="modal-content">
+              <p>
+                <strong>{projectToDelete.name}</strong> and all associated data will be permanently deleted. This includes:
+              </p>
+              <ul style={{ margin: '0.5rem 0 1rem 1.5rem', color: 'var(--color-muted)' }}>
+                <li>Documents and embeddings</li>
+                <li>Vector collections</li>
+                <li>Analyses (ACH matrices, graphs, anomalies, etc.)</li>
+                <li>Members and activity</li>
+              </ul>
+              <p style={{ marginBottom: '1rem' }}>This action cannot be undone.</p>
+              <div className="modal-actions" style={{ display: 'flex', gap: '0.5rem', justifyContent: 'flex-end' }}>
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  onClick={() => { setShowDeleteConfirmModal(false); setProjectToDelete(null); }}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-danger"
+                  onClick={() => projectToDelete && handleDeleteProject(projectToDelete.id)}
+                >
+                  <Icon name="Trash2" size={14} style={{ marginRight: '4px' }} />
+                  Delete project
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -425,7 +459,7 @@ interface ProjectModalProps {
   project?: Project;
   embeddingModels: EmbeddingModel[];
   onClose: () => void;
-  onSave: (name: string, description: string, status?: string, embeddingModel?: string) => void;
+  onSave: (name: string, description: string, status?: string, embeddingModel?: string) => void | Promise<void>;
 }
 
 function ProjectModal({ title, project, embeddingModels, onClose, onSave }: ProjectModalProps) {
@@ -435,11 +469,18 @@ function ProjectModal({ title, project, embeddingModels, onClose, onSave }: Proj
   const [embeddingModel, setEmbeddingModel] = useState(
     project?.settings?.embedding_model || 'all-MiniLM-L6-v2'
   );
+  const [saving, setSaving] = useState(false);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!name.trim()) return;
-    onSave(name, description, status, embeddingModel);
+    if (!name.trim() || saving) return;
+    
+    setSaving(true);
+    try {
+      await onSave(name, description, status, embeddingModel);
+    } finally {
+      setSaving(false);
+    }
   };
 
   const selectedModelInfo = embeddingModels.find(m => m.name === embeddingModel);
@@ -525,11 +566,18 @@ function ProjectModal({ title, project, embeddingModels, onClose, onSave }: Proj
           )}
 
           <div className="modal-actions">
-            <button type="button" className="btn btn-secondary" onClick={onClose}>
+            <button type="button" className="btn btn-secondary" onClick={onClose} disabled={saving}>
               Cancel
             </button>
-            <button type="submit" className="btn btn-primary" disabled={!name.trim()}>
-              {project ? 'Save Changes' : 'Create Project'}
+            <button type="submit" className="btn btn-primary" disabled={!name.trim() || saving}>
+              {saving ? (
+                <>
+                  <Icon name="Loader2" size={16} className="spin" />
+                  {project ? 'Saving...' : 'Creating...'}
+                </>
+              ) : (
+                project ? 'Save Changes' : 'Create Project'
+              )}
             </button>
           </div>
         </form>
@@ -548,21 +596,51 @@ interface ProjectDetailsModalProps {
 
 function ProjectDetailsModal({ project, embeddingModels, onClose, onRefresh }: ProjectDetailsModalProps) {
   const { toast } = useToast();
+  const { hasRole } = useAuth();
   const [collectionStats, setCollectionStats] = useState<CollectionStats | null>(null);
   const [loadingStats, setLoadingStats] = useState(true);
   const [showChangeModel, setShowChangeModel] = useState(false);
   const [newModel, setNewModel] = useState(project.settings?.embedding_model || 'all-MiniLM-L6-v2');
   const [changing, setChanging] = useState(false);
+  const [projectDocuments, setProjectDocuments] = useState<ProjectDocument[]>([]);
+  const [projectMembers, setProjectMembers] = useState<ProjectMember[]>([]);
+  const [loadingDocuments, setLoadingDocuments] = useState(false);
+  const [loadingMembers, setLoadingMembers] = useState(false);
+  const [showEditMembersModal, setShowEditMembersModal] = useState(false);
+
+  const fetchDocuments = useCallback(() => {
+    setLoadingDocuments(true);
+    apiFetch(`/api/projects/${project.id}/documents`)
+      .then(res => (res.ok ? res.json() : []))
+      .then(data => setProjectDocuments(Array.isArray(data) ? data : []))
+      .catch(() => setProjectDocuments([]))
+      .finally(() => setLoadingDocuments(false));
+  }, [project.id]);
+
+  const fetchMembers = useCallback(() => {
+    setLoadingMembers(true);
+    apiFetch(`/api/projects/${project.id}/members`)
+      .then(res => (res.ok ? res.json() : []))
+      .then(data => setProjectMembers(Array.isArray(data) ? data : []))
+      .catch(() => setProjectMembers([]))
+      .finally(() => setLoadingMembers(false));
+  }, [project.id]);
 
   // Fetch collection stats
   useEffect(() => {
     setLoadingStats(true);
-    fetch(`/api/projects/${project.id}/collections`)
+    apiFetch(`/api/projects/${project.id}/collections`)
       .then(res => res.json())
       .then(data => setCollectionStats(data))
       .catch(err => console.error('Failed to fetch collection stats:', err))
       .finally(() => setLoadingStats(false));
   }, [project.id]);
+
+  // Fetch documents and members for this project
+  useEffect(() => {
+    fetchDocuments();
+    fetchMembers();
+  }, [fetchDocuments, fetchMembers]);
 
   const currentModel = project.settings?.embedding_model || 'all-MiniLM-L6-v2';
   const currentDims = project.settings?.embedding_dimensions || 384;
@@ -584,18 +662,12 @@ function ProjectDetailsModal({ project, embeddingModels, onClose, onRefresh }: P
 
     setChanging(true);
     try {
-      const response = await fetch(`/api/projects/${project.id}/embedding-model`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          model: newModel,
-          wipe_collections: requiresWipe,
-        }),
-      });
+      const result = await apiPut<{ success?: boolean; wiped?: boolean; message?: string; detail?: string }>(
+        `/api/projects/${project.id}/embedding-model`,
+        { model: newModel, wipe_collections: requiresWipe },
+      );
 
-      const result = await response.json();
-
-      if (!response.ok || !result.success) {
+      if (!result.success) {
         throw new Error(result.message || result.detail || 'Failed to change model');
       }
 
@@ -608,7 +680,7 @@ function ProjectDetailsModal({ project, embeddingModels, onClose, onRefresh }: P
       onRefresh();
 
       // Refresh stats
-      const statsRes = await fetch(`/api/projects/${project.id}/collections`);
+      const statsRes = await apiFetch(`/api/projects/${project.id}/collections`);
       setCollectionStats(await statsRes.json());
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Failed to change model');
@@ -663,6 +735,68 @@ function ProjectDetailsModal({ project, embeddingModels, onClose, onRefresh }: P
                 <span>{new Date(project.created_at).toLocaleDateString()}</span>
               </div>
             </div>
+          </div>
+
+          {/* Documents in this project */}
+          <div className="details-section">
+            <h3>
+              <Icon name="FileText" size={16} style={{ marginRight: '8px' }} />
+              Documents ({projectDocuments.length})
+            </h3>
+            {loadingDocuments ? (
+              <div className="loading-stats">
+                <Icon name="Loader2" size={20} className="spin" />
+                <span>Loading documents...</span>
+              </div>
+            ) : projectDocuments.length === 0 ? (
+              <p className="section-empty">No documents in this project yet.</p>
+            ) : (
+              <ul className="project-doc-list">
+                {projectDocuments.map(doc => (
+                  <li key={doc.id}>
+                    <Link to={`/documents?id=${doc.document_id}`} className="project-doc-link">
+                      {doc.document_id}
+                    </Link>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+
+          {/* Members */}
+          <div className="details-section">
+            <h3>
+              <Icon name="Users" size={16} style={{ marginRight: '8px' }} />
+              Members ({projectMembers.length})
+            </h3>
+            {hasRole('admin') && (
+              <button
+                type="button"
+                className="btn btn-secondary btn-sm"
+                style={{ marginBottom: '8px' }}
+                onClick={() => setShowEditMembersModal(true)}
+              >
+                <Icon name="UserPlus" size={14} style={{ marginRight: '4px' }} />
+                Edit Members
+              </button>
+            )}
+            {loadingMembers ? (
+              <div className="loading-stats">
+                <Icon name="Loader2" size={20} className="spin" />
+                <span>Loading members...</span>
+              </div>
+            ) : projectMembers.length === 0 ? (
+              <p className="section-empty">No members yet.</p>
+            ) : (
+              <ul className="project-members-list">
+                {projectMembers.map(m => (
+                  <li key={m.id}>
+                    <span className="member-user-id">{m.user_id}</span>
+                    <span className="member-role">{m.role}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
           </div>
 
           {/* Embedding Model Section */}
@@ -799,6 +933,189 @@ function ProjectDetailsModal({ project, embeddingModels, onClose, onRefresh }: P
           <button className="btn btn-secondary" onClick={onClose}>
             Close
           </button>
+        </div>
+
+        {showEditMembersModal && (
+          <EditProjectMembersModal
+            project={project}
+            members={projectMembers}
+            onClose={() => setShowEditMembersModal(false)}
+            onSaved={() => {
+              setShowEditMembersModal(false);
+              fetchMembers();
+              onRefresh();
+            }}
+          />
+        )}
+      </div>
+    </div>
+  );
+}
+
+// Edit Project Members Modal - add/remove members (admin only, shown from ProjectDetailsModal)
+interface EditProjectMembersModalProps {
+  project: Project;
+  members: ProjectMember[];
+  onClose: () => void;
+  onSaved: () => void;
+}
+
+function EditProjectMembersModal({ project, members, onClose, onSaved }: EditProjectMembersModalProps) {
+  const { toast } = useToast();
+  const { user: currentUser } = useAuth();
+  const [tenantUsers, setTenantUsers] = useState<Array<{ id: string; email: string; display_name: string | null; role: string }>>([]);
+  const [loadingUsers, setLoadingUsers] = useState(true);
+  const [adding, setAdding] = useState(false);
+  const [removing, setRemoving] = useState<string | null>(null);
+  const [addUserId, setAddUserId] = useState('');
+  const [addRole, setAddRole] = useState('viewer');
+
+  const fetchTenantUsers = useCallback(() => {
+    let cancelled = false;
+    setLoadingUsers(true);
+    apiGet<Array<{ id: string; email: string; display_name: string | null; role: string }>>('/api/auth/tenant/users')
+      .then(data => {
+        if (!cancelled) {
+          const users = Array.isArray(data) ? data : [];
+          setTenantUsers(users);
+          if (users.length === 0) {
+            console.warn('No tenant users found. User may not have admin access or tenant may have no other users.');
+          }
+        }
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          console.error('Failed to fetch tenant users:', err);
+          setTenantUsers([]);
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingUsers(false);
+      });
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
+    fetchTenantUsers();
+  }, [fetchTenantUsers, project.id, members.length]); // Refetch when project changes or members change (modal opens or members updated)
+
+  const memberIds = new Set(members.map(m => m.user_id));
+  const availableToAdd = tenantUsers.filter(u => !memberIds.has(u.id));
+
+  const handleAdd = async () => {
+    if (!addUserId.trim()) return;
+    setAdding(true);
+    try {
+      await apiPost(`/api/projects/${project.id}/members`, {
+        user_id: addUserId.trim(),
+        role: addRole,
+      });
+      toast.success('Member added');
+      setAddUserId('');
+      // Refetch tenant users to update the dropdown (in case a new user was created elsewhere)
+      fetchTenantUsers();
+      onSaved();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Failed to add member');
+    } finally {
+      setAdding(false);
+    }
+  };
+
+  const handleRemove = async (userId: string) => {
+    if (members.length <= 1) {
+      toast.error('Project must have at least one member.');
+      return;
+    }
+    if (currentUser?.id === userId) {
+      if (!confirm('You are about to remove yourself from this project. You will lose access. Continue?')) return;
+    }
+    setRemoving(userId);
+    try {
+      await apiDelete(`/api/projects/${project.id}/members/${encodeURIComponent(userId)}`);
+      toast.success('Member removed');
+      onSaved();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Failed to remove member');
+    } finally {
+      setRemoving(null);
+    }
+  };
+
+  return (
+    <div className="modal-overlay" style={{ zIndex: 1001 }} onClick={onClose}>
+      <div className="modal modal-large" onClick={e => e.stopPropagation()}>
+        <div className="modal-header">
+          <h2>
+            <Icon name="Users" size={20} style={{ marginRight: '8px' }} />
+            Edit Members – {project.name}
+          </h2>
+          <button type="button" className="icon-btn" onClick={onClose}>
+            <Icon name="X" size={20} />
+          </button>
+        </div>
+        <div className="modal-content">
+          <div className="details-section">
+            <h3>Current members</h3>
+            {members.length === 0 ? (
+              <p className="section-empty">No members yet. Add one below.</p>
+            ) : (
+              <ul className="project-members-list">
+                {members.map(m => (
+                  <li key={m.id}>
+                    <span className="member-user-id">{m.user_id}</span>
+                    <span className="member-role">{m.role}</span>
+                    <button
+                      type="button"
+                      className="btn btn-danger btn-sm"
+                      disabled={members.length <= 1}
+                      onClick={() => handleRemove(m.user_id)}
+                      title={members.length <= 1 ? 'Project must have at least one member' : 'Remove member'}
+                    >
+                      {removing === m.user_id ? <Icon name="Loader2" size={14} className="spin" /> : 'Remove'}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+          <div className="details-section">
+            <h3>Add member</h3>
+            {loadingUsers ? (
+              <div className="loading-stats"><Icon name="Loader2" size={20} className="spin" /> Loading users...</div>
+            ) : availableToAdd.length === 0 ? (
+              <p className="section-empty">All tenant users are already members.</p>
+            ) : (
+              <div className="add-member-form">
+                <select
+                  value={addUserId}
+                  onChange={e => setAddUserId(e.target.value)}
+                  disabled={adding}
+                >
+                  <option value="">Select user…</option>
+                  {availableToAdd.map(u => (
+                    <option key={u.id} value={u.id}>{u.email}{u.display_name ? ` (${u.display_name})` : ''}</option>
+                  ))}
+                </select>
+                <select value={addRole} onChange={e => setAddRole(e.target.value)} disabled={adding}>
+                  <option value="viewer">Viewer</option>
+                  <option value="editor">Editor</option>
+                  <option value="admin">Admin</option>
+                </select>
+                <button
+                  type="button"
+                  className="btn btn-primary btn-sm"
+                  disabled={!addUserId || adding}
+                  onClick={handleAdd}
+                >
+                  {adding ? <Icon name="Loader2" size={14} className="spin" /> : 'Add'}
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+        <div className="modal-actions">
+          <button type="button" className="btn btn-secondary" onClick={onClose}>Close</button>
         </div>
       </div>
     </div>

@@ -37,6 +37,7 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
 
 from .rate_limit import limiter, rate_limit_handler, upload_rate_limit, auth_rate_limit
 from .tenant import TenantContextMiddleware, get_current_tenant_id, set_current_tenant_id
+from .logging import WideEventMiddleware
 
 __all__ = [
     "SecurityHeadersMiddleware",
@@ -47,4 +48,5 @@ __all__ = [
     "TenantContextMiddleware",
     "get_current_tenant_id",
     "set_current_tenant_id",
+    "WideEventMiddleware",
 ]

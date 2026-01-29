@@ -12,6 +12,7 @@ import { useToast } from '../../context/ToastContext';
 import { useFetch } from '../../hooks/useFetch';
 import { usePaginatedFetch } from '../../hooks';
 import { DeceptionPanel, DeceptionRisk, RISK_COLORS } from './components';
+import { apiDelete, apiGet, apiPost } from '../../utils/api';
 import './CredibilityPage.css';
 import './components/DeceptionPanel.css';
 
@@ -172,16 +173,15 @@ export function CredibilityPage() {
           }
 
           if (endpoint) {
-            const res = await fetch(endpoint);
-            if (res.ok) {
-              const data = await res.json();
+            try {
+              const data = await apiGet<any>(endpoint);
               const name = data[nameKey] || data.name || data.title || data.filename || id;
               newCache.set(id, {
                 name: typeof name === 'string' ? name.substring(0, 80) : String(name),
                 type: type.charAt(0).toUpperCase() + type.slice(1),
                 detail: data.file_type || data.entity_type || data.source_type || undefined,
               });
-            } else {
+            } catch {
               // API returned error, use abbreviated ID
               newCache.set(id, {
                 name: id.substring(0, 8) + '...',
@@ -227,10 +227,7 @@ export function CredibilityPage() {
       setCreateSourceName('');
 
       try {
-        const response = await fetch(sourceType.api);
-        if (!response.ok) throw new Error('Failed to fetch');
-
-        const data = await response.json();
+        const data = await apiGet<any>(sourceType.api);
         // Handle different API response formats
         const items = data.items || data.documents || data.entities || data.claims || data || [];
         const nameKey = sourceType.nameKey || 'name';
@@ -313,11 +310,7 @@ export function CredibilityPage() {
       }
 
       // Fetch metadata
-      const response = await fetch(metadataEndpoint);
-      if (!response.ok) {
-        throw new Error(`Failed to fetch ${sourceType}`);
-      }
-      const data = await response.json();
+      const data = await apiGet<any>(metadataEndpoint);
 
       // Get content based on source type
       let content = '';
@@ -326,11 +319,8 @@ export function CredibilityPage() {
         // For documents, fetch content separately
         if (contentEndpoint) {
           try {
-            const contentRes = await fetch(contentEndpoint);
-            if (contentRes.ok) {
-              const contentData = await contentRes.json();
-              content = contentData.content || '';
-            }
+            const contentData = await apiGet<any>(contentEndpoint);
+            content = contentData.content || '';
           } catch {
             // Content fetch failed, try chunks
           }
@@ -339,13 +329,10 @@ export function CredibilityPage() {
         // If no content, try to get from chunks
         if (!content) {
           try {
-            const chunksRes = await fetch(`/api/documents/${sourceId}/chunks?page_size=20`);
-            if (chunksRes.ok) {
-              const chunksData = await chunksRes.json();
-              const chunks = chunksData.items || chunksData.chunks || [];
-              if (Array.isArray(chunks) && chunks.length > 0) {
-                content = chunks.map((c: { content?: string; text?: string }) => c.content || c.text || '').join('\n\n---\n\n');
-              }
+            const chunksData = await apiGet<any>(`/api/documents/${sourceId}/chunks?page_size=20`);
+            const chunks = chunksData.items || chunksData.chunks || [];
+            if (Array.isArray(chunks) && chunks.length > 0) {
+              content = chunks.map((c: { content?: string; text?: string }) => c.content || c.text || '').join('\n\n---\n\n');
             }
           } catch {
             // Ignore chunk fetch errors
@@ -416,13 +403,7 @@ export function CredibilityPage() {
     }
 
     try {
-      const response = await fetch(`/api/credibility/${id}`, {
-        method: 'DELETE',
-      });
-
-      if (!response.ok) {
-        throw new Error('Failed to delete assessment');
-      }
+      await apiDelete(`/api/credibility/${id}`);
 
       toast.success('Assessment deleted');
       refetch();
@@ -457,26 +438,15 @@ export function CredibilityPage() {
 
     setCreating(true);
     try {
-      const response = await fetch('/api/credibility/', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          source_type: createSourceType,
-          source_id: sourceId,
-          score: 50, // Default neutral score
-          confidence: 0.5,
-          factors: [],
-          assessed_by: 'manual',
-          notes: createNotes.trim() || null,
-        }),
+      const newAssessment = await apiPost<Assessment>('/api/credibility/', {
+        source_type: createSourceType,
+        source_id: sourceId,
+        score: 50, // Default neutral score
+        confidence: 0.5,
+        factors: [],
+        assessed_by: 'manual',
+        notes: createNotes.trim() || null,
       });
-
-      if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.detail || 'Failed to create assessment');
-      }
-
-      const newAssessment = await response.json();
       toast.success('Assessment created');
       setShowCreateModal(false);
       setCreateSourceId('');

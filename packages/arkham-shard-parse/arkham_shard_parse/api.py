@@ -2,10 +2,30 @@
 
 import logging
 import uuid
-from typing import Annotated
+from typing import Annotated, Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
+
+try:
+    from arkham_frame.auth import current_active_user, require_project_member
+except ImportError:
+    # Fallback if auth not available
+    async def current_active_user():
+        return None
+    async def require_project_member(*args, **kwargs):
+        pass
+
+# Import wide event logging utilities (with fallback)
+try:
+    from arkham_frame import log_operation
+    WIDE_EVENTS_AVAILABLE = True
+except ImportError:
+    WIDE_EVENTS_AVAILABLE = False
+    from contextlib import contextmanager
+    @contextmanager
+    def log_operation(*args, **kwargs):
+        yield None
 
 logger = logging.getLogger(__name__)
 
@@ -191,44 +211,59 @@ async def parse_document(doc_id: str):
     This dispatches a job to the cpu-ner worker pool for heavy processing.
     Returns immediately with job ID. Listen for parse.document.completed event.
     """
-    if not _worker_service:
-        raise HTTPException(status_code=503, detail="Worker service not available")
+    with log_operation("parse.document", document_id=doc_id) as event:
+        if event:
+            event.context("shard", "parse")
+            event.context("operation", "parse_async")
+            event.input(document_id=doc_id)
+        
+        if not _worker_service:
+            if event:
+                event.error("ServiceUnavailable", "Worker service not available")
+            raise HTTPException(status_code=503, detail="Worker service not available")
 
-    # Dispatch to cpu-ner worker pool
-    job_id = str(uuid.uuid4())
-    job = await _worker_service.enqueue(
-        pool="cpu-ner",
-        job_id=job_id,
-        payload={
-            "document_id": doc_id,
-            "job_type": "parse_document",
-        },
-        priority=2,
-    )
-
-    logger.info(f"Dispatched parse job {job_id} for document {doc_id}")
-
-    # Emit event
-    if _event_bus:
-        await _event_bus.emit(
-            "parse.document.started",
-            {
+        # Dispatch to cpu-ner worker pool
+        job_id = str(uuid.uuid4())
+        job = await _worker_service.enqueue(
+            pool="cpu-ner",
+            job_id=job_id,
+            payload={
                 "document_id": doc_id,
-                "job_id": job_id,
+                "job_type": "parse_document",
             },
-            source="parse-shard",
+            priority=2,
         )
 
-    return ParseDocumentResponse(
-        document_id=doc_id,
-        entities=[],
-        dates=[],
-        chunks=[],
-        total_entities=0,
-        total_chunks=0,
-        status="processing",
-        processing_time_ms=0.0,
-    )
+        logger.info(f"Dispatched parse job {job_id} for document {doc_id}")
+
+        # Emit event
+        if _event_bus:
+            await _event_bus.emit(
+                "parse.document.started",
+                {
+                    "document_id": doc_id,
+                    "job_id": job_id,
+                },
+                source="parse-shard",
+            )
+
+        if event:
+            event.output(
+                job_id=job_id,
+                status="processing",
+                pool="cpu-ner",
+            )
+
+        return ParseDocumentResponse(
+            document_id=doc_id,
+            entities=[],
+            dates=[],
+            chunks=[],
+            total_entities=0,
+            total_chunks=0,
+            status="processing",
+            processing_time_ms=0.0,
+        )
 
 
 @router.post("/document/{doc_id}/sync")
@@ -246,34 +281,53 @@ async def parse_document_sync(doc_id: str, save_chunks: bool = True):
     Returns:
         Full parse result with entities, dates, chunks, and timing info
     """
-    if not _parse_shard:
-        raise HTTPException(status_code=503, detail="Parse shard not initialized")
+    with log_operation("parse.document_sync", document_id=doc_id) as event:
+        if event:
+            event.context("shard", "parse")
+            event.context("operation", "parse_sync")
+            event.input(document_id=doc_id, save_chunks=save_chunks)
+        
+        if not _parse_shard:
+            if event:
+                event.error("ServiceUnavailable", "Parse shard not initialized")
+            raise HTTPException(status_code=503, detail="Parse shard not initialized")
 
-    try:
-        result = await _parse_shard.parse_document(doc_id, save_chunks=save_chunks)
+        try:
+            result = await _parse_shard.parse_document(doc_id, save_chunks=save_chunks)
 
-        # Emit parse completion event so embed shard can auto-embed
-        if save_chunks and _event_bus:
-            await _event_bus.emit(
-                "parse.document.completed",
-                {
-                    "document_id": doc_id,
-                    "entities": result.get("total_entities", 0),
-                    "chunks": result.get("total_chunks", 0),
-                    "chunks_saved": result.get("chunks_saved", 0),
-                    "entities_saved": result.get("entities_saved", 0),
-                    "chunk_ids": result.get("chunk_ids", []),
-                    "entity_ids": result.get("entity_ids", []),
-                    "output_ids": result.get("chunk_ids", []),  # For provenance linking
-                    "output_table": "arkham_document_chunks",
-                },
-                source="parse-shard",
-            )
+            # Emit parse completion event so embed shard can auto-embed
+            if save_chunks and _event_bus:
+                await _event_bus.emit(
+                    "parse.document.completed",
+                    {
+                        "document_id": doc_id,
+                        "entities": result.get("total_entities", 0),
+                        "chunks": result.get("total_chunks", 0),
+                        "chunks_saved": result.get("chunks_saved", 0),
+                        "entities_saved": result.get("entities_saved", 0),
+                        "chunk_ids": result.get("chunk_ids", []),
+                        "entity_ids": result.get("entity_ids", []),
+                        "output_ids": result.get("chunk_ids", []),  # For provenance linking
+                        "output_table": "arkham_document_chunks",
+                    },
+                    source="parse-shard",
+                )
 
-        return result
-    except Exception as e:
-        logger.error(f"Sync parse failed for {doc_id}: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+            if event:
+                event.output(
+                    total_entities=result.get("total_entities", 0),
+                    total_chunks=result.get("total_chunks", 0),
+                    chunks_saved=result.get("chunks_saved", 0),
+                    entities_saved=result.get("entities_saved", 0),
+                    processing_time_ms=result.get("processing_time_ms", 0),
+                )
+
+            return result
+        except Exception as e:
+            logger.error(f"Sync parse failed for {doc_id}: {e}")
+            if event:
+                event.error("ParseFailed", str(e))
+            raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/entities/{doc_id}")
@@ -465,19 +519,34 @@ async def get_parse_stats():
             ))
             total_documents_parsed = result.scalar() or 0
 
-            # Get total entities from entities shard table
+            # Get total entities from entities shard table (filtered by active project)
             total_entities = 0
             entity_types = {}
             try:
-                result = conn.execute(text(
-                    "SELECT COUNT(*) FROM arkham_entities WHERE canonical_id IS NULL"
-                ))
+                # Get active project_id for filtering
+                project_id = None
+                if _parse_shard._frame:
+                    project_id = _parse_shard._frame.active_project_id
+                
+                entity_query = "SELECT COUNT(*) FROM arkham_entities WHERE canonical_id IS NULL"
+                entity_params = {}
+                
+                if project_id:
+                    entity_query += " AND project_id = :project_id"
+                    entity_params["project_id"] = str(project_id)
+                # If no active project, don't filter by project_id (count all entities)
+                
+                result = conn.execute(text(entity_query), entity_params)
                 total_entities = result.scalar() or 0
 
                 # Get entity counts by type
-                result = conn.execute(text(
-                    "SELECT entity_type, COUNT(*) as count FROM arkham_entities WHERE canonical_id IS NULL GROUP BY entity_type"
-                ))
+                type_query = "SELECT entity_type, COUNT(*) as count FROM arkham_entities WHERE canonical_id IS NULL"
+                if project_id:
+                    type_query += " AND project_id = :project_id"
+                # If no active project, don't filter by project_id (count all entities)
+                type_query += " GROUP BY entity_type"
+                
+                result = conn.execute(text(type_query), entity_params)
                 for row in result:
                     entity_types[row[0]] = row[1]
             except Exception:
@@ -506,31 +575,50 @@ async def get_parse_stats():
 
 @router.get("/chunks")
 async def list_all_chunks(
+    request: Request,
     limit: int = 50,
     offset: int = 0,
     document_id: str | None = None,
+    project_id: Optional[str] = Query(None, description="Filter by project"),
+    user = Depends(current_active_user),
 ):
     """
-    List all text chunks with pagination.
+    List all text chunks with pagination. Scoped to active project.
 
     Args:
         limit: Maximum number of chunks to return (default: 50)
         offset: Number of chunks to skip (default: 0)
         document_id: Optional filter by document ID
+        project_id: Optional filter by project (defaults to active project)
     """
     if not _parse_shard or not _parse_shard._frame:
         raise HTTPException(status_code=503, detail="Parse shard not initialized")
 
     db = _parse_shard._frame.get_service("database")
-    doc_service = _parse_shard._frame.get_service("documents")
     if not db or not db._engine:
         raise HTTPException(status_code=503, detail="Database not available")
+
+    # Get active project_id if not provided
+    if not project_id and _parse_shard._frame:
+        project_id = await _parse_shard._frame.get_active_project_id(str(user.id))
+    
+    # If no project_id, return empty results (chunks are project-scoped)
+    if not project_id:
+        return {
+            "chunks": [],
+            "total": 0,
+            "limit": limit,
+            "offset": offset,
+        }
+    
+    # Verify user is a member of the project
+    await require_project_member(str(project_id), user, request)
 
     try:
         from sqlalchemy import text
 
         with db._engine.connect() as conn:
-            # Build query
+            # Build query with project filtering
             if document_id:
                 query = text("""
                     SELECT c.id, c.document_id, c.chunk_index, c.text, c.page_number,
@@ -538,28 +626,37 @@ async def list_all_chunks(
                            d.filename
                     FROM arkham_frame.chunks c
                     LEFT JOIN arkham_frame.documents d ON c.document_id = d.id
-                    WHERE c.document_id = :doc_id
+                    WHERE c.document_id = :doc_id AND d.project_id = :project_id
                     ORDER BY c.chunk_index
                     LIMIT :limit OFFSET :offset
                 """)
-                result = conn.execute(query, {"doc_id": document_id, "limit": limit, "offset": offset})
+                result = conn.execute(query, {"doc_id": document_id, "project_id": project_id, "limit": limit, "offset": offset})
                 
-                count_query = text("SELECT COUNT(*) FROM arkham_frame.chunks WHERE document_id = :doc_id")
-                total = conn.execute(count_query, {"doc_id": document_id}).scalar() or 0
+                count_query = text("""
+                    SELECT COUNT(*) FROM arkham_frame.chunks c
+                    INNER JOIN arkham_frame.documents d ON c.document_id = d.id
+                    WHERE c.document_id = :doc_id AND d.project_id = :project_id
+                """)
+                total = conn.execute(count_query, {"doc_id": document_id, "project_id": project_id}).scalar() or 0
             else:
                 query = text("""
                     SELECT c.id, c.document_id, c.chunk_index, c.text, c.page_number,
                            c.start_char, c.end_char, c.token_count, c.vector_id,
                            d.filename
                     FROM arkham_frame.chunks c
-                    LEFT JOIN arkham_frame.documents d ON c.document_id = d.id
+                    INNER JOIN arkham_frame.documents d ON c.document_id = d.id
+                    WHERE d.project_id = :project_id
                     ORDER BY c.document_id, c.chunk_index
                     LIMIT :limit OFFSET :offset
                 """)
-                result = conn.execute(query, {"limit": limit, "offset": offset})
+                result = conn.execute(query, {"project_id": project_id, "limit": limit, "offset": offset})
                 
-                count_query = text("SELECT COUNT(*) FROM arkham_frame.chunks")
-                total = conn.execute(count_query).scalar() or 0
+                count_query = text("""
+                    SELECT COUNT(*) FROM arkham_frame.chunks c
+                    INNER JOIN arkham_frame.documents d ON c.document_id = d.id
+                    WHERE d.project_id = :project_id
+                """)
+                total = conn.execute(count_query, {"project_id": project_id}).scalar() or 0
 
             chunks = []
             for row in result:

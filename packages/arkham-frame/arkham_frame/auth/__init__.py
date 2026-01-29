@@ -28,6 +28,13 @@ from .audit import (
     AuditListResponse,
     AuditStats,
 )
+from .project_auth import (
+    require_project_member,
+    require_project_admin,
+    require_system_admin,
+    get_user_projects,
+    can_access_project,
+)
 
 __all__ = [
     # Dependencies
@@ -65,4 +72,10 @@ __all__ = [
     "AuditEventRead",
     "AuditListResponse",
     "AuditStats",
+    # Project Authorization
+    "require_project_member",
+    "require_project_admin",
+    "require_system_admin",
+    "get_user_projects",
+    "can_access_project",
 ]

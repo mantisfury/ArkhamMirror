@@ -506,7 +506,7 @@ function RelatedAnomaliesDialog({ related, loading, onClose, onSelect }: Related
               <p>Finding related anomalies...</p>
             </div>
           ) : related.length === 0 ? (
-            <div style={{ padding: '2rem', textAlign: 'center', color: 'var(--arkham-text-muted)' }}>
+            <div style={{ padding: '2rem', textAlign: 'center', color: 'var(--text-muted)' }}>
               <Icon name="Search" size={32} />
               <p>No related anomalies found</p>
             </div>
@@ -530,7 +530,7 @@ function RelatedAnomaliesDialog({ related, loading, onClose, onSelect }: Related
                 <p className="anomaly-explanation" style={{ fontSize: '0.875rem', margin: '0.5rem 0' }}>
                   {anomaly.explanation}
                 </p>
-                <div className="anomaly-meta" style={{ fontSize: '0.75rem', color: 'var(--arkham-text-muted)' }}>
+                <div className="anomaly-meta" style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
                   Score: {anomaly.score.toFixed(1)} • Confidence: {(anomaly.confidence * 100).toFixed(0)}%
                 </div>
               </div>
@@ -552,10 +552,10 @@ function RelatedAnomaliesDialog({ related, loading, onClose, onSelect }: Related
 // ============================================
 
 function getSeverityColor(score: number): string {
-  if (score >= 8) return 'var(--arkham-error)';
-  if (score >= 5) return 'var(--arkham-warning)';
-  if (score >= 3) return 'var(--arkham-info)';
-  return 'var(--arkham-text-muted)';
+  if (score >= 8) return 'var(--error)';
+  if (score >= 5) return 'var(--warning)';
+  if (score >= 3) return 'var(--info)';
+  return 'var(--text-muted)';
 }
 
 function getStatusColor(status: AnomalyStatus): string {

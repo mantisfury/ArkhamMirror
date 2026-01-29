@@ -333,6 +333,22 @@ class GraphShard(ArkhamShard):
 
     # --- Public API for other shards ---
 
+    async def delete_data_for_project(self, project_id: str) -> None:
+        """
+        Delete all graph data for a project. Called when a project is deleted.
+
+        Removes the graph (cascade deletes nodes/edges) and clears cache.
+        """
+        try:
+            if self.storage:
+                if project_id in getattr(self.storage, "_cache", {}):
+                    del self.storage._cache[project_id]
+                if hasattr(self.storage, "_delete_from_db"):
+                    await self.storage._delete_from_db(project_id)
+            logger.info(f"Deleted graph data for project {project_id}")
+        except Exception as e:
+            logger.warning("Failed to delete graph data for project %s: %s", project_id, e)
+
     async def build_graph(
         self,
         project_id: str,

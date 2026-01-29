@@ -4,6 +4,7 @@ Summary Shard API Routes
 FastAPI endpoints for summary generation and management.
 """
 
+import time
 from typing import List, Optional
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
@@ -22,7 +23,28 @@ from .models import (
     BatchSummaryResult,
 )
 
+# Import wide event logging utilities (with fallback)
+try:
+    from arkham_frame import log_operation
+    WIDE_EVENTS_AVAILABLE = True
+except ImportError:
+    WIDE_EVENTS_AVAILABLE = False
+    from contextlib import contextmanager
+    @contextmanager
+    def log_operation(*args, **kwargs):
+        yield None
+
 router = APIRouter(prefix="/api/summary", tags=["summary"])
+
+# Auth / project scoping
+try:
+    from arkham_frame.auth import current_active_user, require_project_member
+except ImportError:
+    async def current_active_user():
+        return None
+
+    async def require_project_member(*args, **kwargs):
+        return None
 
 
 def get_shard(request: Request):
@@ -31,6 +53,23 @@ def get_shard(request: Request):
     if not shard:
         raise HTTPException(status_code=503, detail="Summary shard not available")
     return shard
+
+
+async def _require_active_project_id(request: Request, shard, user) -> str:
+    if not user:
+        raise HTTPException(status_code=401, detail="Authentication required")
+
+    frame = getattr(shard, "frame", None) or getattr(shard, "_frame", None)
+    if not frame or not hasattr(frame, "get_active_project_id"):
+        raise HTTPException(status_code=503, detail="Frame project service not available")
+
+    user_id_str = str(getattr(user, "id", "")).lower().strip()
+    project_id = await frame.get_active_project_id(user_id_str)
+    if not project_id:
+        raise HTTPException(status_code=400, detail="No active project selected")
+
+    await require_project_member(str(project_id), user, request)
+    return str(project_id)
 
 
 # === Pydantic API Models ===
@@ -354,23 +393,55 @@ async def create_summary(body: SummaryCreate, request: Request):
     Returns:
         Generated summary result
     """
-    shard = get_shard(request)
+    with log_operation("summary.generate", source_type=body.source_type.value if hasattr(body.source_type, 'value') else str(body.source_type), source_count=len(body.source_ids)) as event:
+        try:
+            start_time = time.time()
 
-    # Convert to internal request model
-    summary_request = SummaryRequest(
-        source_type=body.source_type,
-        source_ids=body.source_ids,
-        summary_type=body.summary_type,
-        target_length=body.target_length,
-        focus_areas=body.focus_areas,
-        exclude_topics=body.exclude_topics,
-        include_key_points=body.include_key_points,
-        include_title=body.include_title,
-        tags=body.tags,
-    )
+            if event:
+                event.context("shard", "summary")
+                event.context("operation", "generate")
+                event.input(
+                    source_type=body.source_type.value if hasattr(body.source_type, 'value') else str(body.source_type),
+                    source_count=len(body.source_ids),
+                    summary_type=body.summary_type.value if hasattr(body.summary_type, 'value') else str(body.summary_type),
+                    target_length=body.target_length.value if hasattr(body.target_length, 'value') else str(body.target_length),
+                    include_key_points=body.include_key_points,
+                    include_title=body.include_title,
+                    focus_areas_count=len(body.focus_areas),
+                    exclude_topics_count=len(body.exclude_topics),
+                )
 
-    result = await shard.generate_summary(summary_request)
-    return result
+            shard = get_shard(request)
+
+            # Convert to internal request model
+            summary_request = SummaryRequest(
+                source_type=body.source_type,
+                source_ids=body.source_ids,
+                summary_type=body.summary_type,
+                target_length=body.target_length,
+                focus_areas=body.focus_areas,
+                exclude_topics=body.exclude_topics,
+                include_key_points=body.include_key_points,
+                include_title=body.include_title,
+                tags=body.tags,
+            )
+
+            result = await shard.generate_summary(summary_request)
+
+            duration_ms = (time.time() - start_time) * 1000
+
+            if event:
+                event.output(
+                    summary_id=result.summary_id,
+                    status=result.status.value if hasattr(result.status, 'value') else str(result.status),
+                    processing_time_ms=result.processing_time_ms if hasattr(result, 'processing_time_ms') else duration_ms,
+                )
+
+            return result
+        except Exception as e:
+            if event:
+                event.error(str(e), exc_info=True)
+            raise
 
 
 @router.get("/{summary_id}", response_model=SummaryResponse)
@@ -591,6 +662,7 @@ async def browse_documents(
     page_size: int = Query(20, ge=1, le=100, description="Items per page"),
     q: Optional[str] = Query(None, description="Search query"),
     project_id: Optional[str] = Query(None, description="Filter by project"),
+    user=Depends(current_active_user),
 ):
     """
     Browse available documents for summarization.
@@ -622,6 +694,11 @@ async def browse_documents(
             query += " AND filename ILIKE :q"
             count_query += " AND filename ILIKE :q"
             params["q"] = f"%{q}%"
+
+        if not project_id:
+            project_id = await _require_active_project_id(request, shard, user)
+        else:
+            await require_project_member(str(project_id), user, request)
 
         if project_id:
             query += " AND project_id = :project_id"
@@ -695,9 +772,11 @@ async def browse_entities(
     page_size: int = Query(20, ge=1, le=100, description="Items per page"),
     q: Optional[str] = Query(None, description="Search query"),
     entity_type: Optional[str] = Query(None, description="Filter by entity type"),
+    project_id: Optional[str] = Query(None, description="Filter by project"),
+    user = Depends(current_active_user),
 ):
     """
-    Browse available entities for summarization.
+    Browse available entities for summarization. Scoped to active project.
     """
     shard = get_shard(request)
     db = shard._db
@@ -710,6 +789,12 @@ async def browse_entities(
     total = 0
 
     try:
+        # Get active project_id if not provided
+        if not project_id:
+            project_id = await _require_active_project_id(request, shard, user)
+        else:
+            await require_project_member(str(project_id), user, request)
+
         count_query = "SELECT COUNT(*) as count FROM arkham_entities WHERE 1=1"
         query = """
             SELECT id, name, entity_type, mention_count, created_at
@@ -717,6 +802,11 @@ async def browse_entities(
             WHERE 1=1
         """
         params = {}
+
+        if project_id:
+            query += " AND project_id = :project_id"
+            count_query += " AND project_id = :project_id"
+            params["project_id"] = project_id
 
         if q:
             query += " AND name ILIKE :q"
@@ -819,9 +909,11 @@ async def browse_claims(
     page_size: int = Query(20, ge=1, le=100, description="Items per page"),
     q: Optional[str] = Query(None, description="Search query"),
     status: Optional[str] = Query(None, description="Filter by status"),
+    project_id: Optional[str] = Query(None, description="Filter by project"),
+    user = Depends(current_active_user),
 ):
     """
-    Browse available claims for summarization.
+    Browse available claims for summarization. Scoped to active project.
     """
     shard = get_shard(request)
     db = shard._db
@@ -834,6 +926,12 @@ async def browse_claims(
     total = 0
 
     try:
+        # Get active project_id if not provided
+        if not project_id:
+            project_id = await _require_active_project_id(request, shard, user)
+        else:
+            await require_project_member(str(project_id), user, request)
+
         count_query = "SELECT COUNT(*) as count FROM arkham_claims WHERE 1=1"
         query = """
             SELECT id, text, claim_type, status, confidence, created_at
@@ -841,6 +939,11 @@ async def browse_claims(
             WHERE 1=1
         """
         params = {}
+
+        if project_id:
+            query += " AND project_id = :project_id"
+            count_query += " AND project_id = :project_id"
+            params["project_id"] = project_id
 
         if q:
             query += " AND text ILIKE :q"
@@ -886,9 +989,11 @@ async def browse_timeline_events(
     page_size: int = Query(20, ge=1, le=100, description="Items per page"),
     q: Optional[str] = Query(None, description="Search query"),
     event_type: Optional[str] = Query(None, description="Filter by event type"),
+    project_id: Optional[str] = Query(None, description="Filter by project"),
+    user = Depends(current_active_user),
 ):
     """
-    Browse available timeline events for summarization.
+    Browse available timeline events for summarization. Scoped to active project.
     """
     shard = get_shard(request)
     db = shard._db
@@ -901,22 +1006,34 @@ async def browse_timeline_events(
     total = 0
 
     try:
-        count_query = "SELECT COUNT(*) as count FROM arkham_timeline_events WHERE 1=1"
-        query = """
-            SELECT id, text, event_type, date_start, confidence, created_at
-            FROM arkham_timeline_events
-            WHERE 1=1
+        # Get active project_id if not provided
+        if not project_id:
+            project_id = await _require_active_project_id(request, shard, user)
+        else:
+            await require_project_member(str(project_id), user, request)
+
+        # Filter timeline events by project via document join
+        count_query = """
+            SELECT COUNT(*) as count FROM arkham_timeline_events e
+            INNER JOIN arkham_frame.documents d ON e.document_id = d.id
+            WHERE d.project_id = :project_id
         """
-        params = {}
+        query = """
+            SELECT e.id, e.text, e.event_type, e.date_start, e.confidence, e.created_at
+            FROM arkham_timeline_events e
+            INNER JOIN arkham_frame.documents d ON e.document_id = d.id
+            WHERE d.project_id = :project_id
+        """
+        params = {"project_id": project_id}
 
         if q:
-            query += " AND text ILIKE :q"
-            count_query += " AND text ILIKE :q"
+            query += " AND e.text ILIKE :q"
+            count_query += " AND e.text ILIKE :q"
             params["q"] = f"%{q}%"
 
         if event_type:
-            query += " AND event_type = :event_type"
-            count_query += " AND event_type = :event_type"
+            query += " AND e.event_type = :event_type"
+            count_query += " AND e.event_type = :event_type"
             params["event_type"] = event_type
 
         count_row = await db.fetch_one(count_query, params)
@@ -959,35 +1076,63 @@ async def quick_summary(
 
     This is a convenience endpoint for quick one-click summarization.
     """
-    shard = get_shard(request)
+    with log_operation("summary.quick", document_id=doc_id) as event:
+        try:
+            start_time = time.time()
 
-    try:
-        summary_type_enum = SummaryType(summary_type)
-    except ValueError:
-        raise HTTPException(status_code=400, detail=f"Invalid summary_type: {summary_type}")
+            if event:
+                event.context("shard", "summary")
+                event.context("operation", "quick_summary")
+                event.input(
+                    document_id=doc_id,
+                    summary_type=summary_type,
+                    target_length=target_length,
+                )
 
-    try:
-        target_length_enum = SummaryLength(target_length)
-    except ValueError:
-        raise HTTPException(status_code=400, detail=f"Invalid target_length: {target_length}")
+            shard = get_shard(request)
 
-    # Generate summary
-    summary_request = SummaryRequest(
-        source_type=SourceType.DOCUMENT,
-        source_ids=[doc_id],
-        summary_type=summary_type_enum,
-        target_length=target_length_enum,
-        include_key_points=True,
-        include_title=True,
-        tags=["quick-summary"],
-    )
+            try:
+                summary_type_enum = SummaryType(summary_type)
+            except ValueError:
+                raise HTTPException(status_code=400, detail=f"Invalid summary_type: {summary_type}")
 
-    result = await shard.generate_summary(summary_request)
+            try:
+                target_length_enum = SummaryLength(target_length)
+            except ValueError:
+                raise HTTPException(status_code=400, detail=f"Invalid target_length: {target_length}")
 
-    if result.status == SummaryStatus.FAILED:
-        raise HTTPException(
-            status_code=500,
-            detail=result.error_message or "Summary generation failed",
-        )
+            # Generate summary
+            summary_request = SummaryRequest(
+                source_type=SourceType.DOCUMENT,
+                source_ids=[doc_id],
+                summary_type=summary_type_enum,
+                target_length=target_length_enum,
+                include_key_points=True,
+                include_title=True,
+                tags=["quick-summary"],
+            )
 
-    return result
+            result = await shard.generate_summary(summary_request)
+
+            duration_ms = (time.time() - start_time) * 1000
+
+            if result.status == SummaryStatus.FAILED:
+                if event:
+                    event.error(result.error_message or "Summary generation failed", exc_info=True)
+                raise HTTPException(
+                    status_code=500,
+                    detail=result.error_message or "Summary generation failed",
+                )
+
+            if event:
+                event.output(
+                    summary_id=result.summary_id,
+                    status=result.status.value if hasattr(result.status, 'value') else str(result.status),
+                    processing_time_ms=result.processing_time_ms if hasattr(result, 'processing_time_ms') else duration_ms,
+                )
+
+            return result
+        except Exception as e:
+            if event:
+                event.error(str(e), exc_info=True)
+            raise

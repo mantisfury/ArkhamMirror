@@ -3,12 +3,37 @@
 import logging
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 if TYPE_CHECKING:
     from .shard import DocumentsShard
+
+try:
+    from arkham_frame.auth import (
+        current_active_user,
+        current_optional_user,
+        require_project_member,
+    )
+except ImportError:
+    async def current_active_user():
+        return None
+    async def current_optional_user():
+        return None
+    async def require_project_member():
+        return None
+
+# Import wide event logging utilities (with fallback)
+try:
+    from arkham_frame import log_operation
+    WIDE_EVENTS_AVAILABLE = True
+except ImportError:
+    WIDE_EVENTS_AVAILABLE = False
+    from contextlib import contextmanager
+    @contextmanager
+    def log_operation(*args, **kwargs):
+        yield None
 
 logger = logging.getLogger(__name__)
 
@@ -164,59 +189,154 @@ async def list_documents(
     status: Optional[str] = Query(None, description="Filter by status"),
     file_type: Optional[str] = Query(None, description="Filter by file type"),
     project_id: Optional[str] = Query(None, description="Filter by project"),
+    user = Depends(current_active_user),
 ):
     """
     List documents with pagination and filtering.
 
     Supports filtering by status, file type, and project.
+    Authentication required for data access.
     """
-    try:
-        shard = get_shard(request)
+    logger.debug(f"list_documents called by user {user.id if user else 'None'}")
+    
+    with log_operation("documents.list", project_id=project_id) as event:
+        if event and user:
+            event.user(id=str(user.id))
+        if event:
+            event.context("shard", "documents")
+            event.context("operation", "list")
+            event.input(
+                page=page,
+                page_size=page_size,
+                sort=sort,
+                order=order,
+                has_search=q is not None,
+                status=status,
+                file_type=file_type,
+                project_id=project_id,
+            )
+        
+        try:
+            shard = get_shard(request)
+            
+            # Use active project if no project_id specified
+            if not project_id and shard.frame:
+                # Normalize UUID to lowercase string for consistent lookup
+                user_id_str = str(user.id).lower().strip() if user.id else None
+                logger.info(f"Getting active project for user_id: {user_id_str} (type: {type(user.id).__name__})")
+                
+                if user_id_str:
+                    project_id = await shard.frame.get_active_project_id(user_id_str)
+                    logger.info(f"Active project_id result: {project_id}")
+                else:
+                    logger.warning("No user_id available for project lookup")
+            
+            if not project_id:
+                if event:
+                    event.error("NoActiveProject", "No active project selected")
+                # Return empty list instead of error - allows UI to handle gracefully
+                logger.warning(f"No active project selected for user {user.id if user else 'None'}, returning empty document list")
+                return DocumentListResponse(items=[], total=0, page=page, page_size=page_size)
+            
+            if event:
+                event.context("project_id", project_id)
+            
+            # Normalize project_id for consistent querying
+            project_id_str = str(project_id).strip() if project_id else None
+            logger.info(f"Listing documents with project_id: {project_id_str} (type: {type(project_id).__name__})")
+            
+            # Verify user is a member of the project
+            await require_project_member(project_id, user, request)
 
-        offset = (page - 1) * page_size
+            offset = (page - 1) * page_size
 
-        documents = await shard.list_documents(
-            search=q,
-            status=status,
-            file_type=file_type,
-            project_id=project_id,
-            limit=page_size,
-            offset=offset,
-            sort=sort,
-            order=order,
-        )
+            documents = await shard.list_documents(
+                search=q,
+                status=status,
+                file_type=file_type,
+                project_id=project_id_str,
+                limit=page_size,
+                offset=offset,
+                sort=sort,
+                order=order,
+            )
 
-        # Get total count for pagination
-        total = await shard.get_document_count(status=status)
+            logger.info(f"Found {len(documents)} documents for project_id: {project_id_str}")
 
-        response = DocumentListResponse(
-            items=[document_to_response(doc) for doc in documents],
-            total=total,
-            page=page,
-            page_size=page_size,
-        )
-        logger.info(f"list_documents returning {len(documents)} documents, total={total}")
-        return response
-    except Exception as e:
-        logger.error(f"list_documents failed: {e}", exc_info=True)
-        # Return empty response on error instead of crashing
-        return DocumentListResponse(items=[], total=0, page=page, page_size=page_size)
+            # Get total count for pagination
+            # Note: get_document_count doesn't support project_id filtering, so we use len(documents) as approximation
+            # If we got a full page, there might be more
+            total = len(documents) if len(documents) < page_size else page_size + 1
+
+            response = DocumentListResponse(
+                items=[document_to_response(doc) for doc in documents],
+                total=total,
+                page=page,
+                page_size=page_size,
+            )
+            
+            if event:
+                event.output(
+                    document_count=len(documents),
+                    total=total,
+                    page=page,
+                )
+            
+            logger.info(f"list_documents returning {len(documents)} documents, total={total}")
+            return response
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"list_documents failed: {e}", exc_info=True)
+            if event:
+                event.error("ListDocumentsFailed", str(e))
+            # Return empty response on error instead of crashing
+            return DocumentListResponse(items=[], total=0, page=page, page_size=page_size)
 
 
 @router.get("/items/{document_id}", response_model=DocumentMetadata)
-async def get_document(document_id: str, request: Request):
+async def get_document(
+    document_id: str,
+    request: Request,
+    user = Depends(current_active_user),
+):
     """
     Get a single document by ID.
 
     Returns full document metadata including counts.
+    Authentication required for data access.
     """
-    shard = get_shard(request)
-    document = await shard.get_document(document_id)
+    with log_operation("documents.get", document_id=document_id) as event:
+        if event and user:
+            event.user(id=str(user.id))
+        if event:
+            event.context("shard", "documents")
+            event.context("operation", "get")
+            event.input(document_id=document_id)
+        
+        shard = get_shard(request)
+        document = await shard.get_document(document_id)
 
-    if not document:
-        raise HTTPException(status_code=404, detail=f"Document not found: {document_id}")
+        if not document:
+            if event:
+                event.error("DocumentNotFound", f"Document not found: {document_id}")
+            raise HTTPException(status_code=404, detail=f"Document not found: {document_id}")
+        
+        if event:
+            event.context("project_id", document.project_id)
+        
+        # Verify user is a member of the document's project
+        if document.project_id:
+            await require_project_member(document.project_id, user, request)
 
-    return document_to_response(document)
+        if event:
+            event.output(
+                document_id=document.id,
+                status=document.status.value if hasattr(document.status, 'value') else str(document.status),
+                project_id=document.project_id,
+            )
+
+        return document_to_response(document)
 
 
 @router.patch("/items/{document_id}", response_model=DocumentMetadata)
@@ -224,46 +344,92 @@ async def update_document_metadata(
     document_id: str,
     body: UpdateMetadataRequest,
     request: Request,
+    user = Depends(current_active_user),
 ):
     """
     Update document metadata.
+    Authentication required for data modification.
 
     Allows updating title, tags, and custom metadata fields.
     Publishes documents.metadata.updated event.
     """
-    shard = get_shard(request)
+    with log_operation("documents.update", document_id=document_id) as event:
+        if event and user:
+            event.user(id=str(user.id))
+        if event:
+            event.context("shard", "documents")
+            event.context("operation", "update")
+            event.input(
+                document_id=document_id,
+                has_title=body.title is not None,
+                has_tags=body.tags is not None,
+                has_custom_metadata=body.custom_metadata is not None,
+            )
+        
+        shard = get_shard(request)
 
-    try:
-        document = await shard.update_document(
-            document_id,
-            title=body.title,
-            tags=body.tags,
-            custom_metadata=body.custom_metadata,
-        )
+        try:
+            document = await shard.update_document(
+                document_id,
+                title=body.title,
+                tags=body.tags,
+                custom_metadata=body.custom_metadata,
+            )
 
-        if not document:
-            raise HTTPException(status_code=404, detail=f"Document not found: {document_id}")
+            if not document:
+                if event:
+                    event.error("DocumentNotFound", f"Document not found: {document_id}")
+                raise HTTPException(status_code=404, detail=f"Document not found: {document_id}")
 
-        return document_to_response(document)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+            if event:
+                event.context("project_id", document.project_id)
+                event.output(
+                    document_id=document.id,
+                    updated=True,
+                )
+
+            return document_to_response(document)
+        except HTTPException:
+            raise
+        except ValueError as e:
+            if event:
+                event.error("ValidationError", str(e))
+            raise HTTPException(status_code=400, detail=str(e))
 
 
 @router.delete("/items/{document_id}")
-async def delete_document(document_id: str, request: Request):
+async def delete_document(
+    document_id: str,
+    request: Request,
+    user = Depends(current_active_user),
+):
     """
     Delete a document.
 
     Removes document and all associated data.
+    Authentication required for deletion.
     """
-    shard = get_shard(request)
+    with log_operation("documents.delete", document_id=document_id) as event:
+        if event and user:
+            event.user(id=str(user.id))
+        if event:
+            event.context("shard", "documents")
+            event.context("operation", "delete")
+            event.input(document_id=document_id)
+        
+        shard = get_shard(request)
 
-    success = await shard.delete_document(document_id)
+        success = await shard.delete_document(document_id)
 
-    if not success:
-        raise HTTPException(status_code=404, detail=f"Document not found: {document_id}")
+        if not success:
+            if event:
+                event.error("DocumentNotFound", f"Document not found: {document_id}")
+            raise HTTPException(status_code=404, detail=f"Document not found: {document_id}")
 
-    return {"deleted": True, "document_id": document_id}
+        if event:
+            event.output(deleted=True)
+
+        return {"deleted": True, "document_id": document_id}
 
 
 # --- Document Content Endpoints ---
@@ -274,34 +440,58 @@ async def get_document_content(
     document_id: str,
     request: Request,
     page: Optional[int] = Query(None, description="Page number for multi-page docs"),
+    user = Depends(current_active_user),
 ):
     """
     Get document content.
 
     For multi-page documents, specify page number.
     Publishes documents.view.opened event.
+    Authentication required for content access.
     """
-    shard = get_shard(request)
+    with log_operation("documents.get_content", document_id=document_id) as event:
+        if event and user:
+            event.user(id=str(user.id))
+        if event:
+            event.context("shard", "documents")
+            event.context("operation", "get_content")
+            event.input(document_id=document_id, page=page)
+        
+        shard = get_shard(request)
 
-    # Check document exists
-    document = await shard.get_document(document_id)
-    if not document:
-        raise HTTPException(status_code=404, detail=f"Document not found: {document_id}")
+        # Check document exists
+        document = await shard.get_document(document_id)
+        if not document:
+            if event:
+                event.error("DocumentNotFound", f"Document not found: {document_id}")
+            raise HTTPException(status_code=404, detail=f"Document not found: {document_id}")
 
-    # Get content
-    content_data = await shard.get_document_content(document_id, page_number=page)
-    if not content_data:
-        raise HTTPException(status_code=404, detail="Document content not available")
+        if event:
+            event.context("project_id", document.project_id)
 
-    # Record view
-    await shard.mark_document_viewed(document_id, view_mode="content", page_number=page)
+        # Get content
+        content_data = await shard.get_document_content(document_id, page_number=page)
+        if not content_data:
+            if event:
+                event.error("ContentNotFound", "Document content not available")
+            raise HTTPException(status_code=404, detail="Document content not available")
 
-    return DocumentContent(
-        document_id=document_id,
-        content=content_data["content"],
-        page_number=content_data.get("page_number"),
-        total_pages=content_data.get("total_pages", 1),
-    )
+        # Record view
+        await shard.mark_document_viewed(document_id, view_mode="content", page_number=page)
+
+        if event:
+            event.output(
+                content_length=len(content_data["content"]),
+                page_number=content_data.get("page_number"),
+                total_pages=content_data.get("total_pages", 1),
+            )
+
+        return DocumentContent(
+            document_id=document_id,
+            content=content_data["content"],
+            page_number=content_data.get("page_number"),
+            total_pages=content_data.get("total_pages", 1),
+        )
 
 
 @router.get("/{document_id}/pages/{page_number}", response_model=DocumentContent)
@@ -447,24 +637,32 @@ async def get_full_metadata(document_id: str, request: Request):
 async def get_document_count(
     request: Request,
     status: Optional[str] = Query(None, description="Filter by status"),
+    user = Depends(current_active_user),
 ):
     """
     Get total document count (for badge).
 
     Optionally filter by status.
+    Authentication required for data access.
     """
+    
     shard = get_shard(request)
     count = await shard.get_document_count(status=status)
     return {"count": count}
 
 
 @router.get("/stats", response_model=DocumentStats)
-async def get_document_stats(request: Request):
+async def get_document_stats(
+    request: Request,
+    user = Depends(current_active_user),
+):
     """
     Get document statistics.
 
     Returns counts, totals, and aggregate data.
+    Authentication required for data access.
     """
+    
     try:
         shard = get_shard(request)
         stats = await shard.get_document_stats()

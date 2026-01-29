@@ -11,6 +11,7 @@ import { Icon } from '../../components/common/Icon';
 import { AIAnalystButton } from '../../components/AIAnalyst';
 import { useToast } from '../../context/ToastContext';
 import { useFetch } from '../../hooks/useFetch';
+import { apiDelete, apiGet, apiPost, apiPut } from '../../utils/api';
 import './TimelinePage.css';
 
 // Types
@@ -128,6 +129,7 @@ export function TimelinePage() {
   const [selectedEntityId, setSelectedEntityId] = useState<string>('');
   const [filterApplied, setFilterApplied] = useState(false);
   const [extracting, setExtracting] = useState<string | null>(null);
+  const [extractingAll, setExtractingAll] = useState(false);
   const [deleting, setDeleting] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<{ type: 'event' | 'document' | 'all'; id?: string; name?: string } | null>(null);
 
@@ -204,17 +206,11 @@ export function TimelinePage() {
   const extractTimeline = async (documentId: string) => {
     setExtracting(documentId);
     try {
-      const response = await fetch(`/api/timeline/extract/${documentId}`, { method: 'POST' });
-      if (response.ok) {
-        const result = await response.json();
-        toast.success(`Extracted ${result.count} events in ${Math.round(result.duration_ms)}ms`);
-        refetchEvents();
-        refetchStats();
-        refetchDocs();
-      } else {
-        const error = await response.json();
-        toast.error(error.detail || 'Extraction failed');
-      }
+      const result = await apiPost<{ count: number; duration_ms: number }>(`/api/timeline/extract/${documentId}`);
+      toast.success(`Extracted ${result.count} events in ${Math.round(result.duration_ms)}ms`);
+      refetchEvents();
+      refetchStats();
+      refetchDocs();
     } catch {
       toast.error('Failed to extract timeline');
     } finally {
@@ -222,19 +218,40 @@ export function TimelinePage() {
     }
   };
 
+  const extractAllTimelines = async () => {
+    setExtractingAll(true);
+    try {
+      const result = await apiPost<{ 
+        total_documents: number;
+        successful: number;
+        failed: number;
+        total_events: number;
+        duration_ms: number;
+      }>('/api/timeline/extract/all');
+      toast.success(
+        `Extracted ${result.total_events} events from ${result.successful}/${result.total_documents} documents in ${Math.round(result.duration_ms)}ms`
+      );
+      if (result.failed > 0) {
+        toast.warning(`${result.failed} documents failed to extract`);
+      }
+      refetchEvents();
+      refetchStats();
+      refetchDocs();
+    } catch {
+      toast.error('Failed to extract timelines from all documents');
+    } finally {
+      setExtractingAll(false);
+    }
+  };
+
   const deleteEvent = async (eventId: string) => {
     setDeleting(eventId);
     try {
-      const response = await fetch(`/api/timeline/events/${eventId}`, { method: 'DELETE' });
-      if (response.ok) {
-        toast.success('Event deleted');
-        refetchEvents();
-        refetchStats();
-        refetchDocs();
-      } else {
-        const error = await response.json();
-        toast.error(error.detail || 'Failed to delete event');
-      }
+      await apiDelete(`/api/timeline/events/${eventId}`);
+      toast.success('Event deleted');
+      refetchEvents();
+      refetchStats();
+      refetchDocs();
     } catch {
       toast.error('Failed to delete event');
     } finally {
@@ -246,17 +263,11 @@ export function TimelinePage() {
   const deleteDocumentEvents = async (documentId: string) => {
     setDeleting(documentId);
     try {
-      const response = await fetch(`/api/timeline/document/${documentId}/events`, { method: 'DELETE' });
-      if (response.ok) {
-        const result = await response.json();
-        toast.success(`Deleted ${result.deleted} events`);
-        refetchEvents();
-        refetchStats();
-        refetchDocs();
-      } else {
-        const error = await response.json();
-        toast.error(error.detail || 'Failed to delete events');
-      }
+      const result = await apiDelete<{ deleted: number }>(`/api/timeline/document/${documentId}/events`);
+      toast.success(`Deleted ${result.deleted} events`);
+      refetchEvents();
+      refetchStats();
+      refetchDocs();
     } catch {
       toast.error('Failed to delete document events');
     } finally {
@@ -268,17 +279,11 @@ export function TimelinePage() {
   const deleteAllEvents = async () => {
     setDeleting('all');
     try {
-      const response = await fetch('/api/timeline/events?confirm=true', { method: 'DELETE' });
-      if (response.ok) {
-        const result = await response.json();
-        toast.success(`Deleted all ${result.deleted} events`);
-        refetchEvents();
-        refetchStats();
-        refetchDocs();
-      } else {
-        const error = await response.json();
-        toast.error(error.detail || 'Failed to delete events');
-      }
+      const result = await apiDelete<{ deleted: number }>('/api/timeline/events?confirm=true');
+      toast.success(`Deleted all ${result.deleted} events`);
+      refetchEvents();
+      refetchStats();
+      refetchDocs();
     } catch {
       toast.error('Failed to delete all events');
     } finally {
@@ -317,27 +322,17 @@ export function TimelinePage() {
 
     setSaving(true);
     try {
-      const response = await fetch(`/api/timeline/events/${editingEvent.id}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          text: editingEvent.text,
-          date_start: editingEvent.date_start,
-          date_end: editingEvent.date_end || null,
-          event_type: editingEvent.event_type,
-          precision: editingEvent.precision,
-          entities: editingEvent.entities,
-        }),
+      await apiPut(`/api/timeline/events/${editingEvent.id}`, {
+        text: editingEvent.text,
+        date_start: editingEvent.date_start,
+        date_end: editingEvent.date_end || null,
+        event_type: editingEvent.event_type,
+        precision: editingEvent.precision,
+        entities: editingEvent.entities,
       });
-
-      if (response.ok) {
-        toast.success('Event updated');
-        setEditingEvent(null);
-        refetchEvents();
-      } else {
-        const error = await response.json();
-        toast.error(error.detail || 'Failed to update event');
-      }
+      toast.success('Event updated');
+      setEditingEvent(null);
+      refetchEvents();
     } catch {
       toast.error('Failed to update event');
     } finally {
@@ -350,11 +345,8 @@ export function TimelinePage() {
     setLoadingNotes(true);
     setShowNotesFor(eventId);
     try {
-      const response = await fetch(`/api/timeline/events/${eventId}/notes`);
-      if (response.ok) {
-        const data = await response.json();
-        setNotes(data.notes || []);
-      }
+      const data = await apiGet<{ notes?: EventNote[] }>(`/api/timeline/events/${eventId}/notes`);
+      setNotes(Array.isArray(data.notes) ? data.notes : []);
     } catch {
       toast.error('Failed to load notes');
     } finally {
@@ -366,21 +358,12 @@ export function TimelinePage() {
     if (!showNotesFor || !newNote.trim()) return;
 
     try {
-      const response = await fetch(`/api/timeline/events/${showNotesFor}/notes`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ note: newNote.trim() }),
+      const data = await apiPost<EventNote>(`/api/timeline/events/${showNotesFor}/notes`, {
+        note: newNote.trim(),
       });
-
-      if (response.ok) {
-        const data = await response.json();
-        setNotes([data, ...notes]);
-        setNewNote('');
-        toast.success('Note added');
-      } else {
-        const error = await response.json();
-        toast.error(error.detail || 'Failed to add note');
-      }
+      setNotes([data, ...notes]);
+      setNewNote('');
+      toast.success('Note added');
     } catch {
       toast.error('Failed to add note');
     }
@@ -390,17 +373,9 @@ export function TimelinePage() {
     if (!showNotesFor) return;
 
     try {
-      const response = await fetch(`/api/timeline/events/${showNotesFor}/notes/${noteId}`, {
-        method: 'DELETE',
-      });
-
-      if (response.ok) {
-        setNotes(notes.filter(n => n.id !== noteId));
-        toast.success('Note deleted');
-      } else {
-        const error = await response.json();
-        toast.error(error.detail || 'Failed to delete note');
-      }
+      await apiDelete(`/api/timeline/events/${showNotesFor}/notes/${noteId}`);
+      setNotes(notes.filter(n => n.id !== noteId));
+      toast.success('Note deleted');
     } catch {
       toast.error('Failed to delete note');
     }
@@ -410,13 +385,8 @@ export function TimelinePage() {
   const analyzeGaps = async () => {
     setAnalyzingGaps(true);
     try {
-      const response = await fetch('/api/timeline/gaps?min_gap_days=30');
-      if (response.ok) {
-        const data = await response.json();
-        setGapsData(data);
-      } else {
-        toast.error('Failed to analyze gaps');
-      }
+      const data = await apiGet<GapsResponse>('/api/timeline/gaps?min_gap_days=30');
+      setGapsData(data);
     } catch {
       toast.error('Failed to analyze gaps');
     } finally {
@@ -427,13 +397,8 @@ export function TimelinePage() {
   const analyzeConflicts = async () => {
     setAnalyzingConflicts(true);
     try {
-      const response = await fetch('/api/timeline/conflicts/analyze');
-      if (response.ok) {
-        const data = await response.json();
-        setConflictsData(data);
-      } else {
-        toast.error('Failed to analyze conflicts');
-      }
+      const data = await apiGet<ConflictsResponse>('/api/timeline/conflicts/analyze');
+      setConflictsData(data);
     } catch {
       toast.error('Failed to analyze conflicts');
     } finally {
@@ -1063,6 +1028,27 @@ export function TimelinePage() {
             <div className="extract-header">
               <h3>Extract Timeline Events</h3>
               <p>Select documents to extract temporal events from their text content.</p>
+              {docsData?.documents && docsData.documents.length > 0 && (
+                <div className="extract-actions">
+                  <button
+                    className="btn btn-primary"
+                    onClick={extractAllTimelines}
+                    disabled={extractingAll}
+                  >
+                    {extractingAll ? (
+                      <>
+                        <Icon name="Loader2" size={16} className="spin" />
+                        Extracting from all documents...
+                      </>
+                    ) : (
+                      <>
+                        <Icon name="Play" size={16} />
+                        Extract from All Documents
+                      </>
+                    )}
+                  </button>
+                </div>
+              )}
             </div>
 
             {docsLoading ? (

@@ -745,6 +745,8 @@ class ExportShard(ArkhamShard):
 
         while True:
             params = {"page": page, "page_size": page_size}
+            if filters.get("project_id"):
+                params["project_id"] = filters["project_id"]
             if filters.get("entity_type"):
                 params["filter"] = filters["entity_type"]
             if options and options.entity_types:
@@ -799,6 +801,8 @@ class ExportShard(ArkhamShard):
 
         while True:
             params = {"page": page, "page_size": page_size}
+            if filters.get("project_id"):
+                params["project_id"] = filters["project_id"]
             if filters.get("status"):
                 params["status"] = filters["status"]
             if filters.get("document_id"):
@@ -847,6 +851,9 @@ class ExportShard(ArkhamShard):
     ) -> Dict[str, Any]:
         """Fetch timeline events with optional gaps, conflicts, and entity info."""
         params = {"limit": 1000, "offset": 0}
+        
+        if filters.get("project_id"):
+            params["project_id"] = filters["project_id"]
 
         if options:
             if options.date_range_start:
