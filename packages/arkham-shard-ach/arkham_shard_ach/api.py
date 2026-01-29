@@ -1,6 +1,7 @@
 """ACH Shard API endpoints."""
 
 import logging
+import time
 from typing import Annotated, Any, TYPE_CHECKING
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -15,6 +16,17 @@ try:
 except ImportError:
     async def current_optional_user():
         return None
+
+# Import wide event logging utilities (with fallback)
+try:
+    from arkham_frame import log_operation
+    WIDE_EVENTS_AVAILABLE = True
+except ImportError:
+    WIDE_EVENTS_AVAILABLE = False
+    from contextlib import contextmanager
+    @contextmanager
+    def log_operation(*args, **kwargs):
+        yield None
 
 logger = logging.getLogger(__name__)
 
@@ -281,37 +293,58 @@ class ConvertScenarioRequest(BaseModel):
 @router.post("/matrix")
 async def create_matrix(request: CreateMatrixRequest):
     """Create a new ACH matrix."""
-    if not _matrix_manager:
-        raise HTTPException(status_code=503, detail="ACH service not initialized")
+    with log_operation("ach.matrix.create", project_id=request.project_id) as event:
+        if event:
+            event.context("shard", "ach")
+            event.context("operation", "create_matrix")
+            event.input(
+                title=request.title,
+                has_description=bool(request.description),
+                created_by=request.created_by,
+                project_id=request.project_id,
+            )
+            if request.project_id:
+                event.context("project_id", request.project_id)
+        
+        if not _matrix_manager:
+            if event:
+                event.error("ServiceUnavailable", "ACH service not initialized")
+            raise HTTPException(status_code=503, detail="ACH service not initialized")
 
-    matrix = _matrix_manager.create_matrix(
-        title=request.title,
-        description=request.description,
-        created_by=request.created_by,
-        project_id=request.project_id,
-    )
-
-    # Ensure matrix is persisted to database before returning
-    await _matrix_manager.save_matrix_async(matrix)
-
-    # Emit event
-    if _event_bus:
-        await _event_bus.emit(
-            "ach.matrix.created",
-            {
-                "matrix_id": matrix.id,
-                "title": matrix.title,
-                "created_by": matrix.created_by,
-            },
-            source="ach-shard",
+        matrix = _matrix_manager.create_matrix(
+            title=request.title,
+            description=request.description,
+            created_by=request.created_by,
+            project_id=request.project_id,
         )
 
-    return {
-        "matrix_id": matrix.id,
-        "title": matrix.title,
-        "status": matrix.status.value,
-        "created_at": matrix.created_at.isoformat(),
-    }
+        # Ensure matrix is persisted to database before returning
+        await _matrix_manager.save_matrix_async(matrix)
+
+        # Emit event
+        if _event_bus:
+            await _event_bus.emit(
+                "ach.matrix.created",
+                {
+                    "matrix_id": matrix.id,
+                    "title": matrix.title,
+                    "created_by": matrix.created_by,
+                },
+                source="ach-shard",
+            )
+
+        if event:
+            event.output(
+                matrix_id=matrix.id,
+                status=matrix.status.value,
+            )
+
+        return {
+            "matrix_id": matrix.id,
+            "title": matrix.title,
+            "status": matrix.status.value,
+            "created_at": matrix.created_at.isoformat(),
+        }
 
 
 @router.get("/matrix/{matrix_id}")
@@ -860,41 +893,60 @@ async def update_rating(request: UpdateRatingRequest):
 @router.post("/score")
 async def calculate_scores(matrix_id: str = Query(...)):
     """Calculate or recalculate scores for a matrix."""
-    if not _matrix_manager or not _scorer:
-        raise HTTPException(status_code=503, detail="ACH service not initialized")
+    with log_operation("ach.analyze", matrix_id=matrix_id) as event:
+        if event:
+            event.context("shard", "ach")
+            event.context("operation", "calculate_scores")
+            event.input(matrix_id=matrix_id)
+        
+        if not _matrix_manager or not _scorer:
+            if event:
+                event.error("ServiceUnavailable", "ACH service not initialized")
+            raise HTTPException(status_code=503, detail="ACH service not initialized")
 
-    matrix = _matrix_manager.get_matrix(matrix_id)
-    if not matrix:
-        raise HTTPException(status_code=404, detail=f"Matrix not found: {matrix_id}")
+        matrix = _matrix_manager.get_matrix(matrix_id)
+        if not matrix:
+            if event:
+                event.error("MatrixNotFound", f"Matrix not found: {matrix_id}")
+            raise HTTPException(status_code=404, detail=f"Matrix not found: {matrix_id}")
 
-    scores = _scorer.calculate_scores(matrix)
+        start_time = time.time()
+        scores = _scorer.calculate_scores(matrix)
+        duration_ms = int((time.time() - start_time) * 1000)
 
-    # Emit event
-    if _event_bus:
-        await _event_bus.emit(
-            "ach.score.calculated",
-            {
-                "matrix_id": matrix_id,
-                "hypothesis_count": len(scores),
-            },
-            source="ach-shard",
-        )
+        # Emit event
+        if _event_bus:
+            await _event_bus.emit(
+                "ach.score.calculated",
+                {
+                    "matrix_id": matrix_id,
+                    "hypothesis_count": len(scores),
+                },
+                source="ach-shard",
+            )
 
-    return {
-        "matrix_id": matrix_id,
-        "scores": [
-            {
-                "hypothesis_id": s.hypothesis_id,
-                "hypothesis_title": matrix.get_hypothesis(s.hypothesis_id).title,
-                "rank": s.rank,
-                "inconsistency_count": s.inconsistency_count,
-                "weighted_score": s.weighted_score,
-                "normalized_score": s.normalized_score,
-                "evidence_count": s.evidence_count,
-            }
-            for s in scores
-        ],
-    }
+        if event:
+            event.dependency("ach_scorer", duration_ms=duration_ms)
+            event.output(
+                hypothesis_count=len(scores),
+                leading_hypothesis_id=scores[0].hypothesis_id if scores else None,
+            )
+
+        return {
+            "matrix_id": matrix_id,
+            "scores": [
+                {
+                    "hypothesis_id": s.hypothesis_id,
+                    "hypothesis_title": matrix.get_hypothesis(s.hypothesis_id).title,
+                    "rank": s.rank,
+                    "inconsistency_count": s.inconsistency_count,
+                    "weighted_score": s.weighted_score,
+                    "normalized_score": s.normalized_score,
+                    "evidence_count": s.evidence_count,
+                }
+                for s in scores
+            ],
+        }
 
 
 @router.post("/devils-advocate")
@@ -1252,40 +1304,68 @@ async def get_analysis_insights(request: AnalysisInsightsRequest):
     - Cognitive bias warnings
     - Recommendations
     """
-    if not _llm_integration or not _llm_integration.is_available:
-        raise HTTPException(status_code=503, detail="AI features not available")
+    with log_operation("ach.analyze", matrix_id=request.matrix_id) as event:
+        if event:
+            event.context("shard", "ach")
+            event.context("operation", "get_insights")
+            event.input(matrix_id=request.matrix_id)
+        
+        if not _llm_integration or not _llm_integration.is_available:
+            if event:
+                event.error("AIFeaturesUnavailable", "AI features not available")
+            raise HTTPException(status_code=503, detail="AI features not available")
 
-    if not _matrix_manager:
-        raise HTTPException(status_code=503, detail="ACH service not initialized")
+        if not _matrix_manager:
+            if event:
+                event.error("ServiceUnavailable", "ACH service not initialized")
+            raise HTTPException(status_code=503, detail="ACH service not initialized")
 
-    matrix = _matrix_manager.get_matrix(request.matrix_id)
-    if not matrix:
-        raise HTTPException(status_code=404, detail=f"Matrix not found: {request.matrix_id}")
+        matrix = _matrix_manager.get_matrix(request.matrix_id)
+        if not matrix:
+            if event:
+                event.error("MatrixNotFound", f"Matrix not found: {request.matrix_id}")
+            raise HTTPException(status_code=404, detail=f"Matrix not found: {request.matrix_id}")
 
-    # Calculate scores first
-    if _scorer:
-        _scorer.calculate_scores(matrix)
+        # Calculate scores first
+        if _scorer:
+            _scorer.calculate_scores(matrix)
 
-    try:
-        insights = await _llm_integration.get_analysis_insights(matrix)
+        start_time = time.time()
+        try:
+            insights = await _llm_integration.get_analysis_insights(matrix)
+            duration_ms = int((time.time() - start_time) * 1000)
 
-        return {
-            "matrix_id": request.matrix_id,
-            "insights": insights.full_text,
-            "leading_hypothesis": insights.leading_hypothesis,
-            "key_evidence": insights.key_evidence,
-            "evidence_gaps": insights.evidence_gaps,
-            "cognitive_biases": insights.cognitive_biases,
-            "recommendations": insights.recommendations,
-        }
+            if event:
+                event.dependency("llm_analysis", duration_ms=duration_ms)
+                event.output(
+                    has_leading_hypothesis=bool(insights.leading_hypothesis),
+                    key_evidence_count=len(insights.key_evidence) if insights.key_evidence else 0,
+                    evidence_gaps_count=len(insights.evidence_gaps) if insights.evidence_gaps else 0,
+                    cognitive_biases_count=len(insights.cognitive_biases) if insights.cognitive_biases else 0,
+                    recommendations_count=len(insights.recommendations) if insights.recommendations else 0,
+                )
 
-    except Exception as e:
-        logger.error(f"Analysis insights failed for matrix {request.matrix_id}: {e}", exc_info=True)
-        error_msg = str(e)
-        # Provide more helpful error messages
-        if "not available" in error_msg.lower() or "not initialized" in error_msg.lower():
-            raise HTTPException(status_code=503, detail=f"AI service not available: {error_msg}")
-        raise HTTPException(status_code=500, detail=f"AI generation failed: {error_msg}")
+            return {
+                "matrix_id": request.matrix_id,
+                "insights": insights.full_text,
+                "leading_hypothesis": insights.leading_hypothesis,
+                "key_evidence": insights.key_evidence,
+                "evidence_gaps": insights.evidence_gaps,
+                "cognitive_biases": insights.cognitive_biases,
+                "recommendations": insights.recommendations,
+            }
+
+        except Exception as e:
+            duration_ms = int((time.time() - start_time) * 1000)
+            logger.error(f"Analysis insights failed for matrix {request.matrix_id}: {e}", exc_info=True)
+            error_msg = str(e)
+            if event:
+                event.dependency("llm_analysis", duration_ms=duration_ms, error=error_msg)
+                event.error("AnalysisInsightsFailed", error_msg)
+            # Provide more helpful error messages
+            if "not available" in error_msg.lower() or "not initialized" in error_msg.lower():
+                raise HTTPException(status_code=503, detail=f"AI service not available: {error_msg}")
+            raise HTTPException(status_code=500, detail=f"AI generation failed: {error_msg}")
 
 
 @router.post("/ai/milestones")

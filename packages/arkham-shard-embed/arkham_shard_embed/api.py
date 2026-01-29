@@ -27,6 +27,17 @@ except ImportError:
     async def current_optional_user():
         return None
 
+# Import wide event logging utilities (with fallback)
+try:
+    from arkham_frame import log_operation
+    WIDE_EVENTS_AVAILABLE = True
+except ImportError:
+    WIDE_EVENTS_AVAILABLE = False
+    from contextlib import contextmanager
+    @contextmanager
+    def log_operation(*args, **kwargs):
+        yield None
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/embed", tags=["embed"])
@@ -249,69 +260,93 @@ async def embed_document(doc_id: str, request: DocumentEmbedRequestBody | None =
     as a batch to the gpu-embed worker pool.
     Returns a job ID that can be used to track progress.
     """
-    if not _worker_service:
-        raise HTTPException(status_code=503, detail="Worker service not initialized")
+    with log_operation("embed.document", document_id=doc_id) as event:
+        if event:
+            event.context("shard", "embed")
+            event.context("operation", "embed_document")
+            event.input(document_id=doc_id)
+        
+        if not _worker_service:
+            if event:
+                event.error("ServiceUnavailable", "Worker service not initialized")
+            raise HTTPException(status_code=503, detail="Worker service not initialized")
 
-    if not _db_service:
-        raise HTTPException(status_code=503, detail="Database service not initialized")
+        if not _db_service:
+            if event:
+                event.error("ServiceUnavailable", "Database service not initialized")
+            raise HTTPException(status_code=503, detail="Database service not initialized")
 
-    try:
-        # Fetch chunks for this document from the database
-        chunks = await _db_service.fetch_all(
-            """SELECT id, text, chunk_index FROM arkham_frame.chunks
-               WHERE document_id = :doc_id
-               ORDER BY chunk_index""",
-            {"doc_id": doc_id}
-        )
+        try:
+            # Fetch chunks for this document from the database
+            chunks = await _db_service.fetch_all(
+                """SELECT id, text, chunk_index FROM arkham_frame.chunks
+                   WHERE document_id = :doc_id
+                   ORDER BY chunk_index""",
+                {"doc_id": doc_id}
+            )
 
-        if not chunks:
-            raise HTTPException(status_code=404, detail=f"No chunks found for document {doc_id}")
+            if not chunks:
+                if event:
+                    event.error("NoChunksFound", f"No chunks found for document {doc_id}")
+                raise HTTPException(status_code=404, detail=f"No chunks found for document {doc_id}")
 
-        # Extract texts and metadata
-        texts = []
-        chunk_ids = []
-        for chunk in chunks:
-            text = chunk.get("text", "")
-            if text and text.strip():
-                texts.append(text)
-                chunk_ids.append(chunk.get("id", ""))
+            # Extract texts and metadata
+            texts = []
+            chunk_ids = []
+            for chunk in chunks:
+                text = chunk.get("text", "")
+                if text and text.strip():
+                    texts.append(text)
+                    chunk_ids.append(chunk.get("id", ""))
 
-        if not texts:
-            raise HTTPException(status_code=404, detail=f"No valid text in chunks for document {doc_id}")
+            if not texts:
+                if event:
+                    event.error("NoValidText", f"No valid text in chunks for document {doc_id}")
+                raise HTTPException(status_code=404, detail=f"No valid text in chunks for document {doc_id}")
 
-        # Build payload for worker with batch mode
-        job_id = str(uuid.uuid4())
-        payload = {
-            "batch": True,
-            "texts": texts,
-            "doc_id": doc_id,
-            "chunk_ids": chunk_ids,
-        }
+            # Build payload for worker with batch mode
+            job_id = str(uuid.uuid4())
+            payload = {
+                "batch": True,
+                "texts": texts,
+                "doc_id": doc_id,
+                "chunk_ids": chunk_ids,
+            }
 
-        await _worker_service.enqueue(
-            pool="gpu-embed",
-            job_id=job_id,
-            payload=payload,
-        )
+            await _worker_service.enqueue(
+                pool="gpu-embed",
+                job_id=job_id,
+                payload=payload,
+            )
 
-        logger.info(f"Queued document embedding job {job_id} for doc {doc_id} ({len(texts)} chunks)")
+            logger.info(f"Queued document embedding job {job_id} for doc {doc_id} ({len(texts)} chunks)")
 
-        return {
-            "job_id": job_id,
-            "doc_id": doc_id,
-            "status": "queued",
-            "chunk_count": len(texts),
-            "message": "Document embedding job queued"
-        }
+            if event:
+                event.output(
+                    job_id=job_id,
+                    chunk_count=len(texts),
+                    status="queued",
+                    pool="gpu-embed",
+                )
 
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Failed to queue document embedding: {e}", exc_info=True)
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to queue document embedding: {str(e)}"
-        )
+            return {
+                "job_id": job_id,
+                "doc_id": doc_id,
+                "status": "queued",
+                "chunk_count": len(texts),
+                "message": "Document embedding job queued"
+            }
+
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Failed to queue document embedding: {e}", exc_info=True)
+            if event:
+                event.error("EmbedQueueFailed", str(e))
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to queue document embedding: {str(e)}"
+            )
 
 
 @router.get("/document/{doc_id}")

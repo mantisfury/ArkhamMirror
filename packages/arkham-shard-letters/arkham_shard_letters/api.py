@@ -4,6 +4,7 @@ Letters Shard - FastAPI Routes
 REST API endpoints for letter generation and management.
 """
 
+import time
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
 import httpx
@@ -18,6 +19,17 @@ from .models import (
 
 if TYPE_CHECKING:
     from .shard import LettersShard
+
+# Import wide event logging utilities (with fallback)
+try:
+    from arkham_frame import log_operation
+    WIDE_EVENTS_AVAILABLE = True
+except ImportError:
+    WIDE_EVENTS_AVAILABLE = False
+    from contextlib import contextmanager
+    @contextmanager
+    def log_operation(*args, **kwargs):
+        yield None
 
 router = APIRouter(prefix="/api/letters", tags=["letters"])
 
@@ -308,20 +320,43 @@ async def list_letters(
 @router.post("/", response_model=LetterResponse, status_code=201)
 async def create_letter(body: LetterCreate, request: Request):
     """Create a new letter."""
-    shard = get_shard(request)
+    with log_operation("letters.create", letter_type=body.letter_type.value if hasattr(body.letter_type, 'value') else str(body.letter_type)) as event:
+        try:
+            if event:
+                event.context("shard", "letters")
+                event.context("operation", "create")
+                event.input(
+                    letter_type=body.letter_type.value if hasattr(body.letter_type, 'value') else str(body.letter_type),
+                    title=body.title,
+                    has_template=body.template_id is not None,
+                    has_content=bool(body.content),
+                    has_recipient=bool(body.recipient_name),
+                )
 
-    letter = await shard.create_letter(
-        title=body.title,
-        letter_type=body.letter_type,
-        content=body.content,
-        template_id=body.template_id,
-        recipient_name=body.recipient_name,
-        recipient_address=body.recipient_address,
-        subject=body.subject,
-        metadata=body.metadata,
-    )
+            shard = get_shard(request)
 
-    return _letter_to_response(letter)
+            letter = await shard.create_letter(
+                title=body.title,
+                letter_type=body.letter_type,
+                content=body.content,
+                template_id=body.template_id,
+                recipient_name=body.recipient_name,
+                recipient_address=body.recipient_address,
+                subject=body.subject,
+                metadata=body.metadata,
+            )
+
+            if event:
+                event.output(
+                    letter_id=letter.id,
+                    status=letter.status.value if hasattr(letter.status, 'value') else str(letter.status),
+                )
+
+            return _letter_to_response(letter)
+        except Exception as e:
+            if event:
+                event.error(str(e), exc_info=True)
+            raise
 
 
 @router.get("/{letter_id}", response_model=LetterResponse)
@@ -374,23 +409,51 @@ async def delete_letter(letter_id: str, request: Request):
 @router.post("/{letter_id}/export", response_model=ExportResponse)
 async def export_letter(letter_id: str, body: ExportRequest, request: Request):
     """Export a letter to a file format."""
-    shard = get_shard(request)
+    with log_operation("letters.export", letter_id=letter_id, export_format=body.export_format.value if hasattr(body.export_format, 'value') else str(body.export_format)) as event:
+        try:
+            start_time = time.time()
 
-    result = await shard.export_letter(
-        letter_id=letter_id,
-        export_format=body.export_format,
-    )
+            if event:
+                event.context("shard", "letters")
+                event.context("operation", "export")
+                event.input(
+                    letter_id=letter_id,
+                    export_format=body.export_format.value if hasattr(body.export_format, 'value') else str(body.export_format),
+                )
 
-    return ExportResponse(
-        letter_id=result.letter_id,
-        success=result.success,
-        export_format=result.export_format.value,
-        file_path=result.file_path,
-        file_size=result.file_size,
-        processing_time_ms=result.processing_time_ms,
-        errors=result.errors,
-        warnings=result.warnings,
-    )
+            shard = get_shard(request)
+
+            result = await shard.export_letter(
+                letter_id=letter_id,
+                export_format=body.export_format,
+            )
+
+            duration_ms = (time.time() - start_time) * 1000
+
+            if event:
+                event.output(
+                    letter_id=letter_id,
+                    success=result.success,
+                    file_size=result.file_size,
+                    errors_count=len(result.errors) if result.errors else 0,
+                    warnings_count=len(result.warnings) if result.warnings else 0,
+                    duration_ms=duration_ms,
+                )
+
+            return ExportResponse(
+                letter_id=result.letter_id,
+                success=result.success,
+                export_format=result.export_format.value,
+                file_path=result.file_path,
+                file_size=result.file_size,
+                processing_time_ms=result.processing_time_ms,
+                errors=result.errors,
+                warnings=result.warnings,
+            )
+        except Exception as e:
+            if event:
+                event.error(str(e), exc_info=True)
+            raise
 
 
 @router.get("/{letter_id}/download")

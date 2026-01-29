@@ -17,6 +17,17 @@ except ImportError:
     async def current_optional_user():
         return None
 
+# Import wide event logging utilities (with fallback)
+try:
+    from arkham_frame import log_operation
+    WIDE_EVENTS_AVAILABLE = True
+except ImportError:
+    WIDE_EVENTS_AVAILABLE = False
+    from contextlib import contextmanager
+    @contextmanager
+    def log_operation(*args, **kwargs):
+        yield None
+
 
 # --- Project Access Authorization ---
 
@@ -222,67 +233,97 @@ async def upload_file(
         ocr_mode: OCR routing mode (auto, paddle_only, qwen_only)
         project_id: Project ID to associate the document with (required for multi-project setups)
     """
-    if not _intake_manager:
-        raise HTTPException(status_code=503, detail="Ingest service not initialized")
+    with log_operation("ingest.upload", project_id=project_id) as event:
+        if event and user:
+            event.user(id=str(user.id))
+        if event:
+            event.context("shard", "ingest")
+            event.context("operation", "upload")
+            event.input(
+                filename=file.filename,
+                content_type=file.content_type,
+                priority=priority,
+                ocr_mode=ocr_mode,
+                project_id=project_id,
+            )
+        
+        if not _intake_manager:
+            if event:
+                event.error("ServiceUnavailable", "Ingest service not initialized")
+            raise HTTPException(status_code=503, detail="Ingest service not initialized")
 
-    if not project_id:
-        raise HTTPException(status_code=400, detail="project_id is required")
-    
-    # Verify user has access to the project
-    await verify_project_access(project_id, request, user)
+        if not project_id:
+            if event:
+                event.error("ValidationError", "project_id is required")
+            raise HTTPException(status_code=400, detail="project_id is required")
+        
+        if event:
+            event.context("project_id", project_id)
+        
+        # Verify user has access to the project
+        await verify_project_access(project_id, request, user)
 
-    try:
-        job_priority = JobPriority[priority.upper()]
-    except KeyError:
-        job_priority = JobPriority.USER
+        try:
+            job_priority = JobPriority[priority.upper()]
+        except KeyError:
+            job_priority = JobPriority.USER
 
-    # Validate ocr_mode
-    valid_ocr_modes = ("auto", "paddle_only", "qwen_only")
-    if ocr_mode not in valid_ocr_modes:
-        ocr_mode = "auto"
+        # Validate ocr_mode
+        valid_ocr_modes = ("auto", "paddle_only", "qwen_only")
+        if ocr_mode not in valid_ocr_modes:
+            ocr_mode = "auto"
 
-    job = await _intake_manager.receive_file(
-        file=file.file,
-        filename=file.filename,
-        priority=job_priority,
-        ocr_mode=ocr_mode,
-        project_id=project_id,
-    )
-
-    # Dispatch to workers
-    await _job_dispatcher.dispatch(job)
-
-    # Emit event
-    if _event_bus:
-        await _event_bus.emit(
-            "ingest.file.queued",
-            {
-                "job_id": job.id,
-                "filename": file.filename,
-                "category": job.file_info.category.value,
-            },
-            source="ingest-shard",
+        job = await _intake_manager.receive_file(
+            file=file.file,
+            filename=file.filename,
+            priority=job_priority,
+            ocr_mode=ocr_mode,
+            project_id=project_id,
         )
 
-    return UploadResponse(
-        job_id=job.id,
-        filename=job.file_info.original_name,
-        category=job.file_info.category.value,
-        status=job.status.value,
-        route=job.worker_route,
-        quality=(
-            {
-                "classification": job.quality_score.classification.value,
-                "issues": job.quality_score.issues,
-                "dpi": job.quality_score.dpi,
-                "skew": round(job.quality_score.skew_angle, 2),
-                "contrast": round(job.quality_score.contrast_ratio, 2),
-                "layout": job.quality_score.layout_complexity,
-            }
-            if job.quality_score
-            else None
-        ),
-    )
+        # Dispatch to workers
+        await _job_dispatcher.dispatch(job)
+
+        # Emit event
+        if _event_bus:
+            await _event_bus.emit(
+                "ingest.file.queued",
+                {
+                    "job_id": job.id,
+                    "filename": file.filename,
+                    "category": job.file_info.category.value,
+                },
+                source="ingest-shard",
+            )
+
+        if event:
+            event.output(
+                job_id=job.id,
+                category=job.file_info.category.value,
+                status=job.status.value,
+                route=job.worker_route,
+                has_quality_score=job.quality_score is not None,
+            )
+
+        return UploadResponse(
+            job_id=job.id,
+            filename=job.file_info.original_name,
+            category=job.file_info.category.value,
+            status=job.status.value,
+            route=job.worker_route,
+            quality=(
+                {
+                    "classification": job.quality_score.classification.value,
+                    "issues": job.quality_score.issues,
+                    "dpi": job.quality_score.dpi,
+                    "skew": round(job.quality_score.skew_angle, 2),
+                    "contrast": round(job.quality_score.contrast_ratio, 2),
+                    "layout": job.quality_score.layout_complexity,
+                }
+                if job.quality_score
+                else None
+            ),
+        )
 
 
 @router.post("/upload/batch", response_model=BatchUploadResponse)

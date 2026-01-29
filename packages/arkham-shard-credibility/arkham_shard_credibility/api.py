@@ -4,6 +4,7 @@ Credibility Shard - FastAPI Routes
 REST API endpoints for credibility assessment management.
 """
 
+import time
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException, Query, Request
@@ -18,6 +19,17 @@ from .models import (
     DeceptionRisk,
     IndicatorStrength,
 )
+
+# Import wide event logging utilities (with fallback)
+try:
+    from arkham_frame import log_operation
+    WIDE_EVENTS_AVAILABLE = True
+except ImportError:
+    WIDE_EVENTS_AVAILABLE = False
+    from contextlib import contextmanager
+    @contextmanager
+    def log_operation(*args, **kwargs):
+        yield None
 
 router = APIRouter(prefix="/api/credibility", tags=["credibility"])
 
@@ -288,23 +300,50 @@ async def list_assessments(
 @router.post("/", response_model=AssessmentResponse, status_code=201)
 async def create_assessment(body: AssessmentCreate, request: Request):
     """Create a new credibility assessment."""
-    shard = _get_shard(request)
+    with log_operation("credibility.create", source_type=body.source_type.value if hasattr(body.source_type, 'value') else str(body.source_type), source_id=body.source_id) as event:
+        try:
+            if event:
+                event.context("shard", "credibility")
+                event.context("operation", "create")
+                event.input(
+                    source_type=body.source_type.value if hasattr(body.source_type, 'value') else str(body.source_type),
+                    source_id=body.source_id,
+                    score=body.score,
+                    confidence=body.confidence,
+                    assessed_by=body.assessed_by.value if hasattr(body.assessed_by, 'value') else str(body.assessed_by),
+                    factor_count=len(body.factors) if body.factors else 0,
+                    has_notes=body.notes is not None,
+                )
 
-    factors = _models_to_factors(body.factors) if body.factors else None
+            shard = _get_shard(request)
 
-    assessment = await shard.create_assessment(
-        source_type=body.source_type,
-        source_id=body.source_id,
-        score=body.score,
-        confidence=body.confidence,
-        factors=factors,
-        assessed_by=body.assessed_by,
-        assessor_id=body.assessor_id,
-        notes=body.notes,
-        metadata=body.metadata,
-    )
+            factors = _models_to_factors(body.factors) if body.factors else None
 
-    return _assessment_to_response(assessment)
+            assessment = await shard.create_assessment(
+                source_type=body.source_type,
+                source_id=body.source_id,
+                score=body.score,
+                confidence=body.confidence,
+                factors=factors,
+                assessed_by=body.assessed_by,
+                assessor_id=body.assessor_id,
+                notes=body.notes,
+                metadata=body.metadata,
+            )
+
+            if event:
+                event.output(
+                    assessment_id=assessment.id,
+                    score=assessment.score,
+                    level=assessment.level.value if hasattr(assessment.level, 'value') else str(assessment.level),
+                    confidence=assessment.confidence,
+                )
+
+            return _assessment_to_response(assessment)
+        except Exception as e:
+            if event:
+                event.error(str(e), exc_info=True)
+            raise
 
 
 # === Source Endpoints ===
@@ -355,35 +394,62 @@ async def get_source_history(source_type: SourceType, source_id: str, request: R
 @router.post("/calculate", response_model=CalculationResponse)
 async def calculate_credibility(body: CalculateRequest, request: Request):
     """Calculate credibility score for a source."""
-    shard = _get_shard(request)
+    with log_operation("credibility.calculate", source_type=body.source_type.value if hasattr(body.source_type, 'value') else str(body.source_type), source_id=body.source_id) as event:
+        try:
+            start_time = time.time()
+            
+            if event:
+                event.context("shard", "credibility")
+                event.context("operation", "calculate")
+                event.input(
+                    source_type=body.source_type.value if hasattr(body.source_type, 'value') else str(body.source_type),
+                    source_id=body.source_id,
+                    use_llm=body.use_llm,
+                )
 
-    calculation = await shard.calculate_credibility(
-        source_type=body.source_type,
-        source_id=body.source_id,
-        use_llm=body.use_llm,
-    )
+            shard = _get_shard(request)
 
-    factors = [
-        CredibilityFactorModel(
-            factor_type=f.factor_type,
-            weight=f.weight,
-            score=f.score,
-            notes=f.notes,
-        )
-        for f in calculation.factors
-    ]
+            calculation = await shard.calculate_credibility(
+                source_type=body.source_type,
+                source_id=body.source_id,
+                use_llm=body.use_llm,
+            )
 
-    return CalculationResponse(
-        source_type=calculation.source_type.value,
-        source_id=calculation.source_id,
-        calculated_score=calculation.calculated_score,
-        confidence=calculation.confidence,
-        factors=factors,
-        method=calculation.method.value,
-        processing_time_ms=calculation.processing_time_ms,
-        notes=calculation.notes,
-        errors=calculation.errors,
-    )
+            factors = [
+                CredibilityFactorModel(
+                    factor_type=f.factor_type,
+                    weight=f.weight,
+                    score=f.score,
+                    notes=f.notes,
+                )
+                for f in calculation.factors
+            ]
+
+            if event:
+                event.output(
+                    calculated_score=calculation.calculated_score,
+                    confidence=calculation.confidence,
+                    method=calculation.method.value if hasattr(calculation.method, 'value') else str(calculation.method),
+                    factor_count=len(calculation.factors),
+                    processing_time_ms=calculation.processing_time_ms,
+                    error_count=len(calculation.errors) if calculation.errors else 0,
+                )
+
+            return CalculationResponse(
+                source_type=calculation.source_type.value,
+                source_id=calculation.source_id,
+                calculated_score=calculation.calculated_score,
+                confidence=calculation.confidence,
+                factors=factors,
+                method=calculation.method.value,
+                processing_time_ms=calculation.processing_time_ms,
+                notes=calculation.notes,
+                errors=calculation.errors,
+            )
+        except Exception as e:
+            if event:
+                event.error(str(e), exc_info=True)
+            raise
 
 
 # === Factor Endpoints ===
@@ -956,22 +1022,47 @@ async def get_assessment(assessment_id: str, request: Request):
 @router.put("/{assessment_id}", response_model=AssessmentResponse)
 async def update_assessment(assessment_id: str, body: AssessmentUpdate, request: Request):
     """Update an existing assessment."""
-    shard = _get_shard(request)
+    with log_operation("credibility.update", assessment_id=assessment_id) as event:
+        try:
+            if event:
+                event.context("shard", "credibility")
+                event.context("operation", "update")
+                event.input(
+                    assessment_id=assessment_id,
+                    score_updated=body.score is not None,
+                    confidence_updated=body.confidence is not None,
+                    factors_updated=body.factors is not None,
+                    notes_updated=body.notes is not None,
+                )
 
-    factors = _models_to_factors(body.factors) if body.factors else None
+            shard = _get_shard(request)
 
-    assessment = await shard.update_assessment(
-        assessment_id=assessment_id,
-        score=body.score,
-        confidence=body.confidence,
-        factors=factors,
-        notes=body.notes,
-    )
+            factors = _models_to_factors(body.factors) if body.factors else None
 
-    if not assessment:
-        raise HTTPException(status_code=404, detail=f"Assessment {assessment_id} not found")
+            assessment = await shard.update_assessment(
+                assessment_id=assessment_id,
+                score=body.score,
+                confidence=body.confidence,
+                factors=factors,
+                notes=body.notes,
+            )
 
-    return _assessment_to_response(assessment)
+            if not assessment:
+                raise HTTPException(status_code=404, detail=f"Assessment {assessment_id} not found")
+
+            if event:
+                event.output(
+                    assessment_id=assessment.id,
+                    score=assessment.score,
+                    level=assessment.level.value if hasattr(assessment.level, 'value') else str(assessment.level),
+                    confidence=assessment.confidence,
+                )
+
+            return _assessment_to_response(assessment)
+        except Exception as e:
+            if event:
+                event.error(str(e), exc_info=True)
+            raise
 
 
 @router.delete("/{assessment_id}", status_code=204)

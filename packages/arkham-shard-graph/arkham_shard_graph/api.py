@@ -1,6 +1,7 @@
 """API endpoints for the Graph Shard."""
 
 import logging
+import time
 from datetime import datetime
 from typing import Any, TYPE_CHECKING
 
@@ -39,6 +40,17 @@ try:
 except ImportError:
     async def current_optional_user():
         return None
+
+# Import wide event logging utilities (with fallback)
+try:
+    from arkham_frame import log_operation
+    WIDE_EVENTS_AVAILABLE = True
+except ImportError:
+    WIDE_EVENTS_AVAILABLE = False
+    from contextlib import contextmanager
+    @contextmanager
+    def log_operation(*args, **kwargs):
+        yield None
 
 logger = logging.getLogger(__name__)
 
@@ -1550,120 +1562,157 @@ async def build_graph(request: BuildGraphRequest) -> dict[str, Any]:
     if not _builder:
         raise HTTPException(status_code=503, detail="Graph builder not available")
 
-    try:
-        start_time = datetime.utcnow()
+    with log_operation("graph.build", project_id=request.project_id) as event:
+        try:
+            start_time = time.time()
 
-        # Log requested cross-shard sources
-        cross_shard_sources = []
-        if request.include_temporal:
-            cross_shard_sources.append("timeline_events")
-        if request.include_claims:
-            cross_shard_sources.append("claims")
-        if request.include_ach_evidence:
-            cross_shard_sources.append("ach_evidence")
-        if request.include_ach_hypotheses:
-            cross_shard_sources.append("ach_hypotheses")
-        if request.include_provenance_artifacts:
-            cross_shard_sources.append("provenance_artifacts")
-        if request.include_contradictions:
-            cross_shard_sources.append("contradictions")
-        if request.include_patterns:
-            cross_shard_sources.append("patterns")
-        if request.apply_credibility_weights:
-            cross_shard_sources.append("credibility_weights")
+            # Log requested cross-shard sources
+            cross_shard_sources = []
+            if request.include_temporal:
+                cross_shard_sources.append("timeline_events")
+            if request.include_claims:
+                cross_shard_sources.append("claims")
+            if request.include_ach_evidence:
+                cross_shard_sources.append("ach_evidence")
+            if request.include_ach_hypotheses:
+                cross_shard_sources.append("ach_hypotheses")
+            if request.include_provenance_artifacts:
+                cross_shard_sources.append("provenance_artifacts")
+            if request.include_contradictions:
+                cross_shard_sources.append("contradictions")
+            if request.include_patterns:
+                cross_shard_sources.append("patterns")
+            if request.apply_credibility_weights:
+                cross_shard_sources.append("credibility_weights")
 
-        if cross_shard_sources:
-            logger.info(f"Building graph with cross-shard sources: {cross_shard_sources}")
+            if event:
+                event.context("shard", "graph")
+                event.context("operation", "build")
+                event.context("project_id", request.project_id)
+                event.input(
+                    project_id=request.project_id,
+                    document_ids=request.document_ids,
+                    entity_types=request.entity_types,
+                    min_co_occurrence=request.min_co_occurrence,
+                    include_temporal=request.include_temporal,
+                    include_document_entities=request.include_document_entities,
+                    include_cooccurrences=request.include_cooccurrences,
+                    include_claims=request.include_claims,
+                    include_ach_evidence=request.include_ach_evidence,
+                    include_ach_hypotheses=request.include_ach_hypotheses,
+                    include_provenance_artifacts=request.include_provenance_artifacts,
+                    include_contradictions=request.include_contradictions,
+                    include_patterns=request.include_patterns,
+                    apply_credibility_weights=request.apply_credibility_weights,
+                    cross_shard_sources=cross_shard_sources,
+                )
 
-        # Build base graph from entities (conditionally)
-        graph = await _builder.build_graph(
-            project_id=request.project_id,
-            document_ids=request.document_ids,
-            entity_types=request.entity_types,
-            min_co_occurrence=request.min_co_occurrence,
-            include_temporal=request.include_temporal,
-            include_document_entities=request.include_document_entities,
-            include_cooccurrences=request.include_cooccurrences,
-        )
+            if cross_shard_sources:
+                logger.info(f"Building graph with cross-shard sources: {cross_shard_sources}")
 
-        # Enrich with cross-shard data if any source is enabled
-        added_nodes_count = 0
-        added_edges_count = 0
-        if cross_shard_sources:
-            added_nodes, added_edges, credibility_ratings = await _enrich_graph_with_cross_shard_data(
-                graph=graph,
+            # Build base graph from entities (conditionally)
+            graph = await _builder.build_graph(
                 project_id=request.project_id,
-                include_claims=request.include_claims,
-                include_ach_evidence=request.include_ach_evidence,
-                include_ach_hypotheses=request.include_ach_hypotheses,
-                include_provenance_artifacts=request.include_provenance_artifacts,
-                include_timeline=request.include_temporal,
-                include_contradictions=request.include_contradictions,
-                include_patterns=request.include_patterns,
-                apply_credibility_weights=request.apply_credibility_weights,
+                document_ids=request.document_ids,
+                entity_types=request.entity_types,
+                min_co_occurrence=request.min_co_occurrence,
+                include_temporal=request.include_temporal,
+                include_document_entities=request.include_document_entities,
+                include_cooccurrences=request.include_cooccurrences,
             )
 
-            # Add cross-shard nodes to graph
-            graph.nodes.extend(added_nodes)
-            added_nodes_count = len(added_nodes)
+            # Enrich with cross-shard data if any source is enabled
+            added_nodes_count = 0
+            added_edges_count = 0
+            if cross_shard_sources:
+                added_nodes, added_edges, credibility_ratings = await _enrich_graph_with_cross_shard_data(
+                    graph=graph,
+                    project_id=request.project_id,
+                    include_claims=request.include_claims,
+                    include_ach_evidence=request.include_ach_evidence,
+                    include_ach_hypotheses=request.include_ach_hypotheses,
+                    include_provenance_artifacts=request.include_provenance_artifacts,
+                    include_timeline=request.include_temporal,
+                    include_contradictions=request.include_contradictions,
+                    include_patterns=request.include_patterns,
+                    apply_credibility_weights=request.apply_credibility_weights,
+                )
 
-            # Add cross-shard edges to graph
-            graph.edges.extend(added_edges)
-            added_edges_count = len(added_edges)
+                # Add cross-shard nodes to graph
+                graph.nodes.extend(added_nodes)
+                added_nodes_count = len(added_nodes)
 
-            # Apply credibility weights to existing edges
-            if credibility_ratings:
-                for edge in graph.edges:
-                    # Check if any document in edge has credibility rating
-                    edge_credibility_scores = []
-                    for doc_id in edge.document_ids:
-                        if doc_id in credibility_ratings:
-                            edge_credibility_scores.append(credibility_ratings[doc_id])
+                # Add cross-shard edges to graph
+                graph.edges.extend(added_edges)
+                added_edges_count = len(added_edges)
 
-                    # Adjust edge weight based on average credibility
-                    if edge_credibility_scores:
-                        avg_credibility = sum(edge_credibility_scores) / len(edge_credibility_scores)
-                        edge.weight = edge.weight * avg_credibility
-                        edge.properties["credibility_adjusted"] = True
-                        edge.properties["credibility_factor"] = avg_credibility
+                # Apply credibility weights to existing edges
+                if credibility_ratings:
+                    for edge in graph.edges:
+                        # Check if any document in edge has credibility rating
+                        edge_credibility_scores = []
+                        for doc_id in edge.document_ids:
+                            if doc_id in credibility_ratings:
+                                edge_credibility_scores.append(credibility_ratings[doc_id])
 
-            # Update metadata
-            graph.metadata["cross_shard_sources"] = cross_shard_sources
-            graph.metadata["cross_shard_nodes_added"] = added_nodes_count
-            graph.metadata["cross_shard_edges_added"] = added_edges_count
+                        # Adjust edge weight based on average credibility
+                        if edge_credibility_scores:
+                            avg_credibility = sum(edge_credibility_scores) / len(edge_credibility_scores)
+                            edge.weight = edge.weight * avg_credibility
+                            edge.properties["credibility_adjusted"] = True
+                            edge.properties["credibility_factor"] = avg_credibility
 
-        build_time = (datetime.utcnow() - start_time).total_seconds() * 1000
+                # Update metadata
+                graph.metadata["cross_shard_sources"] = cross_shard_sources
+                graph.metadata["cross_shard_nodes_added"] = added_nodes_count
+                graph.metadata["cross_shard_edges_added"] = added_edges_count
 
-        # Store graph if storage available
-        if _storage:
-            await _storage.save_graph(graph)
+            build_time = (time.time() - start_time) * 1000
 
-        # Publish event
-        if _event_bus:
-            await _event_bus.emit(
-                "graph.graph.built",
-                {
-                    "project_id": request.project_id,
-                    "node_count": len(graph.nodes),
-                    "edge_count": len(graph.edges),
-                    "cross_shard_sources": cross_shard_sources,
-                },
-                source="graph-shard",
-            )
+            # Store graph if storage available
+            if _storage:
+                await _storage.save_graph(graph)
 
-        return {
-            "project_id": graph.project_id,
-            "node_count": len(graph.nodes),
-            "edge_count": len(graph.edges),
-            "graph_id": f"graph-{graph.project_id}",
-            "build_time_ms": build_time,
-            "cross_shard_nodes_added": added_nodes_count,
-            "cross_shard_edges_added": added_edges_count,
-        }
+            # Publish event
+            if _event_bus:
+                await _event_bus.emit(
+                    "graph.graph.built",
+                    {
+                        "project_id": request.project_id,
+                        "node_count": len(graph.nodes),
+                        "edge_count": len(graph.edges),
+                        "cross_shard_sources": cross_shard_sources,
+                    },
+                    source="graph-shard",
+                )
 
-    except Exception as e:
-        logger.error(f"Error building graph: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+            result = {
+                "project_id": graph.project_id,
+                "node_count": len(graph.nodes),
+                "edge_count": len(graph.edges),
+                "graph_id": f"graph-{graph.project_id}",
+                "build_time_ms": build_time,
+                "cross_shard_nodes_added": added_nodes_count,
+                "cross_shard_edges_added": added_edges_count,
+            }
+
+            if event:
+                event.output(
+                    graph_id=result["graph_id"],
+                    node_count=result["node_count"],
+                    edge_count=result["edge_count"],
+                    build_time_ms=result["build_time_ms"],
+                    cross_shard_nodes_added=added_nodes_count,
+                    cross_shard_edges_added=added_edges_count,
+                )
+
+            return result
+
+        except Exception as e:
+            logger.error(f"Error building graph: {e}", exc_info=True)
+            if event:
+                event.error(str(e), exc_info=True)
+            raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/stats")

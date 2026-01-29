@@ -4,6 +4,7 @@ Summary Shard API Routes
 FastAPI endpoints for summary generation and management.
 """
 
+import time
 from typing import List, Optional
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
@@ -21,6 +22,17 @@ from .models import (
     BatchSummaryRequest,
     BatchSummaryResult,
 )
+
+# Import wide event logging utilities (with fallback)
+try:
+    from arkham_frame import log_operation
+    WIDE_EVENTS_AVAILABLE = True
+except ImportError:
+    WIDE_EVENTS_AVAILABLE = False
+    from contextlib import contextmanager
+    @contextmanager
+    def log_operation(*args, **kwargs):
+        yield None
 
 router = APIRouter(prefix="/api/summary", tags=["summary"])
 
@@ -354,23 +366,55 @@ async def create_summary(body: SummaryCreate, request: Request):
     Returns:
         Generated summary result
     """
-    shard = get_shard(request)
+    with log_operation("summary.generate", source_type=body.source_type.value if hasattr(body.source_type, 'value') else str(body.source_type), source_count=len(body.source_ids)) as event:
+        try:
+            start_time = time.time()
 
-    # Convert to internal request model
-    summary_request = SummaryRequest(
-        source_type=body.source_type,
-        source_ids=body.source_ids,
-        summary_type=body.summary_type,
-        target_length=body.target_length,
-        focus_areas=body.focus_areas,
-        exclude_topics=body.exclude_topics,
-        include_key_points=body.include_key_points,
-        include_title=body.include_title,
-        tags=body.tags,
-    )
+            if event:
+                event.context("shard", "summary")
+                event.context("operation", "generate")
+                event.input(
+                    source_type=body.source_type.value if hasattr(body.source_type, 'value') else str(body.source_type),
+                    source_count=len(body.source_ids),
+                    summary_type=body.summary_type.value if hasattr(body.summary_type, 'value') else str(body.summary_type),
+                    target_length=body.target_length.value if hasattr(body.target_length, 'value') else str(body.target_length),
+                    include_key_points=body.include_key_points,
+                    include_title=body.include_title,
+                    focus_areas_count=len(body.focus_areas),
+                    exclude_topics_count=len(body.exclude_topics),
+                )
 
-    result = await shard.generate_summary(summary_request)
-    return result
+            shard = get_shard(request)
+
+            # Convert to internal request model
+            summary_request = SummaryRequest(
+                source_type=body.source_type,
+                source_ids=body.source_ids,
+                summary_type=body.summary_type,
+                target_length=body.target_length,
+                focus_areas=body.focus_areas,
+                exclude_topics=body.exclude_topics,
+                include_key_points=body.include_key_points,
+                include_title=body.include_title,
+                tags=body.tags,
+            )
+
+            result = await shard.generate_summary(summary_request)
+
+            duration_ms = (time.time() - start_time) * 1000
+
+            if event:
+                event.output(
+                    summary_id=result.summary_id,
+                    status=result.status.value if hasattr(result.status, 'value') else str(result.status),
+                    processing_time_ms=result.processing_time_ms if hasattr(result, 'processing_time_ms') else duration_ms,
+                )
+
+            return result
+        except Exception as e:
+            if event:
+                event.error(str(e), exc_info=True)
+            raise
 
 
 @router.get("/{summary_id}", response_model=SummaryResponse)
@@ -959,35 +1003,63 @@ async def quick_summary(
 
     This is a convenience endpoint for quick one-click summarization.
     """
-    shard = get_shard(request)
+    with log_operation("summary.quick", document_id=doc_id) as event:
+        try:
+            start_time = time.time()
 
-    try:
-        summary_type_enum = SummaryType(summary_type)
-    except ValueError:
-        raise HTTPException(status_code=400, detail=f"Invalid summary_type: {summary_type}")
+            if event:
+                event.context("shard", "summary")
+                event.context("operation", "quick_summary")
+                event.input(
+                    document_id=doc_id,
+                    summary_type=summary_type,
+                    target_length=target_length,
+                )
 
-    try:
-        target_length_enum = SummaryLength(target_length)
-    except ValueError:
-        raise HTTPException(status_code=400, detail=f"Invalid target_length: {target_length}")
+            shard = get_shard(request)
 
-    # Generate summary
-    summary_request = SummaryRequest(
-        source_type=SourceType.DOCUMENT,
-        source_ids=[doc_id],
-        summary_type=summary_type_enum,
-        target_length=target_length_enum,
-        include_key_points=True,
-        include_title=True,
-        tags=["quick-summary"],
-    )
+            try:
+                summary_type_enum = SummaryType(summary_type)
+            except ValueError:
+                raise HTTPException(status_code=400, detail=f"Invalid summary_type: {summary_type}")
 
-    result = await shard.generate_summary(summary_request)
+            try:
+                target_length_enum = SummaryLength(target_length)
+            except ValueError:
+                raise HTTPException(status_code=400, detail=f"Invalid target_length: {target_length}")
 
-    if result.status == SummaryStatus.FAILED:
-        raise HTTPException(
-            status_code=500,
-            detail=result.error_message or "Summary generation failed",
-        )
+            # Generate summary
+            summary_request = SummaryRequest(
+                source_type=SourceType.DOCUMENT,
+                source_ids=[doc_id],
+                summary_type=summary_type_enum,
+                target_length=target_length_enum,
+                include_key_points=True,
+                include_title=True,
+                tags=["quick-summary"],
+            )
 
-    return result
+            result = await shard.generate_summary(summary_request)
+
+            duration_ms = (time.time() - start_time) * 1000
+
+            if result.status == SummaryStatus.FAILED:
+                if event:
+                    event.error(result.error_message or "Summary generation failed", exc_info=True)
+                raise HTTPException(
+                    status_code=500,
+                    detail=result.error_message or "Summary generation failed",
+                )
+
+            if event:
+                event.output(
+                    summary_id=result.summary_id,
+                    status=result.status.value if hasattr(result.status, 'value') else str(result.status),
+                    processing_time_ms=result.processing_time_ms if hasattr(result, 'processing_time_ms') else duration_ms,
+                )
+
+            return result
+        except Exception as e:
+            if event:
+                event.error(str(e), exc_info=True)
+            raise

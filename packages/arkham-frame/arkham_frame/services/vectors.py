@@ -15,8 +15,23 @@ import logging
 import uuid
 import json
 import hashlib
+import time
 
 logger = logging.getLogger(__name__)
+
+# Import wide event logging utilities (with fallback)
+try:
+    from arkham_frame import log_operation, create_wide_event
+    WIDE_EVENTS_AVAILABLE = True
+except ImportError:
+    WIDE_EVENTS_AVAILABLE = False
+    # Fallback: create no-op context manager
+    from contextlib import contextmanager
+    @contextmanager
+    def log_operation(*args, **kwargs):
+        yield None
+    def create_wide_event(*args, **kwargs):
+        return None
 
 
 class DistanceMetric(str, Enum):
@@ -1108,131 +1123,161 @@ class VectorService:
         recall_target: Optional[float] = None,
     ) -> List[SearchResult]:
         """Search for similar vectors using IVFFlat."""
-        if not self._available:
-            raise VectorStoreUnavailableError("pgvector not available")
-
-        try:
-            async with self._pool.acquire() as conn:
-                # Get collection info for probes setting and vector size
-                coll = await conn.fetchrow(
-                    "SELECT lists, probes, distance_metric, vector_size FROM arkham_vectors.collections WHERE name = $1",
-                    collection
+        with log_operation("vector.search", collection=collection) as event:
+            if event:
+                event.input(
+                    collection=collection,
+                    vector_dimension=len(query_vector) if query_vector else 0,
+                    limit=limit,
+                    has_filter=filter is not None,
+                    score_threshold=score_threshold,
+                    with_vectors=with_vectors,
+                    recall_target=recall_target,
                 )
-                if not coll:
-                    raise CollectionNotFoundError(collection)
+            
+            if not self._available:
+                if event:
+                    event.error("VectorStoreUnavailable", "pgvector not available")
+                raise VectorStoreUnavailableError("pgvector not available")
 
-                # Check if binary quantization is used
-                use_binary_quant = self._should_use_binary_quantization(coll['vector_size'])
-
-                # Calculate probes for this search
-                if recall_target:
-                    probes = self._optimal_probes(coll['lists'], recall_target)
-                else:
-                    probes = coll['probes']
-
-                # Set probes for this query
-                await conn.execute(f"SET LOCAL ivfflat.probes = {probes}")
-
-                if use_binary_quant:
-                    # Use binary quantization with Hamming distance for high dimensions
-                    vector_size = coll['vector_size']
-                    # Build score expression using Hamming distance (lower = better, so negate for score)
-                    score_expr = f"-((binary_quantize(embedding)::bit({vector_size}) <~> binary_quantize($1::vector)::bit({vector_size})))"
-                    
-                    # Build select columns
-                    select_cols = f"id, payload, {score_expr} AS score"
-                    if with_vectors:
-                        select_cols += ", embedding"
-
-                    # Build query with binary quantization
-                    sql = f"""
-                        SELECT {select_cols}
-                        FROM arkham_vectors.embeddings
-                        WHERE collection = $2
-                    """
-                    params = [str(query_vector), collection]
-                    param_idx = 3
-
-                    # Add filter
-                    if filter:
-                        sql += f" AND payload @> ${param_idx}::jsonb"
-                        params.append(json.dumps(filter))
-                        param_idx += 1
-
-                    # Add score threshold (for Hamming, lower distance is better)
-                    if score_threshold:
-                        sql += f" AND {score_expr} >= ${param_idx}"
-                        params.append(score_threshold)
-                        param_idx += 1
-
-                    # Order by Hamming distance (lower is better)
-                    sql += f" ORDER BY binary_quantize(embedding)::bit({vector_size}) <~> binary_quantize($1::vector)::bit({vector_size}) LIMIT ${param_idx}"
-                    params.append(limit)
-                else:
-                    # Standard vector search for dimensions <= 2000
-                    # Determine distance operator
-                    distance_metric = coll['distance_metric'] or 'cosine'
-                    distance_ops = {
-                        'cosine': '<=>',
-                        'euclidean': '<->',
-                        'dot': '<#>',
-                    }
-                    op = distance_ops.get(distance_metric, '<=>')
-
-                    # Build score expression (higher = better)
-                    if distance_metric == 'cosine':
-                        score_expr = f"1 - (embedding {op} $1::vector)"
-                    elif distance_metric == 'dot':
-                        score_expr = f"-(embedding {op} $1::vector)"
-                    else:
-                        score_expr = f"embedding {op} $1::vector"
-
-                    # Build select columns
-                    select_cols = f"id, payload, {score_expr} AS score"
-                    if with_vectors:
-                        select_cols += ", embedding"
-
-                    # Build query
-                    sql = f"""
-                        SELECT {select_cols}
-                        FROM arkham_vectors.embeddings
-                        WHERE collection = $2
-                    """
-                    params = [str(query_vector), collection]
-                    param_idx = 3
-
-                    # Add filter
-                    if filter:
-                        sql += f" AND payload @> ${param_idx}::jsonb"
-                        params.append(json.dumps(filter))
-                        param_idx += 1
-
-                    # Add score threshold
-                    if score_threshold and distance_metric == 'cosine':
-                        sql += f" AND {score_expr} >= ${param_idx}"
-                        params.append(score_threshold)
-                        param_idx += 1
-
-                    # Order and limit
-                    sql += f" ORDER BY embedding {op} $1::vector LIMIT ${param_idx}"
-                    params.append(limit)
-
-                rows = await conn.fetch(sql, *params)
-
-                return [
-                    SearchResult(
-                        id=r['id'],
-                        score=float(r['score']),
-                        payload=r['payload'] or {},
-                        vector=list(r['embedding']) if with_vectors and r.get('embedding') else None,
+            start_time = time.time()
+            try:
+                async with self._pool.acquire() as conn:
+                    # Get collection info for probes setting and vector size
+                    coll = await conn.fetchrow(
+                        "SELECT lists, probes, distance_metric, vector_size FROM arkham_vectors.collections WHERE name = $1",
+                        collection
                     )
-                    for r in rows
-                ]
+                    if not coll:
+                        raise CollectionNotFoundError(collection)
 
-        except CollectionNotFoundError:
-            raise
-        except Exception as e:
-            raise VectorServiceError(f"Search failed: {e}")
+                    # Check if binary quantization is used
+                    use_binary_quant = self._should_use_binary_quantization(coll['vector_size'])
+
+                    # Calculate probes for this search
+                    if recall_target:
+                        probes = self._optimal_probes(coll['lists'], recall_target)
+                    else:
+                        probes = coll['probes']
+
+                    # Set probes for this query
+                    await conn.execute(f"SET LOCAL ivfflat.probes = {probes}")
+
+                    if use_binary_quant:
+                        # Use binary quantization with Hamming distance for high dimensions
+                        vector_size = coll['vector_size']
+                        # Build score expression using Hamming distance (lower = better, so negate for score)
+                        score_expr = f"-((binary_quantize(embedding)::bit({vector_size}) <~> binary_quantize($1::vector)::bit({vector_size})))"
+                        
+                        # Build select columns
+                        select_cols = f"id, payload, {score_expr} AS score"
+                        if with_vectors:
+                            select_cols += ", embedding"
+
+                        # Build query with binary quantization
+                        sql = f"""
+                            SELECT {select_cols}
+                            FROM arkham_vectors.embeddings
+                            WHERE collection = $2
+                        """
+                        params = [str(query_vector), collection]
+                        param_idx = 3
+
+                        # Add filter
+                        if filter:
+                            sql += f" AND payload @> ${param_idx}::jsonb"
+                            params.append(json.dumps(filter))
+                            param_idx += 1
+
+                        # Add score threshold (for Hamming, lower distance is better)
+                        if score_threshold:
+                            sql += f" AND {score_expr} >= ${param_idx}"
+                            params.append(score_threshold)
+                            param_idx += 1
+
+                        # Order by Hamming distance (lower is better)
+                        sql += f" ORDER BY binary_quantize(embedding)::bit({vector_size}) <~> binary_quantize($1::vector)::bit({vector_size}) LIMIT ${param_idx}"
+                        params.append(limit)
+                    else:
+                        # Standard vector search for dimensions <= 2000
+                        # Determine distance operator
+                        distance_metric = coll['distance_metric'] or 'cosine'
+                        distance_ops = {
+                            'cosine': '<=>',
+                            'euclidean': '<->',
+                            'dot': '<#>',
+                        }
+                        op = distance_ops.get(distance_metric, '<=>')
+
+                        # Build score expression (higher = better)
+                        if distance_metric == 'cosine':
+                            score_expr = f"1 - (embedding {op} $1::vector)"
+                        elif distance_metric == 'dot':
+                            score_expr = f"-(embedding {op} $1::vector)"
+                        else:
+                            score_expr = f"embedding {op} $1::vector"
+
+                        # Build select columns
+                        select_cols = f"id, payload, {score_expr} AS score"
+                        if with_vectors:
+                            select_cols += ", embedding"
+
+                        # Build query
+                        sql = f"""
+                            SELECT {select_cols}
+                            FROM arkham_vectors.embeddings
+                            WHERE collection = $2
+                        """
+                        params = [str(query_vector), collection]
+                        param_idx = 3
+
+                        # Add filter
+                        if filter:
+                            sql += f" AND payload @> ${param_idx}::jsonb"
+                            params.append(json.dumps(filter))
+                            param_idx += 1
+
+                        # Add score threshold
+                        if score_threshold and distance_metric == 'cosine':
+                            sql += f" AND {score_expr} >= ${param_idx}"
+                            params.append(score_threshold)
+                            param_idx += 1
+
+                        # Order and limit
+                        sql += f" ORDER BY embedding {op} $1::vector LIMIT ${param_idx}"
+                        params.append(limit)
+
+                    rows = await conn.fetch(sql, *params)
+                    duration_ms = int((time.time() - start_time) * 1000)
+
+                    results = [
+                        SearchResult(
+                            id=r['id'],
+                            score=float(r['score']),
+                            payload=r['payload'] or {},
+                            vector=list(r['embedding']) if with_vectors and r.get('embedding') else None,
+                        )
+                        for r in rows
+                    ]
+                    
+                    if event:
+                        event.dependency("pgvector_search", duration_ms=duration_ms)
+                        event.output(
+                            result_count=len(results),
+                            top_score=results[0].score if results else None,
+                            collection=collection,
+                        )
+                    
+                    return results
+
+            except CollectionNotFoundError:
+                if event:
+                    event.error("CollectionNotFound", f"Collection '{collection}' not found")
+                raise
+            except Exception as e:
+                if event:
+                    event.error("VectorSearchFailed", str(e))
+                raise VectorServiceError(f"Search failed: {e}")
 
     async def search_text(
         self,
@@ -1243,17 +1288,43 @@ class VectorService:
         score_threshold: Optional[float] = None,
     ) -> List[SearchResult]:
         """Search using text (requires embedding model)."""
-        if not self._embedding_available:
-            raise EmbeddingError("Embedding model not available")
+        with log_operation("vector.search_text", collection=collection) as event:
+            if event:
+                event.input(
+                    collection=collection,
+                    text_length=len(text),
+                    limit=limit,
+                    has_filter=filter is not None,
+                    score_threshold=score_threshold,
+                )
+            
+            if not self._embedding_available:
+                if event:
+                    event.error("EmbeddingUnavailable", "Embedding model not available")
+                raise EmbeddingError("Embedding model not available")
 
-        vector = await self.embed_text(text)
-        return await self.search(
-            collection=collection,
-            query_vector=vector,
-            limit=limit,
-            filter=filter,
-            score_threshold=score_threshold,
-        )
+            embed_start = time.time()
+            vector = await self.embed_text(text)
+            embed_duration_ms = int((time.time() - embed_start) * 1000)
+            
+            if event:
+                event.dependency("embedding", duration_ms=embed_duration_ms, dimension=len(vector))
+            
+            results = await self.search(
+                collection=collection,
+                query_vector=vector,
+                limit=limit,
+                filter=filter,
+                score_threshold=score_threshold,
+            )
+            
+            if event:
+                event.output(
+                    result_count=len(results),
+                    top_score=results[0].score if results else None,
+                )
+            
+            return results
 
     async def search_batch(
         self,
@@ -1299,22 +1370,56 @@ class VectorService:
 
     async def embed_texts(self, texts: List[str]) -> List[List[float]]:
         """Generate embeddings for multiple texts (local or cloud API)."""
-        if not self._embedding_available:
-            raise EmbeddingError("Embedding model not available")
+        with log_operation("vector.create_embeddings", text_count=len(texts)) as event:
+            if event:
+                event.input(
+                    text_count=len(texts),
+                    total_text_length=sum(len(t) for t in texts),
+                    use_cloud=self._use_cloud_embeddings,
+                )
+            
+            if not self._embedding_available:
+                if event:
+                    event.error("EmbeddingUnavailable", "Embedding model not available")
+                raise EmbeddingError("Embedding model not available")
 
-        if not texts:
-            return []
+            if not texts:
+                if event:
+                    event.output(embedding_count=0)
+                return []
 
-        # Use cloud API if configured
-        if self._use_cloud_embeddings:
-            return await self._embed_via_cloud_api(texts)
+            start_time = time.time()
+            
+            # Use cloud API if configured
+            if self._use_cloud_embeddings:
+                embeddings = await self._embed_via_cloud_api(texts)
+                duration_ms = int((time.time() - start_time) * 1000)
+                if event:
+                    event.dependency("cloud_embedding_api", duration_ms=duration_ms)
+                    event.output(
+                        embedding_count=len(embeddings),
+                        dimension=len(embeddings[0]) if embeddings else 0,
+                    )
+                return embeddings
 
-        # Use local model
-        try:
-            embeddings = self._embedding_model.encode(texts, convert_to_numpy=True)
-            return [e.tolist() for e in embeddings]
-        except Exception as e:
-            raise EmbeddingError(f"Failed to generate embeddings: {e}")
+            # Use local model
+            try:
+                embeddings = self._embedding_model.encode(texts, convert_to_numpy=True)
+                result = [e.tolist() for e in embeddings]
+                duration_ms = int((time.time() - start_time) * 1000)
+                
+                if event:
+                    event.dependency("local_embedding_model", duration_ms=duration_ms)
+                    event.output(
+                        embedding_count=len(result),
+                        dimension=len(result[0]) if result else 0,
+                    )
+                
+                return result
+            except Exception as e:
+                if event:
+                    event.error("EmbeddingFailed", str(e))
+                raise EmbeddingError(f"Failed to generate embeddings: {e}")
 
     async def _embed_via_cloud_api(self, texts: List[str]) -> List[List[float]]:
         """Generate embeddings via OpenAI-compatible cloud API."""

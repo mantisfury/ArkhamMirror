@@ -5,6 +5,7 @@ FastAPI router for settings management.
 """
 
 import logging
+import time
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
@@ -19,6 +20,17 @@ try:
 except ImportError:
     async def current_optional_user():
         return None
+
+# Import wide event logging utilities (with fallback)
+try:
+    from arkham_frame import log_operation
+    WIDE_EVENTS_AVAILABLE = True
+except ImportError:
+    WIDE_EVENTS_AVAILABLE = False
+    from contextlib import contextmanager
+    @contextmanager
+    def log_operation(*args, **kwargs):
+        yield None
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
 
@@ -871,15 +883,37 @@ async def get_setting(key: str, request: Request):
 @router.put("/{key:path}", response_model=SettingResponse)
 async def update_setting(key: str, body: SettingUpdateRequest, request: Request):
     """Update a setting value."""
-    shard = get_shard(request)
-    try:
-        setting = await shard.update_setting(key, body.value)
-        if not setting:
-            raise HTTPException(status_code=404, detail=f"Setting not found: {key}")
-        cloud_api_available = _check_cloud_api_available()
-        return setting_to_response(setting, cloud_api_available)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    with log_operation("settings.update", setting_key=key) as event:
+        try:
+            if event:
+                event.context("shard", "settings")
+                event.context("operation", "update")
+                event.input(setting_key=key, has_value=body.value is not None)
+
+            shard = get_shard(request)
+            setting = await shard.update_setting(key, body.value)
+
+            if not setting:
+                raise HTTPException(status_code=404, detail=f"Setting not found: {key}")
+
+            cloud_api_available = _check_cloud_api_available()
+
+            if event:
+                event.output(
+                    setting_key=key,
+                    category=setting.category,
+                    requires_restart=setting.requires_restart,
+                )
+
+            return setting_to_response(setting, cloud_api_available)
+        except ValueError as e:
+            if event:
+                event.error(str(e), exc_info=True)
+            raise HTTPException(status_code=400, detail=str(e))
+        except Exception as e:
+            if event:
+                event.error(str(e), exc_info=True)
+            raise
 
 
 @router.delete("/{key:path}", response_model=SettingResponse)

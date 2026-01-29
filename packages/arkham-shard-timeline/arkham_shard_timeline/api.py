@@ -22,6 +22,17 @@ from .models import (
 if TYPE_CHECKING:
     from .shard import TimelineShard
 
+# Import wide event logging utilities (with fallback)
+try:
+    from arkham_frame import log_operation
+    WIDE_EVENTS_AVAILABLE = True
+except ImportError:
+    WIDE_EVENTS_AVAILABLE = False
+    from contextlib import contextmanager
+    @contextmanager
+    def log_operation(*args, **kwargs):
+        yield None
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/timeline", tags=["timeline"])
@@ -239,65 +250,90 @@ async def extract_timeline(request: ExtractionRequest):
 
     Provide either 'text' directly or 'document_id' to extract from document.
     """
-    if not _extractor:
-        raise HTTPException(status_code=503, detail="Timeline service not initialized")
-
-    start_time = time.time()
-
-    # Get text to analyze
-    if request.text:
-        text = request.text
-        doc_id = "adhoc"
-    elif request.document_id:
-        if not _documents_service:
-            raise HTTPException(status_code=503, detail="Documents service not available")
-
-        # Get document text
+    doc_id = request.document_id or "adhoc"
+    with log_operation("timeline.extract", document_id=doc_id) as event:
         try:
-            doc = await _documents_service.get_document(request.document_id)
-            text = doc.get("text", "")
-            doc_id = request.document_id
+            start_time = time.time()
+
+            if event:
+                event.context("shard", "timeline")
+                event.context("operation", "extract")
+                event.input(
+                    document_id=request.document_id,
+                    has_text=request.text is not None,
+                    has_context=request.context is not None,
+                )
+
+            if not _extractor:
+                raise HTTPException(status_code=503, detail="Timeline service not initialized")
+
+            # Get text to analyze
+            if request.text:
+                text = request.text
+                doc_id = "adhoc"
+            elif request.document_id:
+                if not _documents_service:
+                    raise HTTPException(status_code=503, detail="Documents service not available")
+
+                # Get document text
+                try:
+                    doc = await _documents_service.get_document(request.document_id)
+                    text = doc.get("text", "")
+                    doc_id = request.document_id
+                except Exception as e:
+                    logger.error(f"Failed to get document: {e}", exc_info=True)
+                    raise HTTPException(status_code=404, detail=f"Document not found: {request.document_id}")
+            else:
+                raise HTTPException(status_code=400, detail="Either 'text' or 'document_id' required")
+
+            if event:
+                event.context("text_length", len(text) if text else 0)
+
+            # Parse context
+            context = ExtractionContext()
+            if request.context:
+                if "reference_date" in request.context:
+                    from datetime import datetime
+                    context.reference_date = datetime.fromisoformat(request.context["reference_date"])
+                if "timezone" in request.context:
+                    context.timezone = request.context["timezone"]
+
+            # Extract events
+            try:
+                events = _extractor.extract_events(text, doc_id, context)
+            except Exception as e:
+                logger.error(f"Extraction failed: {e}", exc_info=True)
+                raise HTTPException(status_code=500, detail=f"Extraction failed: {str(e)}")
+
+            duration_ms = (time.time() - start_time) * 1000
+
+            if event:
+                event.output(
+                    event_count=len(events),
+                    duration_ms=duration_ms,
+                )
+
+            # Emit event
+            if _event_bus:
+                await _event_bus.emit(
+                    "timeline.events.extracted",
+                    {
+                        "document_id": doc_id,
+                        "event_count": len(events),
+                        "duration_ms": duration_ms,
+                    },
+                    source="timeline-shard",
+                )
+
+            return ExtractionResponse(
+                events=[_event_to_dict(e) for e in events],
+                count=len(events),
+                duration_ms=duration_ms,
+            )
         except Exception as e:
-            logger.error(f"Failed to get document: {e}", exc_info=True)
-            raise HTTPException(status_code=404, detail=f"Document not found: {request.document_id}")
-    else:
-        raise HTTPException(status_code=400, detail="Either 'text' or 'document_id' required")
-
-    # Parse context
-    context = ExtractionContext()
-    if request.context:
-        if "reference_date" in request.context:
-            from datetime import datetime
-            context.reference_date = datetime.fromisoformat(request.context["reference_date"])
-        if "timezone" in request.context:
-            context.timezone = request.context["timezone"]
-
-    # Extract events
-    try:
-        events = _extractor.extract_events(text, doc_id, context)
-    except Exception as e:
-        logger.error(f"Extraction failed: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Extraction failed: {str(e)}")
-
-    duration_ms = (time.time() - start_time) * 1000
-
-    # Emit event
-    if _event_bus:
-        await _event_bus.emit(
-            "timeline.events.extracted",
-            {
-                "document_id": doc_id,
-                "event_count": len(events),
-                "duration_ms": duration_ms,
-            },
-            source="timeline-shard",
-        )
-
-    return ExtractionResponse(
-        events=[_event_to_dict(e) for e in events],
-        count=len(events),
-        duration_ms=duration_ms,
-    )
+            if event:
+                event.error(str(e), exc_info=True)
+            raise
 
 
 class ExtractAllResponse(BaseModel):
@@ -408,34 +444,52 @@ async def extract_document_timeline(request: Request, document_id: str):
 
     This triggers timeline extraction for a specific document ID.
     """
-    shard = get_shard(request)
-    start_time = time.time()
+    with log_operation("timeline.extract_from_document", document_id=document_id) as event:
+        try:
+            start_time = time.time()
 
-    try:
-        events = await shard.extract_timeline(document_id)
-    except Exception as e:
-        logger.error(f"Extraction failed: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Extraction failed: {str(e)}")
+            if event:
+                event.context("shard", "timeline")
+                event.context("operation", "extract_from_document")
+                event.input(document_id=document_id)
 
-    duration_ms = (time.time() - start_time) * 1000
+            shard = get_shard(request)
 
-    # Emit event
-    if _event_bus:
-        await _event_bus.emit(
-            "timeline.timeline.extracted",
-            {
-                "document_id": document_id,
-                "event_count": len(events),
-                "duration_ms": duration_ms,
-            },
-            source="timeline-shard",
-        )
+            try:
+                events = await shard.extract_timeline(document_id)
+            except Exception as e:
+                logger.error(f"Extraction failed: {e}", exc_info=True)
+                raise HTTPException(status_code=500, detail=f"Extraction failed: {str(e)}")
 
-    return ExtractionResponse(
-        events=[_event_to_dict(e) for e in events],
-        count=len(events),
-        duration_ms=duration_ms,
-    )
+            duration_ms = (time.time() - start_time) * 1000
+
+            if event:
+                event.output(
+                    event_count=len(events),
+                    duration_ms=duration_ms,
+                )
+
+            # Emit event
+            if _event_bus:
+                await _event_bus.emit(
+                    "timeline.timeline.extracted",
+                    {
+                        "document_id": document_id,
+                        "event_count": len(events),
+                        "duration_ms": duration_ms,
+                    },
+                    source="timeline-shard",
+                )
+
+            return ExtractionResponse(
+                events=[_event_to_dict(e) for e in events],
+                count=len(events),
+                duration_ms=duration_ms,
+            )
+        except Exception as e:
+            if event:
+                event.error(str(e), exc_info=True)
+            raise
 
 
 @router.get("/documents")
@@ -712,78 +766,109 @@ async def merge_timelines(http_request: Request, request: MergeRequest):
 
     Supports various merge strategies and deduplication.
     """
-    shard = get_shard(http_request)
-
-    if not shard.merger:
-        raise HTTPException(status_code=503, detail="Timeline service not initialized")
-
-    if not shard.database_service:
-        raise HTTPException(status_code=503, detail="Database service not available")
-
-    # Get events for all documents
-    all_events = []
-    for doc_id in request.document_ids:
+    with log_operation("timeline.merge", document_count=len(request.document_ids)) as event:
         try:
-            events = await shard._get_events_for_document(doc_id)
-            all_events.extend(events)
+            start_time = time.time()
+
+            if event:
+                event.context("shard", "timeline")
+                event.context("operation", "merge")
+                event.input(
+                    document_count=len(request.document_ids),
+                    merge_strategy=request.merge_strategy,
+                    deduplicate=request.deduplicate,
+                    has_date_range=request.date_range is not None,
+                    has_priority_docs=request.priority_docs is not None,
+                )
+
+            shard = get_shard(http_request)
+
+            if not shard.merger:
+                raise HTTPException(status_code=503, detail="Timeline service not initialized")
+
+            if not shard.database_service:
+                raise HTTPException(status_code=503, detail="Database service not available")
+
+            # Get events for all documents
+            all_events = []
+            for doc_id in request.document_ids:
+                try:
+                    events = await shard._get_events_for_document(doc_id)
+                    all_events.extend(events)
+                except Exception as e:
+                    logger.error(f"Failed to get events for {doc_id}: {e}")
+
+            if event:
+                event.context("input_event_count", len(all_events))
+
+            # Apply date range filter if provided
+            if request.date_range:
+                from datetime import datetime
+                start = datetime.fromisoformat(request.date_range.get("start")) if request.date_range.get("start") else None
+                end = datetime.fromisoformat(request.date_range.get("end")) if request.date_range.get("end") else None
+
+                if start or end:
+                    filtered_events = []
+                    for event in all_events:
+                        if start and event.date_start < start:
+                            continue
+                        if end and event.date_start > end:
+                            continue
+                        filtered_events.append(event)
+                    all_events = filtered_events
+
+            # Parse merge strategy
+            try:
+                strategy = MergeStrategy(request.merge_strategy.lower())
+            except ValueError:
+                raise HTTPException(status_code=400, detail=f"Invalid merge strategy: {request.merge_strategy}")
+
+            # Merge
+            try:
+                result = shard.merger.merge(
+                    all_events,
+                    strategy=strategy,
+                    priority_docs=request.priority_docs,
+                )
+            except Exception as e:
+                logger.error(f"Merge failed: {e}", exc_info=True)
+                raise HTTPException(status_code=500, detail=f"Merge failed: {str(e)}")
+
+            duration_ms = (time.time() - start_time) * 1000
+
+            if event:
+                event.output(
+                    event_count=result.count,
+                    duplicates_removed=result.duplicates_removed,
+                    duration_ms=duration_ms,
+                )
+
+            # Emit event
+            if _event_bus:
+                await _event_bus.emit(
+                    "timeline.timeline.merged",
+                    {
+                        "document_ids": request.document_ids,
+                        "event_count": result.count,
+                        "strategy": request.merge_strategy,
+                    },
+                    source="timeline-shard",
+                )
+
+            return MergeResponse(
+                events=[_event_to_dict(e) for e in result.events],
+                count=result.count,
+                sources=result.sources,
+                date_range={
+                    "earliest": result.date_range.start.isoformat() if result.date_range.start else None,
+                    "latest": result.date_range.end.isoformat() if result.date_range.end else None,
+                },
+                duplicates_removed=result.duplicates_removed,
+            )
         except Exception as e:
-            logger.error(f"Failed to get events for {doc_id}: {e}")
-
-    # Apply date range filter if provided
-    if request.date_range:
-        from datetime import datetime
-        start = datetime.fromisoformat(request.date_range.get("start")) if request.date_range.get("start") else None
-        end = datetime.fromisoformat(request.date_range.get("end")) if request.date_range.get("end") else None
-
-        if start or end:
-            filtered_events = []
-            for event in all_events:
-                if start and event.date_start < start:
-                    continue
-                if end and event.date_start > end:
-                    continue
-                filtered_events.append(event)
-            all_events = filtered_events
-
-    # Parse merge strategy
-    try:
-        strategy = MergeStrategy(request.merge_strategy.lower())
-    except ValueError:
-        raise HTTPException(status_code=400, detail=f"Invalid merge strategy: {request.merge_strategy}")
-
-    # Merge
-    try:
-        result = shard.merger.merge(
-            all_events,
-            strategy=strategy,
-            priority_docs=request.priority_docs,
-        )
-    except Exception as e:
-        logger.error(f"Merge failed: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Merge failed: {str(e)}")
-
-    # Emit event
-    if _event_bus:
-        await _event_bus.emit(
-            "timeline.timeline.merged",
-            {
-                "document_ids": request.document_ids,
-                "event_count": result.count,
-                "strategy": request.merge_strategy,
-            },
-            source="timeline-shard",
-        )
-
-    return MergeResponse(
-        events=[_event_to_dict(e) for e in result.events],
-        count=result.count,
-        sources=result.sources,
-        date_range={
-            "earliest": result.date_range.start.isoformat() if result.date_range.start else None,
-            "latest": result.date_range.end.isoformat() if result.date_range.end else None,
-        },
-        duplicates_removed=result.duplicates_removed,
-    )
+            if event:
+                event.error(str(e), exc_info=True)
+            raise
 
 
 @router.post("/conflicts", response_model=ConflictsResponse)
@@ -793,75 +878,104 @@ async def detect_conflicts(http_request: Request, request: ConflictsRequest):
 
     Detects contradictions, inconsistencies, gaps, and overlaps.
     """
-    shard = get_shard(http_request)
-
-    if not shard.conflict_detector:
-        raise HTTPException(status_code=503, detail="Timeline service not initialized")
-
-    if not shard.database_service:
-        raise HTTPException(status_code=503, detail="Database service not available")
-
-    # Get events for all documents
-    all_events = []
-    for doc_id in request.document_ids:
+    with log_operation("timeline.detect_conflicts", document_count=len(request.document_ids)) as event:
         try:
-            events = await shard._get_events_for_document(doc_id)
-            all_events.extend(events)
+            start_time = time.time()
+
+            if event:
+                event.context("shard", "timeline")
+                event.context("operation", "detect_conflicts")
+                event.input(
+                    document_count=len(request.document_ids),
+                    conflict_types=request.conflict_types,
+                    tolerance_days=request.tolerance_days,
+                )
+
+            shard = get_shard(http_request)
+
+            if not shard.conflict_detector:
+                raise HTTPException(status_code=503, detail="Timeline service not initialized")
+
+            if not shard.database_service:
+                raise HTTPException(status_code=503, detail="Database service not available")
+
+            # Get events for all documents
+            all_events = []
+            for doc_id in request.document_ids:
+                try:
+                    events = await shard._get_events_for_document(doc_id)
+                    all_events.extend(events)
+                except Exception as e:
+                    logger.error(f"Failed to get events for {doc_id}: {e}")
+
+            if event:
+                event.context("input_event_count", len(all_events))
+
+            # Parse conflict types
+            conflict_types = None
+            if request.conflict_types:
+                try:
+                    conflict_types = [ConflictType(ct.lower()) for ct in request.conflict_types]
+                except ValueError as e:
+                    raise HTTPException(status_code=400, detail=f"Invalid conflict type: {e}")
+
+            # Update detector tolerance
+            if request.tolerance_days != shard.conflict_detector.tolerance_days:
+                from .conflicts import ConflictDetector
+                temp_detector = ConflictDetector(tolerance_days=request.tolerance_days)
+            else:
+                temp_detector = shard.conflict_detector
+
+            # Detect conflicts
+            try:
+                conflicts = temp_detector.detect_conflicts(all_events, conflict_types)
+            except Exception as e:
+                logger.error(f"Conflict detection failed: {e}", exc_info=True)
+                raise HTTPException(status_code=500, detail=f"Conflict detection failed: {str(e)}")
+
+            # Store conflicts
+            if conflicts:
+                try:
+                    await shard._store_conflicts(conflicts)
+                except Exception as e:
+                    logger.error(f"Failed to store conflicts: {e}")
+
+            # Count by type
+            by_type = {}
+            for conflict in conflicts:
+                type_str = conflict.type.value
+                by_type[type_str] = by_type.get(type_str, 0) + 1
+
+            duration_ms = (time.time() - start_time) * 1000
+
+            if event:
+                event.output(
+                    conflict_count=len(conflicts),
+                    by_type=by_type,
+                    duration_ms=duration_ms,
+                )
+
+            # Emit event
+            if _event_bus:
+                await _event_bus.emit(
+                    "timeline.conflict.detected",
+                    {
+                        "document_ids": request.document_ids,
+                        "conflict_count": len(conflicts),
+                        "by_type": by_type,
+                    },
+                    source="timeline-shard",
+                )
+
+            return ConflictsResponse(
+                conflicts=[_conflict_to_dict(c) for c in conflicts],
+                count=len(conflicts),
+                by_type=by_type,
+            )
         except Exception as e:
-            logger.error(f"Failed to get events for {doc_id}: {e}")
-
-    # Parse conflict types
-    conflict_types = None
-    if request.conflict_types:
-        try:
-            conflict_types = [ConflictType(ct.lower()) for ct in request.conflict_types]
-        except ValueError as e:
-            raise HTTPException(status_code=400, detail=f"Invalid conflict type: {e}")
-
-    # Update detector tolerance
-    if request.tolerance_days != shard.conflict_detector.tolerance_days:
-        from .conflicts import ConflictDetector
-        temp_detector = ConflictDetector(tolerance_days=request.tolerance_days)
-    else:
-        temp_detector = shard.conflict_detector
-
-    # Detect conflicts
-    try:
-        conflicts = temp_detector.detect_conflicts(all_events, conflict_types)
-    except Exception as e:
-        logger.error(f"Conflict detection failed: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Conflict detection failed: {str(e)}")
-
-    # Store conflicts
-    if conflicts:
-        try:
-            await shard._store_conflicts(conflicts)
-        except Exception as e:
-            logger.error(f"Failed to store conflicts: {e}")
-
-    # Count by type
-    by_type = {}
-    for conflict in conflicts:
-        type_str = conflict.type.value
-        by_type[type_str] = by_type.get(type_str, 0) + 1
-
-    # Emit event
-    if _event_bus:
-        await _event_bus.emit(
-            "timeline.conflict.detected",
-            {
-                "document_ids": request.document_ids,
-                "conflict_count": len(conflicts),
-                "by_type": by_type,
-            },
-            source="timeline-shard",
-        )
-
-    return ConflictsResponse(
-        conflicts=[_conflict_to_dict(c) for c in conflicts],
-        count=len(conflicts),
-        by_type=by_type,
-    )
+            if event:
+                event.error(str(e), exc_info=True)
+            raise
 
 
 @router.get("/entity/{entity_id}", response_model=EntityTimelineResponse)

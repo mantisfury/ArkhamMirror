@@ -4,6 +4,18 @@ from fastapi import APIRouter, HTTPException, UploadFile, File
 from pydantic import BaseModel
 from typing import Optional
 import logging
+import time
+
+# Import wide event logging utilities (with fallback)
+try:
+    from arkham_frame import log_operation
+    WIDE_EVENTS_AVAILABLE = True
+except ImportError:
+    WIDE_EVENTS_AVAILABLE = False
+    from contextlib import contextmanager
+    @contextmanager
+    def log_operation(*args, **kwargs):
+        yield None
 
 logger = logging.getLogger(__name__)
 
@@ -126,41 +138,76 @@ async def ocr_page(request: OCRRequest):
 @router.post("/document", response_model=OCRResponse)
 async def ocr_document(request: OCRRequest):
     """OCR all pages of a document."""
-    if not _shard:
-        raise HTTPException(status_code=503, detail="OCR shard not initialized")
+    with log_operation("ocr.document", document_id=request.document_id) as event:
+        if event:
+            event.context("shard", "ocr")
+            event.context("operation", "ocr_document")
+            event.input(
+                document_id=request.document_id,
+                engine=request.engine,
+                language=request.language,
+            )
+        
+        if not _shard:
+            if event:
+                event.error("ServiceUnavailable", "OCR shard not initialized")
+            raise HTTPException(status_code=503, detail="OCR shard not initialized")
 
-    if not request.document_id:
-        raise HTTPException(status_code=400, detail="document_id required")
+        if not request.document_id:
+            if event:
+                event.error("ValidationError", "document_id required")
+            raise HTTPException(status_code=400, detail="document_id required")
 
-    try:
-        result = await _shard.ocr_document(
-            document_id=request.document_id,
-            engine=request.engine,
-            language=request.language,
-        )
-
-        # Check for error status from fallback OCR
-        if result.get("status") == "failed":
-            return OCRResponse(
-                success=False,
-                error=result.get("error", "OCR processing failed"),
-                engine=result.get("engine", "paddle"),
+        start_time = time.time()
+        try:
+            result = await _shard.ocr_document(
+                document_id=request.document_id,
+                engine=request.engine,
+                language=request.language,
             )
 
-        # For document OCR, use total_text
-        text = result.get("total_text", "")
-        pages = result.get("pages_processed", 0)
-        return OCRResponse(
-            success=True,
-            text=text,
-            pages_processed=pages,
-            engine=result.get("engine", "paddle"),
-            char_count=len(text),
-            word_count=len(text.split()) if text else 0,
-        )
-    except Exception as e:
-        logger.error(f"OCR document failed: {e}")
-        return OCRResponse(success=False, error=str(e))
+            duration_ms = int((time.time() - start_time) * 1000)
+
+            # Check for error status from fallback OCR
+            if result.get("status") == "failed":
+                if event:
+                    event.error("OCRProcessingFailed", result.get("error", "OCR processing failed"))
+                return OCRResponse(
+                    success=False,
+                    error=result.get("error", "OCR processing failed"),
+                    engine=result.get("engine", "paddle"),
+                )
+
+            # For document OCR, use total_text
+            text = result.get("total_text", "")
+            pages = result.get("pages_processed", 0)
+            
+            if event:
+                event.dependency("ocr_engine", duration_ms=duration_ms, engine=result.get("engine", "paddle"))
+                event.output(
+                    success=True,
+                    pages_processed=pages,
+                    char_count=len(text),
+                    word_count=len(text.split()) if text else 0,
+                    engine=result.get("engine", "paddle"),
+                    escalated=result.get("escalated", False),
+                )
+            
+            return OCRResponse(
+                success=True,
+                text=text,
+                pages_processed=pages,
+                engine=result.get("engine", "paddle"),
+                char_count=len(text),
+                word_count=len(text.split()) if text else 0,
+            )
+        except Exception as e:
+            duration_ms = int((time.time() - start_time) * 1000)
+            logger.error(f"OCR document failed: {e}")
+            if event:
+                event.dependency("ocr_engine", duration_ms=duration_ms, error=str(e))
+                event.error("OCRFailed", str(e))
+            return OCRResponse(success=False, error=str(e))
 
 
 @router.post("/upload", response_model=OCRResponse)

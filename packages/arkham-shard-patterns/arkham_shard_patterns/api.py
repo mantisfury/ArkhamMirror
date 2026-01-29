@@ -4,6 +4,7 @@ Patterns Shard - API Routes
 FastAPI routes for pattern detection and analysis.
 """
 
+import time
 from typing import Any, Optional, TYPE_CHECKING
 
 from fastapi import APIRouter, HTTPException, Query, Request
@@ -31,6 +32,17 @@ from .models import (
 
 if TYPE_CHECKING:
     from .shard import PatternsShard
+
+# Import wide event logging utilities (with fallback)
+try:
+    from arkham_frame import log_operation
+    WIDE_EVENTS_AVAILABLE = True
+except ImportError:
+    WIDE_EVENTS_AVAILABLE = False
+    from contextlib import contextmanager
+    @contextmanager
+    def log_operation(*args, **kwargs):
+        yield None
 
 router = APIRouter(prefix="/api/patterns", tags=["patterns"])
 
@@ -138,15 +150,39 @@ async def list_patterns(
 @router.post("/", response_model=Pattern)
 async def create_pattern(body: PatternCreate, request: Request):
     """Create a new pattern."""
-    shard = get_shard(request)
-    return await shard.create_pattern(
-        name=body.name,
-        description=body.description,
-        pattern_type=body.pattern_type,
-        criteria=body.criteria,
-        confidence=body.confidence,
-        metadata=body.metadata,
-    )
+    with log_operation("patterns.create", pattern_type=body.pattern_type.value if hasattr(body.pattern_type, 'value') else str(body.pattern_type)) as event:
+        try:
+            if event:
+                event.context("shard", "patterns")
+                event.context("operation", "create")
+                event.input(
+                    pattern_type=body.pattern_type.value if hasattr(body.pattern_type, 'value') else str(body.pattern_type),
+                    name=body.name,
+                    confidence=body.confidence,
+                    has_metadata=body.metadata is not None,
+                )
+
+            shard = get_shard(request)
+            pattern = await shard.create_pattern(
+                name=body.name,
+                description=body.description,
+                pattern_type=body.pattern_type,
+                criteria=body.criteria,
+                confidence=body.confidence,
+                metadata=body.metadata,
+            )
+
+            if event:
+                event.output(
+                    pattern_id=pattern.id,
+                    status=pattern.status.value if hasattr(pattern.status, 'value') else str(pattern.status),
+                )
+
+            return pattern
+        except Exception as e:
+            if event:
+                event.error(str(e), exc_info=True)
+            raise
 
 
 @router.get("/{pattern_id}", response_model=Pattern)
@@ -267,8 +303,37 @@ async def remove_match(pattern_id: str, match_id: str, request: Request):
 @router.post("/analyze", response_model=PatternAnalysisResult)
 async def analyze_for_patterns(body: PatternAnalysisRequest, request: Request):
     """Analyze documents or text for patterns."""
-    shard = get_shard(request)
-    return await shard.analyze_documents(body)
+    with log_operation("patterns.analyze") as event:
+        try:
+            start_time = time.time()
+
+            if event:
+                event.context("shard", "patterns")
+                event.context("operation", "analyze")
+                event.input(
+                    document_count=len(body.document_ids) if body.document_ids else 0,
+                    has_text=body.text is not None,
+                    pattern_types=len(body.pattern_types) if body.pattern_types else 0,
+                    min_confidence=body.min_confidence,
+                )
+
+            shard = get_shard(request)
+            result = await shard.analyze_documents(body)
+
+            duration_ms = (time.time() - start_time) * 1000
+
+            if event:
+                event.output(
+                    patterns_found=len(result.patterns) if result.patterns else 0,
+                    matches_found=len(result.matches) if result.matches else 0,
+                    duration_ms=duration_ms,
+                )
+
+            return result
+        except Exception as e:
+            if event:
+                event.error(str(e), exc_info=True)
+            raise
 
 
 @router.post("/detect", response_model=PatternAnalysisResult)
@@ -279,26 +344,80 @@ async def detect_patterns(
     min_confidence: float = Query(0.5, ge=0.0, le=1.0),
 ):
     """Detect patterns in provided text."""
-    shard = get_shard(request)
+    with log_operation("patterns.detect") as event:
+        try:
+            start_time = time.time()
 
-    types = None
-    if pattern_types:
-        types = [PatternType(t.strip()) for t in pattern_types.split(",")]
+            if event:
+                event.context("shard", "patterns")
+                event.context("operation", "detect")
+                event.input(
+                    text_length=len(text) if text else 0,
+                    pattern_types=pattern_types,
+                    min_confidence=min_confidence,
+                )
 
-    analysis_request = PatternAnalysisRequest(
-        text=text,
-        pattern_types=types,
-        min_confidence=min_confidence,
-    )
+            shard = get_shard(request)
 
-    return await shard.analyze_documents(analysis_request)
+            types = None
+            if pattern_types:
+                types = [PatternType(t.strip()) for t in pattern_types.split(",")]
+
+            analysis_request = PatternAnalysisRequest(
+                text=text,
+                pattern_types=types,
+                min_confidence=min_confidence,
+            )
+
+            result = await shard.analyze_documents(analysis_request)
+
+            duration_ms = (time.time() - start_time) * 1000
+
+            if event:
+                event.output(
+                    patterns_found=len(result.patterns) if result.patterns else 0,
+                    matches_found=len(result.matches) if result.matches else 0,
+                    duration_ms=duration_ms,
+                )
+
+            return result
+        except Exception as e:
+            if event:
+                event.error(str(e), exc_info=True)
+            raise
 
 
 @router.post("/correlate", response_model=CorrelationResult)
 async def find_correlations(body: CorrelationRequest, request: Request):
     """Find correlations between entities."""
-    shard = get_shard(request)
-    return await shard.find_correlations(body)
+    with log_operation("patterns.correlate") as event:
+        try:
+            start_time = time.time()
+
+            if event:
+                event.context("shard", "patterns")
+                event.context("operation", "correlate")
+                event.input(
+                    entity_count=len(body.entity_ids) if body.entity_ids else 0,
+                    document_count=len(body.document_ids) if body.document_ids else 0,
+                )
+
+            shard = get_shard(request)
+            result = await shard.find_correlations(body)
+
+            duration_ms = (time.time() - start_time) * 1000
+
+            if event:
+                event.output(
+                    correlation_count=len(result.correlations) if result.correlations else 0,
+                    duration_ms=duration_ms,
+                )
+
+            return result
+        except Exception as e:
+            if event:
+                event.error(str(e), exc_info=True)
+            raise
 
 
 # === Batch Operations ===

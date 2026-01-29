@@ -1,6 +1,7 @@
 """Entities Shard API endpoints."""
 
 import logging
+import time
 from typing import Annotated, Any, Optional, TYPE_CHECKING
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -23,6 +24,17 @@ except ImportError:
         return None
     async def require_project_member():
         return None
+
+# Import wide event logging utilities (with fallback)
+try:
+    from arkham_frame import log_operation
+    WIDE_EVENTS_AVAILABLE = True
+except ImportError:
+    WIDE_EVENTS_AVAILABLE = False
+    from contextlib import contextmanager
+    @contextmanager
+    def log_operation(*args, **kwargs):
+        yield None
 
 logger = logging.getLogger(__name__)
 
@@ -301,45 +313,65 @@ async def update_entity(entity_id: str, update_request: UpdateEntityRequest, req
     Returns:
         Updated entity
     """
-    if not _entity_service:
-        raise HTTPException(status_code=503, detail="Entity service not available")
+    with log_operation("entities.update", entity_id=entity_id) as event:
+        try:
+            if event:
+                event.context("shard", "entities")
+                event.context("operation", "update")
+                event.input(
+                    entity_id=entity_id,
+                    name_updated=update_request.name is not None,
+                    type_updated=update_request.entity_type is not None,
+                    metadata_updated=update_request.metadata is not None,
+                    aliases_updated=update_request.aliases is not None,
+                )
 
-    try:
-        # Build updates dict from request
-        updates = {}
-        if update_request.name is not None:
-            updates["text"] = update_request.name
-        if update_request.entity_type is not None:
-            updates["entity_type"] = update_request.entity_type
-        if update_request.metadata is not None:
-            updates["metadata"] = update_request.metadata
+            if not _entity_service:
+                raise HTTPException(status_code=503, detail="Entity service not available")
 
-        # Update via EntityService
-        updated = await _entity_service.update_entity(entity_id, updates)
+            # Build updates dict from request
+            updates = {}
+            if update_request.name is not None:
+                updates["text"] = update_request.name
+            if update_request.entity_type is not None:
+                updates["entity_type"] = update_request.entity_type
+            if update_request.metadata is not None:
+                updates["metadata"] = update_request.metadata
 
-        # Publish event
-        if _event_bus:
-            await _event_bus.emit(
-                "entities.entity.edited",
-                {"entity_id": entity_id, "changes": updates},
-                source="entities-shard",
+            # Update via EntityService
+            updated = await _entity_service.update_entity(entity_id, updates)
+
+            if event:
+                event.output(
+                    entity_id=entity_id,
+                    entity_type=updated.entity_type.value if hasattr(updated.entity_type, 'value') else str(updated.entity_type),
+                )
+
+            # Publish event
+            if _event_bus:
+                await _event_bus.emit(
+                    "entities.entity.edited",
+                    {"entity_id": entity_id, "changes": updates},
+                    source="entities-shard",
+                )
+
+            return EntityResponse(
+                id=updated.id,
+                name=updated.text,
+                entity_type=updated.entity_type.value if hasattr(updated.entity_type, 'value') else str(updated.entity_type),
+                canonical_id=updated.canonical_id,
+                aliases=[],
+                metadata=updated.metadata or {},
+                mention_count=0,
+                created_at=updated.created_at.isoformat() if updated.created_at else "",
+                updated_at=updated.created_at.isoformat() if updated.created_at else "",
             )
 
-        return EntityResponse(
-            id=updated.id,
-            name=updated.text,
-            entity_type=updated.entity_type.value if hasattr(updated.entity_type, 'value') else str(updated.entity_type),
-            canonical_id=updated.canonical_id,
-            aliases=[],
-            metadata=updated.metadata or {},
-            mention_count=0,
-            created_at=updated.created_at.isoformat() if updated.created_at else "",
-            updated_at=updated.created_at.isoformat() if updated.created_at else "",
-        )
-
-    except Exception as e:
-        logger.error(f"Failed to update entity {entity_id}: {e}")
-        raise HTTPException(status_code=404, detail=f"Entity not found: {entity_id}")
+        except Exception as e:
+            logger.error(f"Failed to update entity {entity_id}: {e}")
+            if event:
+                event.error(str(e), exc_info=True)
+            raise HTTPException(status_code=404, detail=f"Entity not found: {entity_id}")
 
 
 @router.delete("/items/{entity_id}")
@@ -755,22 +787,51 @@ async def merge_entities(merge_request: MergeEntitiesRequest, request: Request):
     Returns:
         Merged entity details
     """
-    shard = get_shard(request)
+    with log_operation("entities.merge", canonical_id=merge_request.canonical_id, entity_count=len(merge_request.entity_ids)) as event:
+        try:
+            start_time = time.time()
 
-    # Merge each entity into the canonical one
-    for entity_id in merge_request.entity_ids:
-        if entity_id != merge_request.canonical_id:
-            await shard.merge_entities(entity_id, merge_request.canonical_id)
+            if event:
+                event.context("shard", "entities")
+                event.context("operation", "merge")
+                event.input(
+                    canonical_id=merge_request.canonical_id,
+                    entity_count=len(merge_request.entity_ids),
+                    canonical_name=merge_request.canonical_name,
+                )
 
-    # Get the updated canonical entity
-    canonical = await shard.get_entity(merge_request.canonical_id)
+            shard = get_shard(request)
 
-    return {
-        "success": True,
-        "canonical_id": merge_request.canonical_id,
-        "merged_count": len([eid for eid in merge_request.entity_ids if eid != merge_request.canonical_id]),
-        "canonical_entity": entity_to_response(canonical) if canonical else None,
-    }
+            # Merge each entity into the canonical one
+            merged_count = 0
+            for entity_id in merge_request.entity_ids:
+                if entity_id != merge_request.canonical_id:
+                    await shard.merge_entities(entity_id, merge_request.canonical_id)
+                    merged_count += 1
+
+            # Get the updated canonical entity
+            canonical = await shard.get_entity(merge_request.canonical_id)
+
+            duration_ms = (time.time() - start_time) * 1000
+
+            if event:
+                event.output(
+                    canonical_id=merge_request.canonical_id,
+                    merged_count=merged_count,
+                    duration_ms=duration_ms,
+                )
+
+            return {
+                "success": True,
+                "canonical_id": merge_request.canonical_id,
+                "merged_count": merged_count,
+                "canonical_entity": entity_to_response(canonical) if canonical else None,
+            }
+        except Exception as e:
+            logger.error(f"Failed to merge entities: {e}")
+            if event:
+                event.error(str(e), exc_info=True)
+            raise
 
 
 # --- Relationship Endpoints ---
@@ -879,53 +940,74 @@ async def create_relationship(rel_request: CreateRelationshipRequest):
     Returns:
         Created relationship
     """
-    if not _entity_service:
-        raise HTTPException(status_code=503, detail="Entity service not available")
-
-    try:
-        from arkham_frame.services.entities import RelationshipType
-
-        # Convert relationship type string to enum
+    with log_operation("entities.create_relationship", source_id=rel_request.source_id, target_id=rel_request.target_id) as event:
         try:
-            rel_type = RelationshipType(rel_request.relationship_type)
-        except ValueError:
-            rel_type = RelationshipType.OTHER
+            if event:
+                event.context("shard", "entities")
+                event.context("operation", "create_relationship")
+                event.input(
+                    source_id=rel_request.source_id,
+                    target_id=rel_request.target_id,
+                    relationship_type=rel_request.relationship_type,
+                    confidence=rel_request.confidence,
+                )
 
-        # Create relationship via EntityService
-        relationship = await _entity_service.create_relationship(
-            source_id=rel_request.source_id,
-            target_id=rel_request.target_id,
-            relationship_type=rel_type,
-            confidence=rel_request.confidence,
-            metadata=rel_request.metadata,
-        )
+            if not _entity_service:
+                raise HTTPException(status_code=503, detail="Entity service not available")
 
-        # Publish event
-        if _event_bus:
-            await _event_bus.emit(
-                "entities.relationship.created",
-                {
-                    "relationship_id": relationship.id,
-                    "source_id": relationship.source_id,
-                    "target_id": relationship.target_id,
-                    "relationship_type": relationship.relationship_type.value,
-                },
-                source="entities-shard",
+            from arkham_frame.services.entities import RelationshipType
+
+            # Convert relationship type string to enum
+            try:
+                rel_type = RelationshipType(rel_request.relationship_type)
+            except ValueError:
+                rel_type = RelationshipType.OTHER
+
+            # Create relationship via EntityService
+            relationship = await _entity_service.create_relationship(
+                source_id=rel_request.source_id,
+                target_id=rel_request.target_id,
+                relationship_type=rel_type,
+                confidence=rel_request.confidence,
+                metadata=rel_request.metadata,
             )
 
-        return RelationshipResponse(
-            id=relationship.id,
-            source_id=relationship.source_id,
-            target_id=relationship.target_id,
-            relationship_type=relationship.relationship_type.value if hasattr(relationship.relationship_type, 'value') else str(relationship.relationship_type),
-            confidence=relationship.confidence,
-            metadata=relationship.metadata or {},
-            created_at=relationship.created_at.isoformat() if relationship.created_at else "",
-        )
+            if event:
+                event.output(
+                    relationship_id=relationship.id,
+                    source_id=relationship.source_id,
+                    target_id=relationship.target_id,
+                    relationship_type=relationship.relationship_type.value if hasattr(relationship.relationship_type, 'value') else str(relationship.relationship_type),
+                )
 
-    except Exception as e:
-        logger.error(f"Failed to create relationship: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+            # Publish event
+            if _event_bus:
+                await _event_bus.emit(
+                    "entities.relationship.created",
+                    {
+                        "relationship_id": relationship.id,
+                        "source_id": relationship.source_id,
+                        "target_id": relationship.target_id,
+                        "relationship_type": relationship.relationship_type.value,
+                    },
+                    source="entities-shard",
+                )
+
+            return RelationshipResponse(
+                id=relationship.id,
+                source_id=relationship.source_id,
+                target_id=relationship.target_id,
+                relationship_type=relationship.relationship_type.value if hasattr(relationship.relationship_type, 'value') else str(relationship.relationship_type),
+                confidence=relationship.confidence,
+                metadata=relationship.metadata or {},
+                created_at=relationship.created_at.isoformat() if relationship.created_at else "",
+            )
+
+        except Exception as e:
+            logger.error(f"Failed to create relationship: {e}")
+            if event:
+                event.error(str(e), exc_info=True)
+            raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.delete("/relationships/{relationship_id}")

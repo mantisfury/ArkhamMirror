@@ -4,6 +4,7 @@ Packets Shard - FastAPI Routes
 REST API endpoints for packet management.
 """
 
+import time
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
 from fastapi import APIRouter, HTTPException, Query, Request
@@ -19,6 +20,17 @@ from .models import (
 
 if TYPE_CHECKING:
     from .shard import PacketsShard
+
+# Import wide event logging utilities (with fallback)
+try:
+    from arkham_frame import log_operation
+    WIDE_EVENTS_AVAILABLE = True
+except ImportError:
+    WIDE_EVENTS_AVAILABLE = False
+    from contextlib import contextmanager
+    @contextmanager
+    def log_operation(*args, **kwargs):
+        yield None
 
 router = APIRouter(prefix="/api/packets", tags=["packets"])
 
@@ -307,16 +319,38 @@ async def list_packets(
 @router.post("/", response_model=PacketResponse, status_code=201)
 async def create_packet(body: PacketCreate, request: Request):
     """Create a new packet."""
-    shard = get_shard(request)
+    with log_operation("packets.create", visibility=body.visibility.value if hasattr(body.visibility, 'value') else str(body.visibility)) as event:
+        try:
+            if event:
+                event.context("shard", "packets")
+                event.context("operation", "create")
+                event.input(
+                    name=body.name,
+                    visibility=body.visibility.value if hasattr(body.visibility, 'value') else str(body.visibility),
+                    has_metadata=body.metadata is not None,
+                )
 
-    packet = await shard.create_packet(
-        name=body.name,
-        description=body.description,
-        visibility=body.visibility,
-        metadata=body.metadata,
-    )
+            shard = get_shard(request)
 
-    return _packet_to_response(packet)
+            packet = await shard.create_packet(
+                name=body.name,
+                description=body.description,
+                visibility=body.visibility,
+                metadata=body.metadata,
+            )
+
+            if event:
+                event.output(
+                    packet_id=packet.id,
+                    status=packet.status.value if hasattr(packet.status, 'value') else str(packet.status),
+                    contents_count=packet.contents_count,
+                )
+
+            return _packet_to_response(packet)
+        except Exception as e:
+            if event:
+                event.error(str(e), exc_info=True)
+            raise
 
 
 @router.get("/{packet_id}", response_model=PacketResponse)
@@ -499,24 +533,53 @@ async def revoke_share(packet_id: str, share_id: str, request: Request):
 @router.post("/{packet_id}/export", response_model=ExportResponse)
 async def export_packet(packet_id: str, body: ExportRequest, request: Request):
     """Export a packet to a file."""
-    shard = get_shard(request)
+    with log_operation("packets.export", packet_id=packet_id, export_format=body.format.value if hasattr(body.format, 'value') else str(body.format)) as event:
+        try:
+            start_time = time.time()
 
-    try:
-        result = await shard.export_packet(
-            packet_id=packet_id,
-            format=body.format,
-        )
-        return ExportResponse(
-            packet_id=result.packet_id,
-            export_format=result.export_format.value,
-            file_path=result.file_path,
-            file_size_bytes=result.file_size_bytes,
-            exported_at=result.exported_at.isoformat(),
-            contents_exported=result.contents_exported,
-            errors=result.errors,
-        )
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+            if event:
+                event.context("shard", "packets")
+                event.context("operation", "export")
+                event.input(
+                    packet_id=packet_id,
+                    export_format=body.format.value if hasattr(body.format, 'value') else str(body.format),
+                )
+
+            shard = get_shard(request)
+
+            result = await shard.export_packet(
+                packet_id=packet_id,
+                format=body.format,
+            )
+
+            duration_ms = (time.time() - start_time) * 1000
+
+            if event:
+                event.output(
+                    packet_id=packet_id,
+                    file_size_bytes=result.file_size_bytes,
+                    contents_exported=result.contents_exported,
+                    errors_count=len(result.errors) if result.errors else 0,
+                    duration_ms=duration_ms,
+                )
+
+            return ExportResponse(
+                packet_id=result.packet_id,
+                export_format=result.export_format.value,
+                file_path=result.file_path,
+                file_size_bytes=result.file_size_bytes,
+                exported_at=result.exported_at.isoformat(),
+                contents_exported=result.contents_exported,
+                errors=result.errors,
+            )
+        except ValueError as e:
+            if event:
+                event.error(str(e), exc_info=True)
+            raise HTTPException(status_code=400, detail=str(e))
+        except Exception as e:
+            if event:
+                event.error(str(e), exc_info=True)
+            raise
 
 
 @router.post("/import", response_model=ImportResponse, status_code=201)

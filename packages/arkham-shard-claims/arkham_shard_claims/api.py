@@ -4,6 +4,7 @@ Claims Shard - FastAPI Routes
 REST API endpoints for claim management.
 """
 
+import time
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException, Query, Request
@@ -18,6 +19,17 @@ from .models import (
     EvidenceType,
     ExtractionMethod,
 )
+
+# Import wide event logging utilities (with fallback)
+try:
+    from arkham_frame import log_operation
+    WIDE_EVENTS_AVAILABLE = True
+except ImportError:
+    WIDE_EVENTS_AVAILABLE = False
+    from contextlib import contextmanager
+    @contextmanager
+    def log_operation(*args, **kwargs):
+        yield None
 
 router = APIRouter(prefix="/api/claims", tags=["claims"])
 
@@ -285,21 +297,45 @@ async def list_claims(
 @router.post("/", response_model=ClaimResponse, status_code=201)
 async def create_claim(request: Request, body: ClaimCreate):
     """Create a new claim."""
-    shard = _get_shard(request)
+    with log_operation("claims.create", claim_type=body.claim_type.value if hasattr(body.claim_type, 'value') else str(body.claim_type)) as event:
+        try:
+            if event:
+                event.context("shard", "claims")
+                event.context("operation", "create")
+                event.input(
+                    claim_type=body.claim_type.value if hasattr(body.claim_type, 'value') else str(body.claim_type),
+                    source_document_id=body.source_document_id,
+                    confidence=body.confidence,
+                    entity_count=len(body.entity_ids) if body.entity_ids else 0,
+                    has_metadata=body.metadata is not None,
+                )
 
-    claim = await shard.create_claim(
-        text=body.text,
-        claim_type=body.claim_type,
-        source_document_id=body.source_document_id,
-        source_start_char=body.source_start_char,
-        source_end_char=body.source_end_char,
-        source_context=body.source_context,
-        confidence=body.confidence,
-        entity_ids=body.entity_ids,
-        metadata=body.metadata,
-    )
+            shard = _get_shard(request)
 
-    return _claim_to_response(claim)
+            claim = await shard.create_claim(
+                text=body.text,
+                claim_type=body.claim_type,
+                source_document_id=body.source_document_id,
+                source_start_char=body.source_start_char,
+                source_end_char=body.source_end_char,
+                source_context=body.source_context,
+                confidence=body.confidence,
+                entity_ids=body.entity_ids,
+                metadata=body.metadata,
+            )
+
+            if event:
+                event.output(
+                    claim_id=claim.id,
+                    status=claim.status.value if hasattr(claim.status, 'value') else str(claim.status),
+                    evidence_count=claim.evidence_count,
+                )
+
+            return _claim_to_response(claim)
+        except Exception as e:
+            if event:
+                event.error(str(e), exc_info=True)
+            raise
 
 
 @router.get("/{claim_id}", response_model=ClaimResponse)
@@ -317,18 +353,40 @@ async def get_claim(request: Request, claim_id: str):
 @router.patch("/{claim_id}/status", response_model=ClaimResponse)
 async def update_claim_status(request: Request, claim_id: str, body: StatusUpdateRequest):
     """Update the status of a claim."""
-    shard = _get_shard(request)
+    with log_operation("claims.update_status", claim_id=claim_id) as event:
+        try:
+            if event:
+                event.context("shard", "claims")
+                event.context("operation", "update_status")
+                event.input(
+                    claim_id=claim_id,
+                    new_status=body.status.value if hasattr(body.status, 'value') else str(body.status),
+                    has_notes=body.notes is not None,
+                )
 
-    claim = await shard.update_claim_status(
-        claim_id=claim_id,
-        status=body.status,
-        notes=body.notes,
-    )
+            shard = _get_shard(request)
 
-    if not claim:
-        raise HTTPException(status_code=404, detail=f"Claim {claim_id} not found")
+            claim = await shard.update_claim_status(
+                claim_id=claim_id,
+                status=body.status,
+                notes=body.notes,
+            )
 
-    return _claim_to_response(claim)
+            if not claim:
+                raise HTTPException(status_code=404, detail=f"Claim {claim_id} not found")
+
+            if event:
+                event.output(
+                    claim_id=claim.id,
+                    status=claim.status.value if hasattr(claim.status, 'value') else str(claim.status),
+                    verified_at=claim.verified_at.isoformat() if claim.verified_at else None,
+                )
+
+            return _claim_to_response(claim)
+        except Exception as e:
+            if event:
+                event.error(str(e), exc_info=True)
+            raise
 
 
 @router.delete("/{claim_id}", status_code=204)
@@ -366,25 +424,51 @@ async def get_claim_evidence(request: Request, claim_id: str):
 @router.post("/{claim_id}/evidence", response_model=EvidenceResponse, status_code=201)
 async def add_claim_evidence(request: Request, claim_id: str, body: EvidenceCreate):
     """Add evidence to a claim."""
-    shard = _get_shard(request)
+    with log_operation("claims.add_evidence", claim_id=claim_id) as event:
+        try:
+            if event:
+                event.context("shard", "claims")
+                event.context("operation", "add_evidence")
+                event.input(
+                    claim_id=claim_id,
+                    evidence_type=body.evidence_type.value if hasattr(body.evidence_type, 'value') else str(body.evidence_type),
+                    relationship=body.relationship.value if hasattr(body.relationship, 'value') else str(body.relationship),
+                    strength=body.strength.value if hasattr(body.strength, 'value') else str(body.strength),
+                    reference_id=body.reference_id,
+                )
 
-    # Verify claim exists
-    claim = await shard.get_claim(claim_id)
-    if not claim:
-        raise HTTPException(status_code=404, detail=f"Claim {claim_id} not found")
+            shard = _get_shard(request)
 
-    evidence = await shard.add_evidence(
-        claim_id=claim_id,
-        evidence_type=body.evidence_type,
-        reference_id=body.reference_id,
-        relationship=body.relationship,
-        strength=body.strength,
-        reference_title=body.reference_title,
-        excerpt=body.excerpt,
-        notes=body.notes,
-    )
+            # Verify claim exists
+            claim = await shard.get_claim(claim_id)
+            if not claim:
+                raise HTTPException(status_code=404, detail=f"Claim {claim_id} not found")
 
-    return _evidence_to_response(evidence)
+            evidence = await shard.add_evidence(
+                claim_id=claim_id,
+                evidence_type=body.evidence_type,
+                reference_id=body.reference_id,
+                relationship=body.relationship,
+                strength=body.strength,
+                reference_title=body.reference_title,
+                excerpt=body.excerpt,
+                notes=body.notes,
+            )
+
+            if event:
+                event.output(
+                    evidence_id=evidence.id,
+                    claim_id=claim_id,
+                    evidence_count=claim.evidence_count,
+                    supporting_count=claim.supporting_count,
+                    refuting_count=claim.refuting_count,
+                )
+
+            return _evidence_to_response(evidence)
+        except Exception as e:
+            if event:
+                event.error(str(e), exc_info=True)
+            raise
 
 
 # === Extraction Endpoints ===
@@ -393,23 +477,49 @@ async def add_claim_evidence(request: Request, claim_id: str, body: EvidenceCrea
 @router.post("/extract", response_model=ExtractionResponse)
 async def extract_claims(request: Request, body: ExtractionRequest):
     """Extract claims from text using LLM."""
-    shard = _get_shard(request)
+    with log_operation("claims.extract", document_id=body.document_id) as event:
+        try:
+            start_time = time.time()
+            
+            if event:
+                event.context("shard", "claims")
+                event.context("operation", "extract")
+                event.input(
+                    document_id=body.document_id,
+                    extraction_model=body.extraction_model,
+                    text_length=len(body.text) if body.text else 0,
+                )
 
-    result = await shard.extract_claims_from_text(
-        text=body.text,
-        document_id=body.document_id,
-        extraction_model=body.extraction_model,
-    )
+            shard = _get_shard(request)
 
-    return ExtractionResponse(
-        claims=[_claim_to_response(c) for c in result.claims],
-        source_document_id=result.source_document_id,
-        extraction_method=result.extraction_method.value,
-        extraction_model=result.extraction_model,
-        total_extracted=result.total_extracted,
-        processing_time_ms=result.processing_time_ms,
-        errors=result.errors,
-    )
+            result = await shard.extract_claims_from_text(
+                text=body.text,
+                document_id=body.document_id,
+                extraction_model=body.extraction_model,
+            )
+
+            if event:
+                event.output(
+                    total_extracted=result.total_extracted,
+                    extraction_method=result.extraction_method.value if hasattr(result.extraction_method, 'value') else str(result.extraction_method),
+                    extraction_model=result.extraction_model,
+                    processing_time_ms=result.processing_time_ms,
+                    error_count=len(result.errors) if result.errors else 0,
+                )
+
+            return ExtractionResponse(
+                claims=[_claim_to_response(c) for c in result.claims],
+                source_document_id=result.source_document_id,
+                extraction_method=result.extraction_method.value,
+                extraction_model=result.extraction_model,
+                total_extracted=result.total_extracted,
+                processing_time_ms=result.processing_time_ms,
+                errors=result.errors,
+            )
+        except Exception as e:
+            if event:
+                event.error(str(e), exc_info=True)
+            raise
 
 
 @router.post("/extract-from-document/{document_id}", response_model=ExtractionResponse)
@@ -419,45 +529,71 @@ async def extract_claims_from_document(request: Request, document_id: str):
 
     Fetches the document content from the database and extracts claims using LLM.
     """
-    shard = _get_shard(request)
+    with log_operation("claims.extract_from_document", document_id=document_id) as event:
+        try:
+            start_time = time.time()
+            
+            if event:
+                event.context("shard", "claims")
+                event.context("operation", "extract_from_document")
+                event.input(document_id=document_id)
 
-    # Get database service to fetch document content
-    db = shard._db
-    if not db:
-        raise HTTPException(status_code=503, detail="Database service not available")
+            shard = _get_shard(request)
 
-    # Fetch document chunks to get text content
-    chunks = await db.fetch_all(
-        """SELECT text FROM arkham_frame.chunks
-           WHERE document_id = :doc_id
-           ORDER BY chunk_index""",
-        {"doc_id": document_id}
-    )
+            # Get database service to fetch document content
+            db = shard._db
+            if not db:
+                raise HTTPException(status_code=503, detail="Database service not available")
 
-    if not chunks:
-        raise HTTPException(status_code=404, detail=f"No content found for document {document_id}")
+            # Fetch document chunks to get text content
+            chunks = await db.fetch_all(
+                """SELECT text FROM arkham_frame.chunks
+                   WHERE document_id = :doc_id
+                   ORDER BY chunk_index""",
+                {"doc_id": document_id}
+            )
 
-    # Combine chunk text
-    text = "\n\n".join(c["text"] for c in chunks if c.get("text"))
+            if not chunks:
+                raise HTTPException(status_code=404, detail=f"No content found for document {document_id}")
 
-    if not text.strip():
-        raise HTTPException(status_code=404, detail=f"Document {document_id} has no text content")
+            # Combine chunk text
+            text = "\n\n".join(c["text"] for c in chunks if c.get("text"))
 
-    # Extract claims
-    result = await shard.extract_claims_from_text(
-        text=text,
-        document_id=document_id,
-    )
+            if not text.strip():
+                raise HTTPException(status_code=404, detail=f"Document {document_id} has no text content")
 
-    return ExtractionResponse(
-        claims=[_claim_to_response(c) for c in result.claims],
-        source_document_id=result.source_document_id,
-        extraction_method=result.extraction_method.value,
-        extraction_model=result.extraction_model,
-        total_extracted=result.total_extracted,
-        processing_time_ms=result.processing_time_ms,
-        errors=result.errors,
-    )
+            if event:
+                event.context("chunk_count", len(chunks))
+                event.context("text_length", len(text))
+
+            # Extract claims
+            result = await shard.extract_claims_from_text(
+                text=text,
+                document_id=document_id,
+            )
+
+            if event:
+                event.output(
+                    total_extracted=result.total_extracted,
+                    extraction_method=result.extraction_method.value if hasattr(result.extraction_method, 'value') else str(result.extraction_method),
+                    extraction_model=result.extraction_model,
+                    processing_time_ms=result.processing_time_ms,
+                    error_count=len(result.errors) if result.errors else 0,
+                )
+
+            return ExtractionResponse(
+                claims=[_claim_to_response(c) for c in result.claims],
+                source_document_id=result.source_document_id,
+                extraction_method=result.extraction_method.value,
+                extraction_model=result.extraction_model,
+                total_extracted=result.total_extracted,
+                processing_time_ms=result.processing_time_ms,
+                errors=result.errors,
+            )
+        except Exception as e:
+            if event:
+                event.error(str(e), exc_info=True)
+            raise
 
 
 # === Backfill Evidence Endpoint ===

@@ -20,7 +20,22 @@ import logging
 import json
 import re
 import os
+import time
 logger = logging.getLogger(__name__)
+
+# Import wide event logging utilities (with fallback)
+try:
+    from arkham_frame import log_operation, create_wide_event
+    WIDE_EVENTS_AVAILABLE = True
+except ImportError:
+    WIDE_EVENTS_AVAILABLE = False
+    # Fallback: create no-op context manager
+    from contextlib import contextmanager
+    @contextmanager
+    def log_operation(*args, **kwargs):
+        yield None
+    def create_wide_event(*args, **kwargs):
+        return None
 
 # Maximum characters to include in error messages (security measure)
 MAX_ERROR_MESSAGE_LENGTH = 200
@@ -349,58 +364,95 @@ class LLMService:
         stop: Optional[List[str]] = None,
     ) -> LLMResponse:
         """Send chat completion request."""
-        if not self._available:
-            raise LLMUnavailableError("LLM not available")
+        with log_operation("llm.chat", model=self._model_name) as event:
+            if event:
+                event.input(
+                    message_count=len(messages),
+                    model=self._model_name,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    has_stop=stop is not None,
+                )
+            
+            if not self._available:
+                if event:
+                    event.error("LLMUnavailable", "LLM not available")
+                raise LLMUnavailableError("LLM not available")
 
-        payload = {
-            "model": self._model_name,
-            "messages": messages,
-            "temperature": temperature,
-        }
-        if max_tokens:
-            payload["max_tokens"] = max_tokens
-        if stop:
-            payload["stop"] = stop
+            payload = {
+                "model": self._model_name,
+                "messages": messages,
+                "temperature": temperature,
+            }
+            if max_tokens:
+                payload["max_tokens"] = max_tokens
+            if stop:
+                payload["stop"] = stop
 
-        # OpenRouter fallback routing (max 3 models allowed)
-        if self._is_openrouter and self._use_fallback_routing and self._fallback_models:
-            payload["route"] = "fallback"
-            # Include primary model + fallback models, limit to 3 total
-            all_models = [self._model_name] + [m for m in self._fallback_models if m != self._model_name]
-            payload["models"] = all_models[:3]
+            # OpenRouter fallback routing (max 3 models allowed)
+            if self._is_openrouter and self._use_fallback_routing and self._fallback_models:
+                payload["route"] = "fallback"
+                # Include primary model + fallback models, limit to 3 total
+                all_models = [self._model_name] + [m for m in self._fallback_models if m != self._model_name]
+                payload["models"] = all_models[:3]
 
+            try:
+                start_time = time.time()
+                response = await self._client.post("/chat/completions", json=payload)
+                duration_ms = int((time.time() - start_time) * 1000)
+                
+                if response.status_code != 200:
+                    # Truncate error message to prevent potential credential leakage
+                    error_text = response.text[:MAX_ERROR_MESSAGE_LENGTH]
+                    if len(response.text) > MAX_ERROR_MESSAGE_LENGTH:
+                        error_text += "... [truncated]"
+                    error_msg = f"LLM request failed ({response.status_code}): {error_text}"
+                    if event:
+                        event.dependency("llm_api", duration_ms=duration_ms, status_code=response.status_code)
+                        event.error("LLMRequestFailed", error_msg)
+                    raise LLMRequestError(error_msg)
 
-        try:
-            response = await self._client.post("/chat/completions", json=payload)
-            if response.status_code != 200:
-                # Truncate error message to prevent potential credential leakage
-                error_text = response.text[:MAX_ERROR_MESSAGE_LENGTH]
-                if len(response.text) > MAX_ERROR_MESSAGE_LENGTH:
-                    error_text += "... [truncated]"
-                raise LLMRequestError(f"LLM request failed ({response.status_code}): {error_text}")
+                data = response.json()
+                choice = data["choices"][0]
 
-            data = response.json()
-            choice = data["choices"][0]
+                # Track usage
+                usage = data.get("usage", {})
+                tokens_prompt = usage.get("prompt_tokens", 0)
+                tokens_completion = usage.get("completion_tokens", 0)
+                self._total_requests += 1
+                self._total_tokens_prompt += tokens_prompt
+                self._total_tokens_completion += tokens_completion
 
-            # Track usage
-            usage = data.get("usage", {})
-            self._total_requests += 1
-            self._total_tokens_prompt += usage.get("prompt_tokens", 0)
-            self._total_tokens_completion += usage.get("completion_tokens", 0)
+                llm_response = LLMResponse(
+                    text=choice["message"]["content"],
+                    model=data.get("model", self._model_name),
+                    tokens_prompt=tokens_prompt,
+                    tokens_completion=tokens_completion,
+                    finish_reason=choice.get("finish_reason"),
+                    raw_response=data,
+                )
+                
+                if event:
+                    event.dependency("llm_api", duration_ms=duration_ms, status_code=200)
+                    event.output(
+                        model=llm_response.model,
+                        tokens_prompt=tokens_prompt,
+                        tokens_completion=tokens_completion,
+                        tokens_total=tokens_prompt + tokens_completion,
+                        finish_reason=llm_response.finish_reason,
+                        response_length=len(llm_response.text),
+                    )
+                
+                return llm_response
 
-            return LLMResponse(
-                text=choice["message"]["content"],
-                model=data.get("model", self._model_name),
-                tokens_prompt=usage.get("prompt_tokens"),
-                tokens_completion=usage.get("completion_tokens"),
-                finish_reason=choice.get("finish_reason"),
-                raw_response=data,
-            )
-
-        except Exception as e:
-            if isinstance(e, (LLMUnavailableError, LLMRequestError)):
-                raise
-            raise LLMRequestError(f"LLM request failed: {e}")
+            except Exception as e:
+                if isinstance(e, (LLMUnavailableError, LLMRequestError)):
+                    if event:
+                        event.error(type(e).__name__, str(e))
+                    raise
+                if event:
+                    event.error("LLMRequestError", str(e))
+                raise LLMRequestError(f"LLM request failed: {e}")
 
     async def generate(
         self,
@@ -439,7 +491,20 @@ class LLMService:
         max_tokens: Optional[int] = None,
     ) -> AsyncIterator[StreamChunk]:
         """Stream chat completion response."""
+        event = None
+        if WIDE_EVENTS_AVAILABLE:
+            event = create_wide_event("llm.stream_chat", model=self._model_name)
+            if event:
+                event.input(
+                    message_count=len(messages),
+                    model=self._model_name,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                )
+        
         if not self._available:
+            if event:
+                event.error("LLMUnavailable", "LLM not available")
             raise LLMUnavailableError("LLM not available")
 
         payload = {
@@ -457,6 +522,10 @@ class LLMService:
             all_models = [self._model_name] + [m for m in self._fallback_models if m != self._model_name]
             payload["models"] = all_models[:3]
 
+        start_time = time.time()
+        chunk_count = 0
+        total_text_length = 0
+        
         try:
             async with self._client.stream(
                 "POST",
@@ -470,8 +539,14 @@ class LLMService:
                     error_text = content.decode()[:MAX_ERROR_MESSAGE_LENGTH]
                     if len(content) > MAX_ERROR_MESSAGE_LENGTH:
                         error_text += "... [truncated]"
-                    raise LLMRequestError(f"LLM stream failed ({response.status_code}): {error_text}")
+                    error_msg = f"LLM stream failed ({response.status_code}): {error_text}"
+                    if event:
+                        duration_ms = int((time.time() - start_time) * 1000)
+                        event.dependency("llm_api", duration_ms=duration_ms, status_code=response.status_code)
+                        event.error("LLMStreamFailed", error_msg)
+                    raise LLMRequestError(error_msg)
 
+                finish_reason = None
                 async for line in response.aiter_lines():
                     if not line or line == "data: [DONE]":
                         continue
@@ -485,6 +560,8 @@ class LLMService:
                             finish_reason = choice.get("finish_reason")
 
                             if content or finish_reason:
+                                chunk_count += 1
+                                total_text_length += len(content)
                                 yield StreamChunk(
                                     text=content,
                                     is_final=finish_reason is not None,
@@ -492,10 +569,25 @@ class LLMService:
                                 )
                         except json.JSONDecodeError:
                             continue
+                
+                # Log completion
+                if event:
+                    duration_ms = int((time.time() - start_time) * 1000)
+                    event.dependency("llm_api", duration_ms=duration_ms, status_code=200)
+                    event.output(
+                        chunk_count=chunk_count,
+                        total_length=total_text_length,
+                        finish_reason=finish_reason,
+                    )
+                    event.success()
 
         except Exception as e:
             if isinstance(e, (LLMUnavailableError, LLMRequestError)):
+                if event:
+                    event.error(type(e).__name__, str(e))
                 raise
+            if event:
+                event.error("LLMStreamError", str(e))
             raise LLMRequestError(f"LLM stream failed: {e}")
 
     async def stream_generate(
@@ -542,42 +634,61 @@ class LLMService:
         Raises:
             JSONExtractionError: If JSON extraction fails after retries
         """
-        if system_prompt is None:
-            system_prompt = (
-                "You are a helpful assistant that responds only with valid JSON. "
-                "Do not include any text before or after the JSON. "
-                "Ensure the JSON is properly formatted and complete."
-            )
-            if schema:
-                system_prompt += f"\n\nThe response must conform to this schema:\n{json.dumps(schema, indent=2)}"
-
-        last_error = None
-
-        for attempt in range(max_retries + 1):
-            try:
-                response = await self.generate(
-                    prompt=prompt,
-                    system_prompt=system_prompt,
+        with log_operation("llm.extract_json", model=self._model_name) as event:
+            if event:
+                event.input(
+                    prompt_length=len(prompt),
+                    has_schema=schema is not None,
+                    has_system_prompt=system_prompt is not None,
                     temperature=temperature,
+                    max_retries=max_retries,
                 )
+            
+            if system_prompt is None:
+                system_prompt = (
+                    "You are a helpful assistant that responds only with valid JSON. "
+                    "Do not include any text before or after the JSON. "
+                    "Ensure the JSON is properly formatted and complete."
+                )
+                if schema:
+                    system_prompt += f"\n\nThe response must conform to this schema:\n{json.dumps(schema, indent=2)}"
 
-                # Try to extract JSON
-                result = self._parse_json_from_text(response.text)
+            last_error = None
 
-                # Validate against schema if provided
-                if schema and not self._validate_json_schema(result, schema):
-                    raise JSONExtractionError("Response does not match schema")
+            for attempt in range(max_retries + 1):
+                try:
+                    response = await self.generate(
+                        prompt=prompt,
+                        system_prompt=system_prompt,
+                        temperature=temperature,
+                    )
 
-                return result
+                    # Try to extract JSON
+                    result = self._parse_json_from_text(response.text)
 
-            except JSONExtractionError as e:
-                last_error = e
-                if attempt < max_retries:
-                    logger.debug(f"JSON extraction attempt {attempt + 1} failed, retrying...")
-                    # Add retry hint to prompt
-                    prompt = f"{prompt}\n\nIMPORTANT: Respond with ONLY valid JSON, no other text."
+                    # Validate against schema if provided
+                    if schema and not self._validate_json_schema(result, schema):
+                        raise JSONExtractionError("Response does not match schema")
 
-        raise JSONExtractionError(f"Failed to extract JSON after {max_retries + 1} attempts: {last_error}")
+                    if event:
+                        event.output(
+                            attempt=attempt + 1,
+                            result_keys=list(result.keys()) if isinstance(result, dict) else "non-dict",
+                            result_type=type(result).__name__,
+                        )
+                    
+                    return result
+
+                except JSONExtractionError as e:
+                    last_error = e
+                    if attempt < max_retries:
+                        logger.debug(f"JSON extraction attempt {attempt + 1} failed, retrying...")
+                        # Add retry hint to prompt
+                        prompt = f"{prompt}\n\nIMPORTANT: Respond with ONLY valid JSON, no other text."
+
+            if event:
+                event.error("JSONExtractionFailed", f"Failed after {max_retries + 1} attempts: {last_error}")
+            raise JSONExtractionError(f"Failed to extract JSON after {max_retries + 1} attempts: {last_error}")
 
     async def extract_list(
         self,

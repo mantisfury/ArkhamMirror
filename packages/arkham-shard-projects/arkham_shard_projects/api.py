@@ -5,12 +5,24 @@ REST API endpoints for project workspace management.
 """
 
 import logging
+import time
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 from .models import ProjectRole, ProjectStatus
+
+# Import wide event logging utilities (with fallback)
+try:
+    from arkham_frame import log_operation
+    WIDE_EVENTS_AVAILABLE = True
+except ImportError:
+    WIDE_EVENTS_AVAILABLE = False
+    from contextlib import contextmanager
+    @contextmanager
+    def log_operation(*args, **kwargs):
+        yield None
 
 logger = logging.getLogger(__name__)
 
@@ -343,42 +355,70 @@ async def create_project(
         400: If project would be created without any members
         403: If user is not a system admin
     """
-    # Require system admin for project creation
-    await require_system_admin(user)
-    # Set request.state.user and tenant context so shard/context see the current user
-    if user is not None:
-        req.state.user = user
+    with log_operation("projects.create", project_name=request.name) as event:
         try:
-            from arkham_frame.middleware.tenant import set_current_tenant_id
-            set_current_tenant_id(getattr(user, "tenant_id", None))
-        except Exception:
-            pass
+            if event:
+                event.context("shard", "projects")
+                event.context("operation", "create")
+                if user:
+                    event.user(id=str(user.id))
+                event.input(
+                    name=request.name,
+                    status=request.status.value if hasattr(request.status, 'value') else str(request.status),
+                    embedding_model=request.embedding_model,
+                    create_collections=request.create_collections,
+                    has_settings=request.settings is not None,
+                    has_metadata=request.metadata is not None,
+                )
 
-    shard = _get_shard(req)
+            # Require system admin for project creation
+            await require_system_admin(user)
+            # Set request.state.user and tenant context so shard/context see the current user
+            if user is not None:
+                req.state.user = user
+                try:
+                    from arkham_frame.middleware.tenant import set_current_tenant_id
+                    set_current_tenant_id(getattr(user, "tenant_id", None))
+                except Exception:
+                    pass
 
-    # Resolve creator_id and tenant_id from authenticated user when available
-    creator_id = None
-    tenant_id = None
-    if user is not None:
-        creator_id = str(user.id)
-        tenant_id = getattr(user, "tenant_id", None)
+            shard = _get_shard(req)
 
-    try:
-        project = await shard.create_project(
-            name=request.name,
-            description=request.description,
-            creator_id=creator_id,
-            status=request.status,
-            settings=request.settings,
-            metadata=request.metadata,
-            embedding_model=request.embedding_model,
-            create_collections=request.create_collections,
-            tenant_id=tenant_id,
-        )
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+            # Resolve creator_id and tenant_id from authenticated user when available
+            creator_id = None
+            tenant_id = None
+            if user is not None:
+                creator_id = str(user.id)
+                tenant_id = getattr(user, "tenant_id", None)
 
-    return _project_to_response(project)
+            try:
+                project = await shard.create_project(
+                    name=request.name,
+                    description=request.description,
+                    creator_id=creator_id,
+                    status=request.status,
+                    settings=request.settings,
+                    metadata=request.metadata,
+                    embedding_model=request.embedding_model,
+                    create_collections=request.create_collections,
+                    tenant_id=tenant_id,
+                )
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail=str(e))
+
+            if event:
+                event.output(
+                    project_id=project.id,
+                    status=project.status.value if hasattr(project.status, 'value') else str(project.status),
+                    member_count=project.member_count,
+                    document_count=project.document_count,
+                )
+
+            return _project_to_response(project)
+        except Exception as e:
+            if event:
+                event.error(str(e), exc_info=True)
+            raise
 
 
 @router.get("/{project_id}", response_model=ProjectResponse)
@@ -411,23 +451,49 @@ async def update_project(
     user: Optional[Any] = Depends(current_active_user),
 ):
     """Update a project. Requires system admin role."""
-    await require_system_admin(user)
-    
-    shard = _get_shard(req)
+    with log_operation("projects.update", project_id=project_id) as event:
+        try:
+            if event:
+                event.context("shard", "projects")
+                event.context("operation", "update")
+                if user:
+                    event.user(id=str(user.id))
+                event.input(
+                    project_id=project_id,
+                    name_updated=request.name is not None,
+                    description_updated=request.description is not None,
+                    status_updated=request.status is not None,
+                    settings_updated=request.settings is not None,
+                    metadata_updated=request.metadata is not None,
+                )
 
-    project = await shard.update_project(
-        project_id=project_id,
-        name=request.name,
-        description=request.description,
-        status=request.status,
-        settings=request.settings,
-        metadata=request.metadata,
-    )
+            await require_system_admin(user)
+            
+            shard = _get_shard(req)
 
-    if not project:
-        raise HTTPException(status_code=404, detail=f"Project {project_id} not found")
+            project = await shard.update_project(
+                project_id=project_id,
+                name=request.name,
+                description=request.description,
+                status=request.status,
+                settings=request.settings,
+                metadata=request.metadata,
+            )
 
-    return _project_to_response(project)
+            if not project:
+                raise HTTPException(status_code=404, detail=f"Project {project_id} not found")
+
+            if event:
+                event.output(
+                    project_id=project.id,
+                    status=project.status.value if hasattr(project.status, 'value') else str(project.status),
+                )
+
+            return _project_to_response(project)
+        except Exception as e:
+            if event:
+                event.error(str(e), exc_info=True)
+            raise
 
 
 @router.delete("/{project_id}", status_code=204)
@@ -437,14 +503,30 @@ async def delete_project(
     user: Optional[Any] = Depends(current_active_user),
 ):
     """Delete a project. Requires system admin role."""
-    await require_system_admin(user)
-    
-    shard = _get_shard(request)
+    with log_operation("projects.delete", project_id=project_id) as event:
+        try:
+            if event:
+                event.context("shard", "projects")
+                event.context("operation", "delete")
+                if user:
+                    event.user(id=str(user.id))
+                event.input(project_id=project_id)
 
-    success = await shard.delete_project(project_id)
+            await require_system_admin(user)
+            
+            shard = _get_shard(request)
 
-    if not success:
-        raise HTTPException(status_code=404, detail=f"Project {project_id} not found")
+            success = await shard.delete_project(project_id)
+
+            if not success:
+                raise HTTPException(status_code=404, detail=f"Project {project_id} not found")
+
+            if event:
+                event.output(project_id=project_id, deleted=True)
+        except Exception as e:
+            if event:
+                event.error(str(e), exc_info=True)
+            raise
 
 
 @router.post("/{project_id}/archive", response_model=ProjectResponse)
@@ -526,21 +608,45 @@ async def add_project_document(
     user: Optional[Any] = Depends(current_optional_user),
 ):
     """Add a document to a project."""
-    _set_request_user_and_tenant(req, user)
-    shard = _get_shard(req)
-    tenant_hint = _tenant_id_from_user(user)
+    with log_operation("projects.add_document", project_id=project_id, document_id=request.document_id) as event:
+        try:
+            if event:
+                event.context("shard", "projects")
+                event.context("operation", "add_document")
+                if user:
+                    event.user(id=str(user.id))
+                event.input(
+                    project_id=project_id,
+                    document_id=request.document_id,
+                    added_by=request.added_by,
+                )
 
-    project = await shard.get_project(project_id, tenant_id_override=tenant_hint)
-    if not project:
-        raise HTTPException(status_code=404, detail=f"Project {project_id} not found")
+            _set_request_user_and_tenant(req, user)
+            shard = _get_shard(req)
+            tenant_hint = _tenant_id_from_user(user)
 
-    doc = await shard.add_document(
-        project_id=project_id,
-        document_id=request.document_id,
-        added_by=request.added_by,
-    )
+            project = await shard.get_project(project_id, tenant_id_override=tenant_hint)
+            if not project:
+                raise HTTPException(status_code=404, detail=f"Project {project_id} not found")
 
-    return _document_to_response(doc)
+            doc = await shard.add_document(
+                project_id=project_id,
+                document_id=request.document_id,
+                added_by=request.added_by,
+            )
+
+            if event:
+                event.output(
+                    project_id=project_id,
+                    document_id=request.document_id,
+                    document_count=project.document_count,
+                )
+
+            return _document_to_response(doc)
+        except Exception as e:
+            if event:
+                event.error(str(e), exc_info=True)
+            raise
 
 
 @router.delete("/{project_id}/documents/{document_id}", status_code=204)

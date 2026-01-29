@@ -20,6 +20,20 @@ import uuid
 
 logger = logging.getLogger(__name__)
 
+# Import wide event logging utilities (with fallback)
+try:
+    from arkham_frame import log_operation
+    from arkham_logging.sanitizer import DataSanitizer
+    WIDE_EVENTS_AVAILABLE = True
+except ImportError:
+    WIDE_EVENTS_AVAILABLE = False
+    # Fallback: create no-op context manager
+    from contextlib import contextmanager
+    @contextmanager
+    def log_operation(*args, **kwargs):
+        yield None
+    DataSanitizer = None
+
 
 class WorkerState(Enum):
     """Worker lifecycle states."""
@@ -487,41 +501,75 @@ class BaseWorker(ABC):
 
                     logger.info(f"Worker {self.worker_id} processing job {job['id']}")
 
-                    try:
-                        start_time = time.time()
-                        result = await self._process_with_timeout(job)
-                        elapsed = time.time() - start_time
+                    # Extract job context for wide event logging
+                    payload = job.get("payload", {})
+                    job_type = payload.get("job_type", "unknown")
+                    document_id = payload.get("document_id")
+                    project_id = payload.get("project_id")
+                    
+                    sanitizer = DataSanitizer() if WIDE_EVENTS_AVAILABLE and DataSanitizer else None
+                    sanitized_payload = sanitizer.sanitize(payload) if sanitizer else payload
+                    
+                    with log_operation("worker.process_job", job_id=job["id"], pool=self.pool) as event:
+                        if event:
+                            event.input(
+                                job_id=job["id"],
+                                job_type=job_type,
+                                worker_id=self.worker_id,
+                                pool=self.pool,
+                            )
+                            if document_id:
+                                event.context("document_id", document_id)
+                            if project_id:
+                                event.context("project_id", project_id)
+                            if sanitized_payload:
+                                event.input(payload_keys=list(sanitized_payload.keys()) if isinstance(sanitized_payload, dict) else "non-dict")
 
-                        await self.complete_job(job["id"], result)
+                        try:
+                            start_time = time.time()
+                            result = await self._process_with_timeout(job)
+                            elapsed = time.time() - start_time
 
-                        self._metrics.jobs_completed += 1
-                        self._metrics.total_processing_time += elapsed
-                        self._metrics.last_job_time = datetime.utcnow()
+                            await self.complete_job(job["id"], result)
 
-                        logger.info(
-                            f"Worker {self.worker_id} completed job {job['id']} "
-                            f"in {elapsed:.2f}s"
-                        )
+                            self._metrics.jobs_completed += 1
+                            self._metrics.total_processing_time += elapsed
+                            self._metrics.last_job_time = datetime.utcnow()
 
-                    except Exception as e:
-                        error_msg = str(e)
-                        logger.error(
-                            f"Worker {self.worker_id} job {job['id']} failed: {error_msg}"
-                        )
+                            logger.info(
+                                f"Worker {self.worker_id} completed job {job['id']} "
+                                f"in {elapsed:.2f}s"
+                            )
+                            
+                            if event:
+                                event.output(
+                                    success=True,
+                                    duration_ms=int(elapsed * 1000),
+                                    result_size=len(str(result)) if result else 0,
+                                )
 
-                        await self.fail_job(job["id"], error_msg, requeue=True)
+                        except Exception as e:
+                            error_msg = str(e)
+                            logger.error(
+                                f"Worker {self.worker_id} job {job['id']} failed: {error_msg}"
+                            )
 
-                        self._metrics.jobs_failed += 1
-                        self._metrics.errors.append({
-                            "job_id": job["id"],
-                            "error": error_msg,
-                            "time": datetime.utcnow().isoformat(),
-                        })
+                            await self.fail_job(job["id"], error_msg, requeue=True)
 
-                    finally:
-                        self._current_job = None
-                        self._current_job_start = None
-                        self._state = WorkerState.IDLE
+                            self._metrics.jobs_failed += 1
+                            self._metrics.errors.append({
+                                "job_id": job["id"],
+                                "error": error_msg,
+                                "time": datetime.utcnow().isoformat(),
+                            })
+                            
+                            if event:
+                                event.error("JobProcessingFailed", error_msg)
+
+                        finally:
+                            self._current_job = None
+                            self._current_job_start = None
+                            self._state = WorkerState.IDLE
 
                 else:
                     # No job available, check idle timeout

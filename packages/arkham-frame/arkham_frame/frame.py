@@ -109,6 +109,39 @@ class ArkhamFrame:
         self.config = ConfigService()
         logger.info(f"ConfigService initialized in {(perf_counter() - t0):.2f}s")
 
+        # Initialize logging system (early, so all subsequent logs use it)
+        try:
+            t0 = perf_counter()
+            from arkham_logging import LoggingManager, initialize as init_logging
+            from arkham_logging.tracing import TracingContext
+            
+            # Load logging config from config service
+            config_path = os.environ.get("CONFIG_PATH", "config/shattered.yaml")
+            self.logging_manager = init_logging(config_path=config_path)
+            self.tracing = TracingContext()
+            
+            # Make logging utilities available to shards
+            from arkham_logging import get_logger, create_wide_event, log_operation
+            self.get_logger = get_logger
+            self.create_wide_event = create_wide_event
+            self.log_operation = log_operation
+            
+            logger.info(f"LoggingManager initialized in {(perf_counter() - t0):.2f}s")
+        except ImportError:
+            logger.warning("arkham-logging not installed, using standard logging")
+            self.logging_manager = None
+            self.tracing = None
+            self.get_logger = logging.getLogger
+            self.create_wide_event = None
+            self.log_operation = None
+        except Exception as e:
+            logger.warning(f"LoggingManager failed to initialize: {e}")
+            self.logging_manager = None
+            self.tracing = None
+            self.get_logger = logging.getLogger
+            self.create_wide_event = None
+            self.log_operation = None
+
         # Initialize model service (for ML model management in air-gap deployments)
         if disable_models:
             logger.info("ModelService disabled via ARKHAM_DISABLE_MODELS=true")

@@ -472,6 +472,9 @@ async def lifespan(app: FastAPI):
 
     # Store app reference on frame for shards to access
     frame.app = app
+    
+    # Store frame in app state for middleware access
+    app.state.frame = frame
 
     # Load shards
     t0 = perf_counter()
@@ -523,11 +526,14 @@ app = FastAPI(
 )
 
 # Security middleware
-from .middleware import SecurityHeadersMiddleware, limiter, rate_limit_handler, TenantContextMiddleware
+from .middleware import SecurityHeadersMiddleware, limiter, rate_limit_handler, TenantContextMiddleware, WideEventMiddleware
 from slowapi.errors import RateLimitExceeded
 
 app.add_middleware(SecurityHeadersMiddleware)
 app.add_middleware(TenantContextMiddleware)
+
+# Wide event logging middleware (frame will be set in app.state during lifespan)
+app.add_middleware(WideEventMiddleware)
 
 # Rate limiting
 app.state.limiter = limiter

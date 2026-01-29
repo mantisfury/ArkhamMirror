@@ -7,6 +7,17 @@ from typing import Annotated
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
+# Import wide event logging utilities (with fallback)
+try:
+    from arkham_frame import log_operation
+    WIDE_EVENTS_AVAILABLE = True
+except ImportError:
+    WIDE_EVENTS_AVAILABLE = False
+    from contextlib import contextmanager
+    @contextmanager
+    def log_operation(*args, **kwargs):
+        yield None
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/parse", tags=["parse"])
@@ -191,44 +202,59 @@ async def parse_document(doc_id: str):
     This dispatches a job to the cpu-ner worker pool for heavy processing.
     Returns immediately with job ID. Listen for parse.document.completed event.
     """
-    if not _worker_service:
-        raise HTTPException(status_code=503, detail="Worker service not available")
+    with log_operation("parse.document", document_id=doc_id) as event:
+        if event:
+            event.context("shard", "parse")
+            event.context("operation", "parse_async")
+            event.input(document_id=doc_id)
+        
+        if not _worker_service:
+            if event:
+                event.error("ServiceUnavailable", "Worker service not available")
+            raise HTTPException(status_code=503, detail="Worker service not available")
 
-    # Dispatch to cpu-ner worker pool
-    job_id = str(uuid.uuid4())
-    job = await _worker_service.enqueue(
-        pool="cpu-ner",
-        job_id=job_id,
-        payload={
-            "document_id": doc_id,
-            "job_type": "parse_document",
-        },
-        priority=2,
-    )
-
-    logger.info(f"Dispatched parse job {job_id} for document {doc_id}")
-
-    # Emit event
-    if _event_bus:
-        await _event_bus.emit(
-            "parse.document.started",
-            {
+        # Dispatch to cpu-ner worker pool
+        job_id = str(uuid.uuid4())
+        job = await _worker_service.enqueue(
+            pool="cpu-ner",
+            job_id=job_id,
+            payload={
                 "document_id": doc_id,
-                "job_id": job_id,
+                "job_type": "parse_document",
             },
-            source="parse-shard",
+            priority=2,
         )
 
-    return ParseDocumentResponse(
-        document_id=doc_id,
-        entities=[],
-        dates=[],
-        chunks=[],
-        total_entities=0,
-        total_chunks=0,
-        status="processing",
-        processing_time_ms=0.0,
-    )
+        logger.info(f"Dispatched parse job {job_id} for document {doc_id}")
+
+        # Emit event
+        if _event_bus:
+            await _event_bus.emit(
+                "parse.document.started",
+                {
+                    "document_id": doc_id,
+                    "job_id": job_id,
+                },
+                source="parse-shard",
+            )
+
+        if event:
+            event.output(
+                job_id=job_id,
+                status="processing",
+                pool="cpu-ner",
+            )
+
+        return ParseDocumentResponse(
+            document_id=doc_id,
+            entities=[],
+            dates=[],
+            chunks=[],
+            total_entities=0,
+            total_chunks=0,
+            status="processing",
+            processing_time_ms=0.0,
+        )
 
 
 @router.post("/document/{doc_id}/sync")
@@ -246,34 +272,53 @@ async def parse_document_sync(doc_id: str, save_chunks: bool = True):
     Returns:
         Full parse result with entities, dates, chunks, and timing info
     """
-    if not _parse_shard:
-        raise HTTPException(status_code=503, detail="Parse shard not initialized")
+    with log_operation("parse.document_sync", document_id=doc_id) as event:
+        if event:
+            event.context("shard", "parse")
+            event.context("operation", "parse_sync")
+            event.input(document_id=doc_id, save_chunks=save_chunks)
+        
+        if not _parse_shard:
+            if event:
+                event.error("ServiceUnavailable", "Parse shard not initialized")
+            raise HTTPException(status_code=503, detail="Parse shard not initialized")
 
-    try:
-        result = await _parse_shard.parse_document(doc_id, save_chunks=save_chunks)
+        try:
+            result = await _parse_shard.parse_document(doc_id, save_chunks=save_chunks)
 
-        # Emit parse completion event so embed shard can auto-embed
-        if save_chunks and _event_bus:
-            await _event_bus.emit(
-                "parse.document.completed",
-                {
-                    "document_id": doc_id,
-                    "entities": result.get("total_entities", 0),
-                    "chunks": result.get("total_chunks", 0),
-                    "chunks_saved": result.get("chunks_saved", 0),
-                    "entities_saved": result.get("entities_saved", 0),
-                    "chunk_ids": result.get("chunk_ids", []),
-                    "entity_ids": result.get("entity_ids", []),
-                    "output_ids": result.get("chunk_ids", []),  # For provenance linking
-                    "output_table": "arkham_document_chunks",
-                },
-                source="parse-shard",
-            )
+            # Emit parse completion event so embed shard can auto-embed
+            if save_chunks and _event_bus:
+                await _event_bus.emit(
+                    "parse.document.completed",
+                    {
+                        "document_id": doc_id,
+                        "entities": result.get("total_entities", 0),
+                        "chunks": result.get("total_chunks", 0),
+                        "chunks_saved": result.get("chunks_saved", 0),
+                        "entities_saved": result.get("entities_saved", 0),
+                        "chunk_ids": result.get("chunk_ids", []),
+                        "entity_ids": result.get("entity_ids", []),
+                        "output_ids": result.get("chunk_ids", []),  # For provenance linking
+                        "output_table": "arkham_document_chunks",
+                    },
+                    source="parse-shard",
+                )
 
-        return result
-    except Exception as e:
-        logger.error(f"Sync parse failed for {doc_id}: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+            if event:
+                event.output(
+                    total_entities=result.get("total_entities", 0),
+                    total_chunks=result.get("total_chunks", 0),
+                    chunks_saved=result.get("chunks_saved", 0),
+                    entities_saved=result.get("entities_saved", 0),
+                    processing_time_ms=result.get("processing_time_ms", 0),
+                )
+
+            return result
+        except Exception as e:
+            logger.error(f"Sync parse failed for {doc_id}: {e}")
+            if event:
+                event.error("ParseFailed", str(e))
+            raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/entities/{doc_id}")

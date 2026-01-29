@@ -1,6 +1,7 @@
 """Contradictions Shard API endpoints."""
 
 import logging
+import time
 from typing import Annotated, Any, TYPE_CHECKING
 
 from fastapi import APIRouter, HTTPException, Query, Request
@@ -23,6 +24,17 @@ from .models import (
     ContradictionStatus,
     Severity,
 )
+
+# Import wide event logging utilities (with fallback)
+try:
+    from arkham_frame import log_operation
+    WIDE_EVENTS_AVAILABLE = True
+except ImportError:
+    WIDE_EVENTS_AVAILABLE = False
+    from contextlib import contextmanager
+    @contextmanager
+    def log_operation(*args, **kwargs):
+        yield None
 
 logger = logging.getLogger(__name__)
 
@@ -150,65 +162,100 @@ async def analyze_documents(request: AnalyzeRequest):
     3. Verify contradictions using LLM (if enabled)
     4. Store detected contradictions
     """
-    if not _detector or not _storage:
-        raise HTTPException(status_code=503, detail="Contradiction service not initialized")
+    with log_operation("contradictions.analyze", doc_a_id=request.doc_a_id, doc_b_id=request.doc_b_id) as event:
+        if event:
+            event.context("shard", "contradictions")
+            event.context("operation", "analyze")
+            event.input(
+                doc_a_id=request.doc_a_id,
+                doc_b_id=request.doc_b_id,
+                threshold=request.threshold,
+                use_llm=request.use_llm,
+            )
+        
+        if not _detector or not _storage:
+            if event:
+                event.error("ServiceUnavailable", "Contradiction service not initialized")
+            raise HTTPException(status_code=503, detail="Contradiction service not initialized")
 
-    logger.info(f"Analyzing documents: {request.doc_a_id} vs {request.doc_b_id}")
+        logger.info(f"Analyzing documents: {request.doc_a_id} vs {request.doc_b_id}")
 
-    # Fetch actual document content from Frame
-    doc_a = await _get_document_content(request.doc_a_id)
-    doc_b = await _get_document_content(request.doc_b_id)
+        start_time = time.time()
 
-    if not doc_a:
-        raise HTTPException(status_code=404, detail=f"Document not found: {request.doc_a_id}")
-    if not doc_b:
-        raise HTTPException(status_code=404, detail=f"Document not found: {request.doc_b_id}")
+        # Fetch actual document content from Frame
+        doc_a = await _get_document_content(request.doc_a_id)
+        doc_b = await _get_document_content(request.doc_b_id)
 
-    doc_a_text = doc_a["content"]
-    doc_b_text = doc_b["content"]
+        if not doc_a:
+            if event:
+                event.error("DocumentNotFound", f"Document not found: {request.doc_a_id}")
+            raise HTTPException(status_code=404, detail=f"Document not found: {request.doc_a_id}")
+        if not doc_b:
+            if event:
+                event.error("DocumentNotFound", f"Document not found: {request.doc_b_id}")
+            raise HTTPException(status_code=404, detail=f"Document not found: {request.doc_b_id}")
 
-    logger.info(f"Fetched documents: {doc_a.get('title')} ({len(doc_a_text)} chars) vs {doc_b.get('title')} ({len(doc_b_text)} chars)")
+        doc_a_text = doc_a["content"]
+        doc_b_text = doc_b["content"]
 
-    # Extract claims
-    if request.use_llm:
-        claims_a = await _detector.extract_claims_llm(doc_a_text, request.doc_a_id)
-        claims_b = await _detector.extract_claims_llm(doc_b_text, request.doc_b_id)
-    else:
-        claims_a = _detector.extract_claims_simple(doc_a_text, request.doc_a_id)
-        claims_b = _detector.extract_claims_simple(doc_b_text, request.doc_b_id)
+        logger.info(f"Fetched documents: {doc_a.get('title')} ({len(doc_a_text)} chars) vs {doc_b.get('title')} ({len(doc_b_text)} chars)")
 
-    # Find similar claim pairs
-    similar_pairs = await _detector.find_similar_claims(
-        claims_a, claims_b, threshold=request.threshold
-    )
+        # Extract claims
+        extract_start = time.time()
+        if request.use_llm:
+            claims_a = await _detector.extract_claims_llm(doc_a_text, request.doc_a_id)
+            claims_b = await _detector.extract_claims_llm(doc_b_text, request.doc_b_id)
+            if event:
+                event.dependency("llm_claim_extraction", duration_ms=int((time.time() - extract_start) * 1000))
+        else:
+            claims_a = _detector.extract_claims_simple(doc_a_text, request.doc_a_id)
+            claims_b = _detector.extract_claims_simple(doc_b_text, request.doc_b_id)
 
-    # Verify contradictions
-    contradictions = []
-    for claim_a, claim_b, similarity in similar_pairs:
-        contradiction = await _detector.verify_contradiction(claim_a, claim_b, similarity)
-        if contradiction:
-            await _storage.create(contradiction)
-            contradictions.append(contradiction)
-
-    # Emit event
-    if _event_bus and contradictions:
-        await _event_bus.emit(
-            "contradictions.detected",
-            {
-                "doc_a_id": request.doc_a_id,
-                "doc_b_id": request.doc_b_id,
-                "count": len(contradictions),
-                "contradiction_ids": [c.id for c in contradictions],
-            },
-            source="contradictions-shard",
+        # Find similar claim pairs
+        similar_start = time.time()
+        similar_pairs = await _detector.find_similar_claims(
+            claims_a, claims_b, threshold=request.threshold
         )
+        if event:
+            event.dependency("vector_search", duration_ms=int((time.time() - similar_start) * 1000))
 
-    return {
-        "doc_a_id": request.doc_a_id,
-        "doc_b_id": request.doc_b_id,
-        "contradictions": [_contradiction_to_result(c) for c in contradictions],
-        "count": len(contradictions),
-    }
+        # Verify contradictions
+        verify_start = time.time()
+        contradictions = []
+        for claim_a, claim_b, similarity in similar_pairs:
+            contradiction = await _detector.verify_contradiction(claim_a, claim_b, similarity)
+            if contradiction:
+                await _storage.create(contradiction)
+                contradictions.append(contradiction)
+        
+        duration_ms = int((time.time() - start_time) * 1000)
+        if event:
+            event.dependency("contradiction_verification", duration_ms=int((time.time() - verify_start) * 1000))
+            event.output(
+                contradiction_count=len(contradictions),
+                similar_pairs_count=len(similar_pairs),
+                duration_ms=duration_ms,
+            )
+
+        # Emit event
+        if _event_bus and contradictions:
+            await _event_bus.emit(
+                "contradictions.detected",
+                {
+                    "doc_a_id": request.doc_a_id,
+                    "doc_b_id": request.doc_b_id,
+                    "count": len(contradictions),
+                    "contradiction_ids": [c.id for c in contradictions],
+                },
+                source="contradictions-shard",
+            )
+
+        return {
+            "doc_a_id": request.doc_a_id,
+            "doc_b_id": request.doc_b_id,
+            "contradictions": [_contradiction_to_result(c) for c in contradictions],
+            "count": len(contradictions),
+        }
 
 
 @router.post("/batch")

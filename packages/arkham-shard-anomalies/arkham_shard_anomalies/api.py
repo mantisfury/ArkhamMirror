@@ -37,6 +37,17 @@ except ImportError:
     async def current_optional_user():
         return None
 
+# Import wide event logging utilities (with fallback)
+try:
+    from arkham_frame import log_operation
+    WIDE_EVENTS_AVAILABLE = True
+except ImportError:
+    WIDE_EVENTS_AVAILABLE = False
+    from contextlib import contextmanager
+    @contextmanager
+    def log_operation(*args, **kwargs):
+        yield None
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/anomalies", tags=["anomalies"])
@@ -132,72 +143,96 @@ async def detect_anomalies(request: DetectRequest):
 
     This endpoint may run as a background job for large corpora.
     """
-    if not _detector or not _store:
-        raise HTTPException(status_code=503, detail="Anomaly service not initialized")
+    with log_operation("anomalies.detect", project_id=request.project_id) as event:
+        if event:
+            event.context("shard", "anomalies")
+            event.context("operation", "detect")
+            event.input(
+                project_id=request.project_id,
+                doc_count=len(request.doc_ids) if request.doc_ids else 0,
+                has_config=request.config is not None,
+            )
+            if request.project_id:
+                event.context("project_id", request.project_id)
+        
+        if not _detector or not _store:
+            if event:
+                event.error("ServiceUnavailable", "Anomaly service not initialized")
+            raise HTTPException(status_code=503, detail="Anomaly service not initialized")
 
-    start_time = time.time()
+        start_time = time.time()
 
-    try:
-        logger.info(f"Anomaly detection requested for project: {request.project_id}")
+        try:
+            logger.info(f"Anomaly detection requested for project: {request.project_id}")
 
-        # Emit detection started event
-        if _event_bus:
-            await _event_bus.emit(
-                "anomalies.detection_started",
-                {
-                    "project_id": request.project_id,
-                    "doc_ids": request.doc_ids,
-                    "config": request.config.__dict__ if request.config else None,
-                },
-                source="anomalies-shard",
+            # Emit detection started event
+            if _event_bus:
+                await _event_bus.emit(
+                    "anomalies.detection_started",
+                    {
+                        "project_id": request.project_id,
+                        "doc_ids": request.doc_ids,
+                        "config": request.config.__dict__ if request.config else None,
+                    },
+                    source="anomalies-shard",
+                )
+
+            # Get documents to analyze
+            doc_ids = request.doc_ids
+            if not doc_ids and _db:
+                # If no specific doc_ids, get all documents from arkham_frame.documents
+                rows = await _db.fetch_all(
+                    "SELECT id FROM arkham_frame.documents LIMIT 1000"
+                )
+                doc_ids = [row["id"] for row in rows] if rows else []
+
+            detected_anomalies = []
+            config = request.config or DetectionConfig()
+
+            # Run detection on each document
+            for doc_id in doc_ids:
+                try:
+                    doc_anomalies = await _detect_document_anomalies_internal(doc_id, config)
+                    for anomaly in doc_anomalies:
+                        await _store.create_anomaly(anomaly)
+                        detected_anomalies.append(anomaly)
+                except Exception as doc_error:
+                    logger.warning(f"Failed to detect anomalies for doc {doc_id}: {doc_error}")
+
+            duration_ms = (time.time() - start_time) * 1000
+
+            # Emit detection completed event
+            if _event_bus:
+                await _event_bus.emit(
+                    "anomalies.detection_completed",
+                    {
+                        "project_id": request.project_id,
+                        "doc_ids": doc_ids,
+                        "anomalies_detected": len(detected_anomalies),
+                        "duration_ms": duration_ms,
+                    },
+                    source="anomalies-shard",
+                )
+
+            if event:
+                event.output(
+                    anomalies_detected=len(detected_anomalies),
+                    documents_analyzed=len(doc_ids),
+                    duration_ms=duration_ms,
+                )
+
+            return DetectResponse(
+                anomalies_detected=len(detected_anomalies),
+                duration_ms=duration_ms,
+                job_id=f"detect-{int(start_time)}",
             )
 
-        # Get documents to analyze
-        doc_ids = request.doc_ids
-        if not doc_ids and _db:
-            # If no specific doc_ids, get all documents from arkham_frame.documents
-            rows = await _db.fetch_all(
-                "SELECT id FROM arkham_frame.documents LIMIT 1000"
-            )
-            doc_ids = [row["id"] for row in rows] if rows else []
-
-        detected_anomalies = []
-        config = request.config or DetectionConfig()
-
-        # Run detection on each document
-        for doc_id in doc_ids:
-            try:
-                doc_anomalies = await _detect_document_anomalies_internal(doc_id, config)
-                for anomaly in doc_anomalies:
-                    await _store.create_anomaly(anomaly)
-                    detected_anomalies.append(anomaly)
-            except Exception as doc_error:
-                logger.warning(f"Failed to detect anomalies for doc {doc_id}: {doc_error}")
-
-        duration_ms = (time.time() - start_time) * 1000
-
-        # Emit detection completed event
-        if _event_bus:
-            await _event_bus.emit(
-                "anomalies.detection_completed",
-                {
-                    "project_id": request.project_id,
-                    "doc_ids": doc_ids,
-                    "anomalies_detected": len(detected_anomalies),
-                    "duration_ms": duration_ms,
-                },
-                source="anomalies-shard",
-            )
-
-        return DetectResponse(
-            anomalies_detected=len(detected_anomalies),
-            duration_ms=duration_ms,
-            job_id=f"detect-{int(start_time)}",
-        )
-
-    except Exception as e:
-        logger.error(f"Anomaly detection failed: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Detection failed: {str(e)}")
+        except Exception as e:
+            duration_ms = int((time.time() - start_time) * 1000)
+            logger.error(f"Anomaly detection failed: {e}", exc_info=True)
+            if event:
+                event.error("AnomalyDetectionFailed", str(e))
+            raise HTTPException(status_code=500, detail=f"Detection failed: {str(e)}")
 
 
 @router.post("/document/{doc_id}", response_model=DetectResponse)
