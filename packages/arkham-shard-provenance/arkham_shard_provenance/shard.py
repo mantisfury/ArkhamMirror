@@ -2940,7 +2940,7 @@ class ProvenanceShard(ArkhamShard):
                 }
             )
 
-    async def get_forensic_scan(self, scan_id: str) -> Optional[Dict[str, Any]]:
+    async def get_forensic_scan(self, scan_id: str, project_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
         """
         Get a forensic scan by ID.
 
@@ -2954,11 +2954,22 @@ class ProvenanceShard(ArkhamShard):
             return None
 
         tenant_id = self.get_tenant_id_or_none()
-        query = "SELECT * FROM arkham_provenance.forensic_scans WHERE id = :id"
         params: Dict[str, Any] = {"id": scan_id}
 
+        # Project scoping: infer scan ownership via document
+        if project_id:
+            query = """
+                SELECT s.*
+                FROM arkham_provenance.forensic_scans s
+                INNER JOIN arkham_frame.documents d ON d.id = s.doc_id
+                WHERE s.id = :id AND d.project_id = :project_id
+            """
+            params["project_id"] = str(project_id)
+        else:
+            query = "SELECT * FROM arkham_provenance.forensic_scans WHERE id = :id"
+
         if tenant_id:
-            query += " AND tenant_id = :tenant_id"
+            query += " AND s.tenant_id = :tenant_id" if project_id else " AND tenant_id = :tenant_id"
             params["tenant_id"] = str(tenant_id)
 
         row = await self._db.fetch_one(query, params)
@@ -2972,7 +2983,7 @@ class ProvenanceShard(ArkhamShard):
                 result[field] = self._parse_jsonb(result[field], {})
         return result
 
-    async def get_document_forensic_scans(self, doc_id: str) -> List[Dict[str, Any]]:
+    async def get_document_forensic_scans(self, doc_id: str, project_id: Optional[str] = None) -> List[Dict[str, Any]]:
         """
         Get all forensic scans for a document.
 
@@ -2986,11 +2997,21 @@ class ProvenanceShard(ArkhamShard):
             return []
 
         tenant_id = self.get_tenant_id_or_none()
-        query = "SELECT * FROM arkham_provenance.forensic_scans WHERE doc_id = :doc_id"
         params: Dict[str, Any] = {"doc_id": doc_id}
 
+        if project_id:
+            query = """
+                SELECT s.*
+                FROM arkham_provenance.forensic_scans s
+                INNER JOIN arkham_frame.documents d ON d.id = s.doc_id
+                WHERE s.doc_id = :doc_id AND d.project_id = :project_id
+            """
+            params["project_id"] = str(project_id)
+        else:
+            query = "SELECT * FROM arkham_provenance.forensic_scans WHERE doc_id = :doc_id"
+
         if tenant_id:
-            query += " AND tenant_id = :tenant_id"
+            query += " AND s.tenant_id = :tenant_id" if project_id else " AND tenant_id = :tenant_id"
             params["tenant_id"] = str(tenant_id)
 
         query += " ORDER BY scanned_at DESC"
@@ -3008,7 +3029,7 @@ class ProvenanceShard(ArkhamShard):
             results.append(result)
         return results
 
-    async def get_forensic_stats(self) -> Dict[str, Any]:
+    async def get_forensic_stats(self, project_id: Optional[str] = None) -> Dict[str, Any]:
         """
         Get forensic scanning statistics.
 
@@ -3019,53 +3040,71 @@ class ProvenanceShard(ArkhamShard):
             return {}
 
         tenant_id = self.get_tenant_id_or_none()
-        tenant_filter = ""
         params: Dict[str, Any] = {}
 
-        if tenant_id:
-            tenant_filter = " WHERE tenant_id = :tenant_id"
-            params["tenant_id"] = str(tenant_id)
+        # Build base FROM with optional project join
+        if project_id:
+            base_from = """
+                FROM arkham_provenance.forensic_scans s
+                INNER JOIN arkham_frame.documents d ON d.id = s.doc_id
+                WHERE d.project_id = :project_id
+            """
+            params["project_id"] = str(project_id)
+            if tenant_id:
+                base_from += " AND s.tenant_id = :tenant_id"
+                params["tenant_id"] = str(tenant_id)
+        else:
+            base_from = "FROM arkham_provenance.forensic_scans"
+            tenant_filter = ""
+            if tenant_id:
+                tenant_filter = " WHERE tenant_id = :tenant_id"
+                params["tenant_id"] = str(tenant_id)
+            base_from = f"{base_from}{tenant_filter}"
 
         # Total scans
-        total_row = await self._db.fetch_one(
-            f"SELECT COUNT(*) as count FROM arkham_provenance.forensic_scans{tenant_filter}",
-            params
-        )
+        total_row = await self._db.fetch_one(f"SELECT COUNT(*) as count {base_from}", params)
         total_scans = total_row.get("count", 0) if total_row else 0
 
         # Scans by status
         status_rows = await self._db.fetch_all(
-            f"""SELECT scan_status, COUNT(*) as count
-                FROM arkham_provenance.forensic_scans{tenant_filter}
-                GROUP BY scan_status""",
-            params
+            f"SELECT scan_status, COUNT(*) as count {base_from} GROUP BY scan_status",
+            params,
         )
         scans_by_status = {row["scan_status"]: row["count"] for row in status_rows} if status_rows else {}
 
         # Integrity counts
         integrity_rows = await self._db.fetch_all(
-            f"""SELECT integrity_status, COUNT(*) as count
-                FROM arkham_provenance.forensic_scans{tenant_filter}
-                GROUP BY integrity_status""",
-            params
+            f"SELECT integrity_status, COUNT(*) as count {base_from} GROUP BY integrity_status",
+            params,
         )
         integrity_counts = {row["integrity_status"]: row["count"] for row in integrity_rows} if integrity_rows else {}
 
         # Documents with findings
-        findings_row = await self._db.fetch_one(
-            f"""SELECT COUNT(DISTINCT doc_id) as count
+        if project_id:
+            findings_row = await self._db.fetch_one(
+                f"""
+                SELECT COUNT(DISTINCT s.doc_id) as count
+                FROM arkham_provenance.forensic_scans s
+                INNER JOIN arkham_frame.documents d ON d.id = s.doc_id
+                WHERE d.project_id = :project_id
+                  AND s.findings != '[]'
+                  {('AND s.tenant_id = :tenant_id' if tenant_id else '')}
+                """,
+                params,
+            )
+        else:
+            findings_row = await self._db.fetch_one(
+                f"""
+                SELECT COUNT(DISTINCT doc_id) as count
                 FROM arkham_provenance.forensic_scans
-                WHERE findings != '[]'{' AND tenant_id = :tenant_id' if tenant_id else ''}""",
-            params
-        )
+                WHERE findings != '[]'{' AND tenant_id = :tenant_id' if tenant_id else ''}
+                """,
+                params,
+            )
         docs_with_findings = findings_row.get("count", 0) if findings_row else 0
 
         # Average confidence
-        avg_row = await self._db.fetch_one(
-            f"""SELECT AVG(confidence_score) as avg_confidence
-                FROM arkham_provenance.forensic_scans{tenant_filter}""",
-            params
-        )
+        avg_row = await self._db.fetch_one(f"SELECT AVG(confidence_score) as avg_confidence {base_from}", params)
         avg_confidence = float(avg_row.get("avg_confidence", 0) or 0) if avg_row else 0.0
 
         return {

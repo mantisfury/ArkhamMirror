@@ -9,11 +9,12 @@
  * - Document comparison
  */
 
-import { useState, useCallback } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import { Icon } from '../../components/common/Icon';
 import { useToast } from '../../context/ToastContext';
+import { useProject } from '../../context/ProjectContext';
 import { useFetch } from '../../hooks/useFetch';
-import { apiPost } from '../../utils/api';
+import { apiFetch, apiPost } from '../../utils/api';
 
 // Types
 interface ExifData {
@@ -111,6 +112,7 @@ interface ForensicsTabProps {
 
 export function ForensicsTab({ onScanComplete }: ForensicsTabProps) {
   const { toast } = useToast();
+  const { activeProjectId, isActive, loading: projectLoading } = useProject();
 
   // State
   const [scanning, setScanning] = useState(false);
@@ -121,6 +123,9 @@ export function ForensicsTab({ onScanComplete }: ForensicsTabProps) {
   const [compareSourceId, setCompareSourceId] = useState<string>('');
   const [compareTargetId, setCompareTargetId] = useState<string>('');
   const [comparisonResult, setComparisonResult] = useState<any>(null);
+  const [documents, setDocuments] = useState<Array<{ id: string; filename: string; file_type: string }>>([]);
+  const [loadingDocs, setLoadingDocs] = useState(false);
+  const [docError, setDocError] = useState<string | null>(null);
 
   // Fetch stats
   const { data: statsData, refetch: refetchStats } = useFetch<{ stats: ForensicStats }>(
@@ -128,11 +133,49 @@ export function ForensicsTab({ onScanComplete }: ForensicsTabProps) {
   );
   const stats = statsData?.stats;
 
-  // Fetch documents for selection
-  const { data: documentsData } = useFetch<{ items: Array<{ id: string; filename: string; file_type: string }> }>(
-    '/api/documents/items?limit=100'
-  );
-  const documents = documentsData?.items || [];
+  // Fetch documents for selection (scoped to active project)
+  useEffect(() => {
+    if (projectLoading) return;
+
+    if (!isActive || !activeProjectId) {
+      setLoadingDocs(false);
+      setDocError('No active project selected. Please select a project first.');
+      setDocuments([]);
+      return;
+    }
+
+    const loadDocuments = async () => {
+      setLoadingDocs(true);
+      setDocError(null);
+      try {
+        const params = new URLSearchParams();
+        params.set('page', '1');
+        params.set('page_size', '100');
+        params.set('project_id', activeProjectId);
+
+        const response = await apiFetch(`/api/documents/items?${params.toString()}`);
+        if (!response.ok) {
+          const errorData = await response.json().catch(() => ({}));
+          throw new Error(errorData.detail || `Failed to fetch documents: ${response.status}`);
+        }
+
+        const data = await response.json();
+        const items = Array.isArray(data.items) ? data.items : [];
+        setDocuments(items);
+        if (items.length === 0) {
+          setDocError('No documents found in the active project. Please ingest documents first.');
+        }
+      } catch (err) {
+        const errorMsg = err instanceof Error ? err.message : 'Failed to fetch documents';
+        setDocError(errorMsg);
+        setDocuments([]);
+      } finally {
+        setLoadingDocs(false);
+      }
+    };
+
+    loadDocuments();
+  }, [activeProjectId, isActive, projectLoading]);
 
   // Scan a document
   const handleScan = useCallback(async () => {
@@ -244,10 +287,11 @@ export function ForensicsTab({ onScanComplete }: ForensicsTabProps) {
       <div className="forensics-scan-controls">
         <div className="forensics-scan-form">
           <label>Select Document for Forensic Analysis</label>
+          {docError && <div className="text-muted">{docError}</div>}
           <select
             value={selectedDocId}
             onChange={(e) => setSelectedDocId(e.target.value)}
-            disabled={scanning}
+            disabled={scanning || loadingDocs || projectLoading}
           >
             <option value="">-- Select a document --</option>
             {documents.map(doc => (

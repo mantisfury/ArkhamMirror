@@ -12,9 +12,13 @@ if TYPE_CHECKING:
     from .shard import ProvenanceShard
 
 try:
-    from arkham_frame.auth import current_optional_user
+    from arkham_frame.auth import current_active_user, current_optional_user, require_project_member
 except ImportError:
+    async def current_active_user():
+        return None
     async def current_optional_user():
+        return None
+    async def require_project_member(*args, **kwargs):
         return None
 
 # Import wide event logging utilities (with fallback)
@@ -60,6 +64,26 @@ def get_shard(request: Request) -> "ProvenanceShard":
     if not shard:
         raise HTTPException(status_code=503, detail="Provenance shard not available")
     return shard
+
+
+async def _require_active_project_id(request: Request, shard: "ProvenanceShard", user: Any) -> str:
+    """
+    Resolve the user's active project_id and validate membership.
+    """
+    if not user:
+        raise HTTPException(status_code=401, detail="Authentication required")
+
+    frame = getattr(shard, "frame", None) or getattr(shard, "_frame", None)
+    if not frame or not hasattr(frame, "get_active_project_id"):
+        raise HTTPException(status_code=503, detail="Frame project service not available")
+
+    user_id_str = str(getattr(user, "id", "")).lower().strip()
+    project_id = await frame.get_active_project_id(user_id_str)
+    if not project_id:
+        raise HTTPException(status_code=400, detail="No active project selected")
+
+    await require_project_member(str(project_id), user, request)
+    return str(project_id)
 
 
 # --- Request/Response Models ---
@@ -1145,6 +1169,7 @@ class ForensicStatsResponse(BaseModel):
 async def scan_forensics(
     request: Request,
     body: ForensicScanRequest,
+    user=Depends(current_active_user),
 ):
     """
     Perform forensic metadata analysis on a document.
@@ -1176,6 +1201,7 @@ async def scan_forensics(
                 event.input(document_id=body.doc_id)
 
             shard = get_shard(request)
+            project_id = await _require_active_project_id(request, shard, user)
 
             if not shard.forensic_analyzer:
                 raise HTTPException(
@@ -1189,8 +1215,8 @@ async def scan_forensics(
             # Get document metadata and file path
             doc_row = await shard._db.fetch_one(
                 """SELECT id, filename, storage_id, mime_type, file_size, metadata
-                   FROM arkham_frame.documents WHERE id = :doc_id""",
-                {"doc_id": body.doc_id}
+                   FROM arkham_frame.documents WHERE id = :doc_id AND project_id = :project_id""",
+                {"doc_id": body.doc_id, "project_id": project_id}
             )
 
             if not doc_row:
@@ -1364,6 +1390,7 @@ async def scan_forensics(
 async def compare_forensics(
     request: Request,
     body: ForensicCompareRequest,
+    user=Depends(current_active_user),
 ):
     """
     Compare metadata between two documents.
@@ -1388,6 +1415,7 @@ async def compare_forensics(
         Comparison results with match score and relationship
     """
     shard = get_shard(request)
+    project_id = await _require_active_project_id(request, shard, user)
 
     if not shard.forensic_analyzer:
         raise HTTPException(
@@ -1396,8 +1424,8 @@ async def compare_forensics(
         )
 
     # Get existing scans for both documents
-    source_scans = await shard.get_document_forensic_scans(body.source_doc_id)
-    target_scans = await shard.get_document_forensic_scans(body.target_doc_id)
+    source_scans = await shard.get_document_forensic_scans(body.source_doc_id, project_id=project_id)
+    target_scans = await shard.get_document_forensic_scans(body.target_doc_id, project_id=project_id)
 
     if not source_scans:
         raise HTTPException(
@@ -1520,7 +1548,7 @@ async def compare_forensics(
 
 
 @router.get("/forensics/stats", response_model=ForensicStatsResponse)
-async def get_forensic_stats(request: Request):
+async def get_forensic_stats(request: Request, user=Depends(current_active_user)):
     """
     Get forensic analysis statistics.
 
@@ -1532,8 +1560,8 @@ async def get_forensic_stats(request: Request):
     - Average confidence score
     """
     shard = get_shard(request)
-
-    stats = await shard.get_forensic_stats()
+    project_id = await _require_active_project_id(request, shard, user)
+    stats = await shard.get_forensic_stats(project_id=project_id)
     return ForensicStatsResponse(stats=stats)
 
 
@@ -1541,6 +1569,7 @@ async def get_forensic_stats(request: Request):
 async def get_document_forensic_scans(
     request: Request,
     doc_id: str,
+    user=Depends(current_active_user),
 ):
     """
     Get all forensic scans for a document.
@@ -1552,8 +1581,8 @@ async def get_document_forensic_scans(
         List of scans for the document
     """
     shard = get_shard(request)
-
-    scans = await shard.get_document_forensic_scans(doc_id)
+    project_id = await _require_active_project_id(request, shard, user)
+    scans = await shard.get_document_forensic_scans(doc_id, project_id=project_id)
     return {"scans": scans, "total": len(scans)}
 
 
@@ -1561,6 +1590,7 @@ async def get_document_forensic_scans(
 async def get_forensic_scan(
     request: Request,
     scan_id: str,
+    user=Depends(current_active_user),
 ):
     """
     Get a specific forensic scan by ID.
@@ -1572,8 +1602,8 @@ async def get_forensic_scan(
         Scan details
     """
     shard = get_shard(request)
-
-    scan = await shard.get_forensic_scan(scan_id)
+    project_id = await _require_active_project_id(request, shard, user)
+    scan = await shard.get_forensic_scan(scan_id, project_id=project_id)
     if not scan:
         raise HTTPException(status_code=404, detail=f"Scan {scan_id} not found")
 
