@@ -22,7 +22,7 @@ if TYPE_CHECKING:
 
 # Import wide event logging utilities (with fallback)
 try:
-    from arkham_frame import log_operation
+    from arkham_frame import log_operation, emit_wide_error
     WIDE_EVENTS_AVAILABLE = True
 except ImportError:
     WIDE_EVENTS_AVAILABLE = False
@@ -30,6 +30,8 @@ except ImportError:
     @contextmanager
     def log_operation(*args, **kwargs):
         yield None
+    def emit_wide_error(*args, **kwargs):
+        pass
 
 router = APIRouter(prefix="/api/export", tags=["export"])
 
@@ -283,7 +285,7 @@ async def create_job(body: ExportJobCreate, request: Request):
             return _job_to_response(job)
         except Exception as e:
             if event:
-                event.error(str(e), exc_info=True)
+                emit_wide_error(event, type(e).__name__, str(e), exc=e)
             raise
 
 
@@ -365,7 +367,7 @@ async def download_job(job_id: str, request: Request):
             )
         except Exception as e:
             if event:
-                event.error(str(e), exc_info=True)
+                emit_wide_error(event, type(e).__name__, str(e), exc=e)
             raise
 
 

@@ -43,7 +43,7 @@ except ImportError:
 
 # Import wide event logging utilities (with fallback)
 try:
-    from arkham_frame import log_operation
+    from arkham_frame import log_operation, emit_wide_error
     WIDE_EVENTS_AVAILABLE = True
 except ImportError:
     WIDE_EVENTS_AVAILABLE = False
@@ -51,6 +51,8 @@ except ImportError:
     @contextmanager
     def log_operation(*args, **kwargs):
         yield None
+    def emit_wide_error(*args, **kwargs):
+        pass
 
 logger = logging.getLogger(__name__)
 
@@ -1711,7 +1713,7 @@ async def build_graph(request: BuildGraphRequest) -> dict[str, Any]:
         except Exception as e:
             logger.error(f"Error building graph: {e}", exc_info=True)
             if event:
-                event.error(str(e), exc_info=True)
+                emit_wide_error(event, type(e).__name__, str(e), exc=e)
             raise HTTPException(status_code=500, detail=str(e))
 
 

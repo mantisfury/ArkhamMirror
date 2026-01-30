@@ -23,7 +23,7 @@ except ImportError:
 
 # Import wide event logging utilities (with fallback)
 try:
-    from arkham_frame import log_operation
+    from arkham_frame import log_operation, emit_wide_error
     WIDE_EVENTS_AVAILABLE = True
 except ImportError:
     WIDE_EVENTS_AVAILABLE = False
@@ -31,6 +31,8 @@ except ImportError:
     @contextmanager
     def log_operation(*args, **kwargs):
         yield None
+    def emit_wide_error(*args, **kwargs):
+        pass
 
 logger = logging.getLogger(__name__)
 
@@ -389,7 +391,7 @@ async def create_chain(request_body: CreateChainRequest, request: Request):
         except Exception as e:
             logger.error(f"Error creating chain: {e}")
             if event:
-                event.error(str(e), exc_info=True)
+                emit_wide_error(event, type(e).__name__, str(e), exc=e)
             raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -519,12 +521,12 @@ async def add_link(chain_id: str, request_body: AddLinkRequest, request: Request
             return link
         except ValueError as e:
             if event:
-                event.error(str(e), exc_info=True)
+                emit_wide_error(event, type(e).__name__, str(e), exc=e)
             raise HTTPException(status_code=400, detail=str(e))
         except Exception as e:
             logger.error(f"Error adding link: {e}")
             if event:
-                event.error(str(e), exc_info=True)
+                emit_wide_error(event, type(e).__name__, str(e), exc=e)
             raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -1260,6 +1262,18 @@ async def scan_forensics(
 
             mime_type = doc_row.get("mime_type", "")
 
+            # Prefer document_metadata from frame when available (avoids re-extracting from file)
+            document_metadata = None
+            _frame = getattr(shard, "_frame", None)
+            if _frame and hasattr(_frame, "get_service"):
+                _doc_service = _frame.get_service("documents")
+                if _doc_service and hasattr(_doc_service, "get_document_metadata"):
+                    try:
+                        document_metadata = await _doc_service.get_document_metadata(body.doc_id)
+                    except Exception as e:
+                        if event:
+                            event.context("document_metadata_fetch_error", str(e))
+
             # Perform forensic scan (use storage_path for file path reference)
             file_path = storage_path or storage_id
             scan_result = shard.forensic_analyzer.full_scan(
@@ -1267,6 +1281,7 @@ async def scan_forensics(
                 file_path=file_path,
                 file_data=file_data,
                 mime_type=mime_type,
+                document_metadata=document_metadata,
             )
 
             # Store the scan result
@@ -1382,7 +1397,7 @@ async def scan_forensics(
         except Exception as e:
             logger.error(f"Error scanning forensics: {e}")
             if event:
-                event.error(str(e), exc_info=True)
+                emit_wide_error(event, type(e).__name__, str(e), exc=e)
             raise
 
 

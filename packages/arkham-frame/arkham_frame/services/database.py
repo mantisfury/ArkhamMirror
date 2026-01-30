@@ -5,13 +5,12 @@ DatabaseService - PostgreSQL database access with schema isolation.
 from typing import Optional, List, Dict, Any
 import logging
 import time
-import re
 
 logger = logging.getLogger(__name__)
 
 # Import wide event logging utilities (with fallback)
 try:
-    from arkham_frame import log_operation
+    from arkham_frame import log_operation, emit_wide_error
     from arkham_logging.sanitizer import DataSanitizer
     WIDE_EVENTS_AVAILABLE = True
 except ImportError:
@@ -21,6 +20,8 @@ except ImportError:
     @contextmanager
     def log_operation(*args, **kwargs):
         yield None
+    def emit_wide_error(*args, **kwargs):
+        pass
     DataSanitizer = None
 
 
@@ -60,23 +61,6 @@ class DatabaseService:
         self._session_factory = None
         self._connected = False
         self._sanitizer = DataSanitizer() if WIDE_EVENTS_AVAILABLE and DataSanitizer else None
-    
-    def _sanitize_query(self, query: str) -> str:
-        """Sanitize query for logging - remove sensitive patterns and truncate."""
-        if not query:
-            return ""
-        
-        # Truncate very long queries
-        max_query_length = 500
-        sanitized = query[:max_query_length]
-        if len(query) > max_query_length:
-            sanitized += "... [truncated]"
-        
-        # Remove potential password/credential patterns
-        sanitized = re.sub(r'(?i)(password|pwd|passwd)\s*=\s*[\'"]?[^\'";\s]+', r'\1=***', sanitized)
-        sanitized = re.sub(r'(?i)(api[_-]?key|token|secret)\s*=\s*[\'"]?[^\'";\s]+', r'\1=***', sanitized)
-        
-        return sanitized
 
     async def initialize(self) -> None:
         """Initialize database connection."""
@@ -349,14 +333,14 @@ class DatabaseService:
 
     async def execute(self, query: str, params=None) -> None:
         """Execute a query (for DDL, INSERT, UPDATE, DELETE)."""
-        sanitized_query = self._sanitize_query(query)
         query_type = query.strip().split()[0].upper() if query.strip() else "UNKNOWN"
-        
+        query_preview = (query or "")[:500] + ("..." if len(query or "") > 500 else "")
+
         with log_operation("database.execute", query_type=query_type) as event:
             if event:
                 event.input(
                     query_type=query_type,
-                    query_preview=sanitized_query,
+                    query_preview=query_preview,
                     has_params=params is not None,
                 )
                 if self._sanitizer and params:
@@ -384,17 +368,17 @@ class DatabaseService:
                 duration_ms = int((time.time() - start_time) * 1000)
                 if event:
                     event.dependency("postgresql", duration_ms=duration_ms, error=str(e))
-                    event.error("QueryExecutionFailed", str(e))
+                emit_wide_error(event, "QueryExecutionFailed", str(e), exc=e)
                 raise QueryExecutionError(str(e), query)
 
     async def fetch_one(self, query: str, params=None) -> Optional[Dict[str, Any]]:
         """Fetch a single row."""
-        sanitized_query = self._sanitize_query(query)
-        
+        query_preview = (query or "")[:500] + ("..." if len(query or "") > 500 else "")
+
         with log_operation("database.fetch_one") as event:
             if event:
                 event.input(
-                    query_preview=sanitized_query,
+                    query_preview=query_preview,
                     has_params=params is not None,
                 )
                 if self._sanitizer and params:
@@ -426,17 +410,17 @@ class DatabaseService:
                 duration_ms = int((time.time() - start_time) * 1000)
                 if event:
                     event.dependency("postgresql", duration_ms=duration_ms, error=str(e))
-                    event.error("QueryExecutionFailed", str(e))
+                emit_wide_error(event, "QueryExecutionFailed", str(e), exc=e)
                 raise QueryExecutionError(str(e), query)
 
     async def fetch_all(self, query: str, params=None) -> List[Dict[str, Any]]:
         """Fetch all rows."""
-        sanitized_query = self._sanitize_query(query)
-        
+        query_preview = (query or "")[:500] + ("..." if len(query or "") > 500 else "")
+
         with log_operation("database.fetch_all") as event:
             if event:
                 event.input(
-                    query_preview=sanitized_query,
+                    query_preview=query_preview,
                     has_params=params is not None,
                 )
                 if self._sanitizer and params:
@@ -466,5 +450,5 @@ class DatabaseService:
                 duration_ms = int((time.time() - start_time) * 1000)
                 if event:
                     event.dependency("postgresql", duration_ms=duration_ms, error=str(e))
-                    event.error("QueryExecutionFailed", str(e))
+                emit_wide_error(event, "QueryExecutionFailed", str(e), exc=e)
                 raise QueryExecutionError(str(e), query)

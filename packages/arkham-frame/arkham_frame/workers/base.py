@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 # Import wide event logging utilities (with fallback)
 try:
-    from arkham_frame import log_operation
+    from arkham_frame import log_operation, emit_wide_error
     from arkham_logging.sanitizer import DataSanitizer
     WIDE_EVENTS_AVAILABLE = True
 except ImportError:
@@ -32,6 +32,8 @@ except ImportError:
     @contextmanager
     def log_operation(*args, **kwargs):
         yield None
+    def emit_wide_error(*args, **kwargs):
+        pass
     DataSanitizer = None
 
 
@@ -563,8 +565,7 @@ class BaseWorker(ABC):
                                 "time": datetime.utcnow().isoformat(),
                             })
                             
-                            if event:
-                                event.error("JobProcessingFailed", error_msg)
+                            emit_wide_error(event, "JobProcessingFailed", error_msg, exc=e)
 
                         finally:
                             self._current_job = None

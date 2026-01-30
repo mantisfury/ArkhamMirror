@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 # Import wide event logging utilities (with fallback)
 try:
-    from arkham_frame import log_operation, create_wide_event
+    from arkham_frame import log_operation, create_wide_event, emit_wide_error
     WIDE_EVENTS_AVAILABLE = True
 except ImportError:
     WIDE_EVENTS_AVAILABLE = False
@@ -32,6 +32,8 @@ except ImportError:
         yield None
     def create_wide_event(*args, **kwargs):
         return None
+    def emit_wide_error(*args, **kwargs):
+        pass
 
 
 class DistanceMetric(str, Enum):
@@ -1275,8 +1277,7 @@ class VectorService:
                     event.error("CollectionNotFound", f"Collection '{collection}' not found")
                 raise
             except Exception as e:
-                if event:
-                    event.error("VectorSearchFailed", str(e))
+                emit_wide_error(event, "VectorSearchFailed", str(e), exc=e)
                 raise VectorServiceError(f"Search failed: {e}")
 
     async def search_text(
@@ -1417,8 +1418,7 @@ class VectorService:
                 
                 return result
             except Exception as e:
-                if event:
-                    event.error("EmbeddingFailed", str(e))
+                emit_wide_error(event, "EmbeddingFailed", str(e), exc=e)
                 raise EmbeddingError(f"Failed to generate embeddings: {e}")
 
     async def _embed_via_cloud_api(self, texts: List[str]) -> List[List[float]]:

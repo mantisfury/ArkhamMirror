@@ -9,7 +9,7 @@ from typing import Dict, Any, List, Optional
 
 # Import wide event logging utilities (with fallback)
 try:
-    from arkham_frame import log_operation
+    from arkham_frame import log_operation, emit_wide_error
     WIDE_EVENTS_AVAILABLE = True
 except ImportError:
     WIDE_EVENTS_AVAILABLE = False
@@ -17,6 +17,8 @@ except ImportError:
     @contextmanager
     def log_operation(*args, **kwargs):
         yield None
+    def emit_wide_error(*args, **kwargs):
+        pass
 
 router = APIRouter(prefix="/api/dashboard", tags=["dashboard"])
 
@@ -126,7 +128,7 @@ async def update_llm_config(request: UpdateLLMRequest) -> Dict[str, Any]:
             return result
         except Exception as e:
             if event:
-                event.error(str(e), exc_info=True)
+                emit_wide_error(event, type(e).__name__, str(e), exc=e)
             raise
 
 
@@ -196,7 +198,7 @@ async def get_database_stats() -> Dict[str, Any]:
             return stats
         except Exception as e:
             if event:
-                event.error(str(e), exc_info=True)
+                emit_wide_error(event, type(e).__name__, str(e), exc=e)
             raise
 
 
@@ -274,7 +276,7 @@ async def scale_workers(request: ScaleWorkersRequest) -> Dict[str, Any]:
             return result
         except Exception as e:
             if event:
-                event.error(str(e), exc_info=True)
+                emit_wide_error(event, type(e).__name__, str(e), exc=e)
             raise
 
 

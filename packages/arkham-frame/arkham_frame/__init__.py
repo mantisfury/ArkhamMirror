@@ -66,6 +66,12 @@ try:
         get_logger,
         create_wide_event,
         log_operation,
+        log_error_with_context,
+        format_error_message,
+        emit_wide_error,
+        get_trace_id,
+        set_trace_id,
+        generate_trace_id,
     )
     from arkham_logging.tracing import TracingContext
     LOGGING_AVAILABLE = True
@@ -75,6 +81,12 @@ except ImportError:
     get_logger = logging.getLogger
     create_wide_event = None
     log_operation = None
+    log_error_with_context = None
+    format_error_message = None
+    emit_wide_error = None
+    get_trace_id = None
+    set_trace_id = None
+    generate_trace_id = None
     TracingContext = None
 
 __all__ = [
@@ -122,6 +134,12 @@ __all__ = [
     "get_logger",
     "create_wide_event",
     "log_operation",
+    "log_error_with_context",
+    "format_error_message",
+    "emit_wide_error",
+    "get_trace_id",
+    "set_trace_id",
+    "generate_trace_id",
     "TracingContext",
     "LOGGING_AVAILABLE",
 ]

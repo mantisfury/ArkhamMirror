@@ -29,7 +29,7 @@ except ImportError:
 
 # Import wide event logging utilities (with fallback)
 try:
-    from arkham_frame import log_operation
+    from arkham_frame import log_operation, emit_wide_error
     WIDE_EVENTS_AVAILABLE = True
 except ImportError:
     WIDE_EVENTS_AVAILABLE = False
@@ -37,6 +37,8 @@ except ImportError:
     @contextmanager
     def log_operation(*args, **kwargs):
         yield None
+    def emit_wide_error(*args, **kwargs):
+        pass
 
 logger = logging.getLogger(__name__)
 
@@ -342,7 +344,7 @@ async def embed_document(doc_id: str, request: DocumentEmbedRequestBody | None =
         except Exception as e:
             logger.error(f"Failed to queue document embedding: {e}", exc_info=True)
             if event:
-                event.error("EmbedQueueFailed", str(e))
+                emit_wide_error(event, "EmbedQueueFailed", str(e), exc=e)
             raise HTTPException(
                 status_code=500,
                 detail=f"Failed to queue document embedding: {str(e)}"

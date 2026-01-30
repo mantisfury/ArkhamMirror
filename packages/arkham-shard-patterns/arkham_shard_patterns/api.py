@@ -45,7 +45,7 @@ except ImportError:
 
 # Import wide event logging utilities (with fallback)
 try:
-    from arkham_frame import log_operation
+    from arkham_frame import log_operation, emit_wide_error
     WIDE_EVENTS_AVAILABLE = True
 except ImportError:
     WIDE_EVENTS_AVAILABLE = False
@@ -53,6 +53,8 @@ except ImportError:
     @contextmanager
     def log_operation(*args, **kwargs):
         yield None
+    def emit_wide_error(*args, **kwargs):
+        pass
 
 router = APIRouter(prefix="/api/patterns", tags=["patterns"])
 
@@ -208,7 +210,7 @@ async def create_pattern(body: PatternCreate, request: Request):
             return pattern
         except Exception as e:
             if event:
-                event.error(str(e), exc_info=True)
+                emit_wide_error(event, type(e).__name__, str(e), exc=e)
             raise
 
 
@@ -364,7 +366,7 @@ async def analyze_for_patterns(
             return result
         except Exception as e:
             if event:
-                event.error(str(e), exc_info=True)
+                emit_wide_error(event, type(e).__name__, str(e), exc=e)
             raise
 
 
@@ -415,7 +417,7 @@ async def detect_patterns(
             return result
         except Exception as e:
             if event:
-                event.error(str(e), exc_info=True)
+                emit_wide_error(event, type(e).__name__, str(e), exc=e)
             raise
 
 
@@ -448,7 +450,7 @@ async def find_correlations(body: CorrelationRequest, request: Request):
             return result
         except Exception as e:
             if event:
-                event.error(str(e), exc_info=True)
+                emit_wide_error(event, type(e).__name__, str(e), exc=e)
             raise
 
 

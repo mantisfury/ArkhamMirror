@@ -11,7 +11,7 @@ from .base import PipelineStage, StageResult, StageStatus, PipelineError
 
 # Import wide event logging utilities (with fallback)
 try:
-    from arkham_frame import log_operation
+    from arkham_frame import log_operation, emit_wide_error
     WIDE_EVENTS_AVAILABLE = True
 except ImportError:
     WIDE_EVENTS_AVAILABLE = False
@@ -19,6 +19,8 @@ except ImportError:
     @contextmanager
     def log_operation(*args, **kwargs):
         yield None
+    def emit_wide_error(*args, **kwargs):
+        pass
 
 logger = logging.getLogger(__name__)
 
@@ -193,7 +195,7 @@ class PipelineCoordinator:
                     stages_failed.append(stage.name)
                     if event:
                         event.dependency(f"stage_{stage.name}", duration_ms=stage_duration_ms, error=str(e))
-                        event.error("StageException", f"Stage {stage.name} exception: {e}")
+                        emit_wide_error(event, "StageException", f"Stage {stage.name} exception: {e}", exc=e)
                     break
 
             pipeline_duration_ms = int((time.time() - pipeline_start) * 1000)

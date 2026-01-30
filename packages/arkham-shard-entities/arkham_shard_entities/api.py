@@ -27,7 +27,7 @@ except ImportError:
 
 # Import wide event logging utilities (with fallback)
 try:
-    from arkham_frame import log_operation
+    from arkham_frame import log_operation, emit_wide_error
     WIDE_EVENTS_AVAILABLE = True
 except ImportError:
     WIDE_EVENTS_AVAILABLE = False
@@ -35,6 +35,8 @@ except ImportError:
     @contextmanager
     def log_operation(*args, **kwargs):
         yield None
+    def emit_wide_error(*args, **kwargs):
+        pass
 
 logger = logging.getLogger(__name__)
 
@@ -370,7 +372,7 @@ async def update_entity(entity_id: str, update_request: UpdateEntityRequest, req
         except Exception as e:
             logger.error(f"Failed to update entity {entity_id}: {e}")
             if event:
-                event.error(str(e), exc_info=True)
+                emit_wide_error(event, type(e).__name__, str(e), exc=e)
             raise HTTPException(status_code=404, detail=f"Entity not found: {entity_id}")
 
 
@@ -830,7 +832,7 @@ async def merge_entities(merge_request: MergeEntitiesRequest, request: Request):
         except Exception as e:
             logger.error(f"Failed to merge entities: {e}")
             if event:
-                event.error(str(e), exc_info=True)
+                emit_wide_error(event, type(e).__name__, str(e), exc=e)
             raise
 
 
@@ -1006,7 +1008,7 @@ async def create_relationship(rel_request: CreateRelationshipRequest):
         except Exception as e:
             logger.error(f"Failed to create relationship: {e}")
             if event:
-                event.error(str(e), exc_info=True)
+                emit_wide_error(event, type(e).__name__, str(e), exc=e)
             raise HTTPException(status_code=500, detail=str(e))
 
 

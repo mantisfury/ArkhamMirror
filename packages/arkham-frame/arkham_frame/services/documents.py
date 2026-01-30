@@ -9,23 +9,26 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 import logging
+import time
 import uuid
 
 logger = logging.getLogger(__name__)
 
 # Import wide event logging utilities (with fallback)
 try:
-    from arkham_frame import log_operation, create_wide_event
+    from arkham_frame import log_operation, create_wide_event, emit_wide_error
     WIDE_EVENTS_AVAILABLE = True
 except ImportError:
     WIDE_EVENTS_AVAILABLE = False
-    # Fallback: create no-op context manager
+    # Fallback: create no-op context manager and helpers
     from contextlib import contextmanager
     @contextmanager
     def log_operation(*args, **kwargs):
         yield None
     def create_wide_event(*args, **kwargs):
         return None
+    def emit_wide_error(*args, **kwargs):
+        pass
 
 
 class DocumentNotFoundError(Exception):
@@ -172,15 +175,15 @@ class DocumentService:
                 # Create schema if not exists
                 conn.execute(text(f"CREATE SCHEMA IF NOT EXISTS {self.SCHEMA}"))
 
-                # Documents table
+                # Documents table (storage_id can be long paths; mime_type can be long IANA types)
                 conn.execute(text(f"""
                     CREATE TABLE IF NOT EXISTS {self.SCHEMA}.documents (
                         id VARCHAR(36) PRIMARY KEY,
                         filename VARCHAR(500) NOT NULL,
-                        storage_id VARCHAR(100),
+                        storage_id VARCHAR(500),
                         project_id VARCHAR(36),
                         status VARCHAR(20) DEFAULT 'pending',
-                        mime_type VARCHAR(100),
+                        mime_type VARCHAR(255),
                         file_size BIGINT DEFAULT 0,
                         page_count INTEGER DEFAULT 0,
                         chunk_count INTEGER DEFAULT 0,
@@ -206,6 +209,12 @@ class DocumentService:
                         END IF;
                     END
                     $$;
+                """))
+                # Widen storage_id and mime_type if still VARCHAR(100) (fix StringDataRightTruncation)
+                conn.execute(text(f"""
+                    ALTER TABLE {self.SCHEMA}.documents
+                        ALTER COLUMN storage_id TYPE VARCHAR(500),
+                        ALTER COLUMN mime_type TYPE VARCHAR(255);
                 """))
 
                 # Chunks table
@@ -251,6 +260,77 @@ class DocumentService:
                 """))
                 conn.execute(text(f"""
                     CREATE INDEX IF NOT EXISTS idx_pages_document ON {self.SCHEMA}.pages(document_id)
+                """))
+
+                # Document metadata table (structured fields, FK to documents)
+                conn.execute(text(f"""
+                    CREATE TABLE IF NOT EXISTS {self.SCHEMA}.document_metadata (
+                        document_id VARCHAR(36) PRIMARY KEY REFERENCES {self.SCHEMA}.documents(id) ON DELETE CASCADE,
+                        original_filename VARCHAR(500),
+                        original_file_path VARCHAR(2000),
+                        provenance_json JSONB DEFAULT '{{}}',
+                        ingest_job_id VARCHAR(36),
+                        storage_path VARCHAR(2000),
+                        is_archive BOOLEAN DEFAULT FALSE,
+                        from_archive BOOLEAN DEFAULT FALSE,
+                        source_archive_document_id VARCHAR(36),
+                        archive_member_path VARCHAR(1000),
+                        author VARCHAR(500),
+                        authors JSONB DEFAULT '[]',
+                        title VARCHAR(1000),
+                        subject VARCHAR(1000),
+                        creator VARCHAR(500),
+                        producer VARCHAR(500),
+                        keywords TEXT,
+                        creation_date TIMESTAMP,
+                        creation_dates JSONB DEFAULT '[]',
+                        modification_date TIMESTAMP,
+                        modification_dates JSONB DEFAULT '[]',
+                        last_accessed_date TIMESTAMP,
+                        accessed_dates JSONB DEFAULT '[]',
+                        last_printed_date TIMESTAMP,
+                        last_modified_by VARCHAR(500),
+                        num_pages INTEGER,
+                        is_encrypted BOOLEAN DEFAULT FALSE,
+                        file_size_bytes BIGINT,
+                        file_version VARCHAR(200),
+                        application_version VARCHAR(500),
+                        filesystem_creation_time TIMESTAMP,
+                        filesystem_modification_time TIMESTAMP,
+                        filesystem_access_time TIMESTAMP,
+                        image_width INTEGER,
+                        image_height INTEGER,
+                        x_resolution REAL,
+                        y_resolution REAL,
+                        device_make VARCHAR(200),
+                        device_model VARCHAR(200),
+                        artist VARCHAR(500),
+                        gps_data JSONB DEFAULT '{{}}',
+                        certificate_envelope_metadata JSONB DEFAULT '{{}}',
+                        signature_certificate_metadata JSONB DEFAULT '{{}}',
+                        exiftool_raw JSONB DEFAULT '{{}}',
+                        found_emails JSONB DEFAULT '[]',
+                        found_urls JSONB DEFAULT '[]',
+                        found_paths JSONB DEFAULT '[]',
+                        found_hostnames JSONB DEFAULT '[]',
+                        found_ip_addresses JSONB DEFAULT '[]',
+                        software_list JSONB DEFAULT '[]',
+                        pii_detected BOOLEAN DEFAULT FALSE,
+                        pii_types JSONB DEFAULT '[]',
+                        pii_entities JSONB DEFAULT '[]',
+                        pii_count INTEGER DEFAULT 0,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                """))
+                conn.execute(text(f"""
+                    CREATE INDEX IF NOT EXISTS idx_document_metadata_is_archive ON {self.SCHEMA}.document_metadata(is_archive)
+                """))
+                conn.execute(text(f"""
+                    CREATE INDEX IF NOT EXISTS idx_document_metadata_from_archive ON {self.SCHEMA}.document_metadata(from_archive)
+                """))
+                conn.execute(text(f"""
+                    CREATE INDEX IF NOT EXISTS idx_document_metadata_source_archive ON {self.SCHEMA}.document_metadata(source_archive_document_id)
                 """))
 
                 conn.commit()
@@ -307,10 +387,13 @@ class DocumentService:
         # Store file if storage service available
         storage_id = None
         if self.storage:
+            start_storage = time.time()
             storage_path = f"{now.year}/{now.month:02d}/{doc_id}/{filename}"
             storage_id = await self.storage.store(
                 storage_path, content, metadata={"document_id": doc_id}
             )
+            if event:
+                event.dependency("storage", duration_ms=int((time.time() - start_storage) * 1000))
 
         # Detect mime type
         import mimetypes
@@ -321,6 +404,7 @@ class DocumentService:
         from psycopg2.extras import Json
 
         try:
+            start_db = time.time()
             with self.db._engine.connect() as conn:
                 conn.execute(
                     text(f"""
@@ -346,6 +430,12 @@ class DocumentService:
                 )
                 conn.commit()
 
+            logger.debug("create_document: documents row inserted, upserting document_metadata")
+            await self.upsert_document_metadata(doc_id, metadata or {})
+
+            if event:
+                event.dependency("postgresql", duration_ms=int((time.time() - start_db) * 1000))
+
             doc = Document(
                 id=doc_id,
                 filename=filename,
@@ -360,7 +450,11 @@ class DocumentService:
                 processed_at=None,
                 metadata=metadata or {},
             )
-            
+            logger.info(
+                "create_document: created document_id=%s filename=%s",
+                doc_id,
+                filename,
+            )
             if event:
                 event.output(
                     document_id=doc.id,
@@ -372,9 +466,10 @@ class DocumentService:
             return doc
 
         except Exception as e:
-            logger.error(f"Failed to create document: {e}")
             if event:
-                event.error("DocumentCreationFailed", str(e))
+                event.dependency("postgresql", duration_ms=int((time.time() - start_db) * 1000), error=str(e))
+            logger.error(f"Failed to create document: {e}")
+            emit_wide_error(event, "DocumentCreationFailed", str(e), exc=e)
             raise DocumentError(f"Document creation failed: {e}")
 
     async def get_document(self, doc_id: str) -> Optional[Document]:
@@ -398,6 +493,7 @@ class DocumentService:
 
             from sqlalchemy import text
 
+            start_db = time.time()
             try:
                 with self.db._engine.connect() as conn:
                     result = conn.execute(
@@ -407,8 +503,13 @@ class DocumentService:
                     row = result.fetchone()
 
                     if row:
-                        doc = self._row_to_document(row._mapping)
+                        row_dict = dict(row._mapping)
+                        meta = await self.get_document_metadata(doc_id)
+                        if meta:
+                            row_dict["metadata"] = {**(row_dict.get("metadata") or {}), **meta}
+                        doc = self._row_to_document(row_dict)
                         if event:
+                            event.dependency("postgresql", duration_ms=int((time.time() - start_db) * 1000))
                             event.output(
                                 document_id=doc.id,
                                 status=doc.status.value,
@@ -418,13 +519,15 @@ class DocumentService:
                         return doc
                     
                     if event:
+                        event.dependency("postgresql", duration_ms=int((time.time() - start_db) * 1000))
                         event.output(found=False)
                     return None
 
             except Exception as e:
-                logger.error(f"Failed to get document {doc_id}: {e}")
                 if event:
-                    event.error("DocumentGetFailed", str(e))
+                    event.dependency("postgresql", duration_ms=int((time.time() - start_db) * 1000), error=str(e))
+                logger.error(f"Failed to get document {doc_id}: {e}")
+                emit_wide_error(event, "DocumentGetFailed", str(e), exc=e)
                 return None
 
     async def list_documents(
@@ -491,6 +594,7 @@ class DocumentService:
 
             order = "DESC" if order.lower() == "desc" else "ASC"
 
+            start_db = time.time()
             try:
                 with self.db._engine.connect() as conn:
                     # Get total count
@@ -516,6 +620,7 @@ class DocumentService:
                     ]
 
                     if event:
+                        event.dependency("postgresql", duration_ms=int((time.time() - start_db) * 1000))
                         event.output(
                             count=len(documents),
                             total=total,
@@ -525,9 +630,10 @@ class DocumentService:
                     return documents, total
 
             except Exception as e:
-                logger.error(f"Failed to list documents: {e}")
                 if event:
-                    event.error("DocumentListFailed", str(e))
+                    event.dependency("postgresql", duration_ms=int((time.time() - start_db) * 1000), error=str(e))
+                logger.error(f"Failed to list documents: {e}")
+                emit_wide_error(event, "DocumentListFailed", str(e), exc=e)
                 return [], 0
 
     async def update_document(
@@ -574,13 +680,15 @@ class DocumentService:
 
             if metadata:
                 updates.append("metadata = metadata || :metadata")
-                params["metadata"] = metadata
+                from psycopg2.extras import Json
+                params["metadata"] = Json(metadata)
 
             if not updates:
                 return await self.get_document(doc_id)
 
             updates.append("updated_at = :updated_at")
 
+            start_db = time.time()
             try:
                 with self.db._engine.connect() as conn:
                     conn.execute(
@@ -593,8 +701,12 @@ class DocumentService:
                     )
                     conn.commit()
 
+                if metadata:
+                    await self.upsert_document_metadata(doc_id, metadata)
+
                 updated_doc = await self.get_document(doc_id)
                 if event and updated_doc:
+                    event.dependency("postgresql", duration_ms=int((time.time() - start_db) * 1000))
                     event.output(
                         document_id=updated_doc.id,
                         status=updated_doc.status.value,
@@ -603,9 +715,10 @@ class DocumentService:
                 return updated_doc
 
             except Exception as e:
-                logger.error(f"Failed to update document {doc_id}: {e}")
                 if event:
-                    event.error("DocumentUpdateFailed", str(e))
+                    event.dependency("postgresql", duration_ms=int((time.time() - start_db) * 1000), error=str(e))
+                logger.error(f"Failed to update document {doc_id}: {e}")
+                emit_wide_error(event, "DocumentUpdateFailed", str(e), exc=e)
                 return None
 
     async def delete_document(self, doc_id: str) -> bool:
@@ -644,6 +757,7 @@ class DocumentService:
 
             from sqlalchemy import text
 
+            start_db = time.time()
             try:
                 with self.db._engine.connect() as conn:
                     # Delete from DB (cascades to chunks and pages)
@@ -655,16 +769,26 @@ class DocumentService:
 
                     if result.rowcount == 0:
                         if event:
+                            event.dependency("postgresql", duration_ms=int((time.time() - start_db) * 1000))
                             event.output(deleted=False)
                         return False
 
+                if event:
+                    event.dependency("postgresql", duration_ms=int((time.time() - start_db) * 1000))
+
                 # Clean up storage
                 if self.storage and doc.storage_id:
+                    start_storage = time.time()
                     await self.storage.delete(doc.storage_id)
+                    if event:
+                        event.dependency("storage", duration_ms=int((time.time() - start_storage) * 1000))
 
                 # Clean up vectors
                 if self.vectors:
+                    start_vectors = time.time()
                     await self.vectors.delete_by_document(doc_id)
+                    if event:
+                        event.dependency("vectors", duration_ms=int((time.time() - start_vectors) * 1000))
 
                 logger.debug(f"Deleted document: {doc_id}")
                 if event:
@@ -672,9 +796,10 @@ class DocumentService:
                 return True
 
             except Exception as e:
-                logger.error(f"Failed to delete document {doc_id}: {e}")
                 if event:
-                    event.error("DocumentDeleteFailed", str(e))
+                    event.dependency("postgresql", duration_ms=int((time.time() - start_db) * 1000), error=str(e))
+                logger.error(f"Failed to delete document {doc_id}: {e}")
+                emit_wide_error(event, "DocumentDeleteFailed", str(e), exc=e)
                 return False
 
     # =========================================================================
@@ -1194,6 +1319,181 @@ class DocumentService:
         except Exception as e:
             logger.error(f"Failed to get document count: {e}")
             return 0
+
+    # =========================================================================
+    # Document metadata table (structured fields)
+    # =========================================================================
+
+    # Map metadata dict keys to document_metadata columns (scalar or JSONB)
+    _METADATA_TO_COLUMN: Dict[str, str] = {
+        "original_filename": "original_filename",
+        "original_file_path": "original_file_path",
+        "provenance": "provenance_json",
+        "ingest_job_id": "ingest_job_id",
+        "storage_path": "storage_path",
+        "is_archive": "is_archive",
+        "from_archive": "from_archive",
+        "source_archive_document_id": "source_archive_document_id",
+        "archive_member_path": "archive_member_path",
+        "author": "author",
+        "authors": "authors",
+        "title": "title",
+        "subject": "subject",
+        "creator": "creator",
+        "producer": "producer",
+        "keywords": "keywords",
+        "creation_date": "creation_date",
+        "creation_dates": "creation_dates",
+        "modification_date": "modification_date",
+        "modification_dates": "modification_dates",
+        "last_accessed_date": "last_accessed_date",
+        "accessed_dates": "accessed_dates",
+        "last_printed_date": "last_printed_date",
+        "last_modified_by": "last_modified_by",
+        "num_pages": "num_pages",
+        "is_encrypted": "is_encrypted",
+        "file_size_bytes": "file_size_bytes",
+        "file_version": "file_version",
+        "application_version": "application_version",
+        "filesystem_creation_time": "filesystem_creation_time",
+        "filesystem_modification_time": "filesystem_modification_time",
+        "filesystem_access_time": "filesystem_access_time",
+        "image_width": "image_width",
+        "image_height": "image_height",
+        "x_resolution": "x_resolution",
+        "y_resolution": "y_resolution",
+        "device_make": "device_make",
+        "device_model": "device_model",
+        "artist": "artist",
+        "gps_data": "gps_data",
+        "certificate_envelope_metadata": "certificate_envelope_metadata",
+        "signature_certificate_metadata": "signature_certificate_metadata",
+        "exiftool_metadata": "exiftool_raw",
+        "found_emails": "found_emails",
+        "found_urls": "found_urls",
+        "found_paths": "found_paths",
+        "found_hostnames": "found_hostnames",
+        "found_ip_addresses": "found_ip_addresses",
+        "software": "software_list",
+        "pii_detected": "pii_detected",
+        "pii_types": "pii_types",
+        "pii_entities": "pii_entities",
+        "pii_count": "pii_count",
+    }
+
+    # Columns that are VARCHAR(36) in some migrations; truncate before insert to avoid overflow.
+    _VARCHAR36_COLUMNS = ("document_id", "ingest_job_id", "source_archive_document_id")
+    _VARCHAR36_MAX = 36
+
+    async def upsert_document_metadata(self, doc_id: str, metadata: Dict[str, Any]) -> None:
+        """Upsert structured metadata into document_metadata table. Unknown keys are ignored (stay in documents.metadata JSONB)."""
+        if not self.db or not self.db._engine or not metadata:
+            return
+        from sqlalchemy import text
+        from psycopg2.extras import Json
+        import json as _json
+        now = datetime.utcnow()
+        cols = ["document_id", "updated_at"]
+        params: Dict[str, Any] = {"document_id": doc_id, "updated_at": now}
+        for key, col in self._METADATA_TO_COLUMN.items():
+            if key not in metadata:
+                continue
+            v = metadata[key]
+            if v is None:
+                continue
+            cols.append(col)
+            if col.endswith("_json") or col in (
+                "gps_data", "certificate_envelope_metadata", "signature_certificate_metadata",
+                "exiftool_raw", "authors", "creation_dates", "modification_dates", "accessed_dates",
+                "found_emails", "found_urls", "found_paths", "found_hostnames",
+                "found_ip_addresses", "software_list", "pii_types", "pii_entities",
+            ):
+                params[col] = Json(v) if isinstance(v, (dict, list)) else Json(_json.loads(v)) if isinstance(v, str) else v
+            elif col == "provenance_json" and isinstance(v, dict):
+                params[col] = Json(v)
+            else:
+                params[col] = v
+        # Truncate varchar(36) columns to avoid "value too long" when DB has strict limit
+        for col in self._VARCHAR36_COLUMNS:
+            if col in params and params[col] is not None:
+                s = str(params[col])
+                if len(s) > self._VARCHAR36_MAX:
+                    params[col] = s[: self._VARCHAR36_MAX]
+                    logger.debug(
+                        "Truncated document_metadata.%s to %d chars",
+                        col,
+                        self._VARCHAR36_MAX,
+                    )
+        if len(cols) <= 2:
+            return
+        names = ", ".join(cols)
+        placeholders = ", ".join(f":{c}" for c in cols)
+        updates = ", ".join(f"{c} = EXCLUDED.{c}" for c in cols if c not in ("document_id",))
+        try:
+            with self.db._engine.connect() as conn:
+                conn.execute(text(f"""
+                    INSERT INTO {self.SCHEMA}.document_metadata ({names})
+                    VALUES ({placeholders})
+                    ON CONFLICT (document_id) DO UPDATE SET {updates}
+                """), params)
+                conn.commit()
+        except Exception as e:
+            varchar36_lens = {}
+            if params.get("document_id") is not None:
+                varchar36_lens["document_id"] = len(str(params["document_id"]))
+            for col in self._VARCHAR36_COLUMNS:
+                if col in params and params[col] is not None:
+                    varchar36_lens[col] = len(str(params[col]))
+            try:
+                from arkham_frame import log_error_with_context
+                if log_error_with_context:
+                    log_error_with_context(
+                        logger,
+                        "Failed to upsert document_metadata",
+                        exc=e,
+                        document_id=doc_id,
+                        varchar36_lens=varchar36_lens,
+                    )
+                else:
+                    raise AttributeError("no helper")
+            except (ImportError, AttributeError):
+                logger.warning(
+                    "Failed to upsert document_metadata for document_id=%s: %s; varchar36_lens=%s",
+                    doc_id,
+                    e,
+                    varchar36_lens,
+                    exc_info=True,
+                )
+
+    async def get_document_metadata(self, doc_id: str) -> Dict[str, Any]:
+        """Load structured metadata from document_metadata table as a dict (metadata key -> value)."""
+        if not self.db or not self.db._engine:
+            return {}
+        from sqlalchemy import text
+        col_to_key = {v: k for k, v in self._METADATA_TO_COLUMN.items()}
+        try:
+            with self.db._engine.connect() as conn:
+                result = conn.execute(
+                    text(f"SELECT * FROM {self.SCHEMA}.document_metadata WHERE document_id = :id"),
+                    {"id": doc_id},
+                )
+                row = result.fetchone()
+                if not row:
+                    return {}
+                m = row._mapping
+                out = {}
+                for col, val in m.items():
+                    if col in ("document_id", "created_at", "updated_at") or val is None:
+                        continue
+                    key = col_to_key.get(col, col)
+                    if col == "provenance_json":
+                        out["provenance"] = val
+                    else:
+                        out[key] = val
+                return out
+        except Exception as e:
+            logger.warning(f"Failed to get document_metadata for {doc_id}: {e}")
+            return {}
 
     # =========================================================================
     # Helper Methods

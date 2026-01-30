@@ -15,7 +15,7 @@ from .models import ProjectRole, ProjectStatus
 
 # Import wide event logging utilities (with fallback)
 try:
-    from arkham_frame import log_operation
+    from arkham_frame import log_operation, emit_wide_error
     WIDE_EVENTS_AVAILABLE = True
 except ImportError:
     WIDE_EVENTS_AVAILABLE = False
@@ -23,6 +23,8 @@ except ImportError:
     @contextmanager
     def log_operation(*args, **kwargs):
         yield None
+    def emit_wide_error(*args, **kwargs):
+        pass
 
 logger = logging.getLogger(__name__)
 
@@ -417,7 +419,7 @@ async def create_project(
             return _project_to_response(project)
         except Exception as e:
             if event:
-                event.error(str(e), exc_info=True)
+                emit_wide_error(event, type(e).__name__, str(e), exc=e)
             raise
 
 
@@ -492,7 +494,7 @@ async def update_project(
             return _project_to_response(project)
         except Exception as e:
             if event:
-                event.error(str(e), exc_info=True)
+                emit_wide_error(event, type(e).__name__, str(e), exc=e)
             raise
 
 
@@ -525,7 +527,7 @@ async def delete_project(
                 event.output(project_id=project_id, deleted=True)
         except Exception as e:
             if event:
-                event.error(str(e), exc_info=True)
+                emit_wide_error(event, type(e).__name__, str(e), exc=e)
             raise
 
 
@@ -645,7 +647,7 @@ async def add_project_document(
             return _document_to_response(doc)
         except Exception as e:
             if event:
-                event.error(str(e), exc_info=True)
+                emit_wide_error(event, type(e).__name__, str(e), exc=e)
             raise
 
 

@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 
 # Import wide event logging utilities (with fallback)
 try:
-    from arkham_frame import log_operation, create_wide_event
+    from arkham_frame import log_operation, create_wide_event, emit_wide_error
     WIDE_EVENTS_AVAILABLE = True
 except ImportError:
     WIDE_EVENTS_AVAILABLE = False
@@ -36,6 +36,8 @@ except ImportError:
         yield None
     def create_wide_event(*args, **kwargs):
         return None
+    def emit_wide_error(*args, **kwargs):
+        pass
 
 # Maximum characters to include in error messages (security measure)
 MAX_ERROR_MESSAGE_LENGTH = 200
@@ -447,11 +449,9 @@ class LLMService:
 
             except Exception as e:
                 if isinstance(e, (LLMUnavailableError, LLMRequestError)):
-                    if event:
-                        event.error(type(e).__name__, str(e))
+                    emit_wide_error(event, type(e).__name__, str(e), exc=e)
                     raise
-                if event:
-                    event.error("LLMRequestError", str(e))
+                emit_wide_error(event, "LLMRequestError", str(e), exc=e)
                 raise LLMRequestError(f"LLM request failed: {e}")
 
     async def generate(
@@ -583,11 +583,9 @@ class LLMService:
 
         except Exception as e:
             if isinstance(e, (LLMUnavailableError, LLMRequestError)):
-                if event:
-                    event.error(type(e).__name__, str(e))
+                emit_wide_error(event, type(e).__name__, str(e), exc=e)
                 raise
-            if event:
-                event.error("LLMStreamError", str(e))
+            emit_wide_error(event, "LLMStreamError", str(e), exc=e)
             raise LLMRequestError(f"LLM stream failed: {e}")
 
     async def stream_generate(
@@ -686,8 +684,12 @@ class LLMService:
                         # Add retry hint to prompt
                         prompt = f"{prompt}\n\nIMPORTANT: Respond with ONLY valid JSON, no other text."
 
-            if event:
-                event.error("JSONExtractionFailed", f"Failed after {max_retries + 1} attempts: {last_error}")
+            emit_wide_error(
+                event,
+                "JSONExtractionFailed",
+                f"Failed after {max_retries + 1} attempts: {last_error}",
+                exc=last_error if isinstance(last_error, Exception) else None,
+            )
             raise JSONExtractionError(f"Failed to extract JSON after {max_retries + 1} attempts: {last_error}")
 
     async def extract_list(

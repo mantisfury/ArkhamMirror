@@ -26,7 +26,7 @@ except ImportError:
 
 # Import wide event logging utilities (with fallback)
 try:
-    from arkham_frame import log_operation
+    from arkham_frame import log_operation, emit_wide_error
     WIDE_EVENTS_AVAILABLE = True
 except ImportError:
     WIDE_EVENTS_AVAILABLE = False
@@ -34,6 +34,8 @@ except ImportError:
     @contextmanager
     def log_operation(*args, **kwargs):
         yield None
+    def emit_wide_error(*args, **kwargs):
+        pass
 
 logger = logging.getLogger(__name__)
 
@@ -288,8 +290,7 @@ async def list_documents(
             raise
         except Exception as e:
             logger.error(f"list_documents failed: {e}", exc_info=True)
-            if event:
-                event.error("ListDocumentsFailed", str(e))
+            emit_wide_error(event, "ListDocumentsFailed", str(e), exc=e)
             # Return empty response on error instead of crashing
             return DocumentListResponse(items=[], total=0, page=page, page_size=page_size)
 
@@ -392,8 +393,7 @@ async def update_document_metadata(
         except HTTPException:
             raise
         except ValueError as e:
-            if event:
-                event.error("ValidationError", str(e))
+            emit_wide_error(event, "ValidationError", str(e), exc=e)
             raise HTTPException(status_code=400, detail=str(e))
 
 

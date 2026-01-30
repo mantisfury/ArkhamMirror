@@ -23,7 +23,7 @@ except ImportError:
 
 # Import wide event logging utilities (with fallback)
 try:
-    from arkham_frame import log_operation
+    from arkham_frame import log_operation, emit_wide_error
     WIDE_EVENTS_AVAILABLE = True
 except ImportError:
     WIDE_EVENTS_AVAILABLE = False
@@ -31,6 +31,8 @@ except ImportError:
     @contextmanager
     def log_operation(*args, **kwargs):
         yield None
+    def emit_wide_error(*args, **kwargs):
+        pass
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
 
@@ -908,11 +910,11 @@ async def update_setting(key: str, body: SettingUpdateRequest, request: Request)
             return setting_to_response(setting, cloud_api_available)
         except ValueError as e:
             if event:
-                event.error(str(e), exc_info=True)
+                emit_wide_error(event, type(e).__name__, str(e), exc=e)
             raise HTTPException(status_code=400, detail=str(e))
         except Exception as e:
             if event:
-                event.error(str(e), exc_info=True)
+                emit_wide_error(event, type(e).__name__, str(e), exc=e)
             raise
 
 

@@ -6,7 +6,7 @@ FastAPI endpoints for summary generation and management.
 
 import time
 from typing import List, Optional
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 from .models import (
@@ -25,7 +25,7 @@ from .models import (
 
 # Import wide event logging utilities (with fallback)
 try:
-    from arkham_frame import log_operation
+    from arkham_frame import log_operation, emit_wide_error
     WIDE_EVENTS_AVAILABLE = True
 except ImportError:
     WIDE_EVENTS_AVAILABLE = False
@@ -33,6 +33,8 @@ except ImportError:
     @contextmanager
     def log_operation(*args, **kwargs):
         yield None
+    def emit_wide_error(*args, **kwargs):
+        pass
 
 router = APIRouter(prefix="/api/summary", tags=["summary"])
 
@@ -439,8 +441,7 @@ async def create_summary(body: SummaryCreate, request: Request):
 
             return result
         except Exception as e:
-            if event:
-                event.error(str(e), exc_info=True)
+            emit_wide_error(event, type(e).__name__, str(e), exc=e)
             raise
 
 
@@ -1118,7 +1119,7 @@ async def quick_summary(
 
             if result.status == SummaryStatus.FAILED:
                 if event:
-                    event.error(result.error_message or "Summary generation failed", exc_info=True)
+                    event.error("SummaryGenerationFailed", result.error_message or "Summary generation failed")
                 raise HTTPException(
                     status_code=500,
                     detail=result.error_message or "Summary generation failed",
@@ -1133,6 +1134,5 @@ async def quick_summary(
 
             return result
         except Exception as e:
-            if event:
-                event.error(str(e), exc_info=True)
+            emit_wide_error(event, type(e).__name__, str(e), exc=e)
             raise

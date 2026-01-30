@@ -1,8 +1,10 @@
 """Ingest Shard API endpoints."""
 
 import asyncio
+import json
 import logging
 import os
+import time
 from pathlib import Path
 from typing import Annotated, Optional
 
@@ -212,6 +214,16 @@ class QueueStatsResponse(BaseModel):
 # --- Endpoints ---
 
 
+def _parse_provenance(provenance_str: Optional[str]) -> Optional[dict]:
+    """Parse optional provenance JSON form field."""
+    if not provenance_str or not provenance_str.strip():
+        return None
+    try:
+        return json.loads(provenance_str)
+    except json.JSONDecodeError:
+        return None
+
+
 @router.post("/upload", response_model=UploadResponse)
 async def upload_file(
     request: Request,
@@ -219,6 +231,9 @@ async def upload_file(
     priority: str = Form("user"),
     ocr_mode: str = Form("auto"),
     project_id: str = Form(None),
+    original_file_path: str = Form(None),
+    provenance: str = Form(None),
+    extract_archives: bool = Form(False),
     user = Depends(current_optional_user),
 ):
     """
@@ -232,6 +247,8 @@ async def upload_file(
         priority: Job priority (user, batch, reprocess)
         ocr_mode: OCR routing mode (auto, paddle_only, qwen_only)
         project_id: Project ID to associate the document with (required for multi-project setups)
+        original_file_path: Optional path (e.g. where user got the file); stored in metadata
+        provenance: Optional JSON object (source_url, source_description, custodian, acquisition_date, etc.)
     """
     with log_operation("ingest.upload", project_id=project_id) as event:
         if event and user:
@@ -273,16 +290,25 @@ async def upload_file(
         if ocr_mode not in valid_ocr_modes:
             ocr_mode = "auto"
 
+        start_receive = time.time()
         job = await _intake_manager.receive_file(
             file=file.file,
             filename=file.filename,
             priority=job_priority,
             ocr_mode=ocr_mode,
             project_id=project_id,
+            original_file_path=original_file_path or None,
+            provenance=_parse_provenance(provenance),
+            extract_archives=extract_archives,
         )
+        if event:
+            event.dependency("receive_file", duration_ms=int((time.time() - start_receive) * 1000))
 
         # Dispatch to workers
+        start_dispatch = time.time()
         await _job_dispatcher.dispatch(job)
+        if event:
+            event.dependency("dispatch", duration_ms=int((time.time() - start_dispatch) * 1000))
 
         # Emit event
         if _event_bus:
@@ -333,6 +359,8 @@ async def upload_batch(
     priority: str = Form("batch"),
     ocr_mode: str = Form("auto"),
     project_id: str = Form(None),
+    provenance: str = Form(None),
+    extract_archives: bool = Form(False),
     user = Depends(current_optional_user),
 ):
     """
@@ -345,72 +373,101 @@ async def upload_batch(
         priority: Job priority (user, batch, reprocess)
         ocr_mode: OCR routing mode (auto, paddle_only, qwen_only)
         project_id: Project ID to associate the documents with (required for multi-project setups)
+        provenance: Optional JSON object applied to all files (source_url, custodian, etc.)
     """
-    if not _intake_manager:
-        raise HTTPException(status_code=503, detail="Ingest service not initialized")
+    with log_operation("ingest.upload.batch", project_id=project_id) as event:
+        if event and user:
+            event.user(id=str(user.id))
+        if event:
+            event.context("shard", "ingest")
+            event.context("operation", "upload_batch")
+            event.input(total_files=len(files), priority=priority, ocr_mode=ocr_mode, project_id=project_id)
+            if project_id:
+                event.context("project_id", project_id)
 
-    if not project_id:
-        raise HTTPException(status_code=400, detail="project_id is required")
-    
-    # Verify user has access to the project
-    await verify_project_access(project_id, request, user)
+        if not _intake_manager:
+            if event:
+                event.error("ServiceUnavailable", "Ingest service not initialized")
+            raise HTTPException(status_code=503, detail="Ingest service not initialized")
 
-    try:
-        job_priority = JobPriority[priority.upper()]
-    except KeyError:
-        job_priority = JobPriority.BATCH
+        if not project_id:
+            if event:
+                event.error("ValidationError", "project_id is required")
+            raise HTTPException(status_code=400, detail="project_id is required")
 
-    # Validate ocr_mode
-    valid_ocr_modes = ("auto", "paddle_only", "qwen_only")
-    if ocr_mode not in valid_ocr_modes:
-        ocr_mode = "auto"
+        # Verify user has access to the project
+        await verify_project_access(project_id, request, user)
 
-    file_tuples = [(f.file, f.filename) for f in files]
-    batch = await _intake_manager.receive_batch(file_tuples, job_priority, ocr_mode=ocr_mode, project_id=project_id)
+        try:
+            job_priority = JobPriority[priority.upper()]
+        except KeyError:
+            job_priority = JobPriority.BATCH
 
-    # Dispatch all jobs with staggering for large batches
-    use_staggering = len(batch.jobs) > BATCH_STAGGER_THRESHOLD
-    for i, job in enumerate(batch.jobs):
-        await _job_dispatcher.dispatch(job)
-        # Stagger: pause every BATCH_STAGGER_SIZE jobs to prevent GPU overload
-        if use_staggering and (i + 1) % BATCH_STAGGER_SIZE == 0:
-            await asyncio.sleep(BATCH_STAGGER_DELAY)
+        # Validate ocr_mode
+        valid_ocr_modes = ("auto", "paddle_only", "qwen_only")
+        if ocr_mode not in valid_ocr_modes:
+            ocr_mode = "auto"
 
-    # Emit event
-    if _event_bus:
-        await _event_bus.emit(
-            "ingest.batch.queued",
-            {
-                "batch_id": batch.id,
-                "total_files": batch.total_files,
-                "failed": batch.failed,
-            },
-            source="ingest-shard",
+        file_tuples = [(f.file, f.filename) for f in files]
+        start_receive = time.time()
+        batch = await _intake_manager.receive_batch(
+            file_tuples, job_priority,
+            ocr_mode=ocr_mode, project_id=project_id,
+            provenance=_parse_provenance(provenance),
+            extract_archives=extract_archives,
         )
+        if event:
+            event.dependency("receive_batch", duration_ms=int((time.time() - start_receive) * 1000), jobs_count=len(batch.jobs))
 
-    return BatchUploadResponse(
-        batch_id=batch.id,
-        total_files=batch.total_files,
-        jobs=[
-            UploadResponse(
-                job_id=j.id,
-                filename=j.file_info.original_name,
-                category=j.file_info.category.value,
-                status=j.status.value,
-                route=j.worker_route,
-                quality=(
-                    {
-                        "classification": j.quality_score.classification.value,
-                        "issues": j.quality_score.issues,
-                    }
-                    if j.quality_score
-                    else None
-                ),
+        # Dispatch all jobs with staggering for large batches
+        start_dispatch = time.time()
+        use_staggering = len(batch.jobs) > BATCH_STAGGER_THRESHOLD
+        for i, job in enumerate(batch.jobs):
+            await _job_dispatcher.dispatch(job)
+            # Stagger: pause every BATCH_STAGGER_SIZE jobs to prevent GPU overload
+            if use_staggering and (i + 1) % BATCH_STAGGER_SIZE == 0:
+                await asyncio.sleep(BATCH_STAGGER_DELAY)
+        if event:
+            event.dependency("dispatch", duration_ms=int((time.time() - start_dispatch) * 1000), jobs_dispatched=len(batch.jobs))
+
+        # Emit event
+        if _event_bus:
+            await _event_bus.emit(
+                "ingest.batch.queued",
+                {
+                    "batch_id": batch.id,
+                    "total_files": batch.total_files,
+                    "failed": batch.failed,
+                },
+                source="ingest-shard",
             )
-            for j in batch.jobs
-        ],
-        failed=batch.failed,
-    )
+
+        if event:
+            event.output(batch_id=batch.id, total_files=batch.total_files, failed=batch.failed)
+
+        return BatchUploadResponse(
+            batch_id=batch.id,
+            total_files=batch.total_files,
+            jobs=[
+                UploadResponse(
+                    job_id=j.id,
+                    filename=j.file_info.original_name,
+                    category=j.file_info.category.value,
+                    status=j.status.value,
+                    route=j.worker_route,
+                    quality=(
+                        {
+                            "classification": j.quality_score.classification.value,
+                            "issues": j.quality_score.issues,
+                        }
+                        if j.quality_score
+                        else None
+                    ),
+                )
+                for j in batch.jobs
+            ],
+            failed=batch.failed,
+        )
 
 
 @router.post("/ingest-path", response_model=BatchUploadResponse)
@@ -428,60 +485,85 @@ async def ingest_from_path(
     Args:
         request: Contains path, recursive, priority, ocr_mode, and project_id settings
     """
-    if not _intake_manager:
-        raise HTTPException(status_code=503, detail="Ingest service not initialized")
+    with log_operation("ingest.path", path=request.path, project_id=request.project_id) as event:
+        if event and user:
+            event.user(id=str(user.id))
+        if event:
+            event.context("shard", "ingest")
+            event.context("operation", "path")
+            event.input(path=request.path, recursive=request.recursive, project_id=request.project_id)
+            if request.project_id:
+                event.context("project_id", request.project_id)
 
-    if not request.project_id:
-        raise HTTPException(status_code=400, detail="project_id is required")
-    
-    # Verify user has access to the project
-    await verify_project_access(request.project_id, req, user)
+        if not _intake_manager:
+            if event:
+                event.error("ServiceUnavailable", "Ingest service not initialized")
+            raise HTTPException(status_code=503, detail="Ingest service not initialized")
 
-    # Validate path is within allowed directories (prevents path traversal)
-    path = validate_ingest_path(Path(request.path))
+        if not request.project_id:
+            if event:
+                event.error("ValidationError", "project_id is required")
+            raise HTTPException(status_code=400, detail="project_id is required")
 
-    if not path.exists():
-        raise HTTPException(status_code=404, detail=f"Path not found: {path}")
+        # Verify user has access to the project
+        await verify_project_access(request.project_id, req, user)
 
-    try:
-        job_priority = JobPriority[request.priority.upper()]
-    except KeyError:
-        job_priority = JobPriority.BATCH
+        # Validate path is within allowed directories (prevents path traversal)
+        path = validate_ingest_path(Path(request.path))
 
-    # Validate ocr_mode
-    valid_ocr_modes = ("auto", "paddle_only", "qwen_only")
-    ocr_mode = request.ocr_mode if request.ocr_mode in valid_ocr_modes else "auto"
+        if not path.exists():
+            if event:
+                event.error("NotFound", f"Path not found: {path}")
+            raise HTTPException(status_code=404, detail=f"Path not found: {path}")
 
-    batch = await _intake_manager.receive_path(
-        path=path,
-        priority=job_priority,
-        recursive=request.recursive,
-        ocr_mode=ocr_mode,
-        project_id=request.project_id,
-    )
+        try:
+            job_priority = JobPriority[request.priority.upper()]
+        except KeyError:
+            job_priority = JobPriority.BATCH
 
-    # Dispatch all jobs with staggering for large batches
-    use_staggering = len(batch.jobs) > BATCH_STAGGER_THRESHOLD
-    for i, job in enumerate(batch.jobs):
-        await _job_dispatcher.dispatch(job)
-        if use_staggering and (i + 1) % BATCH_STAGGER_SIZE == 0:
-            await asyncio.sleep(BATCH_STAGGER_DELAY)
+        # Validate ocr_mode
+        valid_ocr_modes = ("auto", "paddle_only", "qwen_only")
+        ocr_mode = request.ocr_mode if request.ocr_mode in valid_ocr_modes else "auto"
 
-    return BatchUploadResponse(
-        batch_id=batch.id,
-        total_files=batch.total_files,
-        jobs=[
-            UploadResponse(
-                job_id=j.id,
-                filename=j.file_info.original_name,
-                category=j.file_info.category.value,
-                status=j.status.value,
-                route=j.worker_route,
-            )
-            for j in batch.jobs
-        ],
-        failed=batch.failed,
-    )
+        start_receive = time.time()
+        batch = await _intake_manager.receive_path(
+            path=path,
+            priority=job_priority,
+            recursive=request.recursive,
+            ocr_mode=ocr_mode,
+            project_id=request.project_id,
+        )
+        if event:
+            event.dependency("receive_path", duration_ms=int((time.time() - start_receive) * 1000), jobs_count=len(batch.jobs))
+
+        # Dispatch all jobs with staggering for large batches
+        start_dispatch = time.time()
+        use_staggering = len(batch.jobs) > BATCH_STAGGER_THRESHOLD
+        for i, job in enumerate(batch.jobs):
+            await _job_dispatcher.dispatch(job)
+            if use_staggering and (i + 1) % BATCH_STAGGER_SIZE == 0:
+                await asyncio.sleep(BATCH_STAGGER_DELAY)
+        if event:
+            event.dependency("dispatch", duration_ms=int((time.time() - start_dispatch) * 1000), jobs_dispatched=len(batch.jobs))
+
+        if event:
+            event.output(batch_id=batch.id, total_files=batch.total_files, failed=batch.failed)
+
+        return BatchUploadResponse(
+            batch_id=batch.id,
+            total_files=batch.total_files,
+            jobs=[
+                UploadResponse(
+                    job_id=j.id,
+                    filename=j.file_info.original_name,
+                    category=j.file_info.category.value,
+                    status=j.status.value,
+                    route=j.worker_route,
+                )
+                for j in batch.jobs
+            ],
+            failed=batch.failed,
+        )
 
 
 @router.get("/job/{job_id}", response_model=JobStatusResponse)

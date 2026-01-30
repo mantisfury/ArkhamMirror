@@ -4,6 +4,7 @@ import hashlib
 import logging
 import os
 import shutil
+import time
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -12,6 +13,7 @@ from typing import BinaryIO
 import aiofiles
 
 from .classifiers import FileTypeClassifier, ImageQualityClassifier
+from .classifiers.file_type import TYPICAL_ARCHIVE_MIMES
 from .models import (
     FileCategory,
     FileInfo,
@@ -23,6 +25,37 @@ from .models import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Import wide event logging (with fallback)
+try:
+    from arkham_frame import log_operation, emit_wide_error, log_error_with_context
+    WIDE_EVENTS_AVAILABLE = True
+except ImportError:
+    WIDE_EVENTS_AVAILABLE = False
+    from contextlib import contextmanager
+    def log_operation(*args, **kwargs):
+        from contextlib import nullcontext
+        return nullcontext(None)
+    def emit_wide_error(*args, **kwargs):
+        pass
+    def log_error_with_context(*args, **kwargs):
+        pass
+
+# Route steps (from file_type classifier) that are logical steps, not frame worker pool names.
+# Map them to actual frame worker pools so enqueue() succeeds.
+ROUTE_STEP_TO_POOL = {
+    "IMAGES->ocr_route": "gpu-paddle",  # OCR for extracted document images; frame has gpu-paddle, gpu-qwen
+}
+
+
+def _resolve_pool_spec(pool_spec: str) -> tuple[str, str | None]:
+    """Resolve a route step (e.g. IMAGES->ocr_route) or pool:operation to (pool, operation)."""
+    if pool_spec in ROUTE_STEP_TO_POOL:
+        return ROUTE_STEP_TO_POOL[pool_spec], None
+    if ":" in pool_spec:
+        pool, operation = pool_spec.split(":", 1)
+        return pool, operation
+    return pool_spec, None
 
 
 class ValidationError(Exception):
@@ -57,6 +90,7 @@ class IntakeManager:
         skip_blank_pages: bool = True,
         data_silo_path: Path | None = None,
         shard=None,
+        use_magika: bool = True,
     ):
         self.storage_path = Path(storage_path)
         self.temp_path = Path(temp_path) if temp_path else self.storage_path / "temp"
@@ -78,8 +112,8 @@ class IntakeManager:
         self.storage_path.mkdir(parents=True, exist_ok=True)
         self.temp_path.mkdir(parents=True, exist_ok=True)
 
-        # Classifiers
-        self.file_classifier = FileTypeClassifier()
+        # Classifiers (use_magika: content-based MIME via Magika when available)
+        self.file_classifier = FileTypeClassifier(use_magika=use_magika)
         self.image_classifier = ImageQualityClassifier()
 
         # Active jobs and batches (in-memory cache)
@@ -120,128 +154,173 @@ class IntakeManager:
         priority: JobPriority = JobPriority.USER,
         ocr_mode: str | None = None,
         project_id: str | None = None,
+        original_file_path: str | None = None,
+        provenance: dict | None = None,
+        extract_archives: bool = False,
+        from_archive: bool = False,
+        source_archive_document_id: str | None = None,
+        archive_member_path: str | None = None,
     ) -> IngestJob:
         """
         Receive an uploaded file and create an ingest job.
 
         Args:
             file: File-like object with the content
-            filename: Original filename
+            filename: Original filename (unsanitized; stored in metadata as original_filename)
             priority: Job priority level
             ocr_mode: OCR routing mode override (auto, paddle_only, qwen_only).
                       If None, uses the instance default.
             project_id: Project ID to associate the document with
+            original_file_path: Optional path (e.g. from path-based ingest); stored in metadata
+            provenance: Optional dict (source_url, source_description, custodian, acquisition_date, etc.)
 
         Returns:
             Created IngestJob
         """
         # Use request-level ocr_mode if provided, otherwise fall back to instance default
         effective_ocr_mode = ocr_mode if ocr_mode else self.ocr_mode
-        # Generate unique ID
+        # Generate unique ID (must be <= 36 chars for document_metadata.ingest_job_id)
         job_id = str(uuid.uuid4())
 
-        # Save to temp location
-        safe_filename = self._sanitize_filename(filename)
-        temp_file = self.temp_path / f"{job_id}_{safe_filename}"
+        with log_operation("ingest.receive_file", job_id=job_id, filename=filename) as event:
+            if event:
+                event.input(filename=filename, project_id=project_id, priority=priority.value)
 
-        # Calculate checksum while saving
-        checksum = hashlib.sha256()
-        async with aiofiles.open(temp_file, "wb") as f:
-            while chunk := file.read(65536):
-                await f.write(chunk)
-                checksum.update(chunk)
+            # Save to temp location
+            safe_filename = self._sanitize_filename(filename)
+            temp_file = self.temp_path / f"{job_id}_{safe_filename}"
 
-        file_hash = checksum.hexdigest()
+            # Calculate checksum while saving
+            checksum = hashlib.sha256()
+            async with aiofiles.open(temp_file, "wb") as f:
+                while chunk := file.read(65536):
+                    await f.write(chunk)
+                    checksum.update(chunk)
 
-        # Deduplication check: if we've seen this file before, return existing job
-        if self.enable_deduplication:
-            # Check cache first
-            existing_job_id = self._checksums.get(file_hash)
+            file_hash = checksum.hexdigest()
 
-            # If not in cache, check database
-            if not existing_job_id and self._shard:
-                existing_job_id = await self._shard._check_duplicate(file_hash)
+            # Deduplication check: if we've seen this file before, return existing job
+            if self.enable_deduplication:
+                # Check cache first
+                existing_job_id = self._checksums.get(file_hash)
+
+                # If not in cache, check database
+                if not existing_job_id and self._shard:
+                    existing_job_id = await self._shard._check_duplicate(file_hash)
+                    if existing_job_id:
+                        self._checksums[file_hash] = existing_job_id  # Cache it
+
                 if existing_job_id:
-                    self._checksums[file_hash] = existing_job_id  # Cache it
+                    existing_job = self._jobs.get(existing_job_id)
+                    # If not in cache, load from database
+                    if not existing_job and self._shard:
+                        existing_job = await self._shard._load_job(existing_job_id)
+                        if existing_job:
+                            self._jobs[existing_job_id] = existing_job  # Cache it
 
-            if existing_job_id:
-                existing_job = self._jobs.get(existing_job_id)
-                # If not in cache, load from database
-                if not existing_job and self._shard:
-                    existing_job = await self._shard._load_job(existing_job_id)
                     if existing_job:
-                        self._jobs[existing_job_id] = existing_job  # Cache it
+                        # Clean up temp file and return existing job
+                        temp_file.unlink(missing_ok=True)
+                        logger.info(
+                            f"Duplicate detected: {filename} matches existing job {existing_job_id}"
+                        )
+                        if event:
+                            event.output(
+                                job_id=existing_job_id,
+                                duplicate=True,
+                                category=existing_job.file_info.category.value,
+                                route=existing_job.worker_route,
+                            )
+                        return existing_job
 
-                if existing_job:
-                    # Clean up temp file and return existing job
-                    temp_file.unlink(missing_ok=True)
-                    logger.info(
-                        f"Duplicate detected: {filename} matches existing job {existing_job_id}"
-                    )
-                    return existing_job
+            # Get extension for validation
+            extension = Path(filename).suffix.lower()
 
-        # Get extension for validation
-        extension = Path(filename).suffix.lower()
+            # Early validation: reject corrupt/invalid files before processing
+            try:
+                self._validate_file(temp_file, extension)
+            except ValidationError as e:
+                temp_file.unlink(missing_ok=True)
+                logger.warning(f"Validation failed for {filename}: {e}")
+                raise
 
-        # Early validation: reject corrupt/invalid files before processing
-        try:
-            self._validate_file(temp_file, extension)
-        except ValidationError as e:
-            temp_file.unlink(missing_ok=True)
-            logger.warning(f"Validation failed for {filename}: {e}")
-            raise
+            # Classify file
+            file_info = self.file_classifier.classify(temp_file)
+            file_info.original_name = filename
+            file_info.checksum = file_hash
 
-        # Classify file
-        file_info = self.file_classifier.classify(temp_file)
-        file_info.original_name = filename
-        file_info.checksum = file_hash
+            # Create job with route
+            route = self._determine_route(file_info)
 
-        # Create job with route
-        route = self._determine_route(file_info)
-
-        job = IngestJob(
-            id=job_id,
-            file_info=file_info,
-            priority=priority,
-            worker_route=route,
-            project_id=project_id,
-        )
-
-        # Quality classification for images
-        if file_info.category == FileCategory.IMAGE:
-            job.quality_score = self.image_classifier.classify(temp_file)
-            # Update route based on quality
-            job.worker_route = self.image_classifier.get_ocr_route(
-                job.quality_score,
-                ocr_mode=effective_ocr_mode,
-                enable_downscale=self.enable_downscale,
-                skip_blank_pages=self.skip_blank_pages,
+            job = IngestJob(
+                id=job_id,
+                file_info=file_info,
+                priority=priority,
+                worker_route=route,
+                project_id=project_id,
+                original_file_path=original_file_path,
+                provenance=provenance,
+                extract_archives=extract_archives,
+                from_archive=from_archive,
+                source_archive_document_id=source_archive_document_id,
+                archive_member_path=archive_member_path,
             )
 
-        # Move to permanent storage
-        permanent_path = self._get_storage_path(job_id, file_info)
-        permanent_path.parent.mkdir(parents=True, exist_ok=True)
-        shutil.move(temp_file, permanent_path)
-        job.file_info.path = permanent_path
+            # Quality classification for images
+            if file_info.category == FileCategory.IMAGE:
+                job.quality_score = self.image_classifier.classify(temp_file)
+                # Update route based on quality
+                job.worker_route = self.image_classifier.get_ocr_route(
+                    job.quality_score,
+                    ocr_mode=effective_ocr_mode,
+                    enable_downscale=self.enable_downscale,
+                    skip_blank_pages=self.skip_blank_pages,
+                )
 
-        # Track job and checksum for deduplication (cache)
-        self._jobs[job_id] = job
-        self._checksums[file_hash] = job_id
+            # Move to permanent storage
+            permanent_path = self._get_storage_path(job_id, file_info)
+            permanent_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(temp_file, permanent_path)
+            job.file_info.path = permanent_path
 
-        # Persist to database
-        if self._shard:
-            try:
-                await self._shard._save_job(job)
-                await self._shard._record_checksum(file_hash, job_id, filename)
-            except Exception as e:
-                logger.error(f"Failed to persist job {job_id} to database: {e}")
+            # Track job and checksum for deduplication (cache)
+            self._jobs[job_id] = job
+            self._checksums[file_hash] = job_id
 
-        logger.info(
-            f"Received file: {filename} -> job {job_id} "
-            f"(category={file_info.category.value}, route={route})"
-        )
+            # Persist to database
+            if self._shard:
+                start_persist = time.time()
+                try:
+                    await self._shard._save_job(job)
+                    await self._shard._record_checksum(file_hash, job_id, filename)
+                    logger.debug("receive_file: job persisted job_id=%s", job_id)
+                    if event:
+                        event.dependency("persist", duration_ms=int((time.time() - start_persist) * 1000))
+                except Exception as e:
+                    if event:
+                        event.dependency("persist", duration_ms=int((time.time() - start_persist) * 1000), error=str(e))
+                    log_error_with_context(
+                        logger,
+                        "Failed to persist job to database",
+                        exc=e,
+                        job_id=job_id,
+                        job_id_len=len(job_id),
+                        filename=filename,
+                    )
+                    emit_wide_error(event, "PersistJobFailed", str(e), exc=e)
 
-        return job
+            logger.info(
+                "Received file: filename=%s job_id=%s category=%s route=%s",
+                filename,
+                job_id,
+                file_info.category.value,
+                route,
+            )
+
+            if event:
+                event.output(job_id=job.id, category=job.file_info.category.value, route=job.worker_route)
+
+            return job
 
     async def receive_batch(
         self,
@@ -249,6 +328,8 @@ class IntakeManager:
         priority: JobPriority = JobPriority.BATCH,
         ocr_mode: str | None = None,
         project_id: str | None = None,
+        provenance: dict | None = None,
+        extract_archives: bool = False,
     ) -> IngestBatch:
         """
         Receive multiple files as a batch.
@@ -258,6 +339,7 @@ class IntakeManager:
             priority: Priority for all jobs in batch
             ocr_mode: OCR routing mode override for all files in batch
             project_id: Project ID to associate all documents with
+            provenance: Optional provenance dict applied to all files in batch
 
         Returns:
             Created IngestBatch
@@ -271,7 +353,12 @@ class IntakeManager:
 
         for file, filename in files:
             try:
-                job = await self.receive_file(file, filename, priority, ocr_mode=ocr_mode, project_id=project_id)
+                job = await self.receive_file(
+                    file, filename, priority,
+                    ocr_mode=ocr_mode, project_id=project_id,
+                    provenance=provenance,
+                    extract_archives=extract_archives,
+                )
                 batch.jobs.append(job)
             except Exception as e:
                 logger.error(f"Failed to receive {filename}: {e}")
@@ -284,7 +371,13 @@ class IntakeManager:
             try:
                 await self._shard._save_batch(batch)
             except Exception as e:
-                logger.error(f"Failed to persist batch {batch_id} to database: {e}")
+                log_error_with_context(
+                    logger,
+                    "Failed to persist batch to database",
+                    exc=e,
+                    exc_info=True,
+                    batch_id=batch_id,
+                )
 
         return batch
 
@@ -312,9 +405,13 @@ class IntakeManager:
         path = Path(path)
 
         if path.is_file():
-            # Single file
+            # Single file; pass original path for metadata
             with open(path, "rb") as f:
-                job = await self.receive_file(f, path.name, priority, ocr_mode=ocr_mode, project_id=project_id)
+                job = await self.receive_file(
+                    f, path.name, priority,
+                    ocr_mode=ocr_mode, project_id=project_id,
+                    original_file_path=str(path.resolve()),
+                )
             batch = IngestBatch(
                 id=str(uuid.uuid4()),
                 jobs=[job],
@@ -342,6 +439,68 @@ class IntakeManager:
 
         else:
             raise FileNotFoundError(f"Path not found: {path}")
+
+    async def create_job_from_path(
+        self,
+        path: Path,
+        priority: JobPriority = JobPriority.BATCH,
+        project_id: str | None = None,
+        from_archive: bool = False,
+        source_archive_document_id: str | None = None,
+        archive_member_path: str | None = None,
+    ) -> IngestJob:
+        """
+        Create an ingest job from an existing file path (e.g. extracted from an archive).
+        Does not copy the file; the path is used as-is.
+        """
+        path = Path(path)
+        if not path.is_file():
+            raise FileNotFoundError(f"Not a file: {path}")
+
+        file_info = self.file_classifier.classify(path)
+        file_info.original_name = path.name
+        file_info.path = path
+
+        route = self._determine_route(file_info)
+        job_id = str(uuid.uuid4())
+
+        with log_operation("ingest.create_job_from_path", job_id=job_id, path=str(path)) as event:
+            if event:
+                event.input(path=str(path), project_id=project_id, from_archive=from_archive)
+
+            job = IngestJob(
+                id=job_id,
+                file_info=file_info,
+                priority=priority,
+                worker_route=route,
+                project_id=project_id,
+                from_archive=from_archive,
+                source_archive_document_id=source_archive_document_id,
+                archive_member_path=archive_member_path,
+            )
+
+            self._jobs[job_id] = job
+            if self._shard:
+                try:
+                    await self._shard._save_job(job)
+                except Exception as e:
+                    log_error_with_context(
+                        logger,
+                        "Failed to persist job from path",
+                        exc=e,
+                        exc_info=True,
+                        job_id=job_id,
+                        path=str(path),
+                    )
+                    emit_wide_error(event, "PersistJobFailed", str(e), exc=e)
+
+            logger.info(
+                f"Created job from path: {path.name} -> {job_id} "
+                f"(from_archive={from_archive}, route={route})"
+            )
+            if event:
+                event.output(job_id=job_id, route=route)
+            return job
 
     def get_job(self, job_id: str) -> IngestJob | None:
         """Get a job by ID."""
@@ -389,7 +548,13 @@ class IntakeManager:
             try:
                 await self._shard._update_job_status(job_id, status, error, result)
             except Exception as e:
-                logger.error(f"Failed to persist job status {job_id}: {e}")
+                log_error_with_context(
+                    logger,
+                    "Failed to persist job status",
+                    exc=e,
+                    exc_info=True,
+                    job_id=job_id,
+                )
 
         # Update batch if applicable
         batch_id = None
@@ -408,23 +573,34 @@ class IntakeManager:
             try:
                 await self._shard._update_batch_progress(batch_id)
             except Exception as e:
-                logger.error(f"Failed to persist batch progress {batch_id}: {e}")
+                log_error_with_context(
+                    logger,
+                    "Failed to persist batch progress",
+                    exc=e,
+                    exc_info=True,
+                    batch_id=batch_id,
+                )
 
     def _determine_route(self, file_info: FileInfo) -> list[str]:
         """Determine initial worker route for file."""
         return self.file_classifier.get_route(file_info)
 
     def _get_storage_path(self, job_id: str, file_info: FileInfo) -> Path:
-        """Get permanent storage path for a file."""
-        # Organize by date and category
+        """Get permanent storage path for a file. Uses sanitized filename (max 64 chars) for on-disk name."""
         date_str = datetime.utcnow().strftime("%Y/%m/%d")
         category = file_info.category.value
-        ext = file_info.extension
+        safe_filename = self._sanitize_filename(file_info.original_name)
+        return self.storage_path / date_str / category / f"{job_id}_{safe_filename}"
 
-        return self.storage_path / date_str / category / f"{job_id}{ext}"
+    MAX_INTERNAL_FILENAME_CHARS = 64
 
     def _sanitize_filename(self, filename: str) -> str:
-        """Sanitize filename for safe storage."""
+        """
+        Sanitize filename for safe on-disk storage.
+        Internal filename is at most MAX_INTERNAL_FILENAME_CHARS (64).
+        If longer, truncate name part and append 8-char hash of full name.
+        Caller should store original in metadata as original_filename.
+        """
         import re
         import unicodedata
 
@@ -458,17 +634,25 @@ class IntakeManager:
         if name_part in reserved:
             safe = f"file_{safe}"
 
-        # Limit length while preserving extension
-        if len(safe) > 200:
-            if '.' in safe:
-                name, ext = safe.rsplit('.', 1)
-                # Limit extension to 10 chars
-                ext = ext[:10]
-                safe = f"{name[:200-len(ext)-1]}.{ext}"
-            else:
-                safe = safe[:200]
+        # Internal filename length cap: max 64 chars (name + _ + 8-char hash + ext)
+        max_len = self.MAX_INTERNAL_FILENAME_CHARS
+        if '.' in safe:
+            name_part, ext_part = safe.rsplit('.', 1)
+            ext_part = ext_part[:10]  # limit extension
+            # space for: name + "_" + 8-char hash + "." + ext
+            name_max = max_len - 1 - 8 - 1 - len(ext_part)
+            if name_max < 1:
+                name_max = 1
+            if len(name_part) > name_max:
+                suffix = hashlib.sha256(safe.encode("utf-8", errors="replace")).hexdigest()[:8]
+                name_part = name_part[:name_max] + "_" + suffix
+            safe = name_part + "." + ext_part
+        else:
+            if len(safe) > max_len - 9:  # leave room for _ + 8-char hash
+                suffix = hashlib.sha256(safe.encode("utf-8", errors="replace")).hexdigest()[:8]
+                safe = safe[: max_len - 1 - 8] + "_" + suffix
 
-        return safe or "unnamed"
+        return safe[:max_len] if len(safe) > max_len else (safe or "unnamed")
 
     def _validate_file(self, path: Path, extension: str) -> None:
         """
@@ -524,14 +708,21 @@ class JobDispatcher:
     Dispatches jobs to worker pools.
     """
 
-    def __init__(self, worker_service, intake_manager: IntakeManager | None = None):
+    def __init__(
+        self,
+        worker_service,
+        intake_manager: IntakeManager | None = None,
+        on_completed_without_worker=None,
+    ):
         """
         Args:
             worker_service: Frame's WorkerService instance
             intake_manager: IntakeManager for path resolution (optional for backwards compat)
+            on_completed_without_worker: Optional async callback(job) when job completed without enqueueing (e.g. archive with extract_archives=False)
         """
         self.worker_service = worker_service
         self.intake_manager = intake_manager
+        self._on_completed_without_worker = on_completed_without_worker
         self._active_jobs: dict[str, str] = {}  # job_id -> worker_pool
 
     async def dispatch(self, job: IngestJob) -> bool:
@@ -539,11 +730,9 @@ class JobDispatcher:
         Dispatch a job to its first worker pool.
 
         Returns:
-            True if dispatched successfully
+            True if dispatched successfully (or completed without worker)
         """
         if not job.worker_route:
-            # Empty route means no processing needed (e.g., blank page detected)
-            # Mark as completed immediately - no workers to dispatch to
             logger.info(f"Job {job.id} has empty route - completing without processing")
             job.status = JobStatus.COMPLETED
             job.completed_at = datetime.utcnow()
@@ -553,25 +742,32 @@ class JobDispatcher:
             }
             return True
 
-        # Get first worker pool (may include operation suffix like "cpu-image:downscale")
+        mime = (job.file_info.mime_type or "").strip()
+        is_typical_archive = mime in TYPICAL_ARCHIVE_MIMES
+        extract_archives = getattr(job, "extract_archives", False)
+        if (
+            job.file_info.category == FileCategory.ARCHIVE
+            and is_typical_archive
+            and not extract_archives
+        ):
+            logger.info(f"Job {job.id} is typical archive but extract_archives=False - completing without extraction")
+            job.status = JobStatus.COMPLETED
+            job.completed_at = datetime.utcnow()
+            job.result = {"document_metadata": {"is_archive": True}}
+            if self._on_completed_without_worker:
+                await self._on_completed_without_worker(job)
+            return True
+
         pool_spec = job.worker_route[0]
         job.current_worker = pool_spec
         job.status = JobStatus.QUEUED
 
-        # Parse pool:operation format (e.g., "cpu-image:downscale" -> pool="cpu-image", operation="downscale")
-        if ":" in pool_spec:
-            pool, operation = pool_spec.split(":", 1)
-        else:
-            pool = pool_spec
-            operation = None
+        pool, operation = _resolve_pool_spec(pool_spec)
 
         try:
-            # Build payload with portable relative path
-            # Workers use DATA_SILO_PATH env var to resolve the full path
             if self.intake_manager:
                 file_path = self.intake_manager.get_relative_path(job.file_info.path)
             else:
-                # Fallback to absolute path (less portable but backwards compatible)
                 file_path = str(job.file_info.path.resolve())
 
             payload = {
@@ -595,11 +791,19 @@ class JobDispatcher:
                 "route_index": 0,
             }
 
-            # Add operation if specified in pool name
             if operation:
                 payload["operation"] = operation
 
-            # Enqueue to worker service
+            if pool == "cpu-archive" and is_typical_archive and extract_archives:
+                payload["operation"] = "extract"
+                payload["archive_path"] = file_path
+                if self.intake_manager:
+                    output_dir = self.intake_manager.storage_path / job.id / "extracted"
+                    output_dir.mkdir(parents=True, exist_ok=True)
+                    payload["output_dir"] = self.intake_manager.get_relative_path(output_dir)
+                else:
+                    payload["output_dir"] = str(Path(file_path).parent / job.id / "extracted")
+
             await self.worker_service.enqueue(
                 pool=pool,
                 job_id=job.id,
@@ -612,7 +816,13 @@ class JobDispatcher:
             return True
 
         except Exception as e:
-            logger.error(f"Failed to dispatch job {job.id}: {e}")
+            log_error_with_context(
+                logger,
+                "Failed to dispatch job",
+                exc=e,
+                exc_info=True,
+                job_id=job.id,
+            )
             job.status = JobStatus.FAILED
             job.error = str(e)
             return False
@@ -646,12 +856,7 @@ class JobDispatcher:
         pool_spec = job.worker_route[next_idx]
         job.current_worker = pool_spec
 
-        # Parse pool:operation format
-        if ":" in pool_spec:
-            pool, operation = pool_spec.split(":", 1)
-        else:
-            pool = pool_spec
-            operation = None
+        pool, operation = _resolve_pool_spec(pool_spec)
 
         # Build payload with accumulated results
         payload = {

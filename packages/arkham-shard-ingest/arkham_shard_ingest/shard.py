@@ -2,14 +2,27 @@
 
 import json
 import logging
+import time
+from contextlib import nullcontext
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from arkham_frame.shard_interface import ArkhamShard
 
+try:
+    from arkham_frame import log_operation, emit_wide_error, log_error_with_context
+except ImportError:
+    def log_operation(*args, **kwargs):
+        return nullcontext(None)
+    def emit_wide_error(*args, **kwargs):
+        pass
+    def log_error_with_context(*args, **kwargs):
+        pass
+
 from .api import init_api, router
 from .intake import IntakeManager, JobDispatcher
+from .workers.metadata_extraction import detect_language
 from .models import (
     FileCategory,
     FileInfo,
@@ -22,6 +35,35 @@ from .models import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _to_json_safe(obj: Any) -> Any:
+    """Convert values to JSON-serializable form (handles numpy, datetime, etc.)."""
+    if obj is None:
+        return None
+    if isinstance(obj, (str, int, float)):
+        return obj
+    if isinstance(obj, bool):
+        return obj
+    try:
+        import numpy as np
+        if isinstance(obj, (np.bool_, np.integer)):
+            return int(obj) if isinstance(obj, np.integer) else bool(obj)
+        if isinstance(obj, np.floating):
+            return float(obj)
+        if isinstance(obj, np.ndarray):
+            return obj.tolist()
+    except ImportError:
+        pass
+    if hasattr(obj, "item"):  # numpy scalar
+        return obj.item()
+    if isinstance(obj, datetime):
+        return obj.isoformat()
+    if isinstance(obj, dict):
+        return {str(k): _to_json_safe(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_to_json_safe(v) for v in obj]
+    return obj
 
 
 def _parse_json_field(value: Any, default: Any = None) -> Any:
@@ -98,6 +140,7 @@ class IngestShard(ArkhamShard):
         enable_deduplication = self._config.get("ingest_enable_deduplication", True)
         enable_downscale = self._config.get("ingest_enable_downscale", True)
         skip_blank_pages = self._config.get("ingest_skip_blank_pages", True)
+        use_magika = self._config.get("ingest_use_magika", True)
 
         # Create intake manager with data_silo_path for portable relative paths
         self.intake_manager = IntakeManager(
@@ -112,16 +155,21 @@ class IngestShard(ArkhamShard):
             skip_blank_pages=skip_blank_pages,
             data_silo_path=data_silo,  # For Docker/portable path resolution
             shard=self,  # For database persistence
+            use_magika=use_magika,
         )
 
         # Load checksums from database for deduplication
         if self._db:
             await self.intake_manager.initialize_from_db()
 
-        # Create job dispatcher with intake_manager for path resolution
+        # Create job dispatcher with intake_manager and completion callback for archive-no-extract
         worker_service = frame.get_service("workers")
         if worker_service:
-            self.job_dispatcher = JobDispatcher(worker_service, self.intake_manager)
+            self.job_dispatcher = JobDispatcher(
+                worker_service,
+                self.intake_manager,
+                on_completed_without_worker=self._complete_job_without_worker,
+            )
         else:
             logger.warning("Worker service not available, dispatching disabled")
 
@@ -173,7 +221,12 @@ class IngestShard(ArkhamShard):
                         dispatched += 1
                 logger.info(f"Re-dispatched {dispatched}/{len(pending_jobs)} recovered jobs")
         except Exception as e:
-            logger.error(f"Failed to recover pending jobs: {e}")
+            log_error_with_context(
+                logger,
+                "Failed to recover pending jobs",
+                exc=e,
+                exc_info=True,
+            )
 
     async def shutdown(self) -> None:
         """Clean up shard resources."""
@@ -234,36 +287,102 @@ class IngestShard(ArkhamShard):
         advanced = await self.job_dispatcher.advance(job, result)
 
         if not advanced:
-            # Job complete - update status in database
-            await self.intake_manager.update_job_status(
-                job_id, JobStatus.COMPLETED, result=result
-            )
-            logger.info(f"Job {job_id} completed successfully")
-
-            # Register the document with the Frame's document service
-            # Returns the document ID for the event
-            document_id = await self._register_document(job, result)
-
-            event_bus = self._frame.get_service("events")
-            if event_bus:
-                # Include document_id in result for downstream shards (parse, embed)
-                result_with_doc = {**result, "document_id": document_id}
-                await event_bus.emit(
-                    "ingest.job.completed",
-                    {
-                        "job_id": job_id,
-                        "filename": job.file_info.original_name,
-                        "result": result_with_doc,
-                    },
-                    source="ingest-shard",
+            with log_operation("ingest.job.completed", job_id=job_id) as event:
+                if event:
+                    event.input(job_id=job_id, filename=job.file_info.original_name)
+                # Job complete - update status in database
+                start_update = time.time()
+                await self.intake_manager.update_job_status(
+                    job_id, JobStatus.COMPLETED, result=result
                 )
+                if event:
+                    event.dependency("update_job_status", duration_ms=int((time.time() - start_update) * 1000))
+                logger.info(
+                    "Job completed successfully: job_id=%s",
+                    job_id
+                )
+                # Register the document with the Frame's document service
+                start_register = time.time()
+                document_id = await self._register_document(job, result, wide_event=event)
+                if event:
+                    event.dependency("register_document", duration_ms=int((time.time() - start_register) * 1000))
 
-    async def _register_document(self, job, result: dict) -> str | None:
+                # Archive extraction: create child jobs for each extracted path
+                extracted_files = result.get("files") or []
+                if extracted_files and document_id and self.job_dispatcher:
+                    for path_str in extracted_files:
+                        try:
+                            child_job = await self.intake_manager.create_job_from_path(
+                                Path(path_str),
+                                priority=job.priority,
+                                project_id=job.project_id,
+                                from_archive=True,
+                                source_archive_document_id=document_id,
+                                archive_member_path=path_str,
+                            )
+                            await self.job_dispatcher.dispatch(child_job)
+                            logger.info(f"Queued child job {child_job.id} from archive {document_id}")
+                        except Exception as e:
+                            log_error_with_context(
+                                logger,
+                                "Failed to create child job",
+                                exc=e,
+                                exc_info=True,
+                                path_str=path_str,
+                            )
+
+                if event:
+                    event.output(document_id=document_id)
+                event_bus = self._frame.get_service("events")
+                if event_bus:
+                    # Include document_id in result for downstream shards (parse, embed)
+                    result_with_doc = {**result, "document_id": document_id}
+                    await event_bus.emit(
+                        "ingest.job.completed",
+                        {
+                            "job_id": job_id,
+                            "filename": job.file_info.original_name,
+                            "result": result_with_doc,
+                        },
+                        source="ingest-shard",
+                    )
+
+    async def _complete_job_without_worker(self, job: IngestJob) -> None:
+        """
+        Complete a job that was not enqueued (e.g. archive with extract_archives=False).
+        Updates status in DB, registers the document, and emits ingest.job.completed.
+        """
+        job_id = job.id
+        result = job.result or {}
+        await self.intake_manager.update_job_status(
+            job_id, JobStatus.COMPLETED, result=result
+        )
+        logger.info(f"Job {job_id} completed without worker (e.g. archive store-only)")
+        document_id = await self._register_document(job, result)
+        event_bus = self._frame.get_service("events")
+        if event_bus:
+            result_with_doc = {**result, "document_id": document_id}
+            await event_bus.emit(
+                "ingest.job.completed",
+                {
+                    "job_id": job_id,
+                    "filename": job.file_info.original_name,
+                    "result": result_with_doc,
+                },
+                source="ingest-shard",
+            )
+
+    async def _register_document(self, job, result: dict, wide_event=None) -> str | None:
         """
         Register completed document with Frame's document service.
 
         Creates a document record in arkham_frame.documents so it can be
         browsed and searched by the documents shard.
+
+        Args:
+            job: IngestJob
+            result: Job result dict
+            wide_event: Optional WideEventBuilder for error wide-event emission on failure.
 
         Returns:
             Document ID if successfully registered, None otherwise.
@@ -286,6 +405,7 @@ class IngestShard(ArkhamShard):
                 "mime_type": job.file_info.mime_type,
                 "checksum": job.file_info.checksum,
                 "storage_path": str(file_path),
+                "original_filename": job.file_info.original_name,  # Pre-sanitization name (source of truth)
                 "quality_score": (
                     {
                         "classification": job.quality_score.classification.value,
@@ -295,18 +415,104 @@ class IngestShard(ArkhamShard):
                     else None
                 ),
             }
+            if job.original_file_path:
+                metadata["original_file_path"] = job.original_file_path
+            if job.provenance:
+                metadata["provenance"] = job.provenance
+
+            # Archive / from-archive metadata
+            metadata["is_archive"] = job.file_info.is_archive
+            if getattr(job, "from_archive", False):
+                metadata["from_archive"] = True
+            if getattr(job, "source_archive_document_id", None):
+                metadata["source_archive_document_id"] = job.source_archive_document_id
+            if getattr(job, "archive_member_path", None):
+                metadata["archive_member_path"] = job.archive_member_path
 
             # Add extracted document metadata (author, title, creator, etc.)
             # This comes from PDF/DOCX property extraction in ExtractWorker
             document_metadata = result.get("document_metadata", {})
             if document_metadata:
-                # Merge extracted metadata into the main metadata dict
                 for key, value in document_metadata.items():
-                    if value:  # Only add non-empty values
+                    if value is not None and value != "":
                         metadata[key] = value
                 logger.info(f"Including extracted metadata for job {job.id}: {list(document_metadata.keys())}")
 
+            # Language detection on extracted text (guides PII analysis)
+            raw_text = result.get("text") or ""
+            detected_language = detect_language(raw_text)
+            metadata["detected_language"] = detected_language
+            logger.debug(
+                "register_document: job_id=%s detected_language=%s text_len=%s",
+                job.id,
+                detected_language,
+                len(raw_text),
+            )
+
+            # PII detection: run on metadata and on extracted text via PII shard only.
+            # The PII shard handles Presidio vs regex fallback internally; no PII when shard not installed.
+            pii_shard = self._frame.shards.get("pii") if getattr(self._frame, "shards", None) else None
+            max_pii_entities = 200
+
+            if not pii_shard or not hasattr(pii_shard, "analyze_metadata"):
+                if not getattr(self, "_pii_disabled_warned", False):
+                    logger.warning(
+                        "PII is disabled: PII shard not installed. "
+                        "Install arkham-shard-pii for PII detection on metadata and extracted text."
+                    )
+                    self._pii_disabled_warned = True
+                metadata["pii_detected"] = False
+                metadata["pii_types"] = []
+                metadata["pii_entities"] = []
+                metadata["pii_count"] = 0
+            else:
+                try:
+                    if hasattr(pii_shard, "analyze_metadata_async"):
+                        pii_meta = await pii_shard.analyze_metadata_async(metadata, language=detected_language)
+                    else:
+                        pii_meta = pii_shard.analyze_metadata(metadata, language=detected_language)
+                except Exception as e:
+                    logger.warning("PII shard analyze_metadata failed: %s", e)
+                    pii_meta = {"pii_detected": False, "pii_types": [], "pii_entities": [], "pii_count": 0}
+
+                try:
+                    if raw_text.strip() and hasattr(pii_shard, "analyze_text"):
+                        pii_text = pii_shard.analyze_text(raw_text, language=detected_language)
+                    else:
+                        pii_text = {"pii_detected": False, "pii_types": [], "pii_entities": [], "pii_count": 0}
+                except Exception as e:
+                    logger.warning("PII shard analyze_text failed: %s", e)
+                    pii_text = {"pii_detected": False, "pii_types": [], "pii_entities": [], "pii_count": 0}
+
+                meta_entities = list(pii_meta.get("pii_entities") or [])
+                text_entities = list(pii_text.get("pii_entities") or [])
+                for e in text_entities:
+                    if e.get("source_field") is None:
+                        e["source_field"] = "extracted_text"
+                combined = meta_entities + text_entities
+                combined = combined[:max_pii_entities]
+                types_union = set(pii_meta.get("pii_types") or []) | set(pii_text.get("pii_types") or [])
+
+                metadata["pii_detected"] = bool(pii_meta.get("pii_detected") or pii_text.get("pii_detected"))
+                metadata["pii_types"] = sorted(types_union)
+                metadata["pii_entities"] = combined
+                metadata["pii_count"] = len(combined)
+                if pii_meta.get("backend"):
+                    metadata["pii_backend"] = pii_meta["backend"]
+                logger.info(
+                    "register_document: PII analysis job_id=%s pii_detected=%s pii_count=%s backend=%s",
+                    job.id,
+                    metadata["pii_detected"],
+                    len(combined),
+                    metadata.get("pii_backend", "unknown"),
+                )
+
             # Create document in Frame's document service with project association
+            logger.info(
+                "register_document: creating document for job_id=%s, filename=%s",
+                job.id,
+                job.file_info.original_name,
+            )
             doc = await doc_service.create_document(
                 filename=job.file_info.original_name,
                 content=content,
@@ -334,17 +540,25 @@ class IngestShard(ArkhamShard):
 
             logger.info(f"Registered document {doc.id} from job {job.id} for project {job.project_id}")
 
-            # Associate document with project via projects shard
+            # Associate document with project via projects shard (only if project exists)
             if job.project_id:
                 projects_shard = self._frame.shards.get("projects")
                 if projects_shard:
                     try:
-                        await projects_shard.add_document(
-                            project_id=job.project_id,
-                            document_id=doc.id,
-                            added_by="ingest-shard",
-                        )
-                        logger.info(f"Associated document {doc.id} with project {job.project_id}")
+                        project = await projects_shard.get_project(job.project_id)
+                        if not project:
+                            logger.warning(
+                                "Project %s not found, skipping document association for %s",
+                                job.project_id,
+                                doc.id,
+                            )
+                        else:
+                            await projects_shard.add_document(
+                                project_id=job.project_id,
+                                document_id=doc.id,
+                                added_by="ingest-shard",
+                            )
+                            logger.info(f"Associated document {doc.id} with project {job.project_id}")
                     except Exception as e:
                         logger.warning(f"Failed to associate document {doc.id} with project {job.project_id}: {e}")
 
@@ -374,7 +588,14 @@ class IngestShard(ArkhamShard):
             return doc.id
 
         except Exception as e:
-            logger.error(f"Failed to register document for job {job.id}: {e}", exc_info=True)
+            log_error_with_context(
+                logger,
+                "Failed to register document",
+                exc=e,
+                job_id=job.id,
+                job_id_len=len(str(job.id)),
+            )
+            emit_wide_error(wide_event, "RegisterDocumentFailed", str(e), exc=e)
             return None
 
     async def _fetch_job_result(self, job_id: str) -> dict | None:
@@ -403,13 +624,19 @@ class IngestShard(ArkhamShard):
                 logger.debug(f"Fetched result for job {job_id}: {len(str(result))} chars")
             return result
         except Exception as e:
-            logger.warning(f"Failed to fetch result for job {job_id}: {e}")
+            log_error_with_context(
+                logger,
+                "Failed to fetch result for job",
+                exc=e,
+                exc_info=True,
+                job_id=job_id,
+            )
             return None
 
-    async def _on_job_failed(self, event: dict) -> None:
+    async def _on_job_failed(self, evt: dict) -> None:
         """Handle worker job failure."""
         # EventBus wraps events: {"event_type": ..., "payload": {...}, "source": ...}
-        payload = event.get("payload", event)  # Support both wrapped and unwrapped
+        payload = evt.get("payload", evt)  # Support both wrapped and unwrapped
         job_id = payload.get("job_id")
         if not job_id:
             return
@@ -421,33 +648,52 @@ class IngestShard(ArkhamShard):
         error = payload.get("error", "Unknown error")
         logger.warning(f"Job {job_id} failed: {error}")
 
-        # Update job status
-        await self.intake_manager.update_job_status(
-            job_id,
-            status=JobStatus.FAILED,
-            error=error,
-        )
-
-        # Attempt retry
-        if job.can_retry:
-            logger.info(f"Retrying job {job_id} (attempt {job.retry_count + 1}/{job.max_retries})")
-            await self.job_dispatcher.retry(job)
-        else:
-            logger.error(f"Job {job_id} exhausted retries, marking as dead")
-            await self.intake_manager.update_job_status(job_id, status=JobStatus.DEAD)
-
-            event_bus = self._frame.get_service("events")
-            if event_bus:
-                await event_bus.emit(
-                    "ingest.job.failed",
-                    {
-                        "job_id": job_id,
-                        "filename": job.file_info.original_name,
-                        "error": error,
-                        "retries": job.retry_count,
-                    },
-                    source="ingest-shard",
+        with log_operation("ingest.job.failed", job_id=job_id) as wide_event:
+            if wide_event:
+                wide_event.input(
+                    job_id=job_id,
+                    filename=job.file_info.original_name,
+                    error_preview=error[:200] if isinstance(error, str) else str(error)[:200],
+                    retry_count=job.retry_count,
+                    can_retry=job.can_retry,
                 )
+
+            # Update job status
+            start_update = time.time()
+            await self.intake_manager.update_job_status(
+                job_id,
+                status=JobStatus.FAILED,
+                error=error,
+            )
+            if wide_event:
+                wide_event.dependency("update_job_status", duration_ms=int((time.time() - start_update) * 1000))
+
+            # Attempt retry
+            if job.can_retry:
+                logger.info(f"Retrying job {job_id} (attempt {job.retry_count + 1}/{job.max_retries})")
+                await self.job_dispatcher.retry(job)
+                if wide_event:
+                    wide_event.output(retried=True, next_attempt=job.retry_count + 1)
+            else:
+                logger.error(f"Job {job_id} exhausted retries, marking as dead")
+                start_dead = time.time()
+                await self.intake_manager.update_job_status(job_id, status=JobStatus.DEAD)
+                if wide_event:
+                    wide_event.dependency("update_job_status_dead", duration_ms=int((time.time() - start_dead) * 1000))
+                    wide_event.output(marked_dead=True, retries_exhausted=job.retry_count)
+
+                event_bus = self._frame.get_service("events")
+                if event_bus:
+                    await event_bus.emit(
+                        "ingest.job.failed",
+                        {
+                            "job_id": job_id,
+                            "filename": job.file_info.original_name,
+                            "error": error,
+                            "retries": job.retry_count,
+                        },
+                        source="ingest-shard",
+                    )
 
     # --- Public API for other shards ---
 
@@ -626,10 +872,10 @@ class IngestShard(ArkhamShard):
         if not self._db:
             return
 
-        # Build quality_score JSON
+        # Build quality_score JSON (ensure JSON-serializable, e.g. numpy.bool_ -> bool)
         quality_json = None
         if job.quality_score:
-            quality_json = json.dumps({
+            q = {
                 "dpi": job.quality_score.dpi,
                 "skew_angle": job.quality_score.skew_angle,
                 "contrast_ratio": job.quality_score.contrast_ratio,
@@ -639,13 +885,25 @@ class IngestShard(ArkhamShard):
                 "layout_complexity": job.quality_score.layout_complexity,
                 "is_blank": job.quality_score.is_blank,
                 "analysis_ms": job.quality_score.analysis_ms,
-            })
+            }
+            quality_json = json.dumps(_to_json_safe(q))
 
         # Get tenant_id for multi-tenancy
         tenant_id = self.get_tenant_id_or_none()
 
-        # Build metadata JSON with project_id
-        metadata_json = json.dumps({"project_id": job.project_id}) if job.project_id else None
+        # Build metadata JSON (project_id, extract_archives, from_archive, source_archive_document_id, archive_member_path)
+        meta = {}
+        if job.project_id:
+            meta["project_id"] = job.project_id
+        if getattr(job, "extract_archives", False):
+            meta["extract_archives"] = True
+        if getattr(job, "from_archive", False):
+            meta["from_archive"] = True
+        if getattr(job, "source_archive_document_id", None):
+            meta["source_archive_document_id"] = job.source_archive_document_id
+        if getattr(job, "archive_member_path", None):
+            meta["archive_member_path"] = job.archive_member_path
+        metadata_json = json.dumps(_to_json_safe(meta)) if meta else None
 
         await self._db.execute(
             """
@@ -680,13 +938,13 @@ class IngestShard(ArkhamShard):
                 "file_size": job.file_info.size_bytes,
                 "checksum": job.file_info.checksum,
                 "quality_score": quality_json,
-                "worker_route": json.dumps(job.worker_route),
+                "worker_route": json.dumps(_to_json_safe(job.worker_route)),
                 "current_worker": job.current_worker,
                 "batch_id": None,
                 "retry_count": job.retry_count,
                 "max_retries": job.max_retries,
                 "error_message": job.error,
-                "result": json.dumps(job.result) if job.result else None,
+                "result": json.dumps(_to_json_safe(job.result)) if job.result else None,
                 "created_at": job.created_at,
                 "started_at": job.started_at,
                 "completed_at": job.completed_at,
@@ -794,7 +1052,7 @@ class IngestShard(ArkhamShard):
                     "id": job_id,
                     "status": status.value,
                     "error_message": error,
-                    "result": json.dumps(result) if result else None,
+                    "result": json.dumps(_to_json_safe(result)) if result else None,
                     "started_at": started_at,
                     "completed_at": completed_at,
                     "tenant_id": str(tenant_id),
@@ -815,7 +1073,7 @@ class IngestShard(ArkhamShard):
                     "id": job_id,
                     "status": status.value,
                     "error_message": error,
-                    "result": json.dumps(result) if result else None,
+                    "result": json.dumps(_to_json_safe(result)) if result else None,
                     "started_at": started_at,
                     "completed_at": completed_at,
                 },
@@ -1128,9 +1386,13 @@ class IngestShard(ArkhamShard):
             checksum=row.get("checksum"),
         )
 
-        # Parse metadata to get project_id
+        # Parse metadata (project_id, extract_archives, from_archive, etc.)
         metadata = _parse_json_field(row.get("metadata"), {})
         project_id = metadata.get("project_id") if metadata else None
+        extract_archives = metadata.get("extract_archives", False) if metadata else False
+        from_archive = metadata.get("from_archive", False) if metadata else False
+        source_archive_document_id = metadata.get("source_archive_document_id") if metadata else None
+        archive_member_path = metadata.get("archive_member_path") if metadata else None
 
         # Build IngestJob
         return IngestJob(
@@ -1139,6 +1401,10 @@ class IngestShard(ArkhamShard):
             priority=priority,
             status=status,
             project_id=project_id,
+            extract_archives=extract_archives,
+            from_archive=from_archive,
+            source_archive_document_id=source_archive_document_id,
+            archive_member_path=archive_member_path,
             worker_route=_parse_json_field(row.get("worker_route"), []),
             current_worker=row.get("current_worker"),
             quality_score=quality_score,

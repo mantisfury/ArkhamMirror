@@ -22,7 +22,7 @@ from .models import (
 
 # Import wide event logging utilities (with fallback)
 try:
-    from arkham_frame import log_operation
+    from arkham_frame import log_operation, emit_wide_error
     WIDE_EVENTS_AVAILABLE = True
 except ImportError:
     WIDE_EVENTS_AVAILABLE = False
@@ -30,6 +30,8 @@ except ImportError:
     @contextmanager
     def log_operation(*args, **kwargs):
         yield None
+    def emit_wide_error(*args, **kwargs):
+        pass
 
 router = APIRouter(prefix="/api/credibility", tags=["credibility"])
 
@@ -342,7 +344,7 @@ async def create_assessment(body: AssessmentCreate, request: Request):
             return _assessment_to_response(assessment)
         except Exception as e:
             if event:
-                event.error(str(e), exc_info=True)
+                emit_wide_error(event, type(e).__name__, str(e), exc=e)
             raise
 
 
@@ -448,7 +450,7 @@ async def calculate_credibility(body: CalculateRequest, request: Request):
             )
         except Exception as e:
             if event:
-                event.error(str(e), exc_info=True)
+                emit_wide_error(event, type(e).__name__, str(e), exc=e)
             raise
 
 
@@ -1061,7 +1063,7 @@ async def update_assessment(assessment_id: str, body: AssessmentUpdate, request:
             return _assessment_to_response(assessment)
         except Exception as e:
             if event:
-                event.error(str(e), exc_info=True)
+                emit_wide_error(event, type(e).__name__, str(e), exc=e)
             raise
 
 

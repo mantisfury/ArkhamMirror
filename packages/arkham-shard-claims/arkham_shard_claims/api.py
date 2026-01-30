@@ -34,7 +34,7 @@ from .models import (
 
 # Import wide event logging utilities (with fallback)
 try:
-    from arkham_frame import log_operation
+    from arkham_frame import log_operation, emit_wide_error
     WIDE_EVENTS_AVAILABLE = True
 except ImportError:
     WIDE_EVENTS_AVAILABLE = False
@@ -42,6 +42,8 @@ except ImportError:
     @contextmanager
     def log_operation(*args, **kwargs):
         yield None
+    def emit_wide_error(*args, **kwargs):
+        pass
 
 router = APIRouter(prefix="/api/claims", tags=["claims"])
 
@@ -388,7 +390,7 @@ async def create_claim(request: Request, body: ClaimCreate):
             return _claim_to_response(claim)
         except Exception as e:
             if event:
-                event.error(str(e), exc_info=True)
+                emit_wide_error(event, type(e).__name__, str(e), exc=e)
             raise
 
 
@@ -439,7 +441,7 @@ async def update_claim_status(request: Request, claim_id: str, body: StatusUpdat
             return _claim_to_response(claim)
         except Exception as e:
             if event:
-                event.error(str(e), exc_info=True)
+                emit_wide_error(event, type(e).__name__, str(e), exc=e)
             raise
 
 
@@ -521,7 +523,7 @@ async def add_claim_evidence(request: Request, claim_id: str, body: EvidenceCrea
             return _evidence_to_response(evidence)
         except Exception as e:
             if event:
-                event.error(str(e), exc_info=True)
+                emit_wide_error(event, type(e).__name__, str(e), exc=e)
             raise
 
 
@@ -572,7 +574,7 @@ async def extract_claims(request: Request, body: ExtractionRequest):
             )
         except Exception as e:
             if event:
-                event.error(str(e), exc_info=True)
+                emit_wide_error(event, type(e).__name__, str(e), exc=e)
             raise
 
 
@@ -646,7 +648,7 @@ async def extract_claims_from_document(request: Request, document_id: str):
             )
         except Exception as e:
             if event:
-                event.error(str(e), exc_info=True)
+                emit_wide_error(event, type(e).__name__, str(e), exc=e)
             raise
 
 

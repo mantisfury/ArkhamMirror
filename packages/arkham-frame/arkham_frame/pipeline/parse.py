@@ -15,7 +15,7 @@ from .base import PipelineStage, StageResult, StageStatus
 
 # Import wide event logging utilities (with fallback)
 try:
-    from arkham_frame import log_operation
+    from arkham_frame import log_operation, emit_wide_error
     WIDE_EVENTS_AVAILABLE = True
 except ImportError:
     WIDE_EVENTS_AVAILABLE = False
@@ -23,6 +23,8 @@ except ImportError:
     @contextmanager
     def log_operation(*args, **kwargs):
         yield None
+    def emit_wide_error(*args, **kwargs):
+        pass
 
 logger = logging.getLogger(__name__)
 
@@ -132,7 +134,7 @@ class ParseStage(PipelineStage):
                     logger.error(f"NER dispatch failed: {e}")
                     if event:
                         event.dependency(f"worker_pool_{pool}", duration_ms=duration_ms, error=str(e))
-                        event.error("NERDispatchFailed", str(e))
+                        emit_wide_error(event, "NERDispatchFailed", str(e), exc=e)
                     output = {
                         "document_id": document_id,
                         "entities_found": 0,
@@ -163,7 +165,7 @@ class ParseStage(PipelineStage):
             except Exception as e:
                 logger.error(f"Parse dispatch failed: {e}")
                 if event:
-                    event.error("ParseStageFailed", str(e))
+                    emit_wide_error(event, "ParseStageFailed", str(e), exc=e)
                 return StageResult(
                     stage_name=self.name,
                     status=StageStatus.FAILED,
