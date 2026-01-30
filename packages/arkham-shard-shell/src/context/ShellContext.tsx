@@ -63,11 +63,11 @@ export function ShellProvider({ children }: { children: ReactNode }) {
     { backgroundRefetch: true }
   );
 
-  // Poll connection status periodically (every 5 seconds)
+  // Poll shards list periodically (every 60 seconds)
   useEffect(() => {
     const pollInterval = setInterval(() => {
       refetchShards();
-    }, 5000); // Poll every 5 seconds
+    }, 60000); // Poll every 60 seconds
 
     return () => {
       clearInterval(pollInterval);

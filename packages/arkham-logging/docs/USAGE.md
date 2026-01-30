@@ -86,6 +86,40 @@ ARKHAM_LOG_WIDE_EVENTS_SAMPLING_RATE=0.05
 - **ERROR**: Error messages for failures
 - **CRITICAL**: Critical errors requiring immediate attention
 
+## Error tracing
+
+Every log line can include a **trace_id** when the current request has one (e.g. set by middleware from `X-Trace-ID` or generated per request). This lets you correlate all logs for a single request and filter by trace in your log aggregator.
+
+- **Structured (JSON) formatter**: Adds a `trace_id` field to each log record when `get_trace_id()` returns a value.
+- **Standard formatter**: Appends `[trace_id=...]` to the message when a trace is set.
+
+For caught exceptions, use **log_error_with_context** so the error message and `extra` include trace_id and business context (e.g. `job_id`, `document_id`):
+
+```python
+from arkham_logging import log_error_with_context
+
+try:
+    await save_job(job)
+except Exception as e:
+    log_error_with_context(
+        logger,
+        "Failed to persist job to database",
+        exc=e,
+        job_id=job.id,
+        filename=filename,
+    )
+    raise
+```
+
+Use **format_error_message** when building a message for re-raise or for a custom log:
+
+```python
+from arkham_logging import format_error_message
+
+msg = format_error_message("Failed to persist job", exc=e, job_id=job.id)
+raise RuntimeError(msg)
+```
+
 ## Formatters
 
 ### Colored (Console)

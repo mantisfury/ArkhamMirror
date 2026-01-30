@@ -20,7 +20,7 @@ from .manager import UserManager
 
 # Configuration from environment
 SECRET_KEY = os.environ.get("AUTH_SECRET_KEY", "CHANGE-ME-IN-PRODUCTION")
-JWT_LIFETIME = int(os.environ.get("JWT_LIFETIME_SECONDS", "3600"))
+JWT_LIFETIME = int(os.environ.get("JWT_LIFETIME_SECONDS", "28800"))  # default 8 hours
 DATABASE_URL = os.environ.get(
     "AUTH_DATABASE_URL",
     os.environ.get("DATABASE_URL", "postgresql+asyncpg://arkham:arkhampass@localhost/arkhamdb")

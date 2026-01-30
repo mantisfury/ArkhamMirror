@@ -12,6 +12,110 @@ from .tracing import get_trace_id
 
 logger = logging.getLogger(__name__)
 
+
+def format_error_message(
+    message: str,
+    exc: Optional[Exception] = None,
+    *,
+    max_context_items: int = 8,
+    **context: Any,
+) -> str:
+    """Build an error message with trace_id and context for easier tracing.
+
+    Use when logging or re-raising so logs and stack traces include context
+    (e.g. job_id, document_id) without callers having to remember to pass extra.
+
+    Args:
+        message: Primary error message.
+        exc: Optional exception (its message is appended).
+        max_context_items: Max key=value pairs to include in the message string.
+        **context: Key-value context (e.g. job_id=..., document_id=...).
+
+    Returns:
+        A single string like:
+        "Failed to persist job (job_id=abc document_id=xyz trace_id=trace_123): Original error"
+    """
+    parts = [message]
+    trace_id = get_trace_id()
+    if trace_id:
+        context = {**context, "trace_id": trace_id}
+    if context:
+        # Sanitize: short string values only for inline message
+        items = []
+        for k, v in list(context.items())[:max_context_items]:
+            if v is None:
+                items.append(f"{k}=None")
+            elif isinstance(v, str) and len(v) > 64:
+                items.append(f"{k}={v[:61]}...")
+            else:
+                items.append(f"{k}={v}")
+        parts.append(" (" + " ".join(items) + ")")
+    if exc is not None and str(exc):
+        parts.append(f": {exc}")
+    return "".join(parts)
+
+
+def log_error_with_context(
+    log: logging.Logger,
+    message: str,
+    exc: Optional[Exception] = None,
+    *,
+    exc_info: bool = True,
+    level: int = logging.ERROR,
+    **context: Any,
+) -> None:
+    """Log an error with trace_id and context so errors are traceable.
+
+    Ensures trace_id (from current context) and any passed context (job_id,
+    document_id, etc.) are in the log record's extra and, when possible, in
+    the message string. Use this for caught exceptions so logs and log
+    aggregation can be filtered by trace_id or business IDs.
+
+    Args:
+        log: Logger to use (e.g. logger from module).
+        message: Primary error message.
+        exc: Optional exception (if exc_info True, traceback is logged).
+        exc_info: Whether to log exception traceback (default True when exc set).
+        level: Log level (default ERROR).
+        **context: Context to attach (e.g. job_id=..., document_id=...).
+    """
+    trace_id = get_trace_id()
+    extra: Dict[str, Any] = {**context}
+    if trace_id:
+        extra["trace_id"] = trace_id
+    full_message = format_error_message(message, exc=exc, **context)
+    if exc is not None and exc_info:
+        log.log(level, full_message, exc_info=True, extra=extra)
+    else:
+        log.log(level, full_message, extra=extra)
+
+
+def emit_wide_error(
+    event: Optional[WideEventBuilder],
+    code: str,
+    message: str,
+    exc: Optional[Exception] = None,
+) -> None:
+    """Call event.error with full traceback when exc is provided. No-op if event is None.
+
+    Use so call sites do not need to import traceback or build traceback_str by hand.
+    The traceback is derived from the passed exception (safe in async and in helpers).
+
+    Args:
+        event: WideEventBuilder from log_operation or create_wide_event; None is a no-op.
+        code: Error code (e.g. exception type name or "DocumentCreationFailed").
+        message: Error message (e.g. str(e)).
+        exc: Optional exception; when set, type and full traceback are added to the wide event.
+    """
+    if event is None:
+        return
+    if exc is not None:
+        tb_str = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+        event.error(code, message, exception=exc, traceback_str=tb_str)
+    else:
+        event.error(code, message)
+
+
 T = TypeVar("T")
 
 

@@ -151,6 +151,10 @@ class LoggingConfig(BaseModel):
         if env_config.global_level != "INFO":
             config.global_level = env_config.global_level
         
+        # When only ARKHAM_LOG_LEVEL is set, apply it to console too (single env var for console level)
+        if os.environ.get("ARKHAM_LOG_LEVEL") and not os.environ.get("ARKHAM_LOG_CONSOLE_LEVEL"):
+            config.console.level = config.global_level
+        
         # Merge console config
         if os.environ.get("ARKHAM_LOG_CONSOLE_ENABLED") is not None:
             config.console.enabled = env_config.console.enabled

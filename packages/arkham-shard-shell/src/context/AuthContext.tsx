@@ -137,6 +137,18 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
+  // Refresh user data (stable for auth poll effect; must be defined before useEffect that uses it)
+  const refreshUser = useCallback(async (): Promise<void> => {
+    if (state.token) await fetchUser(state.token);
+  }, [state.token, fetchUser]);
+
+  // Poll auth every 30s when authenticated; 401 from /api/auth/me triggers redirect via apiFetch
+  useEffect(() => {
+    if (!state.isAuthenticated || !state.token) return;
+    const interval = setInterval(() => void refreshUser(), 30000);
+    return () => clearInterval(interval);
+  }, [state.isAuthenticated, state.token, refreshUser]);
+
   // Initialize auth state on mount
   useEffect(() => {
     const init = async () => {
@@ -203,13 +215,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       isAuthenticated: false,
       setupRequired: false,
     });
-  };
-
-  // Refresh user data
-  const refreshUser = async (): Promise<void> => {
-    if (state.token) {
-      await fetchUser(state.token);
-    }
   };
 
   // Check if current user has a specific permission

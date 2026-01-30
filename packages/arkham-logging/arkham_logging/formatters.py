@@ -94,7 +94,15 @@ class StructuredFormatter(logging.Formatter):
             "function": record.funcName,
             "line": record.lineno,
         }
-        
+        # trace_id is set by TraceIdFilter on the record (so it survives async/threaded handlers)
+        trace_id = getattr(record, "trace_id", None)
+        if trace_id is None:
+            try:
+                from .tracing import get_trace_id
+                trace_id = get_trace_id()
+            except Exception:
+                pass
+        log_data["trace_id"] = trace_id  # always include (null when not in request context)
         # Add exception info if present
         if record.exc_info:
             log_data["exception"] = {
@@ -107,17 +115,18 @@ class StructuredFormatter(logging.Formatter):
         if hasattr(record, "extra_data"):
             log_data["extra"] = record.extra_data
         
-        # Add any additional fields from record
+        # Add any additional fields from record (includes extra={} from logger.error(..., extra={}))
         for key, value in record.__dict__.items():
             if key not in {
                 "name", "msg", "args", "created", "filename", "funcName",
                 "levelname", "levelno", "lineno", "module", "msecs", "message",
                 "pathname", "process", "processName", "relativeCreated", "thread",
                 "threadName", "exc_info", "exc_text", "stack_info", "extra_data",
+                "trace_id",  # already set above from TraceIdFilter
             }:
                 if not key.startswith("_"):
                     log_data[key] = value
-        
+
         return json.dumps(log_data)
 
 
@@ -139,12 +148,15 @@ class StandardFormatter(logging.Formatter):
         super().__init__(fmt, datefmt)
     
     def format(self, record: logging.LogRecord) -> str:
-        """Format log record.
-        
-        Args:
-            record: Log record to format
-            
-        Returns:
-            Formatted string
-        """
-        return super().format(record)
+        """Format log record. Appends [trace_id=...] when trace_id is on the record."""
+        base = super().format(record)
+        trace_id = getattr(record, "trace_id", None)
+        if trace_id is None:
+            try:
+                from .tracing import get_trace_id
+                trace_id = get_trace_id()
+            except Exception:
+                pass
+        if trace_id:
+            return f"{base} [trace_id={trace_id}]"
+        return base

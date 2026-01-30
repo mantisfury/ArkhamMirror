@@ -62,10 +62,15 @@ class WideEventMiddleware(BaseHTTPMiddleware):
         if not LOGGING_AVAILABLE or not frame or not hasattr(frame, "create_wide_event") or not frame.create_wide_event:
             return await call_next(request)
         
-        # Extract or generate trace_id
+        # Extract or generate trace_id and set in global context (same ContextVar
+        # that TraceIdFilter and get_trace_id() use, so log records get trace_id)
         trace_id = self._extract_trace_id(request)
         if self.tracing:
-            self.tracing.set_trace_id(trace_id)
+            try:
+                from arkham_logging.tracing import set_trace_id
+                set_trace_id(trace_id)
+            except ImportError:
+                self.tracing.set_trace_id(trace_id)
         
         # Create wide event
         event = frame.create_wide_event("api_request", trace_id=trace_id)

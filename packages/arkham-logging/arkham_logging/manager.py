@@ -7,6 +7,7 @@ from typing import Optional
 
 from .config import LoggingConfig
 from .formatters import ColoredFormatter, StandardFormatter, StructuredFormatter
+from .filters import TraceIdFilter
 from .handlers import (
     AsyncFileHandler,
     ColoredConsoleHandler,
@@ -84,6 +85,7 @@ class LoggingManager:
             formatter = StandardFormatter()
         
         handler.setFormatter(formatter)
+        handler.addFilter(TraceIdFilter())
         return handler
     
     def _create_file_handler(self) -> Optional[logging.Handler]:
@@ -104,6 +106,7 @@ class LoggingManager:
             # Use structured formatter for file logs
             formatter = StructuredFormatter()
             handler.setFormatter(formatter)
+            handler.addFilter(TraceIdFilter())
             
             return handler
         except Exception:
@@ -119,6 +122,7 @@ class LoggingManager:
                 handler.setLevel(get_log_level(self.config.file.level))
                 formatter = StructuredFormatter()
                 handler.setFormatter(formatter)
+                handler.addFilter(TraceIdFilter())
                 return handler
             except Exception:
                 import sys
@@ -145,6 +149,7 @@ class LoggingManager:
             
             formatter = StructuredFormatter()
             handler.setFormatter(formatter)
+            handler.addFilter(TraceIdFilter())
             
             return handler
         except Exception:
@@ -160,6 +165,7 @@ class LoggingManager:
                 handler.setLevel(get_log_level("ERROR"))
                 formatter = StructuredFormatter()
                 handler.setFormatter(formatter)
+                handler.addFilter(TraceIdFilter())
                 return handler
             except Exception:
                 return None
@@ -191,9 +197,22 @@ class LoggingManager:
         # Add our handlers
         for handler in self._handlers:
             root_logger.addHandler(handler)
+
+        # Capture trace_id on each record (in request thread) so formatters see it
+        # even when handlers format in another thread (e.g. AsyncFileHandler)
+        root_logger.addFilter(TraceIdFilter())
         
         # Prevent propagation to avoid duplicate logs
         root_logger.propagate = False
+        
+        # Ensure uvicorn and other libs that log to console respect our console level
+        console_level = get_log_level(self.config.console.level)
+        for logger_name in ("uvicorn", "uvicorn.error", "uvicorn.access"):
+            child = logging.getLogger(logger_name)
+            child.setLevel(console_level)
+            for h in child.handlers:
+                if getattr(h, "stream", None) in (sys.stdout, sys.stderr):
+                    h.setLevel(console_level)
     
     def _setup_sampling(self) -> None:
         """Setup sampling strategy."""

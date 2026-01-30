@@ -1,6 +1,7 @@
 """Contradictions Shard - Multi-document contradiction detection."""
 
 import logging
+from typing import Optional
 
 from arkham_frame.shard_interface import ArkhamShard
 
