@@ -65,7 +65,7 @@ frame:
   logging:
     console:
       enabled: true
-      level: WARNING
+      level: INFO
       format: colored  # colored, standard, json
     
     file:

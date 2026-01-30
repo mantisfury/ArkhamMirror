@@ -54,6 +54,14 @@ class FileInfo:
     created_at: datetime = field(default_factory=datetime.utcnow)
     checksum: str | None = None
 
+    # Extension vs detected mime: True if file extension matches detected mime_type
+    extension_fidelity: bool = True
+
+    # Filesystem stat times (from path.stat())
+    access_time: datetime | None = None
+    modification_time: datetime | None = None
+    creation_time: datetime | None = None
+
     # For images
     width: int | None = None
     height: int | None = None
@@ -61,6 +69,9 @@ class FileInfo:
 
     # For documents
     page_count: int | None = None
+
+    # True for archive formats (zip, tar, 7z, rar, etc.) and container formats (docx, xlsx, jar, etc.)
+    is_archive: bool = False
 
 
 @dataclass
@@ -145,6 +156,16 @@ class IngestJob:
 
     # Project association
     project_id: str | None = None
+
+    # Optional upload metadata (stored in document metadata)
+    original_file_path: str | None = None  # Path when available (e.g. path-based ingest)
+    provenance: dict[str, Any] | None = None  # source_url, source_description, custodian, acquisition_date, etc.
+
+    # Archive handling
+    extract_archives: bool = False  # If True and file is a typical archive (zip, tar, etc.), extract and queue members
+    from_archive: bool = False  # True if this file was extracted from an archive
+    source_archive_document_id: str | None = None  # Document ID of the parent archive (when from_archive=True)
+    archive_member_path: str | None = None  # Path within the archive (when from_archive=True)
 
     # Routing
     worker_route: list[str] = field(default_factory=list)

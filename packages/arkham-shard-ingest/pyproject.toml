@@ -19,6 +19,8 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest", "pytest-asyncio", "black", "mypy"]
+magika = ["magika>=0.3.0"]
+langdetect = ["langdetect>=1.0.9"]
 
 [project.entry-points."arkham.shards"]
 ingest = "arkham_shard_ingest:IngestShard"

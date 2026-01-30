@@ -831,7 +831,11 @@ class ProjectsShard(ArkhamShard):
         document_id: str,
         added_by: str = "system",
     ) -> ProjectDocument:
-        """Add a document to a project."""
+        """Add a document to a project. Raises ValueError if the project does not exist."""
+        project = await self.get_project(project_id)
+        if not project:
+            raise ValueError(f"Project not found: {project_id}")
+
         doc_id = str(uuid4())
         now = datetime.utcnow()
 

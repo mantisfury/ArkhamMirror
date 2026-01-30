@@ -365,6 +365,8 @@ pip install -e .
 for dir in ../arkham-shard-*/; do
   pip install -e "$dir"
 done
+# OR
+Get-ChildItem ../arkham-shard-*/ | ForEach-Object { pip install -e $_.FullName }
 
 # Install spaCy model
 python -m spacy download en_core_web_sm

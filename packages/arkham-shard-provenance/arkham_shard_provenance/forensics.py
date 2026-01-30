@@ -16,7 +16,7 @@ import hashlib
 import logging
 import uuid
 from datetime import datetime
-from typing import Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 from .models import (
     ExifData,
@@ -32,6 +32,130 @@ from .models import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _parse_optional_date(value: Any) -> Optional[datetime]:
+    """Parse date from document_metadata (ISO string or datetime)."""
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, str):
+        s = value.strip()
+        if not s:
+            return None
+        try:
+            return datetime.fromisoformat(s.replace("Z", "+00:00"))
+        except ValueError:
+            pass
+    return None
+
+
+def _pdf_metadata_from_document_metadata(d: Dict[str, Any]) -> PdfMetadata:
+    """Build PdfMetadata from frame document_metadata dict (avoids re-reading file)."""
+    pdf = PdfMetadata()
+    if not d:
+        return pdf
+    pdf.title = d.get("title") and str(d["title"]).strip() or None
+    pdf.author = d.get("author") and str(d["author"]).strip() or None
+    pdf.subject = d.get("subject") and str(d["subject"]).strip() or None
+    pdf.creator = d.get("creator") and str(d["creator"]).strip() or None
+    pdf.producer = d.get("producer") and str(d["producer"]).strip() or None
+    pdf.creation_date = _parse_optional_date(d.get("creation_date"))
+    pdf.modification_date = _parse_optional_date(d.get("modification_date"))
+    kw = d.get("keywords")
+    if kw is not None:
+        pdf.keywords = [k.strip() for k in str(kw).split(",") if k.strip()]
+    pdf.page_count = int(d["num_pages"]) if d.get("num_pages") is not None else 0
+    pdf.is_encrypted = bool(d.get("is_encrypted"))
+    xmp = d.get("exiftool_metadata") or d.get("xmp_data")
+    if isinstance(xmp, dict):
+        pdf.xmp_data = xmp
+    return pdf
+
+
+def _office_metadata_from_document_metadata(d: Dict[str, Any]) -> OfficeMetadata:
+    """Build OfficeMetadata from frame document_metadata dict (avoids re-reading file)."""
+    office = OfficeMetadata()
+    if not d:
+        return office
+    office.title = d.get("title") and str(d["title"]).strip() or None
+    office.author = d.get("author") and str(d["author"]).strip() or None
+    office.subject = d.get("subject") and str(d["subject"]).strip() or None
+    office.last_modified_by = d.get("last_modified_by") and str(d["last_modified_by"]).strip() or None
+    office.created = _parse_optional_date(d.get("creation_date"))
+    office.modified = _parse_optional_date(d.get("modification_date"))
+    kw = d.get("keywords")
+    if kw is not None:
+        office.keywords = [k.strip() for k in str(kw).split(",") if k.strip()]
+    rev = d.get("revision")
+    if rev is not None:
+        try:
+            office.revision = int(rev)
+        except (TypeError, ValueError):
+            pass
+    return office
+
+
+def _exif_data_from_document_metadata(d: Dict[str, Any]) -> ExifData:
+    """Build ExifData from frame document_metadata dict (avoids re-reading file for images)."""
+    exif = ExifData()
+    if not d:
+        return exif
+    exif.make = d.get("device_make") and str(d["device_make"]).strip() or None
+    exif.model = d.get("device_model") and str(d["device_model"]).strip() or None
+    exif.software = None
+    sw = d.get("software") or d.get("software_list")
+    if isinstance(sw, list) and sw:
+        exif.software = ", ".join(str(x) for x in sw)
+    elif sw:
+        exif.software = str(sw)
+    exif.width = int(d["image_width"]) if d.get("image_width") is not None else None
+    exif.height = int(d["image_height"]) if d.get("image_height") is not None else None
+    exif.datetime_original = _parse_optional_date(d.get("creation_date"))
+    exif.datetime_modified = _parse_optional_date(d.get("modification_date"))
+    gps = d.get("gps_data")
+    if isinstance(gps, dict):
+        exif.raw_data["gps_data"] = gps
+        # Try common exiftool GPS keys for decimal degrees
+        lat = gps.get("GPSLatitude") or gps.get("GPS Latitude")
+        lon = gps.get("GPSLongitude") or gps.get("GPS Longitude")
+        if lat is not None:
+            try:
+                exif.gps_latitude = float(lat)
+            except (TypeError, ValueError):
+                pass
+        if lon is not None:
+            try:
+                exif.gps_longitude = float(lon)
+            except (TypeError, ValueError):
+                pass
+    return exif
+
+
+def _has_meaningful_pdf_metadata(pdf: PdfMetadata) -> bool:
+    """True if pdf has at least one meaningful field for integrity/timeline."""
+    return bool(
+        pdf.title or pdf.author or pdf.subject or pdf.creator or pdf.producer
+        or pdf.creation_date or pdf.modification_date or pdf.page_count
+    )
+
+
+def _has_meaningful_office_metadata(office: OfficeMetadata) -> bool:
+    """True if office has at least one meaningful field."""
+    return bool(
+        office.title or office.author or office.subject or office.created
+        or office.modified or office.last_modified_by
+    )
+
+
+def _has_meaningful_exif_data(exif: ExifData) -> bool:
+    """True if exif has at least one meaningful field."""
+    return bool(
+        exif.make or exif.model or exif.width or exif.height
+        or exif.gps_latitude is not None or exif.gps_longitude is not None
+        or exif.datetime_original or exif.datetime_modified or exif.software
+    )
 
 
 class MetadataForensicAnalyzer:
@@ -813,6 +937,7 @@ class MetadataForensicAnalyzer:
         file_path: str,
         file_data: bytes,
         mime_type: str,
+        document_metadata: Optional[Dict[str, Any]] = None,
     ) -> MetadataForensicScan:
         """
         Perform complete forensic scan on a document.
@@ -820,11 +945,16 @@ class MetadataForensicAnalyzer:
         Extracts all available metadata, calculates file hashes,
         performs integrity analysis, and reconstructs timeline.
 
+        When document_metadata (from frame document_metadata table) is provided,
+        uses it for PDF/Office/EXIF-style fields and only falls back to file-based
+        extraction when the stored metadata has no meaningful fields for that type.
+
         Args:
             doc_id: Document identifier
             file_path: Path to file on disk
             file_data: Raw file bytes
             mime_type: MIME type
+            document_metadata: Optional dict from frame get_document_metadata(doc_id)
 
         Returns:
             Complete forensic scan results
@@ -842,23 +972,39 @@ class MetadataForensicAnalyzer:
             scan.file_hash_sha512 = hashes['sha512']
             scan.file_size = len(file_data)
 
-            # Extract metadata based on file type
+            # Extract metadata based on file type; prefer document_metadata when available
             mime_lower = mime_type.lower() if mime_type else ""
+            file_path_str = str(file_path) if file_path else ""
 
             if 'image' in mime_lower:
-                scan.exif_data = self.extract_exif(file_path)
+                if document_metadata:
+                    scan.exif_data = _exif_data_from_document_metadata(document_metadata)
+                    if not _has_meaningful_exif_data(scan.exif_data):
+                        scan.exif_data = self.extract_exif(file_path_str)
+                else:
+                    scan.exif_data = self.extract_exif(file_path_str)
 
             if 'pdf' in mime_lower:
-                scan.pdf_metadata = self.extract_pdf_metadata(file_path)
+                if document_metadata:
+                    scan.pdf_metadata = _pdf_metadata_from_document_metadata(document_metadata)
+                    if not _has_meaningful_pdf_metadata(scan.pdf_metadata):
+                        scan.pdf_metadata = self.extract_pdf_metadata(file_path_str)
+                else:
+                    scan.pdf_metadata = self.extract_pdf_metadata(file_path_str)
 
             if any(x in mime_lower for x in ['word', 'document', 'spreadsheet',
                                               'presentation', 'officedocument']):
-                scan.office_metadata = self.extract_office_metadata(file_path)
+                if document_metadata:
+                    scan.office_metadata = _office_metadata_from_document_metadata(document_metadata)
+                    if not _has_meaningful_office_metadata(scan.office_metadata):
+                        scan.office_metadata = self.extract_office_metadata(file_path_str)
+                else:
+                    scan.office_metadata = self.extract_office_metadata(file_path_str)
 
-            # Also try Office extraction for common extensions
-            if file_path.lower().endswith(('.docx', '.xlsx', '.pptx')):
+            # Also try Office extraction for common extensions when we have no author yet
+            if file_path_str.lower().endswith(('.docx', '.xlsx', '.pptx')):
                 if not scan.office_metadata or not scan.office_metadata.author:
-                    scan.office_metadata = self.extract_office_metadata(file_path)
+                    scan.office_metadata = self.extract_office_metadata(file_path_str)
 
             # Analyze integrity
             status, findings, confidence = self.analyze_integrity(

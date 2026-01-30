@@ -2517,10 +2517,17 @@ class ProvenanceShard(ArkhamShard):
 
             # Extract source ID (document being processed)
             source_id = payload.get("source_id") or payload.get("document_id") or payload.get("input_id")
+            # worker.job.completed has {job_id, result}; source may be inside result
+            if not source_id and event_type == "worker.job.completed":
+                result = payload.get("result") or {}
+                if isinstance(result, dict):
+                    source_id = result.get("source_id") or result.get("document_id") or result.get("input_id")
             output_ids = payload.get("output_ids") or payload.get("chunk_ids") or []
 
             if not source_id:
-                logger.debug(f"No source_id in completion event: {event_type}")
+                # worker.job.completed often has no document context; skip without logging
+                if event_type != "worker.job.completed":
+                    logger.debug(f"No source_id in completion event: {event_type}")
                 return
 
             if isinstance(output_ids, str):

@@ -124,11 +124,21 @@ async function fetchAPI<T>(endpoint: string, options?: RequestInit): Promise<T> 
 
 export type OcrMode = 'auto' | 'paddle_only' | 'qwen_only';
 
+/** Optional provenance info stored in document metadata */
+export interface ProvenanceOptions {
+  source_url?: string;
+  source_description?: string;
+  custodian?: string;
+  acquisition_date?: string;
+  [key: string]: string | undefined;
+}
+
 export async function uploadFile(
   file: File,
   priority: 'user' | 'batch' = 'user',
   ocrMode: OcrMode = 'auto',
-  projectId?: string
+  projectId?: string,
+  options?: { original_file_path?: string; provenance?: ProvenanceOptions; extract_archives?: boolean }
 ): Promise<UploadResponse> {
   const formData = new FormData();
   formData.append('file', file);
@@ -136,6 +146,15 @@ export async function uploadFile(
   formData.append('ocr_mode', ocrMode);
   if (projectId) {
     formData.append('project_id', projectId);
+  }
+  if (options?.original_file_path) {
+    formData.append('original_file_path', options.original_file_path);
+  }
+  if (options?.provenance && Object.keys(options.provenance).length > 0) {
+    formData.append('provenance', JSON.stringify(options.provenance));
+  }
+  if (options?.extract_archives) {
+    formData.append('extract_archives', 'true');
   }
 
   return apiUpload<UploadResponse>(`${API_PREFIX}/upload`, formData);
@@ -145,7 +164,8 @@ export async function uploadBatch(
   files: File[],
   priority: 'user' | 'batch' = 'batch',
   ocrMode: OcrMode = 'auto',
-  projectId?: string
+  projectId?: string,
+  options?: { provenance?: ProvenanceOptions; extract_archives?: boolean }
 ): Promise<BatchUploadResponse> {
   const formData = new FormData();
   files.forEach(file => formData.append('files', file));
@@ -153,6 +173,12 @@ export async function uploadBatch(
   formData.append('ocr_mode', ocrMode);
   if (projectId) {
     formData.append('project_id', projectId);
+  }
+  if (options?.provenance && Object.keys(options.provenance).length > 0) {
+    formData.append('provenance', JSON.stringify(options.provenance));
+  }
+  if (options?.extract_archives) {
+    formData.append('extract_archives', 'true');
   }
 
   return apiUpload<BatchUploadResponse>(`${API_PREFIX}/upload/batch`, formData);
@@ -236,11 +262,17 @@ export function useUploadBatch() {
   const [error, setError] = useState<Error | null>(null);
 
   const uploadBatchFiles = useCallback(
-    async (files: File[], priority: 'user' | 'batch' = 'batch', ocrMode: OcrMode = 'auto', projectId?: string) => {
+    async (
+      files: File[],
+      priority: 'user' | 'batch' = 'batch',
+      ocrMode: OcrMode = 'auto',
+      projectId?: string,
+      options?: { provenance?: ProvenanceOptions }
+    ) => {
       setLoading(true);
       setError(null);
       try {
-        const result = await uploadBatch(files, priority, ocrMode, projectId);
+        const result = await uploadBatch(files, priority, ocrMode, projectId, options);
         return result;
       } catch (err) {
         const error = err instanceof Error ? err : new Error('Batch upload failed');

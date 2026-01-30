@@ -265,7 +265,7 @@ class ReportsShard(ArkhamShard):
             if self._workers:
                 await self._workers.enqueue(
                     pool="reports",
-                    job_id=f"report-gen-{report_id}",
+                    job_id=str(uuid4()),
                     payload={
                         "report_id": report_id,
                         "action": "generate_report",

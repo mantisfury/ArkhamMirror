@@ -1,7 +1,9 @@
 """
-ExtractWorker - Text extraction from PDF, DOCX, and XLSX files.
+ExtractWorker - Text and metadata extraction from documents.
 
-Extracts text content from common document formats using CPU-based libraries.
+Extracts text and metadata from PDF, DOCX, XLSX, CSV, TXT, EML using CPU-based
+libraries. Prefers EXIFTool for metadata when available; falls back to
+format-specific extractors. Single source of truth for document metadata.
 Part of the cpu-extract worker pool for document processing.
 """
 
@@ -13,7 +15,48 @@ from typing import Dict, Any, Optional
 
 from arkham_frame.workers.base import BaseWorker
 
+from .metadata_extraction import (
+    run_exiftool,
+    normalize_exiftool_to_metadata,
+    add_filesystem_times,
+)
+
 logger = logging.getLogger(__name__)
+
+# MIME type -> internal file_type for dispatch (must match _extract_* methods)
+MIME_TO_FILE_TYPE = {
+    "application/pdf": "pdf",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
+    "application/msword": "docx",
+    "application/vnd.oasis.opendocument.text": "odt",
+    "application/rtf": "txt",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "xlsx",
+    "application/vnd.ms-excel": "xlsx",
+    "text/csv": "csv",
+    "text/tab-separated-values": "csv",
+    "text/plain": "txt",
+    "text/markdown": "txt",
+    "message/rfc822": "eml",
+    "application/vnd.ms-outlook": "eml",
+}
+# Supported file types for extraction (must match _extract_* methods)
+SUPPORTED_FILE_TYPES = ("pdf", "docx", "xlsx", "csv", "txt", "eml")
+
+# Fallback: extension -> file_type when mime not in map
+EXT_TO_FILE_TYPE = {
+    ".pdf": "pdf",
+    ".docx": "docx",
+    ".doc": "docx",
+    ".xlsx": "xlsx",
+    ".xls": "xlsx",
+    ".csv": "csv",
+    ".tsv": "csv",
+    ".txt": "txt",
+    ".md": "txt",
+    ".log": "txt",
+    ".eml": "eml",
+    ".emlx": "eml",
+}
 
 
 class ExtractWorker(BaseWorker):
@@ -89,86 +132,61 @@ class ExtractWorker(BaseWorker):
 
     async def process_job(self, job_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Extract text from a document.
+        Extract text and metadata from a document.
 
         Payload:
             file_path: Path to the file to extract from (required)
-            file_type: File type - "pdf", "docx", or "xlsx" (required)
+            file_type: Optional - "pdf", "docx", "xlsx", "csv", "txt", "eml"
+            file_info: Optional dict with mime_type (used for routing when file_type absent)
+            mime_type: Optional - used for routing when file_info.mime_type not present
 
         Returns:
-            dict with:
-                success: bool - Whether extraction succeeded
-                text: str - Extracted text content
-                pages: int - Number of pages/sheets processed
-                error: str - Error message if success=False
-                file_path: str - Original file path
-                file_type: str - File type processed
-
-        Raises:
-            ValueError: If required parameters are missing or invalid
-            FileNotFoundError: If file doesn't exist
-            Exception: For other extraction errors
+            dict with success, text, pages, document_metadata, file_path, file_type.
         """
-        # Validate payload
         file_path = payload.get("file_path")
-        file_type = payload.get("file_type", "").lower()
-
         if not file_path:
             raise ValueError("Missing required parameter: file_path")
 
-        # Resolve relative path using DATA_SILO_PATH
         file_path = str(self._resolve_path(file_path))
-
-        # Auto-detect file_type from extension if not provided
-        if not file_type:
-            path = Path(file_path)
-            ext = path.suffix.lower()
-            ext_to_type = {
-                ".pdf": "pdf",
-                ".docx": "docx",
-                ".doc": "docx",  # Old Word format (may not work)
-                ".xlsx": "xlsx",
-                ".xls": "xlsx",  # Old Excel format (may not work)
-                ".csv": "csv",
-                ".tsv": "csv",  # Tab-separated values
-                ".txt": "txt",
-                ".text": "txt",
-                ".md": "txt",
-                ".log": "txt",
-                ".eml": "eml",
-                ".emlx": "eml",  # Apple Mail format
-            }
-            file_type = ext_to_type.get(ext, "")
-            if file_type:
-                logger.debug(f"Auto-detected file_type: {file_type} from extension {ext}")
-
-        if not file_type:
-            raise ValueError(
-                f"Could not determine file type. "
-                "Provide file_type parameter or use a supported extension: "
-                "pdf, docx, xlsx, csv, txt, eml"
-            )
-
-        if file_type not in ["pdf", "docx", "xlsx", "csv", "txt", "eml"]:
-            raise ValueError(
-                f"Unsupported file_type: {file_type}. "
-                "Supported types: pdf, docx, xlsx, csv, txt, eml"
-            )
-
-        # Check file exists
         path = Path(file_path)
+
+        # Derive file_type from mime_type (single source of type) then extension
+        file_info = payload.get("file_info") or {}
+        mime_type = file_info.get("mime_type") or payload.get("mime_type") or ""
+        file_type = payload.get("file_type", "").lower()
+        if not file_type and mime_type:
+            file_type = MIME_TO_FILE_TYPE.get(mime_type.strip(), "")
+        if not file_type:
+            ext = path.suffix.lower()
+            file_type = EXT_TO_FILE_TYPE.get(ext, "")
+
+        if not file_type:
+            raise ValueError(
+                "Could not determine file type. Provide file_type, mime_type, or use a supported extension: "
+                + ", ".join(SUPPORTED_FILE_TYPES)
+            )
+
+        if file_type not in SUPPORTED_FILE_TYPES:
+            # Map odt/rtf to txt for simple read; otherwise reject
+            if file_type in ("odt", "rtf"):
+                file_type = "txt"
+            else:
+                raise ValueError(
+                    f"Unsupported file_type: {file_type}. Supported: {', '.join(SUPPORTED_FILE_TYPES)}"
+                )
+
         if not path.exists():
             raise FileNotFoundError(f"File not found: {file_path}")
-
         if not path.is_file():
             raise ValueError(f"Path is not a file: {file_path}")
 
         logger.info(
-            f"ExtractWorker processing {file_type.upper()} file: "
-            f"{path.name} (job {job_id})"
+            "ExtractWorker processing %s file: %s (job %s)",
+            file_type.upper(),
+            path.name,
+            job_id,
         )
 
-        # Dispatch to appropriate extractor
         try:
             if file_type == "pdf":
                 result = await self._extract_pdf(path)
@@ -183,30 +201,52 @@ class ExtractWorker(BaseWorker):
             elif file_type == "eml":
                 result = await self._extract_eml(path)
             else:
-                # Should never reach here due to earlier validation
                 raise ValueError(f"Unsupported file type: {file_type}")
 
-            # Add metadata
+            # Ensure document_metadata dict exists
+            doc_meta = result.get("document_metadata") or {}
+            result["document_metadata"] = doc_meta
+
+            # EXIFTool-first: run when available and merge into document_metadata
+            raw_exif = run_exiftool(path)
+            if raw_exif:
+                exif_meta = normalize_exiftool_to_metadata(raw_exif)
+                for k, v in exif_meta.items():
+                    if k == "exiftool_metadata":
+                        doc_meta["exiftool_metadata"] = v
+                    elif v and (k not in doc_meta or not doc_meta[k]):
+                        doc_meta[k] = v
+                logger.debug("Merged EXIFTool metadata for job %s", job_id)
+
+            # Filesystem times (single source of truth)
+            add_filesystem_times(path, doc_meta)
+
+            # num_pages from extraction result if not set
+            if "num_pages" not in doc_meta or doc_meta["num_pages"] is None:
+                doc_meta["num_pages"] = result.get("pages", 0)
+
+            # PII detection is done in ingest shard _register_document (PII shard or fallback)
+
             result["file_path"] = str(file_path)
             result["file_type"] = file_type
             result["success"] = True
 
             logger.info(
-                f"ExtractWorker completed {file_type.upper()}: "
-                f"{result.get('pages', 0)} pages, "
-                f"{len(result.get('text', ''))} chars"
+                "ExtractWorker completed %s: %s pages, %s chars",
+                file_type.upper(),
+                result.get("pages", 0),
+                len(result.get("text", "")),
             )
-
             return result
 
         except Exception as e:
             error_msg = f"Extraction failed for {file_type.upper()}: {str(e)}"
-            logger.error(f"ExtractWorker error (job {job_id}): {error_msg}")
-
+            logger.error("ExtractWorker error (job %s): %s", job_id, error_msg)
             return {
                 "success": False,
                 "text": "",
                 "pages": 0,
+                "document_metadata": {},
                 "error": error_msg,
                 "file_path": str(file_path),
                 "file_type": file_type,
@@ -239,15 +279,16 @@ class ExtractWorker(BaseWorker):
             try:
                 reader = PdfReader(str(path))
 
-                # Check for encryption
-                if reader.is_encrypted:
+                # Check for encryption (store in metadata for single source of truth)
+                is_encrypted = getattr(reader, "is_encrypted", False) or False
+                document_metadata = {"is_encrypted": is_encrypted}
+                if is_encrypted:
                     raise ValueError(
                         "PDF is password-protected. "
                         "Encrypted PDFs are not supported."
                     )
 
                 # Extract PDF metadata (author, title, creator, etc.)
-                document_metadata = {}
                 if reader.metadata:
                     meta = reader.metadata
                     # Standard PDF metadata fields
@@ -262,9 +303,17 @@ class ExtractWorker(BaseWorker):
                     if meta.producer:
                         document_metadata["producer"] = str(meta.producer)
                     if meta.creation_date:
-                        document_metadata["creation_date"] = str(meta.creation_date)
+                        document_metadata["creation_date"] = (
+                            meta.creation_date.isoformat()
+                            if hasattr(meta.creation_date, "isoformat")
+                            else str(meta.creation_date)
+                        )
                     if meta.modification_date:
-                        document_metadata["modification_date"] = str(meta.modification_date)
+                        document_metadata["modification_date"] = (
+                            meta.modification_date.isoformat()
+                            if hasattr(meta.modification_date, "isoformat")
+                            else str(meta.modification_date)
+                        )
                     # Keywords (may be comma-separated string)
                     if hasattr(meta, 'keywords') and meta.keywords:
                         document_metadata["keywords"] = str(meta.keywords)
@@ -277,6 +326,7 @@ class ExtractWorker(BaseWorker):
 
                 full_text = "\n\n".join(pages)
 
+                document_metadata["num_pages"] = len(reader.pages)
                 return {
                     "text": full_text,
                     "pages": len(reader.pages),
@@ -287,7 +337,7 @@ class ExtractWorker(BaseWorker):
                 # Add context to error
                 raise Exception(f"PDF reading error: {str(e)}")
 
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, extract)
 
     async def _extract_docx(self, path: Path) -> Dict[str, Any]:
@@ -375,7 +425,7 @@ class ExtractWorker(BaseWorker):
             except Exception as e:
                 raise Exception(f"DOCX reading error: {str(e)}")
 
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, extract)
 
     async def _extract_xlsx(self, path: Path) -> Dict[str, Any]:
@@ -429,9 +479,17 @@ class ExtractWorker(BaseWorker):
                     if props.lastModifiedBy:
                         document_metadata["last_modified_by"] = str(props.lastModifiedBy)
                     if props.created:
-                        document_metadata["creation_date"] = str(props.created)
+                        document_metadata["creation_date"] = (
+                            props.created.isoformat()
+                            if hasattr(props.created, "isoformat")
+                            else str(props.created)
+                        )
                     if props.modified:
-                        document_metadata["modification_date"] = str(props.modified)
+                        document_metadata["modification_date"] = (
+                            props.modified.isoformat()
+                            if hasattr(props.modified, "isoformat")
+                            else str(props.modified)
+                        )
                     if props.company:
                         document_metadata["company"] = str(props.company)
 
@@ -462,7 +520,7 @@ class ExtractWorker(BaseWorker):
             except Exception as e:
                 raise Exception(f"XLSX reading error: {str(e)}")
 
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, extract)
 
     async def _extract_text(self, path: Path) -> Dict[str, Any]:
@@ -499,12 +557,13 @@ class ExtractWorker(BaseWorker):
                 return {
                     "text": text,
                     "pages": lines,  # Use line count as proxy for pages
+                    "document_metadata": {},
                 }
 
             except Exception as e:
                 raise Exception(f"Text file reading error: {str(e)}")
 
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, extract)
 
     async def _extract_csv(self, path: Path) -> Dict[str, Any]:
@@ -596,7 +655,7 @@ class ExtractWorker(BaseWorker):
             except Exception as e:
                 raise Exception(f"CSV reading error: {str(e)}")
 
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, extract)
 
     async def _extract_eml(self, path: Path) -> Dict[str, Any]:
@@ -738,7 +797,7 @@ class ExtractWorker(BaseWorker):
             except Exception as e:
                 raise Exception(f"Email file reading error: {str(e)}")
 
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, extract)
 
 

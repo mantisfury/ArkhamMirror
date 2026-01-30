@@ -506,6 +506,15 @@ class WorkerService:
         if pool not in WORKER_POOLS:
             raise WorkerError(f"Unknown worker pool: {pool}")
 
+        # arkham_jobs.jobs.id is VARCHAR(36); avoid StringDataRightTruncationError from any caller
+        if len(job_id) > 36:
+            logger.warning(
+                "job_id longer than VARCHAR(36), using generated UUID (original_len=%s, prefix=%r)",
+                len(job_id),
+                job_id[:40],
+            )
+            job_id = str(uuid.uuid4())
+
         # Clamp priority to valid range
         priority = max(1, min(10, priority))
 
@@ -1408,7 +1417,8 @@ class WorkerService:
                     """, pool)
 
                 for row in rows:
-                    new_job_id = f"{row['id']}-retry-{uuid.uuid4().hex[:4]}"
+                    # job id must fit VARCHAR(36); use fresh UUID instead of prefixing original
+                    new_job_id = str(uuid.uuid4())
                     payload = row['payload'] if isinstance(row['payload'], dict) else json.loads(row['payload'])
 
                     await conn.execute("""
@@ -1545,8 +1555,8 @@ class WorkerService:
             if not row:
                 return {"success": False, "error": f"Dead letter {dlq_id} not found"}
 
-            # Create new job
-            new_job_id = f"{row['job_id']}-dlq-{uuid.uuid4().hex[:4]}"
+            # Create new job (id must fit VARCHAR(36); use fresh UUID)
+            new_job_id = str(uuid.uuid4())
             payload = row['payload'] if isinstance(row['payload'], dict) else json.loads(row['payload'])
 
             await conn.execute("""

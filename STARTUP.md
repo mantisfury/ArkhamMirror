@@ -81,13 +81,22 @@ pip install -e packages/arkham-shard-ingest
 python -m spacy download en_core_web_sm
 ```
 
-### 4. Install Node Dependencies
+### 4. Metadata extraction (optional)
+
+Document metadata is extracted during ingest (single source of truth). For the richest metadata (PDF, images, Office, etc.):
+
+- **EXIFTool** (recommended): Install [ExifTool](https://exiftool.org/) and ensure `exiftool` is on your PATH. The ingest extract worker uses it when available; otherwise it falls back to pypdf, python-docx, openpyxl, and Pillow.
+- **Magika** (optional): For content-based MIME detection, install the ingest shard with `pip install -e ".[magika]"` from `packages/arkham-shard-ingest`.
+
+**PII detection**: The **PII shard** (`arkham-shard-pii`) is the single source for PII. Install it with `pip install -e .` from `packages/arkham-shard-pii`. During document registration, ingest calls the PII shard (when installed) to analyze metadata; results are stored in document metadata (`pii_detected`, `pii_types`, `pii_entities`, `pii_count`). If the PII shard is not installed, ingest uses a built-in regex/heuristic fallback. For stronger detection, run [Microsoft Presidio](https://github.com/microsoft/presidio) and set `PII_PRESIDIO_URL` (e.g. `http://localhost:3000`); see `packages/arkham-shard-pii/README.md` for Presidio Docker setup.
+
+### 5. Install Node Dependencies
 
 ```bash
 cd packages/arkham-shard-shell && npm install
 ```
 
-### 5. Start Backend
+### 6. Start Backend
 
 ```bash
 python -m uvicorn arkham_frame.main:app --host 127.0.0.1 --port 8100
@@ -98,7 +107,7 @@ With auto-reload for development:
 python -m uvicorn arkham_frame.main:app --host 127.0.0.1 --port 8100 --reload
 ```
 
-### 6. Start UI Shell
+### 7. Start UI Shell
 
 In a new terminal:
 ```bash

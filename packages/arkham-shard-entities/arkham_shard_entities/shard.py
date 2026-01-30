@@ -258,8 +258,8 @@ class EntitiesShard(ArkhamShard):
                         EXECUTE format('ALTER TABLE %I ADD COLUMN tenant_id UUID', tbl);
                     END IF;
                     
-                    -- Add project_id if not exists (for entities and mentions only)
-                    IF tbl IN ('arkham_entities', 'arkham_entity_mentions') THEN
+                    -- Add project_id if not exists (entities, mentions, relationships)
+                    IF tbl IN ('arkham_entities', 'arkham_entity_mentions', 'arkham_entity_relationships') THEN
                         IF NOT EXISTS (
                             SELECT 1 FROM information_schema.columns
                             WHERE table_schema = 'public'
@@ -282,6 +282,11 @@ class EntitiesShard(ArkhamShard):
         await self._db.execute("""
             CREATE INDEX IF NOT EXISTS idx_mentions_project
             ON arkham_entity_mentions(project_id)
+        """)
+
+        await self._db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_relationships_project
+            ON arkham_entity_relationships(project_id)
         """)
 
         # Create tenant_id indexes

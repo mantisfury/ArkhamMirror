@@ -1,0 +1,37 @@
+# PII Shard - Production Manifest
+# Optional shard: PII discovery and analysis (Presidio preferred, regex fallback)
+
+name: pii
+version: "0.1.0"
+description: PII detection and analysis - Microsoft Presidio when configured, improved regex fallback otherwise
+entry_point: arkham_shard_pii:PiiShard
+api_prefix: /api/pii
+requires_frame: ">=0.1.0"
+
+navigation:
+  category: System
+  order: 95
+  icon: ShieldAlert
+  label: PII
+  route: /pii
+
+dependencies:
+  services: []
+  optional:
+    - events
+  shards: []
+
+capabilities:
+  - pii_detection
+  - pii_analysis_metadata
+  - pii_analysis_text
+
+events:
+  publishes: []
+  subscribes: []
+
+state:
+  strategy: none
+
+ui:
+  has_custom_ui: false

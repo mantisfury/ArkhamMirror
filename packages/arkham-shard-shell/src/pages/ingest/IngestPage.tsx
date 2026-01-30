@@ -14,7 +14,7 @@ import { Icon } from '../../components/common/Icon';
 import { useToast } from '../../context/ToastContext';
 import { useProject } from '../../context/ProjectContext';
 import { useUploadBatch, useQueue, usePending, useIngestSettings, useUpdateIngestSettings } from './api';
-import type { PendingJob, OcrMode, IngestSettings, IngestSettingsUpdate } from './api';
+import type { PendingJob, OcrMode, IngestSettings, IngestSettingsUpdate, ProvenanceOptions } from './api';
 
 export function IngestPage() {
   const { toast } = useToast();
@@ -25,6 +25,14 @@ export function IngestPage() {
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
   const [ocrMode, setOcrMode] = useState<OcrMode>('auto');
   const [showSettings, setShowSettings] = useState(false);
+  const [showProvenance, setShowProvenance] = useState(false);
+  const [extractArchives, setExtractArchives] = useState(false);
+  const [provenance, setProvenance] = useState<ProvenanceOptions>({
+    source_url: '',
+    source_description: '',
+    custodian: '',
+    acquisition_date: '',
+  });
 
   const { uploadBatch, loading: uploading } = useUploadBatch();
   const { data: queueStats, loading: loadingQueue, refetch: refetchQueue } = useQueue();
@@ -94,7 +102,25 @@ export function IngestPage() {
     }
 
     try {
-      const result = await uploadBatch(selectedFiles, 'user', ocrMode, activeProjectId);
+      const hasProvenance =
+        (provenance.source_url ?? '').trim() ||
+        (provenance.source_description ?? '').trim() ||
+        (provenance.custodian ?? '').trim() ||
+        (provenance.acquisition_date ?? '').trim();
+      const provenancePayload = hasProvenance
+        ? {
+            provenance: Object.fromEntries(
+              Object.entries(provenance).filter(([, v]) => v != null && String(v).trim() !== '')
+            ) as ProvenanceOptions,
+          }
+        : undefined;
+      const result = await uploadBatch(
+        selectedFiles,
+        'user',
+        ocrMode,
+        activeProjectId,
+        provenancePayload
+      );
       if (result.failed > 0) {
         toast.warning(`Uploaded ${result.total_files} file(s), ${result.failed} failed`);
       } else {
@@ -106,7 +132,7 @@ export function IngestPage() {
     } catch (error) {
       toast.error(error instanceof Error ? error.message : 'Upload failed');
     }
-  }, [selectedFiles, uploadBatch, toast, refetchQueue, refetchPending, ocrMode, activeProjectId, activeProject]);
+  }, [selectedFiles, uploadBatch, toast, refetchQueue, refetchPending, ocrMode, activeProjectId, activeProject, provenance, extractArchives]);
 
   const formatFileSize = (bytes: number): string => {
     if (bytes < 1024) return `${bytes} B`;
@@ -522,6 +548,81 @@ export function IngestPage() {
                   </button>
                 </div>
               </div>
+              <div className="option-group" style={{ marginTop: '12px' }}>
+                <label className="option-label" style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
+                  <input
+                    type="checkbox"
+                    checked={extractArchives}
+                    onChange={e => setExtractArchives(e.target.checked)}
+                    style={{ width: 18, height: 18 }}
+                  />
+                  <Icon name="Archive" size={16} />
+                  Extract archives (ZIP, TAR, etc.)
+                </label>
+                <p style={{ margin: '4px 0 0 0', fontSize: '0.8rem', color: '#6b7280' }}>
+                  When enabled, typical archives are extracted and each file is ingested separately.
+                </p>
+              </div>
+            </div>
+            {/* Optional provenance (where you got this data) */}
+            <div className="provenance-section" style={{ marginTop: '16px', borderTop: '1px solid #e5e7eb', paddingTop: '16px' }}>
+              <button
+                type="button"
+                className="button-secondary"
+                onClick={() => setShowProvenance(!showProvenance)}
+                style={{ marginBottom: showProvenance ? 12 : 0 }}
+              >
+                <Icon name={showProvenance ? 'ChevronDown' : 'ChevronRight'} size={16} />
+                Provenance (optional)
+              </button>
+              {showProvenance && (
+                <div className="provenance-fields" style={{ display: 'grid', gap: '12px', maxWidth: '480px' }}>
+                  <div>
+                    <label htmlFor="provenance-source-url" style={{ display: 'block', marginBottom: 4, fontSize: '0.875rem' }}>Source URL</label>
+                    <input
+                      id="provenance-source-url"
+                      type="url"
+                      placeholder="https://..."
+                      value={provenance.source_url ?? ''}
+                      onChange={e => setProvenance(p => ({ ...p, source_url: e.target.value }))}
+                      style={{ width: '100%', padding: '8px 12px', borderRadius: 6, border: '1px solid #d1d5db' }}
+                    />
+                  </div>
+                  <div>
+                    <label htmlFor="provenance-description" style={{ display: 'block', marginBottom: 4, fontSize: '0.875rem' }}>Source description</label>
+                    <input
+                      id="provenance-description"
+                      type="text"
+                      placeholder="Where you got this data"
+                      value={provenance.source_description ?? ''}
+                      onChange={e => setProvenance(p => ({ ...p, source_description: e.target.value }))}
+                      style={{ width: '100%', padding: '8px 12px', borderRadius: 6, border: '1px solid #d1d5db' }}
+                    />
+                  </div>
+                  <div>
+                    <label htmlFor="provenance-custodian" style={{ display: 'block', marginBottom: 4, fontSize: '0.875rem' }}>Custodian</label>
+                    <input
+                      id="provenance-custodian"
+                      type="text"
+                      placeholder="Who provided or owns the data"
+                      value={provenance.custodian ?? ''}
+                      onChange={e => setProvenance(p => ({ ...p, custodian: e.target.value }))}
+                      style={{ width: '100%', padding: '8px 12px', borderRadius: 6, border: '1px solid #d1d5db' }}
+                    />
+                  </div>
+                  <div>
+                    <label htmlFor="provenance-date" style={{ display: 'block', marginBottom: 4, fontSize: '0.875rem' }}>Acquisition date</label>
+                    <input
+                      id="provenance-date"
+                      type="text"
+                      placeholder="YYYY-MM-DD or description"
+                      value={provenance.acquisition_date ?? ''}
+                      onChange={e => setProvenance(p => ({ ...p, acquisition_date: e.target.value }))}
+                      style={{ width: '100%', padding: '8px 12px', borderRadius: 6, border: '1px solid #d1d5db' }}
+                    />
+                  </div>
+                </div>
+              )}
             </div>
             <div className="upload-actions">
               <button className="button-primary" onClick={handleUpload} disabled={uploading}>

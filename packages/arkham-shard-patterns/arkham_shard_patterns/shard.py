@@ -244,11 +244,11 @@ class PatternsShard(ArkhamShard):
             return
 
         logger.debug(f"Document processed, checking patterns: {document_id}")
-        # Queue pattern matching job if workers available
+        # Queue pattern matching job if workers available (job_id must fit VARCHAR(36))
         if self._workers:
             await self._workers.enqueue(
                 pool="cpu-light",
-                job_id=f"patterns-match-{document_id}",
+                job_id=str(uuid4()),
                 payload={"document_id": document_id, "action": "match_patterns"},
             )
 
