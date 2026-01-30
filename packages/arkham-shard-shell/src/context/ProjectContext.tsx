@@ -3,11 +3,13 @@
  *
  * Tracks the currently active project and provides methods to change it.
  * All embedding and search operations route to the active project's collections.
+ * Fetches only when authenticated so session data aligns with displayed UI on load/refresh.
  */
 
-import { createContext, useContext, useState, useCallback, useEffect, ReactNode } from 'react';
+import { createContext, useContext, useState, useCallback, useEffect, useRef, ReactNode } from 'react';
 import { useFetch } from '../hooks/useFetch';
 import { apiFetch } from '../utils/api';
+import { useAuth } from './AuthContext';
 
 export interface Project {
   id: string;
@@ -62,28 +64,35 @@ interface ProjectContextValue {
 
 const ProjectContext = createContext<ProjectContextValue | null>(null);
 
+const LAST_ACTIVE_PROJECT_KEY = 'arkham_last_active_project';
+
 export function ProjectProvider({ children }: { children: ReactNode }) {
+  const { isAuthenticated } = useAuth();
   const [settingProject, setSettingProject] = useState(false);
   const [setError, setSetError] = useState<Error | null>(null);
   const [projectsCacheKey, setProjectsCacheKey] = useState(0);
+  const hasRestoredFromStorage = useRef(false);
 
-  // Fetch active project state
+  // Fetch active project only when authenticated so displayed project matches server on load/refresh
   const {
     data: activeData,
     loading: activeLoading,
     error: activeError,
     refetch: refreshActiveProject,
-  } = useFetch<ActiveProjectResponse>('/api/frame/active-project');
+  } = useFetch<ActiveProjectResponse>(isAuthenticated ? '/api/frame/active-project' : null);
 
-  // Fetch all projects for the selector (with cache-busting)
+  // Fetch all projects for the selector only when authenticated (with cache-busting)
   const {
     data: projectsData,
     loading: projectsLoading,
     error: projectsError,
     refetch: refreshProjectsInternal,
-  } = useFetch<ProjectsListResponse>(`/api/projects/?page_size=100&_t=${projectsCacheKey}`);
+  } = useFetch<ProjectsListResponse>(
+    isAuthenticated ? `/api/projects/?page_size=100&_t=${projectsCacheKey}` : null
+  );
 
   const activeProjectId = activeData?.project_id ?? null;
+  const projectsList = projectsData?.projects || projectsData?.items || [];
 
   // Log errors for debugging
   useEffect(() => {
@@ -94,6 +103,36 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
       console.warn('Projects list is empty. User may not have access to any projects or may not be authenticated.');
     }
   }, [projectsError, projectsData]);
+
+  // Restore active project from localStorage when server returns null (e.g. new session) so displayed project aligns with user's last choice
+  useEffect(() => {
+    if (
+      hasRestoredFromStorage.current ||
+      !isAuthenticated ||
+      activeLoading ||
+      projectsLoading ||
+      activeData == null ||
+      activeData.project_id != null
+    ) {
+      return;
+    }
+    const lastId = typeof localStorage !== 'undefined' ? localStorage.getItem(LAST_ACTIVE_PROJECT_KEY) : null;
+    if (!lastId || !projectsList.some((p: Project) => p.id === lastId)) {
+      return;
+    }
+    hasRestoredFromStorage.current = true;
+    apiFetch('/api/frame/active-project', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ project_id: lastId }),
+    })
+      .then((res) => {
+        if (res.ok) refreshActiveProject();
+      })
+      .catch(() => {
+        hasRestoredFromStorage.current = false;
+      });
+  }, [isAuthenticated, activeLoading, activeData?.project_id, projectsLoading, projectsList, refreshActiveProject]);
 
   // Watch for activeProjectId changes and emit event
   useEffect(() => {
@@ -128,11 +167,11 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
         throw new Error(errorData.detail || `Failed to set active project: ${response.status}`);
       }
 
-      // Store in localStorage as fallback
+      // Store in localStorage as fallback for restore on next load
       if (projectId) {
-        localStorage.setItem('arkham_last_active_project', projectId);
+        localStorage.setItem(LAST_ACTIVE_PROJECT_KEY, projectId);
       } else {
-        localStorage.removeItem('arkham_last_active_project');
+        localStorage.removeItem(LAST_ACTIVE_PROJECT_KEY);
       }
 
       // Refresh active project state
